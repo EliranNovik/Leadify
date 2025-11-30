@@ -18,6 +18,8 @@ import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from
 import TeamsMeetingModal from './TeamsMeetingModal';
 import StaffMeetingEditModal from './StaffMeetingEditModal';
 import DepartmentList from './DepartmentList';
+import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
+import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
 
 // Email templates
 const emailTemplates = [
@@ -290,10 +292,15 @@ const CalendarPage: React.FC = () => {
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
-  const [whatsAppInput, setWhatsAppInput] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'cards'>('list');
-  // WhatsApp chat messages for the chat box (from selectedLead.manual_interactions)
-  const [selectedLeadForWhatsApp, setSelectedLeadForWhatsApp] = useState<any>(null);
+  const [selectedClientForWhatsApp, setSelectedClientForWhatsApp] = useState<{
+    id: string;
+    name: string;
+    lead_number: string;
+    phone?: string;
+    mobile?: string;
+    lead_type?: string;
+  } | null>(null);
   const { instance, accounts } = useMsal();
 
   // Currency conversion rates (same as DepartmentList)
@@ -387,21 +394,15 @@ const CalendarPage: React.FC = () => {
 
   // Email functionality
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
-  const [selectedLeadForEmail, setSelectedLeadForEmail] = useState<any>(null);
-  const [emails, setEmails] = useState<any[]>([]);
-  const [emailsLoading, setEmailsLoading] = useState(false);
-  const [composeSubject, setComposeSubject] = useState('');
-  const [composeBody, setComposeBody] = useState('');
-  const [sending, setSending] = useState(false);
-  const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
-  const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
-  const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
-  const [bodyFocused, setBodyFocused] = useState(false);
-  const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
-  const [showCompose, setShowCompose] = useState(false);
-  const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  const [uploadingMedia, setUploadingMedia] = useState(false);
+  const [selectedClientForEmail, setSelectedClientForEmail] = useState<{
+    id: string;
+    name: string;
+    lead_number: string;
+    email?: string;
+    lead_type?: string;
+    topic?: string;
+    user_internal_id?: string | number | null;
+  } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const quillRef = useRef<ReactQuill>(null);
   const staffDropdownRef = useRef<HTMLDivElement | null>(null);
@@ -434,9 +435,6 @@ const CalendarPage: React.FC = () => {
     };
   }>({});
 
-  // 1. Add state for WhatsApp messages and input
-  const [whatsAppChatMessages, setWhatsAppChatMessages] = useState<any[]>([]);
-  const [isWhatsAppLoading, setIsWhatsAppLoading] = useState(false);
 
   // State to store all employees and categories for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
@@ -1592,90 +1590,7 @@ const CalendarPage: React.FC = () => {
 
   }, [appliedFromDate, appliedToDate, selectedStaff, selectedMeetingType, meetings, staffMeetings]);
 
-  useEffect(() => {
-    const fetchEmails = async () => {
-      setEmailsLoading(true);
-      try {
-        // Only fetch emails from the last 30 days to prevent timeouts
-        const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
-        
-        const { data, error }: any = await supabase
-          .from('emails')
-          .select('*')
-          .gte('sent_at', thirtyDaysAgo)
-          .order('sent_at', { ascending: false })
-          .limit(200); // Reduced limit for faster query
-        
-        if (error) {
-          console.error('Error fetching emails:', error);
-          // Gracefully handle statement timeout without breaking the calendar
-          const message = typeof error?.message === 'string' ? error.message : '';
-          const code = error?.code;
-          if (message.includes('timeout') || code === '57014') {
-            // Just stop loading; leave any existing emails list as-is
-            setEmailsLoading(false);
-            return;
-          }
-          // For other errors, still set loading to false
-          setEmailsLoading(false);
-          return;
-        }
-        setEmails(data || []);
-      } catch (err) {
-        console.error('Exception fetching emails:', err);
-      } finally {
-        setEmailsLoading(false);
-      }
-    };
 
-    fetchEmails();
-  }, []);
-
-  // Sync emails when email modal opens
-  useEffect(() => {
-    const syncEmailsForClient = async () => {
-      if (!isEmailModalOpen || !selectedLeadForEmail || !instance || !accounts[0]) return;
-      
-      setEmailsLoading(true);
-      try {
-        const tokenResponse = await acquireToken(instance, accounts[0]);
-        await syncClientEmails(tokenResponse.accessToken, selectedLeadForEmail);
-        
-        // Fetch updated emails from database
-        const { data, error }: any = await supabase
-          .from('emails')
-          .select('*')
-          .eq('client_id', selectedLeadForEmail.id)
-          .order('sent_at', { ascending: false });
-        
-        if (error) {
-          console.error('Error fetching emails after sync:', error);
-          const message = typeof error?.message === 'string' ? error.message : '';
-          const code = error?.code;
-          if (message.includes('timeout') || code === '57014') {
-            return;
-          }
-        } else {
-          setEmails(data || []);
-        }
-      } catch (e) {
-        console.error("Email sync failed:", e);
-        toast.error("Failed to sync emails from server.");
-      } finally {
-        setEmailsLoading(false);
-      }
-    };
-
-    syncEmailsForClient();
-  }, [isEmailModalOpen, selectedLeadForEmail, instance, accounts]);
-
-  // Set the subject when the email modal opens (if not already set by user)
-  useEffect(() => {
-    if (isEmailModalOpen && selectedLeadForEmail) {
-      const defaultSubject = `[${selectedLeadForEmail.lead_number}] - ${selectedLeadForEmail.name} - ${selectedLeadForEmail.topic || ''}`;
-      setComposeSubject(prev => prev && prev.trim() ? prev : defaultSubject);
-    }
-  }, [isEmailModalOpen, selectedLeadForEmail]);
 
   const FALLBACK_STAGE_COLOR = '#3b28c7';
   const NEUTRAL_STAGE_BG = '#f3f4f6';
@@ -1770,351 +1685,70 @@ const CalendarPage: React.FC = () => {
 
   // Helper function to handle Email button click
   const handleEmailClick = (lead: any, meeting: any) => {
-    // Debug: Log the lead data to ensure it's correct
+    // Format lead as client object for SchedulerEmailThreadModal
+    // For new leads: id is UUID string, for legacy: id is number
+    const isLegacy = lead.lead_type === 'legacy' || 
+                     (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
+                     (meeting.legacy_lead_id && !meeting.client_id);
     
-    // Set the selected lead for email and open the modal
-    setSelectedLeadForEmail(lead);
+    let clientId: string;
+    if (isLegacy) {
+      // For legacy leads, use the numeric ID (remove 'legacy_' prefix if present)
+      const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
+        ? lead.id.replace('legacy_', '')
+        : (meeting.legacy_lead_id || lead.id || '').toString();
+      clientId = legacyId;
+    } else {
+      // For new leads, use the UUID
+      clientId = lead.id || meeting.client_id || '';
+    }
+    
+    const client = {
+      id: clientId,
+      name: lead.name || '',
+      lead_number: lead.lead_number || (isLegacy ? clientId : ''),
+      email: lead.email || '',
+      lead_type: isLegacy ? 'legacy' : 'new',
+      topic: lead.topic || '',
+      user_internal_id: lead.user_internal_id || null
+    };
+    setSelectedClientForEmail(client);
     setIsEmailModalOpen(true);
   };
 
   // Helper function to handle WhatsApp button click
   const handleWhatsAppClick = (lead: any, meeting: any) => {
-    // Debug: Log the lead data to ensure it's correct
+    // Format lead as client object for SchedulerWhatsAppModal
+    // For new leads: id is UUID string, for legacy: id is number
+    const isLegacy = lead.lead_type === 'legacy' || 
+                     (typeof lead.id === 'string' && lead.id.startsWith('legacy_')) ||
+                     (meeting.legacy_lead_id && !meeting.client_id);
     
-    // Set the selected lead for WhatsApp and open the modal
-    setSelectedLeadForWhatsApp(lead);
+    let clientId: string;
+    if (isLegacy) {
+      // For legacy leads, use the numeric ID (remove 'legacy_' prefix if present)
+      const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
+        ? lead.id.replace('legacy_', '')
+        : (meeting.legacy_lead_id || lead.id || '').toString();
+      clientId = legacyId;
+    } else {
+      // For new leads, use the UUID
+      clientId = lead.id || meeting.client_id || '';
+    }
+    
+    const client = {
+      id: clientId,
+      name: lead.name || '',
+      lead_number: lead.lead_number || (isLegacy ? clientId : ''),
+      phone: lead.phone || '',
+      mobile: lead.mobile || '',
+      lead_type: isLegacy ? 'legacy' : 'new'
+    };
+    setSelectedClientForWhatsApp(client);
     setIsWhatsAppOpen(true);
   };
 
-  // 2. Fetch WhatsApp messages when modal opens or selectedLeadForWhatsApp changes
-  useEffect(() => {
-    async function fetchWhatsAppMessages() {
-      if (!selectedLeadForWhatsApp?.id) return;
-      setIsWhatsAppLoading(true);
-      const { data, error } = await supabase
-        .from('whatsapp_messages')
-        .select('*')
-        .eq('lead_id', selectedLeadForWhatsApp.id)
-        .order('sent_at', { ascending: true });
-      if (!error && data) {
-        setWhatsAppChatMessages(data);
-      } else {
-        setWhatsAppChatMessages([]);
-      }
-      setIsWhatsAppLoading(false);
-    }
-    if (isWhatsAppOpen && selectedLeadForWhatsApp) {
-      fetchWhatsAppMessages();
-    }
-  }, [isWhatsAppOpen, selectedLeadForWhatsApp]);
 
-  // 3. Handle sending WhatsApp message
-  const handleSendWhatsAppMessage = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!whatsAppInput.trim() || !selectedLeadForWhatsApp?.id) return;
-    let senderId = null;
-    let senderName = 'You';
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user?.id) {
-        const { data: userRow, error: userLookupError } = await supabase
-          .from('users')
-          .select('id, full_name, email')
-          .eq('auth_id', user.id)
-          .single();
-        if (!userLookupError && userRow) {
-          senderId = userRow.id;
-          senderName = userRow.full_name || userRow.email || 'You';
-        }
-      }
-      const now = new Date();
-      const { error: insertError } = await supabase
-        .from('whatsapp_messages')
-        .insert([
-          {
-            lead_id: selectedLeadForWhatsApp.id,
-            sender_id: senderId,
-            sender_name: senderName,
-            direction: 'out',
-            message: whatsAppInput,
-            sent_at: now.toISOString(),
-            status: 'sent',
-          }
-        ]);
-      if (insertError) {
-        alert('Failed to send WhatsApp message: ' + insertError.message);
-        return;
-      }
-      setWhatsAppInput('');
-      // Refetch messages
-      const { data, error } = await supabase
-        .from('whatsapp_messages')
-        .select('*')
-        .eq('lead_id', selectedLeadForWhatsApp.id)
-        .order('sent_at', { ascending: true });
-      if (!error && data) {
-        setWhatsAppChatMessages(data);
-      }
-    } catch (err) {
-      alert('Unexpected error sending WhatsApp message.');
-    }
-  };
-
-  // Helper function to render WhatsApp-style message status
-  const renderMessageStatus = (status?: string) => {
-    if (!status) return null;
-    
-    const baseClasses = "w-7 h-7";
-    
-    switch (status) {
-      case 'sent':
-        return (
-          <svg className={baseClasses} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-          </svg>
-        );
-      case 'delivered':
-        return (
-          <svg className={`${baseClasses} text-gray-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
-          </svg>
-        );
-      case 'read':
-        return (
-          <svg className={`${baseClasses} text-black`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
-          </svg>
-        );
-      default:
-        return null;
-    }
-  };
-
-  // Handle file selection for WhatsApp
-  const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (file) {
-      setSelectedFile(file);
-    }
-  };
-
-  // Send media message via WhatsApp
-  const handleSendMedia = async () => {
-    if (!selectedFile || !selectedLeadForWhatsApp) return;
-
-    setUploadingMedia(true);
-    try {
-      // Create FormData for file upload
-      const formData = new FormData();
-      formData.append('file', selectedFile);
-      formData.append('leadId', selectedLeadForWhatsApp.id);
-
-      // Upload media to WhatsApp
-      const uploadResponse = await fetch(buildApiUrl('/api/whatsapp/upload-media'), {
-        method: 'POST',
-        body: formData,
-      });
-
-      const uploadResult = await uploadResponse.json();
-
-      if (!uploadResponse.ok) {
-        throw new Error(uploadResult.error || 'Failed to upload media');
-      }
-
-      // Send media message
-      const mediaType = selectedFile.type.startsWith('image/') ? 'image' : 'document';
-      const senderName = currentUserFullName || 'You';
-      const response = await fetch(buildApiUrl('/api/whatsapp/send-media'), {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          leadId: selectedLeadForWhatsApp.id,
-          mediaUrl: uploadResult.mediaId,
-          mediaType: mediaType,
-          caption: whatsAppInput.trim() || undefined,
-          phoneNumber: selectedLeadForWhatsApp.phone || selectedLeadForWhatsApp.mobile,
-          sender_name: senderName
-        }),
-      });
-
-      const result = await response.json();
-
-      if (!response.ok) {
-        throw new Error(result.error || 'Failed to send media');
-      }
-
-      // Add message to local state
-      const newMsg = {
-        id: Date.now(),
-        lead_id: selectedLeadForWhatsApp.id,
-        sender_id: null,
-        sender_name: senderName,
-        direction: 'out',
-        message: whatsAppInput.trim() || `${mediaType} message`,
-        sent_at: new Date().toISOString(),
-        status: 'sent',
-        message_type: mediaType,
-        whatsapp_status: 'sent',
-        whatsapp_message_id: result.messageId,
-        media_url: uploadResult.mediaId,
-        caption: whatsAppInput.trim() || undefined
-      };
-
-      setWhatsAppChatMessages(prev => [...prev, newMsg]);
-      setWhatsAppInput('');
-      setSelectedFile(null);
-      toast.success('Media sent via WhatsApp!');
-    } catch (error) {
-      console.error('Error sending media:', error);
-      toast.error('Failed to send media: ' + (error as Error).message);
-    } finally {
-      setUploadingMedia(false);
-    }
-  };
-
-  // Handle WhatsApp modal close
-  const handleWhatsAppClose = () => {
-    setIsWhatsAppOpen(false);
-    setSelectedLeadForWhatsApp(null);
-    setWhatsAppInput("");
-  };
-
-  // Email functionality
-  const handleEmailClose = () => {
-    setIsEmailModalOpen(false);
-    setSelectedLeadForEmail(null);
-    setComposeSubject('');
-    setComposeBody('');
-    setComposeAttachments([]);
-  };
-
-  const handleSendEmail = async () => {
-    if (!selectedLeadForEmail?.email) return;
-    setSending(true);
-    try {
-      const account = instance.getAllAccounts()[0];
-      if (!account) {
-        toast.error('You must be signed in to send an email.');
-        setSending(false);
-        return;
-      }
-      let senderName = account.name || 'Current User';
-      try {
-        const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-        const accessToken = response.accessToken;
-        await sendClientEmail(accessToken, composeSubject, composeBody, selectedLeadForEmail, senderName, composeAttachments);
-        toast.success('Email sent successfully!');
-        
-        // Sync emails after sending
-        await syncClientEmails(accessToken, selectedLeadForEmail);
-        
-        // Fetch updated emails from database
-        const { data, error } = await supabase
-          .from('emails')
-          .select('*')
-          .eq('client_id', selectedLeadForEmail.id)
-          .order('sent_at', { ascending: false });
-        
-        if (!error && data) {
-          setEmails(data);
-        }
-        
-        // Clear form
-        setComposeBody('');
-        setComposeSubject('');
-        setComposeAttachments([]);
-      } catch (error) {
-        if (error instanceof Error && error.name === 'InteractionRequiredAuthError') {
-          const response = await instance.acquireTokenPopup(loginRequest);
-          const accessToken = response.accessToken;
-          await sendClientEmail(accessToken, composeSubject, composeBody, selectedLeadForEmail, senderName, composeAttachments);
-          toast.success('Email sent successfully!');
-          
-          // Sync emails after sending
-          await syncClientEmails(accessToken, selectedLeadForEmail);
-          
-          // Fetch updated emails from database
-          const { data, error } = await supabase
-            .from('emails')
-            .select('*')
-            .eq('client_id', selectedLeadForEmail.id)
-            .order('sent_at', { ascending: false });
-          
-          if (!error && data) {
-            setEmails(data);
-          }
-          
-          // Clear form
-          setComposeBody('');
-          setComposeSubject('');
-          setComposeAttachments([]);
-        } else {
-          throw error;
-        }
-      }
-    } catch (e) {
-      toast.error('Failed to send email.');
-    }
-    setSending(false);
-  };
-
-  const handleDownloadAttachment = async (messageId: string, attachment: any) => {
-    setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: true }));
-    try {
-      const account = instance.getAllAccounts()[0];
-      if (!account) {
-        toast.error('You must be signed in to download attachments.');
-        return;
-      }
-      const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-      const accessToken = response.accessToken;
-      
-      const downloadResponse = await fetch(attachment.contentUrl, {
-        headers: { Authorization: `Bearer ${accessToken}` }
-      });
-      if (!downloadResponse.ok) throw new Error('Download failed');
-      
-      const blob = await downloadResponse.blob();
-      const url = window.URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = attachment.name;
-      document.body.appendChild(a);
-      a.click();
-      window.URL.revokeObjectURL(url);
-      document.body.removeChild(a);
-      toast.success('Attachment downloaded!');
-    } catch (error) {
-      toast.error('Failed to download attachment.');
-    } finally {
-      setDownloadingAttachments(prev => ({ ...prev, [attachment.id]: false }));
-    }
-  };
-
-  const handleAttachmentUpload = async (files: FileList) => {
-    const newAttachments: { name: string; contentType: string; contentBytes: string }[] = [];
-    for (let i = 0; i < files.length; i++) {
-      const file = files[i];
-      const contentBytes = await new Promise<string>((resolve) => {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const result = reader.result as string;
-          resolve(result.split(',')[1]); // Remove data URL prefix
-        };
-        reader.readAsDataURL(file);
-      });
-      newAttachments.push({
-        name: file.name,
-        contentType: file.type,
-        contentBytes: contentBytes,
-      });
-    }
-    setComposeAttachments(prev => [...prev, ...newAttachments]);
-  };
 
   // Assign Staff Modal Functions
   const fetchAssignStaffData = async () => {
@@ -4058,458 +3692,25 @@ const CalendarPage: React.FC = () => {
       />
 
       {/* WhatsApp Modal */}
-      {isWhatsAppOpen && selectedLeadForWhatsApp && createPortal(
-        <div className="fixed inset-0 bg-white z-[9999]">
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-              <div className="flex items-center gap-2 md:gap-4">
-                <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
-                <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
-                <div className="flex items-center gap-2">
-                  <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span className="text-lg font-semibold text-gray-900 truncate">
-                      {selectedLeadForWhatsApp.name}
-                    </span>
-                    <span className="text-sm text-gray-500 font-mono flex-shrink-0">
-                      ({selectedLeadForWhatsApp.lead_number})
-                    </span>
-                  </div>
-                </div>
-              </div>
-              <button
-                onClick={handleWhatsAppClose}
-                className="btn btn-ghost btn-circle flex-shrink-0"
-              >
-                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-              </button>
-            </div>
-
-            {/* Messages - Scrollable */}
-            <div className="flex-1 overflow-y-auto p-4 space-y-4">
-              {isWhatsAppLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="loading loading-spinner loading-lg text-green-500"></div>
-                </div>
-              ) : whatsAppChatMessages.length === 0 ? (
-                <div className="text-center py-8 text-gray-500">
-                  <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                  <p className="text-lg font-medium">No messages yet</p>
-                  <p className="text-sm">Start the conversation with {selectedLeadForWhatsApp.name}</p>
-                </div>
-              ) : (
-                whatsAppChatMessages.map((message, index) => (
-                  <div
-                    key={message.id || index}
-                    className={`flex flex-col ${message.direction === 'out' ? 'items-end' : 'items-start'}`}
-                  >
-                    {message.direction === 'out' && (
-                      <span className="text-xs text-gray-500 mb-1 mr-2">
-                        {message.sender_name || 'You'}
-                      </span>
-                    )}
-                    {message.direction === 'in' && (
-                      <span className="text-xs text-gray-500 mb-1 ml-2">
-                        {message.sender_name || selectedLeadForWhatsApp.name}
-                      </span>
-                    )}
-                    <div
-                      className={`max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
-                        message.direction === 'out'
-                          ? 'bg-green-600 text-white'
-                          : 'bg-white text-gray-900 border border-gray-200'
-                      }`}
-                    >
-                      {/* Message content based on type */}
-                      {message.message_type === 'text' && (
-                        <p className="text-sm break-words">{message.message}</p>
-                      )}
-                      
-                      {message.message_type === 'image' && (
-                        <div>
-                          {message.media_url && (
-                            <div className="relative inline-block">
-                              <img 
-                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                alt="Image"
-                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                                onClick={() => message.media_url && setSelectedMedia({
-                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                  type: 'image',
-                                  caption: message.caption
-                                })}
-                                onError={(e) => {
-                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
-                                  e.currentTarget.style.border = '1px solid #e5e7eb';
-                                  e.currentTarget.style.borderRadius = '0.5rem';
-                                }}
-                              />
-                              <button
-                                onClick={() => {
-                                  if (!message.media_url) return;
-                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
-                                  const link = document.createElement('a');
-                                  link.href = url;
-                                  link.download = `image_${Date.now()}.jpg`;
-                                  link.click();
-                                }}
-                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
-                                title="Download"
-                              >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                </svg>
-                              </button>
-                            </div>
-                          )}
-                          {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
-                          )}
-                        </div>
-                      )}
-                      
-                      {message.message_type === 'video' && (
-                        <div>
-                          {message.media_url && (
-                            <video 
-                              controls
-                              className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                              onClick={() => message.media_url && setSelectedMedia({
-                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                type: 'video',
-                                caption: message.caption
-                              })}
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                                const errorDiv = document.createElement('div');
-                                errorDiv.className = 'text-center text-gray-500 p-4 border border-gray-200 rounded-lg bg-gray-50';
-                                errorDiv.innerHTML = `
-                                  <FilmIcon class="w-12 h-12 mx-auto mb-2 text-gray-400" />
-                                  <p class="text-xs font-medium">Video Unavailable</p>
-                                  <p class="text-xs opacity-70">Media may have expired</p>
-                                `;
-                                e.currentTarget.parentNode?.appendChild(errorDiv);
-                              }}
-                            >
-                              <source src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)} />
-                              Your browser does not support the video tag.
-                            </video>
-                          )}
-                          {message.caption && (
-                            <p className="text-sm break-words">{message.caption}</p>
-                          )}
-                        </div>
-                      )}
-
-                      {/* Message status and time */}
-                      <div className="flex items-center gap-1 mt-1 text-xs opacity-70 justify-end">
-                        <span>
-                          {new Date(message.sent_at).toLocaleTimeString([], {
-                            hour: '2-digit',
-                            minute: '2-digit'
-                          })}
-                        </span>
-                        {message.direction === 'out' && (
-                          <span className="inline-block align-middle text-current">
-                            {renderMessageStatus(message.whatsapp_status)}
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-
-            {/* Message Input - Fixed */}
-            <div className="flex-shrink-0 p-4 bg-white border-t border-gray-200">
-              <form onSubmit={handleSendWhatsAppMessage} className="flex items-center gap-2">
-                <button type="button" className="btn btn-ghost btn-circle">
-                  <FaceSmileIcon className="w-6 h-6 text-gray-500" />
-                </button>
-                
-                {/* File upload button */}
-                <label className="btn btn-ghost btn-circle cursor-pointer">
-                  <PaperClipIcon className="w-6 h-6 text-gray-500" />
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                    onChange={handleFileSelect}
-                    disabled={uploadingMedia}
-                  />
-                </label>
-
-                {/* Selected file preview */}
-                {selectedFile && (
-                  <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1">
-                    <span className="text-xs text-gray-600">{selectedFile.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => setSelectedFile(null)}
-                      className="text-red-500 hover:text-red-700"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                )}
-
-                <input
-                  type="text"
-                  value={whatsAppInput}
-                  onChange={(e) => setWhatsAppInput(e.target.value)}
-                  placeholder={selectedFile ? "Add a caption..." : "Type a message..."}
-                  className="flex-1 input input-bordered rounded-full"
-                  disabled={sending || uploadingMedia}
-                />
-                
-                {selectedFile ? (
-                  <button
-                    type="button"
-                    onClick={handleSendMedia}
-                    disabled={uploadingMedia}
-                    className="btn btn-primary btn-circle"
-                  >
-                    {uploadingMedia ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
-                    )}
-                  </button>
-                ) : (
-                  <button
-                    type="submit"
-                    disabled={!whatsAppInput.trim() || sending}
-                    className="btn btn-primary btn-circle"
-                  >
-                    {sending ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PaperAirplaneIcon className="w-5 h-5" />
-                    )}
-                  </button>
-                )}
-              </form>
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <SchedulerWhatsAppModal
+        isOpen={isWhatsAppOpen}
+        onClose={() => {
+          setIsWhatsAppOpen(false);
+          setSelectedClientForWhatsApp(null);
+        }}
+        client={selectedClientForWhatsApp || undefined}
+        hideContactSelector={true}
+      />
 
       {/* Email Thread Modal */}
-      {isEmailModalOpen && selectedLeadForEmail && createPortal(
-        <div className="fixed inset-0 bg-white z-[9999]">
-          <div className="h-full flex flex-col">
-            {/* Header */}
-            <div className="flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
-              <div className="flex items-center gap-2 md:gap-4">
-                <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
-                <div className="flex items-center gap-2">
-                  <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span className="text-gray-600">
-                    {selectedLeadForEmail.name} ({selectedLeadForEmail.lead_number})
-                  </span>
-                </div>
-              </div>
-              <button
-                onClick={handleEmailClose}
-                className="btn btn-ghost btn-circle"
-              >
-                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-              </button>
-            </div>
-
-            {/* Email Thread */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-6">
-              {emailsLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="loading loading-spinner loading-lg text-blue-500"></div>
-                </div>
-              ) : emails.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-500">
-                  <div className="text-center">
-                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                      </svg>
-                    </div>
-                    <p className="text-lg font-medium">No messages yet</p>
-                    <p className="text-sm">Start a conversation with {selectedLeadForEmail.name}</p>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {[...emails]
-                    .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime())
-                    .map((message, index) => (
-                      <div
-                        key={message.message_id}
-                        data-email-id={message.message_id}
-                        className={`flex flex-col ${message.direction === 'outgoing' ? 'items-end' : 'items-start'}`}
-                      >
-                        {/* Message Label */}
-                        <div className={`mb-2 px-3 py-1 rounded-full text-xs font-semibold ${
-                          message.direction === 'outgoing'
-                            ? 'bg-gradient-to-r from-blue-500 via-purple-500 to-purple-600 text-white'
-                            : 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
-                        }`}>
-                          {message.direction === 'outgoing' ? 'Team' : 'Client'}
-                        </div>
-                        
-                        {/* Message Bubble */}
-                        <div
-                          className={`max-w-[85%] md:max-w-md lg:max-w-lg xl:max-w-xl ${
-                            message.direction === 'outgoing'
-                              ? 'bg-[#3E28CD] text-white'
-                              : 'bg-gray-100 text-gray-900'
-                          } rounded-2xl px-4 py-3 shadow-sm`}
-                        >
-                          <div className="flex items-center gap-2 mb-2">
-                            <span className="font-semibold text-sm">
-                              {message.direction === 'outgoing' ? (currentUserFullName || 'You') : selectedLeadForEmail.name}
-                            </span>
-                            <span className="text-xs opacity-70">
-                              {new Date(message.sent_at).toLocaleString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </span>
-                          </div>
-                          {message.subject && (
-                            <div className="font-medium mb-2">
-                              {message.subject}
-                            </div>
-                          )}
-                          <div className="text-sm whitespace-pre-wrap">
-                            <div dangerouslySetInnerHTML={{ 
-                              __html: sanitizeHtml(stripSignatureAndQuotedText(message.body_preview || '')) 
-                            }} />
-                          </div>
-                          {/* Attachments */}
-                          {message.attachments && message.attachments.length > 0 && (
-                            <div className="mt-3 pt-3 border-t border-gray-200">
-                              <div className="text-xs opacity-70 mb-2">Attachments:</div>
-                              <div className="flex flex-wrap gap-2">
-                                {message.attachments.map((attachment: any, idx: number) => (
-                                  <button 
-                                    key={attachment.id}
-                                    className="btn btn-outline btn-xs gap-1"
-                                    onClick={() => handleDownloadAttachment(message.message_id, attachment)}
-                                    disabled={downloadingAttachments[attachment.id]}
-                                  >
-                                    {downloadingAttachments[attachment.id] ? (
-                                      <span className="loading loading-spinner loading-xs" />
-                                    ) : (
-                                      <PaperClipIcon className="w-3 h-3" />
-                                    )}
-                                    <span className="truncate max-w-[100px]">{attachment.name}</span>
-                                  </button>
-                                ))}
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                </div>
-              )}
-            </div>
-
-            {/* Compose Area */}
-            <div className="border-t border-gray-200 p-4 md:p-6">
-              {showCompose ? (
-                <div className="space-y-4">
-                  <input
-                    type="text"
-                    placeholder="Subject"
-                    value={composeSubject}
-                    onChange={(e) => setComposeSubject(e.target.value)}
-                    className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  />
-                  <textarea
-                    placeholder="Type your message..."
-                    value={composeBody}
-                    onChange={(e) => setComposeBody(e.target.value)}
-                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
-                    rows={4}
-                  />
-                  
-                  {/* Attachments */}
-                  {composeAttachments.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {composeAttachments.map((file, index) => (
-                        <div key={index} className="flex items-center gap-2 bg-gray-100 px-3 py-1 rounded-lg">
-                          <PaperClipIcon className="w-4 h-4 text-gray-500" />
-                          <span className="text-sm">{file.name}</span>
-                          <button
-                            onClick={() => setComposeAttachments(prev => prev.filter((_, i) => i !== index))}
-                            className="text-red-500 hover:text-red-700"
-                          >
-                            ×
-                          </button>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                  
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => fileInputRef.current?.click()}
-                        className="btn btn-ghost btn-sm"
-                      >
-                        <PaperClipIcon className="w-4 h-4" />
-                        Attach
-                      </button>
-                      <input
-                        ref={fileInputRef}
-                        type="file"
-                        multiple
-                        onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                        className="hidden"
-                      />
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <button
-                        onClick={() => setShowCompose(false)}
-                        className="btn btn-outline btn-sm"
-                      >
-                        Cancel
-                      </button>
-                      <button
-                        onClick={handleSendEmail}
-                        disabled={sending || !composeBody.trim()}
-                        className="btn btn-primary btn-sm"
-                      >
-                        {sending ? (
-                          <div className="loading loading-spinner loading-xs"></div>
-                        ) : (
-                          <>
-                            <PaperAirplaneIcon className="w-4 h-4" />
-                            Send
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setShowCompose(true)}
-                  className="w-full btn btn-primary"
-                >
-                  <PaperAirplaneIcon className="w-4 h-4 mr-2" />
-                  Compose Message
-                </button>
-              )}
-            </div>
-          </div>
-        </div>,
-        document.body
-      )}
+      <SchedulerEmailThreadModal
+        isOpen={isEmailModalOpen}
+        onClose={() => {
+          setIsEmailModalOpen(false);
+          setSelectedClientForEmail(null);
+        }}
+        client={selectedClientForEmail || undefined}
+      />
 
       {/* Assign Staff Modal */}
       {isAssignStaffModalOpen && createPortal(

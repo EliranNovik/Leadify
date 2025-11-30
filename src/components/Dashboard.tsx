@@ -60,6 +60,13 @@ const Dashboard: React.FC = () => {
   // 1. Add state for real signed leads
   const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
   const [realLeadsLoading, setRealLeadsLoading] = useState(false);
+  
+  // State for real performance data
+  const [realPerformanceData, setRealPerformanceData] = useState<any[]>([]);
+  const [realTeamAverageData, setRealTeamAverageData] = useState<any[]>([]);
+  const [performanceLoading, setPerformanceLoading] = useState(false);
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
 
   // 1. Add state for real overdue leads
   const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
@@ -1775,51 +1782,31 @@ const Dashboard: React.FC = () => {
     }, 100);
   };
 
-  // Mock data for My Performance (last 30 days)
+  // Calculate date array for last 30 days
   const today = new Date();
   const daysArray = Array.from({ length: 30 }, (_, i) => {
     const d = new Date(today);
     d.setDate(today.getDate() - (29 - i));
     return d;
   });
-  const performanceData = daysArray.map((date, i) => ({
+
+  // Use real performance data if available, otherwise use empty array
+  const performanceData = realPerformanceData.length > 0 ? realPerformanceData : daysArray.map((date) => ({
     date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-    count: Math.floor(Math.random() * 5) + (date.getDate() === today.getDate() ? 5 : 1), // More contracts today
+    count: 0,
     isToday: date.toDateString() === today.toDateString(),
     isThisMonth: date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear(),
   }));
+
+  // Use real team average data if available, otherwise use empty array
+  const teamAverageData = realTeamAverageData.length > 0 ? realTeamAverageData : daysArray.map((date) => ({
+    date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
+    avg: 0
+  }));
+
   const contractsToday = performanceData.find(d => d.isToday)?.count || 0;
   const contractsThisMonth = performanceData.filter(d => d.isThisMonth).reduce((sum: number, d: { count: number; isThisMonth: boolean }) => sum + d.count, 0);
   const contractsLast30 = performanceData.reduce((sum: number, d: { count: number }) => sum + d.count, 0);
-
-  // Mock data for signed leads (last 30 days)
-  const signedLeads = performanceData.map((d, i) => ({
-    id: `L${10000 + i}`,
-    clientName: [
-      'David Lee', 'Emma Wilson', 'Noah Cohen', 'Olivia Levi', 'Liam Katz',
-      'Maya Gold', 'Ethan Weiss', 'Sophie Adler', 'Daniel Stern', 'Ella Rubin',
-      'Ava Berger', 'Ben Shalev', 'Mia Rosen', 'Leo Friedman', 'Zoe Klein',
-      'Sara Weiss', 'Jonah Adler', 'Lily Stern', 'Max Rubin', 'Nina Berger',
-      'Adam Shalev', 'Tamar Rosen', 'Oren Friedman', 'Shira Klein', 'Eli Weiss',
-      'Noa Adler', 'Amit Stern', 'Lior Rubin', 'Dana Berger', 'Yarden Shalev'
-    ][i % 30],
-    date: d.date,
-    amount: Math.floor(Math.random() * 8000) + 2000,
-    category: ['German Citizenship', 'Austrian Citizenship', 'Business Visa', 'Family Reunification', 'Other'][i % 5],
-    topic: [
-      'Citizenship', 'Visa', 'Family Reunification', 'Business', 'Other'
-    ][i % 5],
-    expert: [
-      'Dr. Cohen', 'Adv. Levi', 'Ms. Katz', 'Mr. Gold', 'Dr. Weiss'
-    ][i % 5],
-    leadNumber: `L${10000 + i}`,
-  }));
-
-  // Mock data for team average contracts signed per day (last 30 days)
-  const teamAverageData = daysArray.map((date, i) => ({
-    date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
-    avg: 3 + Math.sin(i / 5) * 1.5 // some variation for demo
-  }));
 
   // Remove dropdown state
   const [showLeadsList, setShowLeadsList] = React.useState(false);
@@ -2058,6 +2045,164 @@ const Dashboard: React.FC = () => {
     };
 
     fetchContractsSigned();
+  }, []);
+
+  // Fetch real performance data from leads_leadstage
+  const fetchPerformanceData = async () => {
+    setPerformanceLoading(true);
+    try {
+      // Get current user's employee ID and full name
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        setPerformanceLoading(false);
+        return;
+      }
+
+      // Get user's full name and employee ID
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select(`
+          id,
+          full_name,
+          employee_id,
+          tenants_employee!employee_id(
+            id,
+            display_name
+          )
+        `)
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData) {
+        console.error('Error fetching user data:', userError);
+        setPerformanceLoading(false);
+        return;
+      }
+
+      const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
+      const userEmployeeId = userData.employee_id;
+
+      setCurrentUserFullName(userFullName || '');
+      setCurrentUserEmployeeId(userEmployeeId);
+
+      // Calculate date 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+
+      // Fetch contracts signed (stage = 60) from last 30 days
+      const { data: contractsData, error: contractsError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          stage,
+          date,
+          creator_id,
+          lead_id,
+          newlead_id
+        `)
+        .eq('stage', 60)
+        .gte('date', thirtyDaysAgoStr);
+
+      if (contractsError) {
+        console.error('Error fetching contracts signed:', contractsError);
+      }
+
+      // Process contracts to determine which belong to current user
+      const userContractsByDate: Record<string, number> = {};
+      const allContractsByDate: Record<string, number> = {};
+
+      // Initialize all dates with 0
+      daysArray.forEach(date => {
+        const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        userContractsByDate[dateStr] = 0;
+        allContractsByDate[dateStr] = 0;
+      });
+
+      // Process each contract
+      for (const contract of contractsData || []) {
+        if (!contract.date) continue;
+        
+        const contractDate = new Date(contract.date);
+        const dateStr = contractDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        
+        // Count all contracts for team average
+        allContractsByDate[dateStr] = (allContractsByDate[dateStr] || 0) + 1;
+
+        // Check if this contract belongs to current user
+        let belongsToUser = false;
+
+        if (contract.creator_id) {
+          // Use creator_id if available
+          belongsToUser = contract.creator_id === userEmployeeId;
+        } else {
+          // If creator_id is NULL, get closer from the lead
+          if (contract.newlead_id) {
+            // New lead - get closer (string) from leads table
+            const { data: newLead } = await supabase
+              .from('leads')
+              .select('closer')
+              .eq('id', contract.newlead_id)
+              .single();
+            
+            if (newLead?.closer === userFullName) {
+              belongsToUser = true;
+            }
+          } else if (contract.lead_id) {
+            // Legacy lead - get closer_id (bigint) from leads_lead table
+            const { data: legacyLead } = await supabase
+              .from('leads_lead')
+              .select('closer_id')
+              .eq('id', contract.lead_id)
+              .single();
+            
+            if (legacyLead?.closer_id === userEmployeeId) {
+              belongsToUser = true;
+            }
+          }
+        }
+
+        if (belongsToUser) {
+          userContractsByDate[dateStr] = (userContractsByDate[dateStr] || 0) + 1;
+        }
+      }
+
+      // Calculate team average per day
+      const totalContracts = Object.values(allContractsByDate).reduce((sum, count) => sum + count, 0);
+      const teamDailyAverage = totalContracts / 30; // Average per day over 30 days
+
+      // Build performance data array
+      const performanceDataArray = daysArray.map((date) => {
+        const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        return {
+          date: dateStr,
+          count: userContractsByDate[dateStr] || 0,
+          isToday: date.toDateString() === today.toDateString(),
+          isThisMonth: date.getMonth() === today.getMonth() && date.getFullYear() === today.getFullYear(),
+        };
+      });
+
+      // Build team average data array
+      const teamAverageDataArray = daysArray.map((date) => {
+        const dateStr = date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+        return {
+          date: dateStr,
+          avg: Math.round((allContractsByDate[dateStr] || 0) * 10) / 10 // Round to 1 decimal
+        };
+      });
+
+      setRealPerformanceData(performanceDataArray);
+      setRealTeamAverageData(teamAverageDataArray);
+    } catch (error) {
+      console.error('Error fetching performance data:', error);
+    } finally {
+      setPerformanceLoading(false);
+    }
+  };
+
+  // Fetch performance data on component mount
+  useEffect(() => {
+    fetchPerformanceData();
   }, []);
 
   // Fetch department performance data
@@ -4692,25 +4837,267 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     if (!showLeadsList) return;
     setRealLeadsLoading(true);
-    // Stages considered as 'signed' or after
-    const signedStages = [
-      'Client signed agreement',
-      'payment_request_sent',
-      'finances_and_payments_plan',
-      'Success',
-      'client_signed',
-      'Mtng sum+Agreement sent',
-    ];
+    
     (async () => {
-      const { data, error } = await supabase
-        .from('leads')
-        .select('id, lead_number, name, topic, expert, proposal_total, proposal_currency, date_signed, created_at, stage')
-        .in('stage', signedStages)
-        .order('date_signed', { ascending: false })
-        .order('created_at', { ascending: false });
-      if (!error && data) setRealSignedLeads(data);
-      else setRealSignedLeads([]);
-      setRealLeadsLoading(false);
+      try {
+        // Calculate date 30 days ago
+        const thirtyDaysAgo = new Date();
+        thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+
+        // Fetch contracts signed (stage = 60) from last 30 days
+        const { data: contractsData, error: contractsError } = await supabase
+          .from('leads_leadstage')
+          .select(`
+            id,
+            stage,
+            date,
+            creator_id,
+            lead_id,
+            newlead_id
+          `)
+          .eq('stage', 60)
+          .gte('date', thirtyDaysAgoStr)
+          .order('date', { ascending: false });
+
+        if (contractsError) {
+          console.error('Error fetching contracts:', contractsError);
+          setRealSignedLeads([]);
+          setRealLeadsLoading(false);
+          return;
+        }
+
+        // Get current user info
+        const { data: { user } } = await supabase.auth.getUser();
+        if (!user) {
+          setRealSignedLeads([]);
+          setRealLeadsLoading(false);
+          return;
+        }
+
+        const { data: userData } = await supabase
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
+          .eq('auth_id', user.id)
+          .single();
+
+        const userFullName = (userData?.tenants_employee as any)?.display_name || userData?.full_name;
+        const userEmployeeId = userData?.employee_id;
+
+        // Filter contracts that belong to current user and deduplicate by lead
+        const userContractsMap = new Map<string, any>();
+
+        for (const contract of contractsData || []) {
+          let belongsToUser = false;
+
+          if (contract.creator_id) {
+            belongsToUser = contract.creator_id === userEmployeeId;
+          } else {
+            // If creator_id is NULL, get closer from the lead
+            if (contract.newlead_id) {
+              const { data: newLead } = await supabase
+                .from('leads')
+                .select('closer')
+                .eq('id', contract.newlead_id)
+                .single();
+              
+              if (newLead?.closer === userFullName) {
+                belongsToUser = true;
+              }
+            } else if (contract.lead_id) {
+              const { data: legacyLead } = await supabase
+                .from('leads_lead')
+                .select('closer_id')
+                .eq('id', contract.lead_id)
+                .single();
+              
+              if (legacyLead?.closer_id === userEmployeeId) {
+                belongsToUser = true;
+              }
+            }
+          }
+
+          if (belongsToUser) {
+            // Deduplicate by lead_id/newlead_id - keep only the first (most recent) contract per lead
+            const leadKey = contract.newlead_id ? `new_${contract.newlead_id}` : `legacy_${contract.lead_id}`;
+            if (!userContractsMap.has(leadKey)) {
+              userContractsMap.set(leadKey, contract);
+            }
+          }
+        }
+
+        // Convert map to array
+        const userContracts = Array.from(userContractsMap.values());
+
+        // Get unique lead IDs (both new and legacy) - already deduplicated
+        const newLeadIds = [...new Set(userContracts.map(c => c.newlead_id).filter(Boolean))];
+        const legacyLeadIds = [...new Set(userContracts.map(c => c.lead_id).filter(Boolean))];
+
+        // Fetch new leads data
+        let newLeadsData: any[] = [];
+        if (newLeadIds.length > 0) {
+          const { data: newLeads, error: newLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              lead_number,
+              name,
+              category,
+              category_id,
+              date_signed,
+              number_of_applicants_meeting,
+              balance,
+              balance_currency,
+              proposal_total,
+              proposal_currency
+            `)
+            .in('id', newLeadIds);
+
+          if (!newLeadsError && newLeads) {
+            newLeadsData = newLeads;
+          }
+        }
+
+        // Fetch legacy leads data
+        let legacyLeadsData: any[] = [];
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyLeads, error: legacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              name,
+              category_id,
+              no_of_applicants,
+              total,
+              currency_id
+            `)
+            .in('id', legacyLeadIds);
+
+          if (!legacyLeadsError && legacyLeads) {
+            // Fetch currency codes
+            const currencyIds = legacyLeads.map(l => l.currency_id).filter(Boolean);
+            let currencyMap: Record<number, string> = {};
+            
+            if (currencyIds.length > 0) {
+              const { data: currencies } = await supabase
+                .from('accounting_currencies')
+                .select('id, iso_code')
+                .in('id', currencyIds);
+              
+              if (currencies) {
+                currencyMap = currencies.reduce((acc, curr) => {
+                  acc[curr.id] = curr.iso_code;
+                  return acc;
+                }, {} as Record<number, string>);
+              }
+            }
+
+            legacyLeadsData = legacyLeads.map(lead => ({
+              ...lead,
+              currency_code: currencyMap[lead.currency_id] || '₪'
+            }));
+          }
+        }
+
+        // Fetch categories with main categories for category names
+        const allCategoryIds = [
+          ...new Set([
+            ...newLeadsData.map(l => l.category_id).filter(Boolean),
+            ...legacyLeadsData.map(l => l.category_id).filter(Boolean)
+          ])
+        ];
+
+        let categoryMap: Record<number, string> = {};
+        if (allCategoryIds.length > 0) {
+          const { data: categories } = await supabase
+            .from('misc_category')
+            .select(`
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name
+              )
+            `)
+            .in('id', allCategoryIds);
+
+          if (categories) {
+            categoryMap = categories.reduce((acc, cat: any) => {
+              // Format as "subcategory (main category)" or just "category" if no main category
+              const mainCategory = Array.isArray(cat.misc_maincategory) 
+                ? cat.misc_maincategory[0] 
+                : cat.misc_maincategory;
+              
+              if (mainCategory?.name) {
+                acc[cat.id] = `${cat.name} (${mainCategory.name})`;
+              } else {
+                acc[cat.id] = cat.name;
+              }
+              return acc;
+            }, {} as Record<number, string>);
+          }
+        }
+
+        // Combine and map contracts to leads with signed date
+        const signedLeadsWithDate = userContracts.map(contract => {
+          if (contract.newlead_id) {
+            const lead = newLeadsData.find(l => l.id === contract.newlead_id);
+            if (lead) {
+              return {
+                id: lead.id,
+                lead_number: lead.lead_number,
+                name: lead.name,
+                category: categoryMap[lead.category_id] || lead.category || 'N/A',
+                signed_date: contract.date,
+                applicants: lead.number_of_applicants_meeting || 'N/A',
+                value: lead.balance || lead.proposal_total || 0,
+                currency: lead.balance_currency || lead.proposal_currency || '₪',
+                lead_type: 'new'
+              };
+            }
+          } else if (contract.lead_id) {
+            const lead = legacyLeadsData.find(l => l.id === contract.lead_id);
+            if (lead) {
+              return {
+                id: `legacy_${lead.id}`,
+                lead_number: lead.id.toString(),
+                name: lead.name,
+                category: categoryMap[lead.category_id] || 'N/A',
+                signed_date: contract.date,
+                applicants: lead.no_of_applicants || 'N/A',
+                value: lead.total || 0,
+                currency: lead.currency_code || '₪',
+                lead_type: 'legacy'
+              };
+            }
+          }
+          return null;
+        }).filter(Boolean);
+
+        // Sort by signed date (most recent first)
+        signedLeadsWithDate.sort((a, b) => {
+          if (!a || !b) return 0;
+          const dateA = new Date(a.signed_date).getTime();
+          const dateB = new Date(b.signed_date).getTime();
+          return dateB - dateA;
+        });
+
+        setRealSignedLeads(signedLeadsWithDate);
+      } catch (error) {
+        console.error('Error fetching signed leads:', error);
+        setRealSignedLeads([]);
+      } finally {
+        setRealLeadsLoading(false);
+      }
     })();
   }, [showLeadsList]);
 
@@ -6240,70 +6627,72 @@ const Dashboard: React.FC = () => {
 
       {/* Team Availability Section */}
       <div className="w-full mt-12">
-        <div className="bg-white border border-gray-200 rounded-lg shadow-sm">
-          <div className="p-6">
-            <div className="flex items-center gap-3 mb-6">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-gradient-to-tr from-purple-600 to-indigo-600">
-                <UserGroupIcon className="w-5 h-5 text-white" />
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
+          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
+                <UserGroupIcon className="w-6 h-6 text-white" />
               </div>
               <div>
-                <h2 className="text-xl font-semibold text-gray-900">Team Availability</h2>
-                <p className="text-gray-500 text-sm">Employees unavailable today</p>
+                <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
+                <p className="text-sm text-gray-500">Employees unavailable today</p>
               </div>
             </div>
-              
-              {/* Detailed Table */}
-              {unavailableEmployeesLoading ? (
-                <div className="flex justify-center items-center py-8">
-                  <div className="loading loading-spinner loading-lg text-gray-600"></div>
-                </div>
-              ) : unavailableEmployeesData.length > 0 ? (
-                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
-                  <div className="overflow-x-auto">
-                    <table className="table w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="text-gray-700 font-medium">Employee</th>
-                          <th className="text-gray-700 font-medium">Date</th>
-                          <th className="text-gray-700 font-medium">Time</th>
-                          <th className="text-gray-700 font-medium">Reason</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {unavailableEmployeesData.map((item) => (
-                          <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
-                            <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
-                            <td className="text-gray-700 py-3">{item.date}</td>
-                            <td className="text-gray-700 py-3">{item.time}</td>
-                            <td className="text-gray-700 py-3">{item.reason}</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </div>
-              ) : (
-                <div className="bg-white rounded-lg p-8 border border-gray-200 text-center">
-                  <div className="flex flex-col items-center gap-4">
-                    <div className="p-3 bg-green-100 rounded-full">
-                      <CheckCircleIcon className="w-8 h-8 text-green-600" />
-                    </div>
-                    <div>
-                      <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
-                      <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
-                    </div>
-                  </div>
-                </div>
-              )}
           </div>
+          
+          {/* Detailed Table */}
+          {unavailableEmployeesLoading ? (
+            <div className="flex justify-center items-center py-8 px-6">
+              <div className="loading loading-spinner loading-lg text-gray-600"></div>
+            </div>
+          ) : unavailableEmployeesData.length > 0 ? (
+            <div className="overflow-x-auto px-6 pb-6">
+              <table className="table w-full">
+                <thead className="bg-gray-50 border-b border-gray-200">
+                  <tr>
+                    <th className="text-gray-700 font-medium">Employee</th>
+                    <th className="text-gray-700 font-medium">Date</th>
+                    <th className="text-gray-700 font-medium">Time</th>
+                    <th className="text-gray-700 font-medium">Reason</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unavailableEmployeesData.map((item) => (
+                    <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
+                      <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
+                      <td className="text-gray-700 py-3">{item.date}</td>
+                      <td className="text-gray-700 py-3">{item.time}</td>
+                      <td className="text-gray-700 py-3">{item.reason}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="px-6 pb-6 pt-8 text-center">
+              <div className="flex flex-col items-center gap-4">
+                <div className="p-3 bg-green-100 rounded-full">
+                  <CheckCircleIcon className="w-8 h-8 text-green-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
+                  <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
+      </div>
+
+      {/* My Waiting Leads Box */}
+      <div className="w-full mt-12">
+        <WaitingForPriceOfferMyLeadsWidget maxItems={10} />
       </div>
 
       {/* 4. My Performance Graph (Full Width) */}
       <div className="w-full mt-12">
-        <div className="rounded-3xl p-0.5 bg-gradient-to-tr from-white via-white to-white">
-          <div className="card shadow-xl rounded-3xl w-full max-w-full relative overflow-hidden bg-white">
-            <div className="card-body p-8">
+        <div className="bg-white rounded-2xl shadow-lg border border-gray-200 w-full max-w-full">
+          <div className="p-8">
               <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
                 <div className="flex items-center gap-2 mb-2">
                   <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
@@ -6341,10 +6730,11 @@ const Dashboard: React.FC = () => {
                   </button>
                 </div>
               </div>
-              <div className="w-full h-72" style={{ minWidth: '400px', minHeight: '288px' }}>
+              <div className="w-full h-72 bg-white" style={{ minWidth: '400px', minHeight: '288px' }}>
                 {performanceData && performanceData.length > 0 ? (
                   <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={288}>
                     <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} width={30} />
                     <Tooltip content={<PerformanceTooltip />} />
@@ -6404,124 +6794,88 @@ const Dashboard: React.FC = () => {
                   <span className="text-base font-semibold text-gray-900">Team Avg</span>
                 </div>
               </div>
-            </div>
           </div>
         </div>
       </div>
       {showLeadsList && (
         <div className="glass-card mt-6 p-6 shadow-lg rounded-2xl w-full max-w-full animate-fade-in">
-          <div className="font-bold text-lg mb-4 text-base-content/80">My Signed Leads</div>
+          <div className="font-bold text-lg mb-4 text-base-content/80">My Signed Leads (Last 30 Days)</div>
           {realLeadsLoading ? (
             <div className="flex justify-center items-center py-12"><span className="loading loading-spinner loading-lg text-primary"></span></div>
+          ) : realSignedLeads.length === 0 ? (
+            <div className="text-center py-12 text-gray-500">No signed leads found in the last 30 days</div>
           ) : (
             <>
-              {/* Desktop Card Grid View */}
-              <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
-                {realSignedLeads.map((lead, idx) => (
-                  <div
-                    key={lead.id}
-                    className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative"
-              >
-                <div className="flex-1 flex flex-col">
-                  {/* Lead Number and Name */}
-                  <div className="mb-3 flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                    <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                      </div>
-                      {/* Stage */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Stage</span>
-                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                          {lead.stage}
-                        </span>
-                      </div>
-                      <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                        {/* Topic */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Topic</span>
-                          <span className="badge badge-outline text-sm font-bold text-gray-800">{lead.topic}</span>
-                        </div>
-                        {/* Expert */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Expert</span>
-                          <span className="text-sm font-bold text-gray-800">{lead.expert}</span>
-                        </div>
-                        {/* Amount */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Math.ceil(Number(lead.proposal_total)).toLocaleString() : ''}</span>
-                        </div>
-                        {/* Signed Date */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Signed Date</span>
-                          <span className="text-sm font-bold text-gray-800">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : (lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '--')}</span>
-                        </div>
-                      </div>
-                    </div>
-                    {/* View Lead Button */}
-                    <a
-                      href={`/clients/${lead.lead_number}`}
-                      className="btn btn-sm btn-outline border-[#3b28c7] text-[#3b28c7] font-bold mt-4 self-end hover:bg-[#3b28c7]/10 hover:border-[#3b28c7] transition-colors"
-                      style={{ borderWidth: 2 }}
-                    >
-                      View Lead
-                    </a>
-                  </div>
-                ))}
+              {/* Desktop Table View */}
+              <div className="hidden md:block overflow-x-auto">
+                <table className="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Lead Number + Client Name</th>
+                      <th>Category</th>
+                      <th>Signed Agreement Date</th>
+                      <th>Applicants</th>
+                      <th>Value (Amount)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {realSignedLeads.map((lead) => (
+                      <tr 
+                        key={lead.id} 
+                        className="hover:bg-gray-50 cursor-pointer"
+                        onClick={() => window.location.href = `/clients/${lead.lead_number}`}
+                      >
+                        <td>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <span className="font-semibold text-gray-900">{lead.name}</span>
+                          </div>
+                        </td>
+                        <td>{lead.category}</td>
+                        <td>{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</td>
+                        <td>{lead.applicants}</td>
+                        <td className="font-semibold text-green-600">
+                          {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
               </div>
               {/* Mobile Card View */}
-              <div className="md:hidden flex flex-col gap-6">
-                {realSignedLeads.map((lead, idx) => (
+              <div className="md:hidden flex flex-col gap-4">
+                {realSignedLeads.map((lead) => (
                   <div
                     key={lead.id}
-                    className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-gray-100 group flex flex-col justify-between min-h-[340px] relative"
+                    className="bg-white rounded-xl p-4 shadow-md border border-gray-100 cursor-pointer hover:shadow-lg transition-shadow"
+                    onClick={() => window.location.href = `/clients/${lead.lead_number}`}
                   >
-                    <div className="flex-1 flex flex-col">
-                      {/* Lead Number and Name */}
-                      <div className="mb-3 flex items-center gap-2">
-                        <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                    <div className="flex items-center gap-2 mb-3">
+                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                      <span className="font-semibold text-gray-900 flex-1">{lead.name}</span>
+                    </div>
+                    <div className="space-y-2 text-sm">
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Category:</span>
+                        <span className="font-semibold">{lead.category}</span>
                       </div>
-                      {/* Stage */}
-                      <div className="flex justify-between items-center py-1">
-                        <span className="text-xs font-semibold text-gray-500">Stage</span>
-                        <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
-                          {lead.stage}
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Signed Date:</span>
+                        <span className="font-semibold">{lead.signed_date ? new Date(lead.signed_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : 'N/A'}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Applicants:</span>
+                        <span className="font-semibold">{lead.applicants}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-gray-500">Value:</span>
+                        <span className="font-semibold text-green-600">
+                          {(lead.currency === 'NIS' ? '₪' : (lead.currency || '₪'))}{lead.value ? Number(lead.value).toLocaleString() : '0'}
                         </span>
                       </div>
-                      <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                        {/* Topic */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Topic</span>
-                          <span className="badge badge-outline text-sm font-bold text-gray-800">{lead.topic}</span>
-                        </div>
-                        {/* Expert */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Expert</span>
-                          <span className="text-sm font-bold text-gray-800">{lead.expert}</span>
-                        </div>
-                        {/* Amount */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Amount</span>
-                          <span className="text-sm font-bold text-green-600">{lead.proposal_currency || '₪'}{lead.proposal_total ? Math.ceil(Number(lead.proposal_total)).toLocaleString() : ''}</span>
-                        </div>
-                        {/* Signed Date */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Signed Date</span>
-                          <span className="text-sm font-bold text-gray-800">{lead.date_signed ? new Date(lead.date_signed).toLocaleDateString() : (lead.created_at ? new Date(lead.created_at).toLocaleDateString() : '--')}</span>
-                        </div>
-                      </div>
                     </div>
-                    {/* View Lead Button */}
-                    <a
-                      href={`/clients/${lead.lead_number}`}
-                      className="btn btn-sm btn-outline border-[#3b28c7] text-[#3b28c7] font-bold mt-4 self-end hover:bg-[#3b28c7]/10 hover:border-[#3b28c7] transition-colors"
-                      style={{ borderWidth: 2 }}
-                    >
-                      View Lead
-                    </a>
                   </div>
                 ))}
               </div>

@@ -1,11 +1,30 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon } from '@heroicons/react/24/outline';
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
 import { BarChart3, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getStageName, initializeStageNames, getStageColour } from '../lib/stageUtils';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
+
+// Helper function to format currency amount
+const formatAmount = (amount: number | null | undefined, currency: string | null | undefined): string => {
+  if (amount === null || amount === undefined) return 'N/A';
+  const currencySymbol = currency || '₪';
+  return `${currencySymbol}${amount.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })}`;
+};
+
+// Helper function to get display value (prefer balance, fallback to proposal_total)
+const getDisplayValue = (lead: LeadForExpert): string => {
+  if (lead.balance !== null && lead.balance !== undefined) {
+    return formatAmount(lead.balance, lead.balance_currency);
+  }
+  if (lead.proposal_total !== null && lead.proposal_total !== undefined) {
+    return formatAmount(lead.proposal_total, lead.proposal_currency);
+  }
+  return 'N/A';
+};
 
 const LABEL_OPTIONS = [
   'High Value',
@@ -48,6 +67,10 @@ interface LeadForExpert {
   stage?: string;
   probability?: number;
   number_of_applicants_meeting?: number;
+  balance?: number | null;
+  balance_currency?: string | null;
+  proposal_total?: number | null;
+  proposal_currency?: string | null;
   expert_comments?: { text: string; timestamp: string; user: string }[];
   label?: string | null;
   lead_type?: 'new' | 'legacy';
@@ -78,6 +101,18 @@ const ExpertPage: React.FC = () => {
   const [userId, setUserId] = useState<string | null>(null);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [topExpertName, setTopExpertName] = useState<string>('N/A');
+  const [showMyStatsModal, setShowMyStatsModal] = useState(false);
+  const [expertStats, setExpertStats] = useState<any>(null);
+  const [loadingStats, setLoadingStats] = useState(false);
+  const [realSummaryStats, setRealSummaryStats] = useState<{
+    totalArchivalChecks: number;
+    topExpertId: number | null;
+    topExpertCount: number;
+  }>({
+    totalArchivalChecks: 0,
+    topExpertId: null,
+    topExpertCount: 0
+  });
 
   // Fetch categories on component mount
   useEffect(() => {
@@ -108,6 +143,249 @@ const ExpertPage: React.FC = () => {
     
     fetchCategories();
   }, []);
+
+  // Fetch real summary statistics from database (last 30 days)
+  const fetchRealSummaryStats = async () => {
+    try {
+      // Calculate date 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      // Fetch new leads with eligibility_status (expert opinions) from last 30 days
+      const { data: newLeadsWithOpinions, error: newLeadsError } = await supabase
+        .from('leads')
+        .select('id, expert, eligibility_status, created_at')
+        .in('eligibility_status', ['feasible_no_check', 'feasible_check', 'not_feasible'])
+        .gte('created_at', thirtyDaysAgoStr)
+        .not('expert', 'is', null)
+        .neq('expert', '---');
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads for summary stats:', newLeadsError);
+      }
+
+      // Fetch legacy leads with expert_examination from last 30 days
+      const { data: legacyLeadsWithOpinions, error: legacyLeadsError } = await supabase
+        .from('leads_lead')
+        .select('id, expert_id, expert_examination, cdate')
+        .not('expert_examination', 'is', null)
+        .neq('expert_examination', '0')
+        .neq('expert_examination', '')
+        .gte('cdate', thirtyDaysAgoStr)
+        .not('expert_id', 'is', null);
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads for summary stats:', legacyLeadsError);
+      }
+
+      // Count total archival checks (expert opinions) from both tables
+      const newLeadsCount = (newLeadsWithOpinions || []).length;
+      const legacyLeadsCount = (legacyLeadsWithOpinions || []).length;
+      const totalArchivalChecks = newLeadsCount + legacyLeadsCount;
+
+      // Count expert opinions by expert ID
+      const expertCounts: Record<number, number> = {};
+
+      // Count from new leads (expert is employee ID)
+      (newLeadsWithOpinions || []).forEach((lead: any) => {
+        const expertId = typeof lead.expert === 'number' ? lead.expert : parseInt(lead.expert);
+        if (!isNaN(expertId) && expertId > 0) {
+          expertCounts[expertId] = (expertCounts[expertId] || 0) + 1;
+        }
+      });
+
+      // Count from legacy leads (expert_id is employee ID)
+      (legacyLeadsWithOpinions || []).forEach((lead: any) => {
+        const expertId = typeof lead.expert_id === 'number' ? lead.expert_id : parseInt(lead.expert_id);
+        if (!isNaN(expertId) && expertId > 0) {
+          expertCounts[expertId] = (expertCounts[expertId] || 0) + 1;
+        }
+      });
+
+      // Find top expert
+      let topExpertId: number | null = null;
+      let topExpertCount = 0;
+
+      Object.entries(expertCounts).forEach(([expertIdStr, count]) => {
+        const expertId = parseInt(expertIdStr);
+        if (count > topExpertCount) {
+          topExpertCount = count;
+          topExpertId = expertId;
+        }
+      });
+
+      setRealSummaryStats({
+        totalArchivalChecks,
+        topExpertId,
+        topExpertCount
+      });
+
+      // Fetch top expert name
+      if (topExpertId) {
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .eq('id', topExpertId)
+          .single();
+
+        if (!employeeError && employeeData?.display_name) {
+          setTopExpertName(employeeData.display_name);
+        } else {
+          setTopExpertName(`Employee ${topExpertId}`);
+        }
+      } else {
+        setTopExpertName('N/A');
+      }
+    } catch (error) {
+      console.error('Error fetching real summary stats:', error);
+    }
+  };
+
+  // Fetch real summary stats on component mount
+  useEffect(() => {
+    fetchRealSummaryStats();
+  }, []);
+
+  // Fetch expert statistics
+  const fetchExpertStats = async () => {
+    setLoadingStats(true);
+    try {
+      // Get current user's employee ID
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No user found');
+        setLoadingStats(false);
+        return;
+      }
+
+      // Get user's full name
+      const { data: userData } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('email', user.email)
+        .single();
+
+      const currentUserFullName = userData?.full_name;
+      if (!currentUserFullName) {
+        console.error('Could not find user full name');
+        setLoadingStats(false);
+        return;
+      }
+
+      // Get employee ID
+      const { data: employeeData, error: employeeError } = await supabase
+        .from('tenants_employee')
+        .select('id')
+        .eq('display_name', currentUserFullName)
+        .single();
+
+      if (employeeError || !employeeData) {
+        console.error('Could not find employee ID:', employeeError);
+        setLoadingStats(false);
+        return;
+      }
+
+      const currentUserEmployeeId = employeeData.id;
+
+      // Calculate date 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      // Fetch new leads where user is expert with eligibility_status (from last 30 days)
+      // New leads store examination in eligibility_status as text: 'feasible_no_check', 'feasible_check', 'not_feasible'
+      const { data: newLeads, error: newLeadsError } = await supabase
+        .from('leads')
+        .select('id, eligibility_status, created_at')
+        .eq('expert', currentUserEmployeeId)
+        .in('eligibility_status', ['feasible_no_check', 'feasible_check', 'not_feasible'])
+        .gte('created_at', thirtyDaysAgoStr);
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads:', newLeadsError);
+      }
+
+      // Fetch legacy leads with expert_examination from last 30 days
+      // Legacy leads store examination in expert_examination as numeric: 8, 5, 1
+      const { data: legacyLeads, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('id, expert_examination, cdate')
+        .eq('expert_id', currentUserEmployeeId)
+        .not('expert_examination', 'is', null)
+        .neq('expert_examination', '0')
+        .neq('expert_examination', '')
+        .gte('cdate', thirtyDaysAgoStr);
+
+      if (legacyError) {
+        console.error('Error fetching legacy leads:', legacyError);
+        setLoadingStats(false);
+        return;
+      }
+
+      // Count feasibility types from both new and legacy leads
+      const feasibilityCounts = {
+        noFeasibility: 0,      // "1" or "not_feasible"
+        feasibleFurtherCheck: 0, // "5" or "feasible_check"
+        feasibleNoCheck: 0     // "8" or "feasible_no_check"
+      };
+
+      // Count from new leads (eligibility_status as text)
+      (newLeads || []).forEach((lead: any) => {
+        const eligibilityStatus = lead.eligibility_status;
+        if (eligibilityStatus) {
+          switch (eligibilityStatus) {
+            case 'not_feasible':
+              feasibilityCounts.noFeasibility++;
+              break;
+            case 'feasible_check':
+              feasibilityCounts.feasibleFurtherCheck++;
+              break;
+            case 'feasible_no_check':
+              feasibilityCounts.feasibleNoCheck++;
+              break;
+          }
+        }
+      });
+
+      // Count from legacy leads (expert_examination as numeric string)
+      (legacyLeads || []).forEach((lead: any) => {
+        const examinationValue = String(lead.expert_examination);
+        switch (examinationValue) {
+          case "1":
+            feasibilityCounts.noFeasibility++;
+            break;
+          case "5":
+            feasibilityCounts.feasibleFurtherCheck++;
+            break;
+          case "8":
+            feasibilityCounts.feasibleNoCheck++;
+            break;
+        }
+      });
+
+      // Total opinions = sum of all three types
+      const totalOpinions = feasibilityCounts.noFeasibility + feasibilityCounts.feasibleFurtherCheck + feasibilityCounts.feasibleNoCheck;
+
+      setExpertStats({
+        totalOpinions,
+        noFeasibility: feasibilityCounts.noFeasibility,
+        feasibleFurtherCheck: feasibilityCounts.feasibleFurtherCheck,
+        feasibleNoCheck: feasibilityCounts.feasibleNoCheck
+      });
+    } catch (error) {
+      console.error('Error fetching expert stats:', error);
+    } finally {
+      setLoadingStats(false);
+    }
+  };
+
+  // Fetch stats when modal opens
+  useEffect(() => {
+    if (showMyStatsModal) {
+      fetchExpertStats();
+    }
+  }, [showMyStatsModal]);
 
   useEffect(() => {
     const fetchLeads = async () => {
@@ -193,6 +471,10 @@ const ExpertPage: React.FC = () => {
             stage,
             probability,
             number_of_applicants_meeting,
+            balance,
+            balance_currency,
+            proposal_total,
+            proposal_currency,
             expert_page_comments,
             expert_page_label,
             expert_page_highlighted_by,
@@ -244,6 +526,9 @@ const ExpertPage: React.FC = () => {
             meeting_date,
             meeting_time,
             expert_examination,
+            total_base,
+            currency_id,
+            proposal,
             expert_page_comments,
             expert_page_label,
             expert_page_highlighted_by,
@@ -369,7 +654,11 @@ const ExpertPage: React.FC = () => {
             highlighted_by: lead.expert_page_highlighted_by || [],
             lead_type: 'new' as const,
             category: categoryName,
-            topic: lead.topic || categoryName // Keep topic for backward compatibility
+            topic: lead.topic || categoryName, // Keep topic for backward compatibility
+            balance: lead.balance || null,
+            balance_currency: lead.balance_currency || null,
+            proposal_total: lead.proposal_total || null,
+            proposal_currency: lead.proposal_currency || null
           };
         }).filter(lead => {
           // Filter new leads to only include those with meeting dates from 2025 onwards
@@ -425,6 +714,10 @@ const ExpertPage: React.FC = () => {
             stage: lead.stage?.toString() || '',
             probability: typeof lead.probability === 'string' ? parseFloat(lead.probability) : lead.probability,
             number_of_applicants_meeting: lead.no_of_applicants,
+            balance: lead.total_base || null,
+            balance_currency: lead.currency_id ? (lead.currency_id === 1 ? '₪' : lead.currency_id === 2 ? '€' : lead.currency_id === 3 ? '$' : lead.currency_id === 4 ? '£' : '₪') : null,
+            proposal_total: lead.proposal || null,
+            proposal_currency: lead.currency_id ? (lead.currency_id === 1 ? '₪' : lead.currency_id === 2 ? '€' : lead.currency_id === 3 ? '$' : lead.currency_id === 4 ? '£' : '₪') : null,
             expert_comments: lead.expert_page_comments || [],
             label: lead.expert_page_label || null,
             highlighted_by: lead.expert_page_highlighted_by || [],
@@ -764,108 +1057,18 @@ const ExpertPage: React.FC = () => {
     setHighlightPanelOpen(false);
   };
 
-  // Calculate summary statistics
+  // Calculate summary statistics (using real data from database)
   const summaryStats = useMemo(() => {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    // Total Archival Checks (assuming each lead is an archival check)
-    const archivalChecks = leads.filter(lead => new Date(lead.created_at) >= thirtyDaysAgo).length;
-
-    // Top Worker (expert with most leads in last 30 days)
-    // For new leads, expert is an employee ID; for legacy leads, expert is already a name
-    const expertCounts: Record<string | number, number> = {};
-    
-    leads.filter(lead => new Date(lead.created_at) >= thirtyDaysAgo).forEach(lead => {
-      // For new leads, expert is an employee ID (number)
-      // For legacy leads, expert is already a name (string)
-      if (lead.lead_type === 'new') {
-        // New lead: expert can be a number (employee ID) or string representation
-        const expertId = lead.expert;
-        // Convert to string for consistent key handling (Object.entries returns string keys)
-        const expertKey = String(expertId);
-        expertCounts[expertKey] = (expertCounts[expertKey] || 0) + 1;
-      } else {
-        // Legacy lead: expert is already a name
-        const expert = lead.expert || 'Unknown';
-        expertCounts[expert] = (expertCounts[expert] || 0) + 1;
-      }
-    });
-    
-    let topWorkerCount = 0;
-    let topWorkerId: string | number | null = null;
-    
-    Object.entries(expertCounts).forEach(([expert, count]) => {
-      if (count > topWorkerCount) {
-        topWorkerCount = count;
-        topWorkerId = expert; // This will be a string from Object.entries
-      }
-    });
-    
-    console.log('Top expert calculation:', {
-      topWorkerId,
-      topWorkerCount,
-      topWorkerIdType: typeof topWorkerId,
-      isNumeric: topWorkerId !== null && !isNaN(Number(topWorkerId))
-    });
-
-    // Total leads
+    // Total leads (current filtered leads on page)
     const totalLeads = leads.length;
 
     return {
-      archivalChecks,
-      topWorkerCount,
+      archivalChecks: realSummaryStats.totalArchivalChecks,
+      topWorkerCount: realSummaryStats.topExpertCount,
       totalLeads,
-      topWorkerId // Store ID for fetching name
+      topWorkerId: realSummaryStats.topExpertId
     };
-  }, [leads]);
-
-  // Fetch top expert name when topWorkerId changes
-  useEffect(() => {
-    const fetchTopExpertName = async () => {
-      if (summaryStats.topWorkerId === null) {
-        setTopExpertName('N/A');
-        return;
-      }
-      
-      // Object.entries returns keys as strings, so we need to check if it's a numeric string
-      // If it's a number or numeric string, it's an employee ID - fetch the name
-      const employeeId = typeof summaryStats.topWorkerId === 'number' 
-        ? summaryStats.topWorkerId 
-        : (typeof summaryStats.topWorkerId === 'string' && !isNaN(Number(summaryStats.topWorkerId))
-          ? Number(summaryStats.topWorkerId)
-          : null);
-      
-      if (employeeId !== null) {
-        // It's an employee ID (from new leads) - fetch the name
-        try {
-          console.log('Fetching employee name for ID:', employeeId);
-          const { data: employeeData, error: employeeError } = await supabase
-            .from('tenants_employee')
-            .select('id, display_name')
-            .eq('id', employeeId)
-            .single();
-          
-          console.log('Employee data:', employeeData, 'Error:', employeeError);
-          
-          if (!employeeError && employeeData?.display_name) {
-            setTopExpertName(employeeData.display_name);
-          } else {
-            console.error('Error fetching employee name:', employeeError);
-            setTopExpertName(`Employee ${employeeId}`);
-          }
-        } catch (error) {
-          console.error('Error fetching top expert name:', error);
-          setTopExpertName(`Employee ${employeeId}`);
-        }
-      } else {
-        // It's already a name (legacy lead)
-        setTopExpertName(String(summaryStats.topWorkerId));
-      }
-    };
-    
-    fetchTopExpertName();
-  }, [summaryStats.topWorkerId]);
+  }, [leads, realSummaryStats]);
 
   return (
     <div className="p-4 md:p-6 lg:p-8">
@@ -892,12 +1095,12 @@ const ExpertPage: React.FC = () => {
         {/* Filters Row */}
         <div className="flex flex-row flex-wrap gap-4 w-full">
           {/* Meeting Date Range Filter */}
-          <div className="flex flex-col min-w-[220px]">
+          <div className="flex flex-col min-w-[360px]">
             <label className="text-xs font-semibold text-base-content/70 mb-1">Meeting Date</label>
             <div className="flex items-center gap-2">
               <input
                 type="date"
-                className="input input-bordered w-full max-w-[110px]"
+                className="input input-bordered w-full max-w-[160px]"
                 value={filterMeetingDateFrom}
                 onChange={e => setFilterMeetingDateFrom(e.target.value)}
                 placeholder="From"
@@ -905,7 +1108,7 @@ const ExpertPage: React.FC = () => {
               <span className="mx-2 text-base-content/50">-</span>
               <input
                 type="date"
-                className="input input-bordered w-full max-w-[110px]"
+                className="input input-bordered w-full max-w-[160px]"
                 value={filterMeetingDateTo}
                 onChange={e => setFilterMeetingDateTo(e.target.value)}
                 placeholder="To"
@@ -938,6 +1141,17 @@ const ExpertPage: React.FC = () => {
               ))}
             </select>
           </div>
+          {/* My Stats Button */}
+          <div className="flex flex-col min-w-[140px]">
+            <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
+            <button
+              className="btn btn-primary w-full"
+              onClick={() => setShowMyStatsModal(true)}
+            >
+              <ChartBarIcon className="w-4 h-4 mr-2" />
+              My Stats
+            </button>
+          </div>
         </div>
       </div>
 
@@ -962,7 +1176,7 @@ const ExpertPage: React.FC = () => {
             <div>
               <p className="text-white/90 text-sm font-medium">Top Expert</p>
               <p className="text-xl font-bold truncate">{topExpertName}</p>
-              <p className="text-white/90 text-xs mt-1">{summaryStats.topWorkerCount} lead{summaryStats.topWorkerCount === 1 ? '' : 's'} (last 30 days)</p>
+              <p className="text-white/90 text-xs mt-1">{summaryStats.topWorkerCount} opinion{summaryStats.topWorkerCount === 1 ? '' : 's'} (last 30 days)</p>
             </div>
             <div className="bg-white/20 rounded-full p-3">
                 <UserIcon className="w-8 h-8" />
@@ -1083,7 +1297,12 @@ const ExpertPage: React.FC = () => {
                     <span className="text-sm font-semibold text-gray-500">Meeting Date</span>
                     <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
                     {lead.meetings && lead.meetings.length > 0 ? (() => {
-                      const meetingDateStr = lead.meetings[0].meeting_date;
+                      // Get the latest meeting date by sorting and taking the first one
+                      const sortedMeetings = [...lead.meetings].filter(m => m.meeting_date).sort((a, b) => {
+                        return new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime();
+                      });
+                      if (sortedMeetings.length === 0) return 'N/A';
+                      const meetingDateStr = sortedMeetings[0].meeting_date;
                       // Since meeting_date is stored as text, extract the date part and format it
                       const dateOnly = meetingDateStr.split(' ')[0];
                       // Convert YYYY-MM-DD to dd/mm/yyyy format
@@ -1092,6 +1311,11 @@ const ExpertPage: React.FC = () => {
                       return formattedDate;
                     })() : 'N/A'}
                   </span>
+                </div>
+                {/* Value */}
+                <div className="flex justify-between items-center py-1">
+                    <span className="text-sm font-semibold text-gray-500">Value</span>
+                    <span className="text-base font-bold text-gray-800 ml-2">{getDisplayValue(lead)}</span>
                 </div>
               </div>
               
@@ -1194,6 +1418,7 @@ const ExpertPage: React.FC = () => {
                     <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>
                   )}
                 </th>
+                <th>Value</th>
                 <th>Label</th>
               </tr>
             </thead>
@@ -1215,6 +1440,7 @@ const ExpertPage: React.FC = () => {
                     const formattedDate = `${day}/${month}/${year}`;
                     return formattedDate;
                   })() : 'N/A'}</td>
+                  <td>{getDisplayValue(lead)}</td>
                   <td>{lead.label ? <span className="badge badge-outline badge-primary font-semibold">{lead.label}</span> : ''}</td>
                 </tr>
               ))}
@@ -1479,6 +1705,98 @@ const ExpertPage: React.FC = () => {
       >
         <svg className={`w-6 h-6 transition-transform ${highlightPanelOpen ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
       </button>
+
+      {/* My Stats Modal */}
+      {showMyStatsModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-4xl w-[95vw] max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-2xl font-bold flex items-center gap-2">
+                  <ChartBarIcon className="w-6 h-6" />
+                  My Expert Statistics
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">Last 30 days</p>
+              </div>
+              <button
+                className="btn btn-sm btn-circle btn-ghost"
+                onClick={() => setShowMyStatsModal(false)}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {loadingStats ? (
+              <div className="flex items-center justify-center py-12">
+                <span className="loading loading-spinner loading-lg"></span>
+                <span className="ml-3">Loading statistics...</span>
+              </div>
+            ) : expertStats ? (
+              <div className="space-y-6">
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="stat bg-white rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.15),0_1px_8px_rgba(0,0,0,0.1)] border border-gray-100">
+                    <div className="stat-title">Total Opinions</div>
+                    <div className="stat-value text-primary">{expertStats.totalOpinions}</div>
+                    <div className="stat-desc">Expert examinations</div>
+                  </div>
+                  <div className="stat bg-white rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.15),0_1px_8px_rgba(0,0,0,0.1)] border border-gray-100">
+                    <div className="stat-title">Feasible (No Check)</div>
+                    <div className="stat-value text-success">{expertStats.feasibleNoCheck}</div>
+                    <div className="stat-desc">Direct feasibility</div>
+                  </div>
+                  <div className="stat bg-white rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.15),0_1px_8px_rgba(0,0,0,0.1)] border border-gray-100">
+                    <div className="stat-title">Feasible (Further Check)</div>
+                    <div className="stat-value text-warning">{expertStats.feasibleFurtherCheck}</div>
+                    <div className="stat-desc">Requires investigation</div>
+                  </div>
+                  <div className="stat bg-white rounded-lg shadow-[0_10px_30px_rgba(0,0,0,0.15),0_1px_8px_rgba(0,0,0,0.1)] border border-gray-100">
+                    <div className="stat-title">Not Feasible</div>
+                    <div className="stat-value text-error">{expertStats.noFeasibility}</div>
+                    <div className="stat-desc">No feasibility</div>
+                  </div>
+                </div>
+
+                {/* Bar Chart */}
+                <div className="card bg-base-100 shadow-sm">
+                  <div className="card-body">
+                    <h4 className="card-title mb-4">Feasibility Distribution</h4>
+                    <div className="h-80 w-full">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart
+                          data={[
+                            { name: 'Feasible (No Check)', value: expertStats.feasibleNoCheck },
+                            { name: 'Feasible (Further Check)', value: expertStats.feasibleFurtherCheck },
+                            { name: 'Not Feasible', value: expertStats.noFeasibility }
+                          ]}
+                          margin={{ top: 5, right: 30, left: 20, bottom: 5 }}
+                        >
+                          <CartesianGrid strokeDasharray="3 3" />
+                          <XAxis dataKey="name" />
+                          <YAxis />
+                          <Tooltip />
+                          <Legend />
+                          <Bar dataKey="value" fill="#6c4edb" radius={[8, 8, 0, 0]} />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="text-center py-12">
+                <p className="text-gray-500">No statistics available</p>
+              </div>
+            )}
+
+            <div className="modal-action mt-6">
+              <button className="btn btn-primary" onClick={() => setShowMyStatsModal(false)}>
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

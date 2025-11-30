@@ -15,6 +15,7 @@ import { loginRequest } from '../msalConfig';
 import { InteractionRequiredAuthError, IPublicClientApplication, AccountInfo } from '@azure/msal-browser';
 import { toast } from 'react-hot-toast';
 import { getStageName, initializeStageNames } from '../lib/stageUtils';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 
 interface LeadForPipeline {
   id: number | string;
@@ -422,6 +423,31 @@ const PipelinePage: React.FC = () => {
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   
+  // Real summary statistics from database
+  const [realSummaryStats, setRealSummaryStats] = useState<{
+    contractsSigned: number;
+    meetingsCreated: number;
+    topCloserId: number | null;
+    topCloserName: string;
+    topCloserCount: number;
+    topSchedulerId: number | null;
+    topSchedulerName: string;
+    topSchedulerCount: number;
+    currentUserContractsSigned: number; // Current user's personal count (deduplicated)
+    currentUserMeetingsCreated: number; // Current user's personal count (deduplicated)
+  }>({
+    contractsSigned: 0,
+    meetingsCreated: 0,
+    topCloserId: null,
+    topCloserName: 'N/A',
+    topCloserCount: 0,
+    topSchedulerId: null,
+    topSchedulerName: 'N/A',
+    topSchedulerCount: 0,
+    currentUserContractsSigned: 0,
+    currentUserMeetingsCreated: 0
+  });
+  
   // Assignment modal state
   const [assignmentModalOpen, setAssignmentModalOpen] = useState(false);
   const [assignmentLeads, setAssignmentLeads] = useState<LeadForPipeline[]>([]);
@@ -437,6 +463,14 @@ const PipelinePage: React.FC = () => {
   // Status filter state
   const [showUnassignedOnly, setShowUnassignedOnly] = useState(false);
   const [showLostInteractionsOnly, setShowLostInteractionsOnly] = useState(false);
+
+  // My Stats modal state
+  const [showMyStatsModal, setShowMyStatsModal] = useState(false);
+  const [myStatsData, setMyStatsData] = useState<{
+    total: number;
+    dailyStats: Array<{ date: string; count: number }>;
+  } | null>(null);
+  const [loadingMyStats, setLoadingMyStats] = useState(false);
 
   // Fetch categories on component mount (same as Clients.tsx)
   useEffect(() => {
@@ -836,6 +870,7 @@ const PipelinePage: React.FC = () => {
                 latest_interaction,
                 country_id,
                 language,
+                source,
                 meetings (
                   meeting_date
                 )
@@ -849,10 +884,13 @@ const PipelinePage: React.FC = () => {
             newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
             
             // Apply filter if user is logged in
+            // For new leads: scheduler and closer are stored as strings (display names)
             if (currentUserFullName) {
               if (pipelineMode === 'closer') {
+                // Closer is stored as string (display name) for new leads
                 newLeadsQuery = newLeadsQuery.eq('closer', currentUserFullName);
               } else if (pipelineMode === 'scheduler') {
+                // Scheduler is stored as string (display name) for new leads
                 newLeadsQuery = newLeadsQuery.eq('scheduler', currentUserFullName);
               }
             }
@@ -907,10 +945,13 @@ const PipelinePage: React.FC = () => {
             .eq('status', 0); // Only fetch leads where status is 0
           
           // Apply filter using employee ID (columns are now bigint)
+          // For legacy leads: scheduler is stored in meeting_scheduler_id (bigint), closer is stored in closer_id (bigint)
           if (currentUserEmployeeId) {
             if (pipelineMode === 'closer') {
+              // Closer is stored as employee ID (bigint) in closer_id for legacy leads
               legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserEmployeeId);
             } else if (pipelineMode === 'scheduler') {
+              // Scheduler is stored as employee ID (bigint) in meeting_scheduler_id for legacy leads
               legacyLeadsQuery = legacyLeadsQuery.eq('meeting_scheduler_id', currentUserEmployeeId);
             }
           }
@@ -1459,52 +1500,33 @@ const PipelinePage: React.FC = () => {
     return leadsToSort;
   }, [filteredLeads, sortColumn, sortDirection]);
 
-  // Calculate summary statistics from the actual filtered leads being displayed
+  // Calculate summary statistics (using real data from database)
   const summaryStats = useMemo(() => {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    // Use the filtered leads that are actually being displayed
-    const displayedLeads = filteredLeads;
-    
-    // Contracts signed in last 30 days (stage includes 'Client signed agreement')
-    const contractsSignedLeads = displayedLeads.filter(lead => 
-      isSignedAgreementLead(lead) && new Date(lead.created_at) >= thirtyDaysAgo
-    );
-    const contractsSigned = contractsSignedLeads.length;
-
     // Count total leads in pipeline (excluding signed agreements)
+    const displayedLeads = filteredLeads;
     const pipelineLeads = displayedLeads.filter(lead => !isSignedAgreementLead(lead));
     const totalLeads = pipelineLeads.length;
-    
 
-    // Calculate top worker based on pipeline mode
-    const roleCounts: Record<string, number> = {};
-    contractsSignedLeads.forEach(lead => {
-      let roleValue = 'Unknown';
-      if (pipelineMode === 'closer') {
-        roleValue = lead.closer || 'Unknown';
-      } else if (pipelineMode === 'scheduler') {
-        roleValue = lead.scheduler || 'Unknown';
-      }
-      roleCounts[roleValue] = (roleCounts[roleValue] || 0) + 1;
-    });
-    let topWorker = 'N/A';
-    let topWorkerCount = 0;
-    Object.entries(roleCounts).forEach(([role, count]) => {
-      if (count > topWorkerCount) {
-        topWorker = role;
-        topWorkerCount = count;
-      }
-    });
+    // Use current user's personal count (deduplicated) for the purple card
+    // This matches "My Stats" modal and Dashboard's top schedulers/closers
+    const currentUserContractsSigned = realSummaryStats.currentUserContractsSigned;
+    const currentUserMeetingsCreated = realSummaryStats.currentUserMeetingsCreated;
+
+    // Use real data for top worker based on pipeline mode
+    const topWorker = pipelineMode === 'closer' 
+      ? realSummaryStats.topCloserName 
+      : realSummaryStats.topSchedulerName;
+    const topWorkerCount = pipelineMode === 'closer'
+      ? realSummaryStats.topCloserCount
+      : realSummaryStats.topSchedulerCount;
 
     return {
-      contractsSigned,
+      contractsSigned: pipelineMode === 'closer' ? currentUserContractsSigned : currentUserMeetingsCreated,
       totalLeads,
       topWorker,
       topWorkerCount
     };
-  }, [filteredLeads, pipelineMode]);
+  }, [filteredLeads, pipelineMode, realSummaryStats]);
 
   const handleRowClick = (lead: LeadForPipeline) => {
     setSelectedLead(lead);
@@ -2553,6 +2575,645 @@ const PipelinePage: React.FC = () => {
     setLabelSubmitting(false);
   };
 
+  // Fetch real summary statistics from database (last 30 days)
+  const fetchRealSummaryStats = async () => {
+    try {
+      // Calculate date 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+
+      // Fetch contracts signed (stage = 60) from last 30 days
+      const { data: contractsSignedData, error: contractsError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          stage,
+          date,
+          creator_id,
+          lead_id,
+          newlead_id
+        `)
+        .eq('stage', 60)
+        .gte('date', thirtyDaysAgoStr);
+
+      if (contractsError) {
+        console.error('Error fetching contracts signed:', contractsError);
+      }
+
+      // Fetch meetings created (stage = 20) from last 30 days
+      const { data: meetingsCreatedData, error: meetingsError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          stage,
+          date,
+          creator_id,
+          lead_id,
+          newlead_id
+        `)
+        .eq('stage', 20)
+        .gte('date', thirtyDaysAgoStr);
+
+      if (meetingsError) {
+        console.error('Error fetching meetings created:', meetingsError);
+      }
+
+      // Process contracts signed - deduplicate by lead ID
+      const closerCounts: Record<number, Set<string>> = {}; // Use Set to track unique leads per closer
+
+      // Separate contracts with creator_id and without
+      const contractsWithCreator = (contractsSignedData || []).filter(c => c.creator_id);
+      const contractsWithoutCreator = (contractsSignedData || []).filter(c => !c.creator_id);
+
+      // Count contracts with creator_id (deduplicated by lead)
+      contractsWithCreator.forEach(contract => {
+        const creatorId = contract.creator_id;
+        if (creatorId) {
+          if (!closerCounts[creatorId]) {
+            closerCounts[creatorId] = new Set();
+          }
+          const leadKey = contract.newlead_id 
+            ? `new_${contract.newlead_id}` 
+            : contract.lead_id 
+              ? `legacy_${contract.lead_id}` 
+              : null;
+          if (leadKey) {
+            closerCounts[creatorId].add(leadKey);
+          }
+        }
+      });
+
+      // Batch fetch leads for contracts without creator_id
+      const newLeadIds = contractsWithoutCreator.map(c => c.newlead_id).filter(Boolean);
+      const legacyLeadIds = contractsWithoutCreator.map(c => c.lead_id).filter(Boolean);
+
+      // Fetch new leads in batch
+      if (newLeadIds.length > 0) {
+        const { data: newLeads } = await supabase
+          .from('leads')
+          .select('id, closer')
+          .in('id', newLeadIds);
+
+        if (newLeads) {
+          // Get unique closer names
+          const closerNames = [...new Set(newLeads.map(l => l.closer).filter(Boolean))];
+          
+          // Fetch employee IDs for these closer names
+          if (closerNames.length > 0) {
+            const { data: employees } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('display_name', closerNames);
+
+            // Create a map of closer name to employee ID
+            const closerNameToId: Record<string, number> = {};
+            employees?.forEach(emp => {
+              if (emp.display_name) {
+                closerNameToId[emp.display_name] = emp.id;
+              }
+            });
+
+            // Count contracts by closer (deduplicated by lead)
+            contractsWithoutCreator.forEach(contract => {
+              if (contract.newlead_id) {
+                const lead = newLeads.find(l => l.id === contract.newlead_id);
+                if (lead?.closer) {
+                  // Try to find closer ID from the map
+                  let closerId = closerNameToId[lead.closer];
+                  
+                  // If not found and it matches current user's name, use current user's employee ID
+                  if (!closerId && currentUserFullName && currentUserEmployeeId && lead.closer === currentUserFullName) {
+                    closerId = currentUserEmployeeId;
+                  }
+                  
+                  if (closerId) {
+                    if (!closerCounts[closerId]) {
+                      closerCounts[closerId] = new Set();
+                    }
+                    closerCounts[closerId].add(`new_${contract.newlead_id}`);
+                  }
+                }
+              }
+            });
+          }
+        }
+      }
+
+      // Fetch legacy leads in batch
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select('id, closer_id')
+          .in('id', legacyLeadIds);
+
+        if (legacyLeads) {
+          // Count contracts by closer_id (deduplicated by lead)
+          contractsWithoutCreator.forEach(contract => {
+            if (contract.lead_id) {
+              const lead = legacyLeads.find(l => l.id === contract.lead_id);
+              if (lead?.closer_id) {
+                if (!closerCounts[lead.closer_id]) {
+                  closerCounts[lead.closer_id] = new Set();
+                }
+                closerCounts[lead.closer_id].add(`legacy_${contract.lead_id}`);
+              }
+            }
+          });
+        }
+      }
+
+      // Calculate total unique contracts (deduplicated across all closers)
+      const allUniqueContractLeads = new Set<string>();
+      Object.values(closerCounts).forEach(leadSet => {
+        leadSet.forEach(leadKey => allUniqueContractLeads.add(leadKey));
+      });
+      const contractsCount = allUniqueContractLeads.size;
+
+      // Find top closer (count unique leads)
+      let topCloserId: number | null = null;
+      let topCloserCount = 0;
+      Object.entries(closerCounts).forEach(([closerIdStr, leadSet]) => {
+        const closerId = parseInt(closerIdStr);
+        const uniqueCount = leadSet.size;
+        if (uniqueCount > topCloserCount) {
+          topCloserCount = uniqueCount;
+          topCloserId = closerId;
+        }
+      });
+
+      // Fetch top closer name
+      let topCloserName = 'N/A';
+      if (topCloserId) {
+        const { data: closerEmployee, error: closerError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .eq('id', topCloserId)
+          .single();
+
+        if (!closerError && closerEmployee?.display_name) {
+          topCloserName = closerEmployee.display_name;
+        } else {
+          topCloserName = `Employee ${topCloserId}`;
+        }
+      }
+
+      // Process meetings created - deduplicate by lead ID
+      const schedulerCounts: Record<number, Set<string>> = {}; // Use Set to track unique leads per scheduler
+
+      // Separate meetings with creator_id and without
+      const meetingsWithCreator = (meetingsCreatedData || []).filter(m => m.creator_id);
+      const meetingsWithoutCreator = (meetingsCreatedData || []).filter(m => !m.creator_id);
+
+      // Count meetings with creator_id (deduplicated by lead)
+      meetingsWithCreator.forEach(meeting => {
+        const creatorId = meeting.creator_id;
+        if (creatorId) {
+          if (!schedulerCounts[creatorId]) {
+            schedulerCounts[creatorId] = new Set();
+          }
+          const leadKey = meeting.newlead_id 
+            ? `new_${meeting.newlead_id}` 
+            : meeting.lead_id 
+              ? `legacy_${meeting.lead_id}` 
+              : null;
+          if (leadKey) {
+            schedulerCounts[creatorId].add(leadKey);
+          }
+        }
+      });
+
+      // Batch fetch leads for meetings without creator_id
+      const newLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.newlead_id).filter(Boolean);
+      const legacyLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.lead_id).filter(Boolean);
+
+      // Fetch new leads in batch
+      if (newLeadIdsForMeetings.length > 0) {
+        const { data: newLeadsForMeetings } = await supabase
+          .from('leads')
+          .select('id, scheduler')
+          .in('id', newLeadIdsForMeetings);
+
+        if (newLeadsForMeetings) {
+          // Get unique scheduler names
+          const schedulerNames = [...new Set(newLeadsForMeetings.map(l => l.scheduler).filter(Boolean))];
+          
+          // Fetch employee IDs for these scheduler names
+          if (schedulerNames.length > 0) {
+            const { data: employees } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('display_name', schedulerNames);
+
+            // Create a map of scheduler name to employee ID
+            const schedulerNameToId: Record<string, number> = {};
+            employees?.forEach(emp => {
+              if (emp.display_name) {
+                schedulerNameToId[emp.display_name] = emp.id;
+              }
+            });
+
+            // Also ensure current user is in the map if their name is in the scheduler names
+            // This handles cases where the name lookup might have failed
+            if (currentUserFullName && currentUserEmployeeId && schedulerNames.includes(currentUserFullName)) {
+              schedulerNameToId[currentUserFullName] = currentUserEmployeeId;
+            }
+
+            // Count meetings by scheduler (deduplicated by lead)
+            meetingsWithoutCreator.forEach(meeting => {
+              if (meeting.newlead_id) {
+                const lead = newLeadsForMeetings.find(l => l.id === meeting.newlead_id);
+                if (lead?.scheduler) {
+                  // Try to find scheduler ID from the map
+                  let schedulerId = schedulerNameToId[lead.scheduler];
+                  
+                  // If not found and it matches current user's name, use current user's employee ID
+                  if (!schedulerId && lead.scheduler === currentUserFullName && currentUserEmployeeId) {
+                    schedulerId = currentUserEmployeeId;
+                  }
+                  
+                  if (schedulerId) {
+                    if (!schedulerCounts[schedulerId]) {
+                      schedulerCounts[schedulerId] = new Set();
+                    }
+                    schedulerCounts[schedulerId].add(`new_${meeting.newlead_id}`);
+                  }
+                }
+              }
+            });
+          }
+        }
+      }
+
+      // Fetch legacy leads in batch
+      if (legacyLeadIdsForMeetings.length > 0) {
+        const { data: legacyLeadsForMeetings } = await supabase
+          .from('leads_lead')
+          .select('id, meeting_scheduler_id')
+          .in('id', legacyLeadIdsForMeetings);
+
+        if (legacyLeadsForMeetings) {
+          // Count meetings by meeting_scheduler_id (deduplicated by lead)
+          meetingsWithoutCreator.forEach(meeting => {
+            if (meeting.lead_id) {
+              const lead = legacyLeadsForMeetings.find(l => l.id === meeting.lead_id);
+              if (lead?.meeting_scheduler_id) {
+                if (!schedulerCounts[lead.meeting_scheduler_id]) {
+                  schedulerCounts[lead.meeting_scheduler_id] = new Set();
+                }
+                schedulerCounts[lead.meeting_scheduler_id].add(`legacy_${meeting.lead_id}`);
+              }
+            }
+          });
+        }
+      }
+
+      // Calculate total unique meetings (deduplicated across all schedulers)
+      const allUniqueMeetingLeads = new Set<string>();
+      Object.values(schedulerCounts).forEach(leadSet => {
+        leadSet.forEach(leadKey => allUniqueMeetingLeads.add(leadKey));
+      });
+      const meetingsCount = allUniqueMeetingLeads.size;
+
+      // Find top scheduler (count unique leads)
+      let topSchedulerId: number | null = null;
+      let topSchedulerCount = 0;
+      Object.entries(schedulerCounts).forEach(([schedulerIdStr, leadSet]) => {
+        const schedulerId = parseInt(schedulerIdStr);
+        const uniqueCount = leadSet.size;
+        if (uniqueCount > topSchedulerCount) {
+          topSchedulerCount = uniqueCount;
+          topSchedulerId = schedulerId;
+        }
+      });
+
+      // Fetch top scheduler name
+      let topSchedulerName = 'N/A';
+      if (topSchedulerId) {
+        const { data: schedulerEmployee, error: schedulerError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .eq('id', topSchedulerId)
+          .single();
+
+        if (!schedulerError && schedulerEmployee?.display_name) {
+          topSchedulerName = schedulerEmployee.display_name;
+        } else {
+          topSchedulerName = `Employee ${topSchedulerId}`;
+        }
+      }
+
+      // Get current user's personal counts (deduplicated)
+      const currentUserContractsCount = currentUserEmployeeId 
+        ? (closerCounts[currentUserEmployeeId]?.size || 0)
+        : 0;
+      const currentUserMeetingsCount = currentUserEmployeeId
+        ? (schedulerCounts[currentUserEmployeeId]?.size || 0)
+        : 0;
+
+      setRealSummaryStats({
+        contractsSigned: contractsCount,
+        meetingsCreated: meetingsCount,
+        topCloserId,
+        topCloserName,
+        topCloserCount,
+        topSchedulerId,
+        topSchedulerName,
+        topSchedulerCount,
+        currentUserContractsSigned: currentUserContractsCount,
+        currentUserMeetingsCreated: currentUserMeetingsCount
+      });
+    } catch (error) {
+      console.error('Error fetching real summary stats:', error);
+    }
+  };
+
+  // Fetch real summary stats when user info is available
+  useEffect(() => {
+    if (currentUserEmployeeId && currentUserFullName) {
+      fetchRealSummaryStats();
+    }
+  }, [currentUserEmployeeId, currentUserFullName]);
+
+  // Fetch user's personal stats (contracts signed for closer, meetings created for scheduler)
+  // Uses the exact same logic as fetchRealSummaryStats to ensure consistency
+  const fetchMyStats = async () => {
+    setLoadingMyStats(true);
+    try {
+      if (!currentUserEmployeeId || !currentUserFullName) {
+        console.error('User employee ID or full name not available');
+        setLoadingMyStats(false);
+        return;
+      }
+
+      // Calculate date 30 days ago
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString();
+
+      // Determine which stage to fetch based on pipeline mode
+      const targetStage = pipelineMode === 'closer' ? 60 : 20; // 60 = contracts signed, 20 = meetings created
+
+      // Fetch stage changes from last 30 days (same as fetchRealSummaryStats)
+      const { data: stageChanges, error: stageError } = await supabase
+        .from('leads_leadstage')
+        .select(`
+          id,
+          stage,
+          date,
+          creator_id,
+          lead_id,
+          newlead_id
+        `)
+        .eq('stage', targetStage)
+        .gte('date', thirtyDaysAgoStr);
+
+      if (stageError) {
+        console.error('Error fetching stage changes:', stageError);
+        setLoadingMyStats(false);
+        return;
+      }
+
+      // Use the EXACT same logic as fetchRealSummaryStats
+      let roleCounts: Record<number, Set<string>> = {}; // Use Set to track unique leads per employee
+
+      if (pipelineMode === 'closer') {
+        // For closer: use the same logic as fetchRealSummaryStats for contracts signed
+        const contractsWithCreator = (stageChanges || []).filter(c => c.creator_id);
+        const contractsWithoutCreator = (stageChanges || []).filter(c => !c.creator_id);
+
+        // Count contracts with creator_id (deduplicated by lead)
+        contractsWithCreator.forEach(contract => {
+          const creatorId = contract.creator_id;
+          if (creatorId) {
+            if (!roleCounts[creatorId]) {
+              roleCounts[creatorId] = new Set();
+            }
+            const leadKey = contract.newlead_id 
+              ? `new_${contract.newlead_id}` 
+              : contract.lead_id 
+                ? `legacy_${contract.lead_id}` 
+                : null;
+            if (leadKey) {
+              roleCounts[creatorId].add(leadKey);
+            }
+          }
+        });
+
+        // Batch fetch leads for contracts without creator_id
+        const newLeadIds = contractsWithoutCreator.map(c => c.newlead_id).filter(Boolean);
+        const legacyLeadIds = contractsWithoutCreator.map(c => c.lead_id).filter(Boolean);
+
+        if (newLeadIds.length > 0) {
+          const { data: newLeads } = await supabase
+            .from('leads')
+            .select('id, closer')
+            .in('id', newLeadIds);
+
+          if (newLeads) {
+            const closerNames = [...new Set(newLeads.map(l => l.closer).filter(Boolean))];
+            
+            if (closerNames.length > 0) {
+              const { data: employees } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name')
+                .in('display_name', closerNames);
+
+              const closerNameToId: Record<string, number> = {};
+              employees?.forEach(emp => {
+                if (emp.display_name) {
+                  closerNameToId[emp.display_name] = emp.id;
+                }
+              });
+
+              contractsWithoutCreator.forEach(contract => {
+                if (contract.newlead_id) {
+                  const lead = newLeads.find(l => l.id === contract.newlead_id);
+                  if (lead?.closer && closerNameToId[lead.closer]) {
+                    const closerId = closerNameToId[lead.closer];
+                    if (!roleCounts[closerId]) {
+                      roleCounts[closerId] = new Set();
+                    }
+                    roleCounts[closerId].add(`new_${contract.newlead_id}`);
+                  }
+                }
+              });
+            }
+          }
+        }
+
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyLeads } = await supabase
+            .from('leads_lead')
+            .select('id, closer_id')
+            .in('id', legacyLeadIds);
+
+          if (legacyLeads) {
+            contractsWithoutCreator.forEach(contract => {
+              if (contract.lead_id) {
+                const lead = legacyLeads.find(l => l.id === contract.lead_id);
+                if (lead?.closer_id) {
+                  if (!roleCounts[lead.closer_id]) {
+                    roleCounts[lead.closer_id] = new Set();
+                  }
+                  roleCounts[lead.closer_id].add(`legacy_${contract.lead_id}`);
+                }
+              }
+            });
+          }
+        }
+      } else {
+        // For scheduler: use the EXACT same logic as fetchRealSummaryStats for meetings created
+        const meetingsWithCreator = (stageChanges || []).filter(m => m.creator_id);
+        const meetingsWithoutCreator = (stageChanges || []).filter(m => !m.creator_id);
+
+        // Count meetings with creator_id (deduplicated by lead)
+        meetingsWithCreator.forEach(meeting => {
+          const creatorId = meeting.creator_id;
+          if (creatorId) {
+            if (!roleCounts[creatorId]) {
+              roleCounts[creatorId] = new Set();
+            }
+            const leadKey = meeting.newlead_id 
+              ? `new_${meeting.newlead_id}` 
+              : meeting.lead_id 
+                ? `legacy_${meeting.lead_id}` 
+                : null;
+            if (leadKey) {
+              roleCounts[creatorId].add(leadKey);
+            }
+          }
+        });
+
+        // Batch fetch leads for meetings without creator_id
+        const newLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.newlead_id).filter(Boolean);
+        const legacyLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.lead_id).filter(Boolean);
+
+        if (newLeadIdsForMeetings.length > 0) {
+          const { data: newLeadsForMeetings } = await supabase
+            .from('leads')
+            .select('id, scheduler')
+            .in('id', newLeadIdsForMeetings);
+
+          if (newLeadsForMeetings) {
+            const schedulerNames = [...new Set(newLeadsForMeetings.map(l => l.scheduler).filter(Boolean))];
+            
+            if (schedulerNames.length > 0) {
+              const { data: employees } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name')
+                .in('display_name', schedulerNames);
+
+              const schedulerNameToId: Record<string, number> = {};
+              employees?.forEach(emp => {
+                if (emp.display_name) {
+                  schedulerNameToId[emp.display_name] = emp.id;
+                }
+              });
+
+              meetingsWithoutCreator.forEach(meeting => {
+                if (meeting.newlead_id) {
+                  const lead = newLeadsForMeetings.find(l => l.id === meeting.newlead_id);
+                  if (lead?.scheduler && schedulerNameToId[lead.scheduler]) {
+                    const schedulerId = schedulerNameToId[lead.scheduler];
+                    if (!roleCounts[schedulerId]) {
+                      roleCounts[schedulerId] = new Set();
+                    }
+                    roleCounts[schedulerId].add(`new_${meeting.newlead_id}`);
+                  }
+                }
+              });
+            }
+          }
+        }
+
+        if (legacyLeadIdsForMeetings.length > 0) {
+          const { data: legacyLeadsForMeetings } = await supabase
+            .from('leads_lead')
+            .select('id, meeting_scheduler_id')
+            .in('id', legacyLeadIdsForMeetings);
+
+          if (legacyLeadsForMeetings) {
+            meetingsWithoutCreator.forEach(meeting => {
+              if (meeting.lead_id) {
+                const lead = legacyLeadsForMeetings.find(l => l.id === meeting.lead_id);
+                if (lead?.meeting_scheduler_id) {
+                  if (!roleCounts[lead.meeting_scheduler_id]) {
+                    roleCounts[lead.meeting_scheduler_id] = new Set();
+                  }
+                  roleCounts[lead.meeting_scheduler_id].add(`legacy_${meeting.lead_id}`);
+                }
+              }
+            });
+          }
+        }
+      }
+
+      // Get current user's unique leads from the same structure
+      const userLeadSet = roleCounts[currentUserEmployeeId] || new Set<string>();
+      const userUniqueLeads = Array.from(userLeadSet);
+
+      // Group by date for daily stats
+      const dailyCounts: Record<string, Set<string>> = {};
+      
+      // Get the dates for each unique lead
+      const userStageChanges = (stageChanges || []).filter(change => {
+        const leadKey = change.newlead_id 
+          ? `new_${change.newlead_id}` 
+          : change.lead_id 
+            ? `legacy_${change.lead_id}` 
+            : null;
+        return leadKey && userUniqueLeads.includes(leadKey);
+      });
+
+      // For each unique lead, get the most recent date
+      const leadDates: Record<string, string> = {};
+      userStageChanges.forEach(change => {
+        const leadKey = change.newlead_id 
+          ? `new_${change.newlead_id}` 
+          : change.lead_id 
+            ? `legacy_${change.lead_id}` 
+            : null;
+        
+        if (leadKey && change.date) {
+          const changeDate = new Date(change.date).toISOString().split('T')[0];
+          if (!leadDates[leadKey] || changeDate > leadDates[leadKey]) {
+            leadDates[leadKey] = changeDate;
+          }
+        }
+      });
+
+      // Group by date
+      Object.entries(leadDates).forEach(([leadKey, date]) => {
+        if (!dailyCounts[date]) {
+          dailyCounts[date] = new Set();
+        }
+        dailyCounts[date].add(leadKey);
+      });
+
+      // Convert to array and sort by date
+      const dailyStats = Object.entries(dailyCounts)
+        .map(([date, leadSet]) => ({ date, count: leadSet.size }))
+        .sort((a, b) => a.date.localeCompare(b.date));
+
+      setMyStatsData({
+        total: userLeadSet.size, // Count unique leads - matches the logic in fetchRealSummaryStats
+        dailyStats
+      });
+    } catch (error) {
+      console.error('Error fetching my stats:', error);
+    } finally {
+      setLoadingMyStats(false);
+    }
+  };
+
+  // Fetch stats when modal opens
+  useEffect(() => {
+    if (showMyStatsModal && currentUserEmployeeId && currentUserFullName) {
+      fetchMyStats();
+    }
+  }, [showMyStatsModal, pipelineMode, currentUserEmployeeId, currentUserFullName]);
+
   // Fetch user id and full name on mount
   useEffect(() => {
     (async () => {
@@ -2838,14 +3499,17 @@ const PipelinePage: React.FC = () => {
         
         // Filter in-memory: unassigned OR lost interactions
         // Exclude leads already assigned to the current user
+        // For legacy leads: scheduler is stored in meeting_scheduler_id (bigint), closer is stored in closer_id (bigint)
         const twoWeeksAgoMs = twoWeeksAgo.getTime();
         const filtered = data.filter(lead => {
-          // Exclude if assigned to current user
+          // Exclude if assigned to current user (employee ID match)
           if (pipelineMode === 'closer') {
+            // Closer is stored as employee ID (bigint) in closer_id for legacy leads
             if (lead.closer_id === currentUserEmployeeId || lead.closer_id === Number(currentUserEmployeeId)) {
               return false; // Exclude - already assigned to current user as closer
             }
           } else {
+            // Scheduler is stored as employee ID (bigint) in meeting_scheduler_id for legacy leads
             if (lead.meeting_scheduler_id === currentUserEmployeeId || lead.meeting_scheduler_id === Number(currentUserEmployeeId)) {
               return false; // Exclude - already assigned to current user as scheduler
             }
@@ -3062,11 +3726,11 @@ const PipelinePage: React.FC = () => {
     setAssigningLead(lead.id.toString());
     try {
       if (lead.lead_type === 'legacy') {
-        // For legacy leads, use the employee display_name directly (no need for additional query)
+        // For legacy leads: scheduler is stored in meeting_scheduler_id (bigint), closer is stored in closer_id (bigint)
         const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
         
         if (pipelineMode === 'closer') {
-          // Assign as closer using employee ID
+          // Assign as closer using employee ID (bigint) - matches RolesTab.tsx behavior
           const { error } = await supabase
             .from('leads_lead')
             .update({ closer_id: currentUserEmployeeId })
@@ -3074,7 +3738,7 @@ const PipelinePage: React.FC = () => {
           
           if (error) throw error;
         } else {
-          // Assign as scheduler using employee ID
+          // Assign as scheduler using employee ID (bigint) - matches RolesTab.tsx behavior
           const { error } = await supabase
             .from('leads_lead')
             .update({ meeting_scheduler_id: currentUserEmployeeId })
@@ -3083,9 +3747,9 @@ const PipelinePage: React.FC = () => {
           if (error) throw error;
         }
       } else {
-        // For new leads, assign directly using full name
+        // For new leads: scheduler and closer are stored as strings (display names) - matches RolesTab.tsx behavior
         if (pipelineMode === 'closer') {
-          // Assign as closer
+          // Assign as closer using display name (string)
           const { error } = await supabase
             .from('leads')
             .update({ closer: currentUserFullName })
@@ -3093,7 +3757,7 @@ const PipelinePage: React.FC = () => {
           
           if (error) throw error;
         } else {
-          // Assign as scheduler
+          // Assign as scheduler using display name (string)
           const { error } = await supabase
             .from('leads')
             .update({ scheduler: currentUserFullName })
@@ -3151,24 +3815,28 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
         
-        {/* Current User Info */}
-        {currentUserFullName && (
-          <div className="text-sm text-base-content/70">
-            Viewing {pipelineMode} pipeline for: <span className="font-semibold">{currentUserFullName}</span>
-          </div>
-        )}
-        
-        {/* Assignment Button */}
-        <button
-          onClick={() => {
-            setAssignmentModalOpen(true);
-            fetchAssignmentLeads();
-          }}
-          className="btn btn-primary btn-sm flex items-center gap-2"
-        >
-          <UserIcon className="w-4 h-4" />
-          Assign Leads
-        </button>
+        <div className="flex items-center gap-2">
+          {/* My Stats Button */}
+          <button
+            onClick={() => setShowMyStatsModal(true)}
+            className="btn btn-primary btn-sm flex items-center gap-2"
+          >
+            <ChartBarIcon className="w-4 h-4" />
+            My Stats
+          </button>
+          
+          {/* Assignment Button */}
+          <button
+            onClick={() => {
+              setAssignmentModalOpen(true);
+              fetchAssignmentLeads();
+            }}
+            className="btn btn-primary btn-sm flex items-center gap-2"
+          >
+            <UserIcon className="w-4 h-4" />
+            Assign Leads
+          </button>
+        </div>
       </div>
       {/* Filters and Search */}
       <div className="mb-6 flex flex-col gap-2 md:flex-row md:items-end md:justify-between">
@@ -5222,6 +5890,104 @@ const PipelinePage: React.FC = () => {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* My Stats Modal */}
+      {showMyStatsModal && (
+        <div className="modal modal-open">
+          <div className="modal-box max-w-4xl w-[95vw] max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h3 className="text-2xl font-bold flex items-center gap-2">
+                  <ChartBarIcon className="w-6 h-6" />
+                  My {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'} Statistics
+                </h3>
+                <p className="text-sm text-gray-500 mt-1">Last 30 days</p>
+              </div>
+              <button
+                className="btn btn-sm btn-circle btn-ghost"
+                onClick={() => setShowMyStatsModal(false)}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+
+            {loadingMyStats ? (
+              <div className="flex justify-center items-center py-12">
+                <span className="loading loading-spinner loading-lg text-primary"></span>
+              </div>
+            ) : myStatsData ? (
+              <div className="space-y-6">
+                {/* Summary Cards */}
+                <div className="grid grid-cols-1 md:grid-cols-1 gap-4">
+                  <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-200">
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <p className="text-sm font-medium text-gray-600">
+                          Total {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
+                        </p>
+                        <p className="text-3xl font-bold text-gray-900 mt-2">{myStatsData.total}</p>
+                        <p className="text-xs text-gray-500 mt-1">Last 30 days</p>
+                      </div>
+                      <div className="bg-primary/10 rounded-full p-4">
+                        <ChartBarIcon className="w-8 h-8 text-primary" />
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Bar Chart */}
+                {myStatsData.dailyStats.length > 0 ? (
+                  <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-200">
+                    <h4 className="text-lg font-semibold text-gray-900 mb-4">
+                      Daily {pipelineMode === 'closer' ? 'Contracts Signed' : 'Meetings Created'}
+                    </h4>
+                    <div className="w-full h-80">
+                      <ResponsiveContainer width="100%" height="100%">
+                        <BarChart data={myStatsData.dailyStats}>
+                          <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
+                          <XAxis 
+                            dataKey="date" 
+                            tick={{ fontSize: 12, fill: '#222' }}
+                            tickFormatter={(value) => {
+                              const date = new Date(value);
+                              return `${date.getDate()}/${date.getMonth() + 1}`;
+                            }}
+                          />
+                          <YAxis 
+                            allowDecimals={false}
+                            tick={{ fontSize: 12, fill: '#222' }}
+                          />
+                          <Tooltip
+                            labelFormatter={(value) => {
+                              const date = new Date(value);
+                              return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                            }}
+                            formatter={(value: any) => [value, pipelineMode === 'closer' ? 'Contracts' : 'Meetings']}
+                          />
+                          <Bar 
+                            dataKey="count" 
+                            fill="#3b28c7"
+                            radius={[8, 8, 0, 0]}
+                          />
+                        </BarChart>
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="bg-white rounded-xl p-8 shadow-lg border border-gray-200 text-center">
+                    <p className="text-gray-500">No data available for the last 30 days</p>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="flex justify-center items-center py-12">
+                <p className="text-gray-500">No data available</p>
+              </div>
+            )}
+          </div>
+          <div className="modal-backdrop" onClick={() => setShowMyStatsModal(false)}></div>
         </div>
       )}
     </div>

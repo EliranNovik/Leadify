@@ -141,233 +141,555 @@ const EmployeeScoreboard: React.FC<EmployeeScoreboardProps> = ({ className = '' 
         handlers: []
       };
 
-      // Fetch closers data (signed contracts) - Use EmployeeModal approach without JOINs
-      console.log('🔍 EmployeeScoreboard - Fetching closers data...');
-      console.log('🔍 EmployeeScoreboard - Closers query parameters:', {
-        table: 'leads_lead',
-        select: 'closer_id',
-        filters: {
-          closer_id: 'not.is.null',
-          cdate_gte: startDateISO.split('T')[0],
-          cdate_lte: endDateISO.split('T')[0]
-        }
-      });
+      // Fetch closers data (signed contracts) - Use leads_leadstage table (stage 60)
+      console.log('🔍 EmployeeScoreboard - Fetching closers data from leads_leadstage...');
+      
+      const startDateStr = startDateISO.split('T')[0];
+      const endDateStr = endDateISO.split('T')[0];
       
       const { data: closersData, error: closersError } = await supabase
-        .from('leads_lead')
-        .select('closer_id')
-        .not('closer_id', 'is', null)
-        .gte('cdate', startDateISO.split('T')[0])
-        .lte('cdate', endDateISO.split('T')[0]);
+        .from('leads_leadstage')
+        .select('id, stage, date, creator_id, lead_id, newlead_id')
+        .eq('stage', 60)
+        .gte('date', startDateStr)
+        .lte('date', endDateStr);
 
       if (closersError) {
         console.error('❌ EmployeeScoreboard - Error fetching closers data:', closersError);
-        console.error('❌ EmployeeScoreboard - Closers error details:', {
-          message: closersError.message,
-          details: closersError.details,
-          hint: closersError.hint,
-          code: closersError.code
-        });
       } else {
         console.log('✅ EmployeeScoreboard - Closers data fetched successfully:', closersData?.length || 0, 'records');
-        console.log('🔍 EmployeeScoreboard - Sample closers data:', closersData?.[0]);
       }
 
       if (!closersError && closersData) {
-        const closerCounts: { [key: string]: { count: number; employee: any } } = {};
-        closersData.forEach((lead: any) => {
-          if (lead.closer_id) {
-            // Find the employee name from the employees data we fetched earlier
-            // Convert both to strings for comparison (like EmployeeModal does)
-            const employee = employees?.find(emp => String(emp.id) === String(lead.closer_id));
-            if (employee?.display_name) {
-              const name = employee.display_name;
-              if (!closerCounts[name]) {
-                closerCounts[name] = { count: 0, employee };
+        const closerCounts: { [key: number]: { count: number; employee: any } } = {};
+        
+        // Deduplicate by lead_id/newlead_id to avoid counting same lead twice
+        const uniqueContracts = new Map<string, any>();
+        closersData.forEach(contract => {
+          const key = contract.newlead_id ? `new_${contract.newlead_id}` : `legacy_${contract.lead_id}`;
+          if (!uniqueContracts.has(key)) {
+            uniqueContracts.set(key, contract);
+          }
+        });
+        const deduplicatedContracts = Array.from(uniqueContracts.values());
+        
+        // Separate contracts with creator_id and without
+        const contractsWithCreator = deduplicatedContracts.filter(c => c.creator_id);
+        const contractsWithoutCreator = deduplicatedContracts.filter(c => !c.creator_id);
+        
+        // Count contracts with creator_id
+        contractsWithCreator.forEach((contract: any) => {
+          const creatorId = contract.creator_id;
+          if (creatorId) {
+            const employee = employees?.find(emp => String(emp.id) === String(creatorId));
+            if (employee) {
+              if (!closerCounts[creatorId]) {
+                closerCounts[creatorId] = { count: 0, employee };
               }
-              closerCounts[name].count += 1;
+              closerCounts[creatorId].count += 1;
             }
           }
         });
+        
+        // Batch fetch leads for contracts without creator_id
+        const newLeadIds = contractsWithoutCreator.map(c => c.newlead_id).filter(Boolean);
+        const legacyLeadIds = contractsWithoutCreator.map(c => c.lead_id).filter(Boolean);
+        
+        // Fetch new leads in batch
+        if (newLeadIds.length > 0) {
+          const { data: newLeads } = await supabase
+            .from('leads')
+            .select('id, closer')
+            .in('id', newLeadIds);
+          
+          if (newLeads) {
+            // Get unique closer names
+            const closerNames = [...new Set(newLeads.map(l => l.closer).filter(Boolean))];
+            
+            // Fetch employee IDs for these closer names
+            if (closerNames.length > 0) {
+              const { data: closerEmployees } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name, photo_url, photo')
+                .in('display_name', closerNames);
+              
+              // Create a map of closer name to employee
+              const closerNameToEmployee: Record<string, any> = {};
+              closerEmployees?.forEach(emp => {
+                if (emp.display_name) {
+                  closerNameToEmployee[emp.display_name] = emp;
+                }
+              });
+              
+              // Count contracts by closer
+              contractsWithoutCreator.forEach(contract => {
+                if (contract.newlead_id) {
+                  const lead = newLeads.find(l => l.id === contract.newlead_id);
+                  if (lead?.closer && closerNameToEmployee[lead.closer]) {
+                    const employee = closerNameToEmployee[lead.closer];
+                    const employeeId = employee.id;
+                    if (!closerCounts[employeeId]) {
+                      closerCounts[employeeId] = { count: 0, employee };
+                    }
+                    closerCounts[employeeId].count += 1;
+                  }
+                }
+              });
+            }
+          }
+        }
+        
+        // Fetch legacy leads in batch
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyLeads } = await supabase
+            .from('leads_lead')
+            .select('id, closer_id')
+            .in('id', legacyLeadIds);
+          
+          if (legacyLeads) {
+            // Count contracts by closer_id
+            contractsWithoutCreator.forEach(contract => {
+              if (contract.lead_id) {
+                const lead = legacyLeads.find(l => l.id === contract.lead_id);
+                if (lead?.closer_id) {
+                  const employee = employees?.find(emp => String(emp.id) === String(lead.closer_id));
+                  if (employee) {
+                    const employeeId = employee.id;
+                    if (!closerCounts[employeeId]) {
+                      closerCounts[employeeId] = { count: 0, employee };
+                    }
+                    closerCounts[employeeId].count += 1;
+                  }
+                }
+              }
+            });
+          }
+        }
+        
         scoreboard.closers = Object.entries(closerCounts)
-          .map(([name, data]) => ({ name, count: data.count, employee: data.employee }))
+          .map(([employeeId, data]) => ({ name: data.employee.display_name, count: data.count, employee: data.employee }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 3);
         console.log('✅ EmployeeScoreboard - Closers processed:', scoreboard.closers);
-        console.log('🔍 EmployeeScoreboard - Closer counts before processing:', closerCounts);
       }
 
-      // Fetch schedulers data (scheduled meetings) - Use EmployeeModal approach from leads_lead table
-      console.log('🔍 EmployeeScoreboard - Fetching schedulers data...');
-      console.log('🔍 EmployeeScoreboard - Schedulers query parameters:', {
-        table: 'leads_lead',
-        select: 'meeting_scheduler_id',
-        filters: {
-          meeting_scheduler_id: 'not.is.null',
-          cdate_gte: startDateISO.split('T')[0],
-          cdate_lte: endDateISO.split('T')[0]
-        }
-      });
+      // Fetch schedulers data (scheduled meetings) - Use leads_leadstage table (stage 20)
+      console.log('🔍 EmployeeScoreboard - Fetching schedulers data from leads_leadstage...');
       
       const { data: schedulersData, error: schedulersError } = await supabase
-        .from('leads_lead')
-        .select('meeting_scheduler_id')
-        .not('meeting_scheduler_id', 'is', null)
-        .gte('cdate', startDateISO.split('T')[0])
-        .lte('cdate', endDateISO.split('T')[0]);
+        .from('leads_leadstage')
+        .select('id, stage, date, creator_id, lead_id, newlead_id')
+        .eq('stage', 20)
+        .gte('date', startDateStr)
+        .lte('date', endDateStr);
 
       if (schedulersError) {
         console.error('❌ EmployeeScoreboard - Error fetching schedulers data:', schedulersError);
-        console.error('❌ EmployeeScoreboard - Schedulers error details:', {
-          message: schedulersError.message,
-          details: schedulersError.details,
-          hint: schedulersError.hint,
-          code: schedulersError.code
-        });
       } else {
         console.log('✅ EmployeeScoreboard - Schedulers data fetched successfully:', schedulersData?.length || 0, 'records');
-        console.log('🔍 EmployeeScoreboard - Sample schedulers data:', schedulersData?.[0]);
       }
 
       if (!schedulersError && schedulersData) {
-        const schedulerCounts: { [key: string]: { count: number; employee: any } } = {};
-        schedulersData.forEach((lead: any) => {
-          if (lead.meeting_scheduler_id) {
-            // Find the employee name from the employees data we fetched earlier
-            // Convert both to strings for comparison (like EmployeeModal does)
-            const employee = employees?.find(emp => String(emp.id) === String(lead.meeting_scheduler_id));
-            if (employee?.display_name) {
-              const name = employee.display_name;
-              if (!schedulerCounts[name]) {
-                schedulerCounts[name] = { count: 0, employee };
+        const schedulerCounts: { [key: number]: { count: number; employee: any } } = {};
+        
+        // Deduplicate by lead_id/newlead_id to avoid counting same lead twice
+        const uniqueMeetings = new Map<string, any>();
+        schedulersData.forEach(meeting => {
+          const key = meeting.newlead_id ? `new_${meeting.newlead_id}` : `legacy_${meeting.lead_id}`;
+          if (!uniqueMeetings.has(key)) {
+            uniqueMeetings.set(key, meeting);
+          }
+        });
+        const deduplicatedMeetings = Array.from(uniqueMeetings.values());
+        
+        // Separate meetings with creator_id and without
+        const meetingsWithCreator = deduplicatedMeetings.filter(m => m.creator_id);
+        const meetingsWithoutCreator = deduplicatedMeetings.filter(m => !m.creator_id);
+        
+        // Count meetings with creator_id
+        meetingsWithCreator.forEach((meeting: any) => {
+          const creatorId = meeting.creator_id;
+          if (creatorId) {
+            const employee = employees?.find(emp => String(emp.id) === String(creatorId));
+            if (employee) {
+              if (!schedulerCounts[creatorId]) {
+                schedulerCounts[creatorId] = { count: 0, employee };
               }
-              schedulerCounts[name].count += 1;
+              schedulerCounts[creatorId].count += 1;
             }
           }
         });
+        
+        // Batch fetch leads for meetings without creator_id
+        const newLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.newlead_id).filter(Boolean);
+        const legacyLeadIdsForMeetings = meetingsWithoutCreator.map(m => m.lead_id).filter(Boolean);
+        
+        // Fetch new leads in batch
+        if (newLeadIdsForMeetings.length > 0) {
+          const { data: newLeadsForMeetings } = await supabase
+            .from('leads')
+            .select('id, scheduler')
+            .in('id', newLeadIdsForMeetings);
+          
+          if (newLeadsForMeetings) {
+            // Get unique scheduler names
+            const schedulerNames = [...new Set(newLeadsForMeetings.map(l => l.scheduler).filter(Boolean))];
+            
+            // Fetch employee IDs for these scheduler names
+            if (schedulerNames.length > 0) {
+              const { data: schedulerEmployees } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name, photo_url, photo')
+                .in('display_name', schedulerNames);
+              
+              // Create a map of scheduler name to employee
+              const schedulerNameToEmployee: Record<string, any> = {};
+              schedulerEmployees?.forEach(emp => {
+                if (emp.display_name) {
+                  schedulerNameToEmployee[emp.display_name] = emp;
+                }
+              });
+              
+              // Count meetings by scheduler
+              meetingsWithoutCreator.forEach(meeting => {
+                if (meeting.newlead_id) {
+                  const lead = newLeadsForMeetings.find(l => l.id === meeting.newlead_id);
+                  if (lead?.scheduler && schedulerNameToEmployee[lead.scheduler]) {
+                    const employee = schedulerNameToEmployee[lead.scheduler];
+                    const employeeId = employee.id;
+                    if (!schedulerCounts[employeeId]) {
+                      schedulerCounts[employeeId] = { count: 0, employee };
+                    }
+                    schedulerCounts[employeeId].count += 1;
+                  }
+                }
+              });
+            }
+          }
+        }
+        
+        // Fetch legacy leads in batch
+        if (legacyLeadIdsForMeetings.length > 0) {
+          const { data: legacyLeadsForMeetings } = await supabase
+            .from('leads_lead')
+            .select('id, meeting_scheduler_id')
+            .in('id', legacyLeadIdsForMeetings);
+          
+          if (legacyLeadsForMeetings) {
+            // Count meetings by meeting_scheduler_id
+            meetingsWithoutCreator.forEach(meeting => {
+              if (meeting.lead_id) {
+                const lead = legacyLeadsForMeetings.find(l => l.id === meeting.lead_id);
+                if (lead?.meeting_scheduler_id) {
+                  const employee = employees?.find(emp => String(emp.id) === String(lead.meeting_scheduler_id));
+                  if (employee) {
+                    const employeeId = employee.id;
+                    if (!schedulerCounts[employeeId]) {
+                      schedulerCounts[employeeId] = { count: 0, employee };
+                    }
+                    schedulerCounts[employeeId].count += 1;
+                  }
+                }
+              }
+            });
+          }
+        }
+        
         scoreboard.schedulers = Object.entries(schedulerCounts)
-          .map(([name, data]) => ({ name, count: data.count, employee: data.employee }))
+          .map(([employeeId, data]) => ({ name: data.employee.display_name, count: data.count, employee: data.employee }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 3);
         console.log('✅ EmployeeScoreboard - Schedulers processed:', scoreboard.schedulers);
-        console.log('🔍 EmployeeScoreboard - Scheduler counts before processing:', schedulerCounts);
       }
 
-      // Fetch experts data (expert examinations) - Use EmployeeModal approach without JOINs
-      console.log('🔍 EmployeeScoreboard - Fetching experts data...');
-      console.log('🔍 EmployeeScoreboard - Experts query parameters:', {
-        table: 'leads_lead',
-        select: 'expert_id, expert_examination',
+      // Fetch experts data (expert examinations) - From both new leads and legacy leads
+      console.log('🔍 EmployeeScoreboard - Fetching experts data from new and legacy leads...');
+      
+      // Fetch new leads with expert opinions
+      const { data: newLeadsExperts, error: newLeadsExpertsError } = await supabase
+        .from('leads')
+        .select('id, expert, eligibility_status, created_at')
+        .not('expert', 'is', null)
+        .neq('expert', '---')
+        .in('eligibility_status', ['feasible_no_check', 'feasible_check', 'not_feasible'])
+        .gte('created_at', startDateISO)
+        .lte('created_at', endDateISO);
+      
+      console.log('🔍 EmployeeScoreboard - New leads experts query:', {
+        startDate: startDateISO,
+        endDate: endDateISO,
         filters: {
-          expert_id: 'not.is.null',
-          cdate_gte: startDateISO.split('T')[0],
-          cdate_lte: endDateISO.split('T')[0]
+          expert: 'not null and not ---',
+          eligibility_status: ['feasible_no_check', 'feasible_check', 'not_feasible']
         }
       });
-      
-      const { data: expertsData, error: expertsError } = await supabase
-        .from('leads_lead')
-        .select('expert_id, expert_examination')
-        .not('expert_id', 'is', null)
-        .gte('cdate', startDateISO.split('T')[0])
-        .lte('cdate', endDateISO.split('T')[0]);
 
-      if (expertsError) {
-        console.error('❌ EmployeeScoreboard - Error fetching experts data:', expertsError);
-        console.error('❌ EmployeeScoreboard - Experts error details:', {
-          message: expertsError.message,
-          details: expertsError.details,
-          hint: expertsError.hint,
-          code: expertsError.code
-        });
+      // Fetch legacy leads with expert examinations
+      const { data: legacyLeadsExperts, error: legacyLeadsExpertsError } = await supabase
+        .from('leads_lead')
+        .select('id, expert_id, expert_examination, cdate')
+        .not('expert_id', 'is', null)
+        .not('expert_examination', 'is', null)
+        .neq('expert_examination', '0')
+        .neq('expert_examination', '')
+        .gte('cdate', startDateStr)
+        .lte('cdate', endDateStr);
+
+      if (newLeadsExpertsError) {
+        console.error('❌ EmployeeScoreboard - Error fetching new leads experts data:', newLeadsExpertsError);
       } else {
-        console.log('✅ EmployeeScoreboard - Experts data fetched successfully:', expertsData?.length || 0, 'records');
-        console.log('🔍 EmployeeScoreboard - Sample experts data:', expertsData?.[0]);
+        console.log('✅ EmployeeScoreboard - New leads experts data fetched successfully:', newLeadsExperts?.length || 0, 'records');
       }
 
-      if (!expertsError && expertsData) {
-        const expertCounts: { [key: string]: { count: number; employee: any } } = {};
-        expertsData.forEach((lead: any) => {
+      if (legacyLeadsExpertsError) {
+        console.error('❌ EmployeeScoreboard - Error fetching legacy leads experts data:', legacyLeadsExpertsError);
+      } else {
+        console.log('✅ EmployeeScoreboard - Legacy leads experts data fetched successfully:', legacyLeadsExperts?.length || 0, 'records');
+      }
+
+      const expertCounts: { [key: number]: { count: number; employee: any } } = {};
+      
+      // Process new leads
+      if (newLeadsExperts && newLeadsExperts.length > 0) {
+        console.log('🔍 EmployeeScoreboard - Processing new leads experts:', newLeadsExperts.length, 'leads');
+        
+        // Separate expert values into IDs and names
+        const expertIds: number[] = [];
+        const expertNames: string[] = [];
+        
+        newLeadsExperts.forEach(lead => {
+          if (lead.expert) {
+            // Check if expert is a numeric ID or a name
+            const expertValue = String(lead.expert).trim();
+            const numericId = parseInt(expertValue);
+            if (!isNaN(numericId) && expertValue === String(numericId)) {
+              // It's a numeric ID
+              expertIds.push(numericId);
+            } else {
+              // It's a display name
+              expertNames.push(expertValue);
+            }
+          }
+        });
+        
+        console.log('🔍 EmployeeScoreboard - Expert IDs found:', expertIds);
+        console.log('🔍 EmployeeScoreboard - Expert names found:', expertNames);
+        
+        // Fetch employees by ID
+        if (expertIds.length > 0) {
+          const uniqueExpertIds = [...new Set(expertIds)];
+          const { data: expertEmployeesById } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, photo_url, photo')
+            .in('id', uniqueExpertIds);
+          
+          console.log('🔍 EmployeeScoreboard - Expert employees found by ID:', expertEmployeesById?.length || 0);
+          
+          // Add to expertCounts
+          expertEmployeesById?.forEach(emp => {
+            if (!expertCounts[emp.id]) {
+              expertCounts[emp.id] = { count: 0, employee: emp };
+            }
+          });
+        }
+        
+        // Fetch employees by display name
+        if (expertNames.length > 0) {
+          const uniqueExpertNames = [...new Set(expertNames)];
+          const { data: expertEmployeesByName } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, photo_url, photo')
+            .in('display_name', uniqueExpertNames);
+          
+          console.log('🔍 EmployeeScoreboard - Expert employees found by name:', expertEmployeesByName?.length || 0);
+          
+          // Create a map of expert name to employee
+          const expertNameToEmployee: Record<string, any> = {};
+          expertEmployeesByName?.forEach(emp => {
+            if (emp.display_name) {
+              expertNameToEmployee[emp.display_name] = emp;
+            }
+          });
+          
+          // Add to expertCounts
+          expertEmployeesByName?.forEach(emp => {
+            if (!expertCounts[emp.id]) {
+              expertCounts[emp.id] = { count: 0, employee: emp };
+            }
+          });
+        }
+        
+        // Count expert opinions
+        newLeadsExperts.forEach(lead => {
+          if (lead.expert) {
+            const expertValue = String(lead.expert).trim();
+            const numericId = parseInt(expertValue);
+            let employee: any = null;
+            let employeeId: number | null = null;
+            
+            if (!isNaN(numericId) && expertValue === String(numericId)) {
+              // It's a numeric ID - find in expertCounts or employees array
+              employeeId = numericId;
+              employee = expertCounts[numericId]?.employee || employees?.find(emp => String(emp.id) === String(numericId));
+            } else {
+              // It's a display name - find in employees array
+              employee = employees?.find(emp => emp.display_name === expertValue);
+              if (employee) {
+                employeeId = employee.id;
+              }
+            }
+            
+            if (employee && employeeId) {
+              if (!expertCounts[employeeId]) {
+                expertCounts[employeeId] = { count: 0, employee };
+              }
+              expertCounts[employeeId].count += 1;
+            } else {
+              console.log('⚠️ EmployeeScoreboard - Employee not found for expert:', lead.expert, '(value:', expertValue, ', numericId:', numericId, ')');
+            }
+          }
+        });
+      } else {
+        console.log('⚠️ EmployeeScoreboard - No new leads experts data to process');
+      }
+      
+      // Process legacy leads
+      if (legacyLeadsExperts) {
+        legacyLeadsExperts.forEach((lead: any) => {
           if (lead.expert_id) {
-            // Only count if expert_examination is not null and not "0" (like EmployeeModal)
+            // Only count if expert_examination is not null and not "0"
             const examinationValue = lead.expert_examination;
             const examStr = String(examinationValue);
             if (examStr && examStr !== "0" && examStr !== "" && examStr !== "null") {
-              // Find the employee name from the employees data we fetched earlier
-              // Convert both to strings for comparison (like EmployeeModal does)
               const employee = employees?.find(emp => String(emp.id) === String(lead.expert_id));
-              if (employee?.display_name) {
-                const name = employee.display_name;
-                if (!expertCounts[name]) {
-                  expertCounts[name] = { count: 0, employee };
+              if (employee) {
+                const employeeId = employee.id;
+                if (!expertCounts[employeeId]) {
+                  expertCounts[employeeId] = { count: 0, employee };
                 }
-                expertCounts[name].count += 1;
+                expertCounts[employeeId].count += 1;
               }
             }
           }
         });
-        scoreboard.experts = Object.entries(expertCounts)
-          .map(([name, data]) => ({ name, count: data.count, employee: data.employee }))
-          .sort((a, b) => b.count - a.count)
-          .slice(0, 3);
-        console.log('✅ EmployeeScoreboard - Experts processed:', scoreboard.experts);
-        console.log('🔍 EmployeeScoreboard - Expert counts before processing:', expertCounts);
       }
+      
+      scoreboard.experts = Object.entries(expertCounts)
+        .map(([employeeId, data]) => ({ name: data.employee.display_name, count: data.count, employee: data.employee }))
+        .sort((a, b) => b.count - a.count)
+        .slice(0, 3);
+      console.log('✅ EmployeeScoreboard - Experts processed:', scoreboard.experts);
 
-      // Fetch handlers data (cases where they are case_handler_id) - Use EmployeeModal approach without JOINs
-      console.log('🔍 EmployeeScoreboard - Fetching handlers data...');
-      console.log('🔍 EmployeeScoreboard - Handlers query parameters:', {
-        table: 'leads_lead',
-        select: 'case_handler_id',
-        filters: {
-          case_handler_id: 'not.is.null',
-          cdate_gte: startDateISO.split('T')[0],
-          cdate_lte: endDateISO.split('T')[0]
-        }
-      });
+      // Fetch handlers data (stage changes) - Use leads_leadstage table (stage 150 and 200)
+      console.log('🔍 EmployeeScoreboard - Fetching handlers data from leads_leadstage...');
       
       const { data: handlersData, error: handlersError } = await supabase
-        .from('leads_lead')
-        .select('case_handler_id')
-        .not('case_handler_id', 'is', null)
-        .gte('cdate', startDateISO.split('T')[0])
-        .lte('cdate', endDateISO.split('T')[0]);
+        .from('leads_leadstage')
+        .select('id, stage, date, creator_id, lead_id, newlead_id')
+        .in('stage', [150, 200])
+        .gte('date', startDateStr)
+        .lte('date', endDateStr);
 
       if (handlersError) {
         console.error('❌ EmployeeScoreboard - Error fetching handlers data:', handlersError);
-        console.error('❌ EmployeeScoreboard - Handlers error details:', {
-          message: handlersError.message,
-          details: handlersError.details,
-          hint: handlersError.hint,
-          code: handlersError.code
-        });
       } else {
         console.log('✅ EmployeeScoreboard - Handlers data fetched successfully:', handlersData?.length || 0, 'records');
-        console.log('🔍 EmployeeScoreboard - Sample handlers data:', handlersData?.[0]);
       }
 
       if (!handlersError && handlersData) {
-        const handlerCounts: { [key: string]: { count: number; employee: any } } = {};
-        handlersData.forEach((lead: any) => {
-          if (lead.case_handler_id) {
-            // Find the employee name from the employees data we fetched earlier
-            // Convert both to strings for comparison (like EmployeeModal does)
-            const employee = employees?.find(emp => String(emp.id) === String(lead.case_handler_id));
-            if (employee?.display_name) {
-              const name = employee.display_name;
-              if (!handlerCounts[name]) {
-                handlerCounts[name] = { count: 0, employee };
-              }
-              handlerCounts[name].count += 1;
-            }
+        const handlerCounts: { [key: number]: { count: number; employee: any } } = {};
+        
+        // Deduplicate by lead_id/newlead_id to avoid counting same lead twice
+        const uniqueChanges = new Map<string, any>();
+        handlersData.forEach(change => {
+          const key = change.newlead_id ? `new_${change.newlead_id}` : `legacy_${change.lead_id}`;
+          if (!uniqueChanges.has(key)) {
+            uniqueChanges.set(key, change);
           }
         });
+        const deduplicatedChanges = Array.from(uniqueChanges.values());
+        
+        // For handlers, NEVER use creator_id - always get handler from the lead
+        // Batch fetch leads for all stage changes
+        const newLeadIdsForHandlers = deduplicatedChanges.map(h => h.newlead_id).filter(Boolean);
+        const legacyLeadIdsForHandlers = deduplicatedChanges.map(h => h.lead_id).filter(Boolean);
+        
+        // Fetch new leads in batch
+        if (newLeadIdsForHandlers.length > 0) {
+          const { data: newLeadsForHandlers } = await supabase
+            .from('leads')
+            .select('id, handler')
+            .in('id', newLeadIdsForHandlers);
+          
+          if (newLeadsForHandlers) {
+            // Get unique handler names
+            const handlerNames = [...new Set(newLeadsForHandlers.map(l => l.handler).filter(Boolean))];
+            
+            // Fetch employee IDs for these handler names
+            if (handlerNames.length > 0) {
+              const { data: handlerEmployees } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name, photo_url, photo')
+                .in('display_name', handlerNames);
+              
+              // Create a map of handler name to employee
+              const handlerNameToEmployee: Record<string, any> = {};
+              handlerEmployees?.forEach(emp => {
+                if (emp.display_name) {
+                  handlerNameToEmployee[emp.display_name] = emp;
+                }
+              });
+              
+              // Count stage changes by handler
+              deduplicatedChanges.forEach((change: any) => {
+                if (change.newlead_id) {
+                  const lead = newLeadsForHandlers.find(l => l.id === change.newlead_id);
+                  if (lead?.handler && handlerNameToEmployee[lead.handler]) {
+                    const employee = handlerNameToEmployee[lead.handler];
+                    const employeeId = employee.id;
+                    if (!handlerCounts[employeeId]) {
+                      handlerCounts[employeeId] = { count: 0, employee };
+                    }
+                    handlerCounts[employeeId].count += 1;
+                  }
+                }
+              });
+            }
+          }
+        }
+        
+        // Fetch legacy leads in batch
+        if (legacyLeadIdsForHandlers.length > 0) {
+          const { data: legacyLeadsForHandlers } = await supabase
+            .from('leads_lead')
+            .select('id, case_handler_id')
+            .in('id', legacyLeadIdsForHandlers);
+          
+          if (legacyLeadsForHandlers) {
+            // Count stage changes by case_handler_id
+            deduplicatedChanges.forEach((change: any) => {
+              if (change.lead_id) {
+                const lead = legacyLeadsForHandlers.find(l => l.id === change.lead_id);
+                if (lead?.case_handler_id) {
+                  const employee = employees?.find(emp => String(emp.id) === String(lead.case_handler_id));
+                  if (employee) {
+                    const employeeId = employee.id;
+                    if (!handlerCounts[employeeId]) {
+                      handlerCounts[employeeId] = { count: 0, employee };
+                    }
+                    handlerCounts[employeeId].count += 1;
+                  }
+                }
+              }
+            });
+          }
+        }
+        
         scoreboard.handlers = Object.entries(handlerCounts)
-          .map(([name, data]) => ({ name, count: data.count, employee: data.employee }))
+          .map(([employeeId, data]) => ({ name: data.employee.display_name, count: data.count, employee: data.employee }))
           .sort((a, b) => b.count - a.count)
           .slice(0, 3);
         console.log('✅ EmployeeScoreboard - Handlers processed:', scoreboard.handlers);
-        console.log('🔍 EmployeeScoreboard - Handler counts before processing:', handlerCounts);
       }
 
       setEmployeeScoreboard(scoreboard);

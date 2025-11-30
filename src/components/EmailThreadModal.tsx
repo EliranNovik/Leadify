@@ -2413,41 +2413,6 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             </button>
           </div>
           
-          {/* Toggle Tabs in Header when mobile and chat is open */}
-          {isMobile && showChat && (
-            <div className="px-3 pb-3 border-t border-gray-200 bg-white">
-              <div className="flex gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMyContactsOnly(false);
-                    setShowChat(false); // Show contacts list so user can see the filter working
-                  }}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    !showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  All Contacts
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowMyContactsOnly(true);
-                    setShowChat(false); // Show contacts list so user can see the filter working
-                  }}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  My Contacts
-                </button>
-              </div>
-            </div>
-          )}
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -2481,7 +2446,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   onClick={() => setShowMyContactsOnly(false)}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                     !showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
+                      ? 'bg-purple-600 text-white shadow-sm'
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}
                 >
@@ -2492,7 +2457,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   onClick={() => setShowMyContactsOnly(true)}
                   className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                     showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
+                      ? 'bg-purple-600 text-white shadow-sm'
                       : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                   }`}
                 >
