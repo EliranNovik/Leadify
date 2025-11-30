@@ -321,25 +321,11 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                 // Prefer the formatted lead number (e.g. "L18/2"), fall back to manual_id and finally to id
                 let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
                 
-                // Debug logging
-                console.log('🔍 ClientInformationBox - Lead number logic:', {
-                  id: selectedClient.id,
-                  idString: selectedClient.id?.toString(),
-                  isLegacy: selectedClient.id?.toString().startsWith('legacy_'),
-                  stage: selectedClient.stage,
-                  stageType: typeof selectedClient.stage,
-                  manual_id: selectedClient.manual_id,
-                  lead_number: selectedClient.lead_number,
-                  displayNumber: displayNumber
-                });
-                
-                // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
-                const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+                // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
                 const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
-                
-                if (isLegacyLead && isSuccessStage) {
-                  console.log('🔍 Adding C prefix to:', displayNumber);
-                  displayNumber = `C${displayNumber}`;
+                if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
+                  // Replace "L" prefix with "C" for display only
+                  displayNumber = displayNumber.toString().replace(/^L/, 'C');
                 }
                 
                 return displayNumber;

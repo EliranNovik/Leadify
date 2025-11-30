@@ -1549,10 +1549,17 @@ useEffect(() => {
 
 
   // Helper to convert lead number to case number
-  const convertLeadToCaseNumber = (leadNumber: string): string => {
-    if (!leadNumber) return leadNumber;
-    // Replace 'L' with 'C' at the beginning of the lead number
-    return leadNumber.replace(/^L/, 'C');
+  // Helper function to get display lead number (shows "C" prefix in UI when stage is Success/100)
+  const getDisplayLeadNumber = (lead: any): string => {
+    if (!lead) return '---';
+    let displayNumber = lead.lead_number || lead.manual_id || lead.id || '---';
+    const isSuccessStage = lead.stage === '100' || lead.stage === 100;
+    // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
+    if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
+      // Replace "L" prefix with "C" for display only
+      displayNumber = displayNumber.toString().replace(/^L/, 'C');
+    }
+    return displayNumber.toString();
   };
 
   // Handler for Payment Received - new Client !!!
@@ -1619,8 +1626,6 @@ useEffect(() => {
         return;
       }
 
-      const caseNumber = convertLeadToCaseNumber(selectedClient.lead_number);
-      
       const successStageId = resolveStageId('Success');
       if (successStageId === null) {
         toast.error('Unable to resolve "Success" stage. Please contact an administrator.');
@@ -1699,8 +1704,8 @@ useEffect(() => {
         setSelectedClient((prev: any) => ({
           ...prev,
           stage: successStageId,
-          lead_number: caseNumber,
-        proposal_currency: successForm.currency,
+          // Don't update lead_number - keep original "L" prefix in database
+          proposal_currency: successForm.currency,
           number_of_applicants_meeting: numApplicants ?? prev?.number_of_applicants_meeting,
           proposal_total: proposal ?? prev?.proposal_total,
           potential_value: potentialValue ?? prev?.potential_value,
@@ -1716,7 +1721,7 @@ useEffect(() => {
       } else {
         const updateData: any = {
           stage: successStageId,
-          lead_number: caseNumber,
+          // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
           file_id: fileId,
           proposal_currency: successForm.currency,
         balance_currency: successForm.currency,
@@ -1753,7 +1758,7 @@ useEffect(() => {
       setSelectedClient((prev: any) => ({
         ...prev,
         stage: successStageId,
-          lead_number: caseNumber,
+          // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
         proposal_currency: successForm.currency,
         number_of_applicants_meeting: numApplicants,
         proposal_total: proposal,
@@ -8228,15 +8233,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             <div className="flex flex-col gap-1 flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-lg font-bold text-gray-900 whitespace-nowrap">
-                  {selectedClient ? (() => {
-                    let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
-                    const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
-                    const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
-                    if (isLegacyLead && isSuccessStage) {
-                      displayNumber = `C${displayNumber}`;
-                    }
-                    return displayNumber;
-                  })() : '---'}
+                  {selectedClient ? getDisplayLeadNumber(selectedClient) : '---'}
                 </span>
                 <span className="text-lg font-bold text-gray-900">-</span>
                 <span className="text-xl font-bold text-gray-700 truncate">
