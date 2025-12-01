@@ -279,14 +279,134 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
       if (mobileMatches) addContacts(mobileMatches);
     }
 
-    if (!contactCandidatesMap.size && incomingNormalized) {
-      const suffix = incomingNormalized.slice(-7);
-      if (suffix.length >= 4) {
-        const { data: partialMatches } = await supabase
-          .from('leads_contact')
-          .select(contactSelectColumns)
-          .or(`phone.ilike.%${suffix}%,mobile.ilike.%${suffix}%,additional_phones.ilike.%${suffix}%`);
-        if (partialMatches) addContacts(partialMatches);
+    // Store direct lead matches for fallback if no contacts found
+    let directNewLeadMatch = null;
+    let directLegacyLeadMatch = null;
+
+    // If no exact matches found, try partial matching using last 8 digits
+    // This handles cases like 972507825939 vs 9720507825939 (both end with same 8 digits)
+    if (!contactCandidatesMap.size && incomingNormalized && incomingNormalized.length >= 8) {
+      const last8Digits = incomingNormalized.slice(-8);
+      
+      // Search in leads_contact table with last 8 digits
+      // This will find contacts that match, and we'll use lead_leadcontact to find associated leads
+      const { data: contactPartialMatches } = await supabase
+        .from('leads_contact')
+        .select(contactSelectColumns)
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+      if (contactPartialMatches) addContacts(contactPartialMatches);
+      
+      // Also search via lead_leadcontact junction table to find leads associated with matching contacts
+      // First, find all contacts matching last 8 digits
+      const { data: matchingContactsByLast8 } = await supabase
+        .from('leads_contact')
+        .select('id')
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+      
+      if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
+        const matchingContactIds = matchingContactsByLast8.map(c => c.id);
+        
+        // Find all leads (new and legacy) linked to these contacts via lead_leadcontact
+        const { data: linkedLeadsViaContacts } = await supabase
+          .from('lead_leadcontact')
+          .select('newlead_id, lead_id')
+          .in('contact_id', matchingContactIds);
+        
+        if (linkedLeadsViaContacts && linkedLeadsViaContacts.length > 0) {
+          // Get unique new lead IDs
+          const newLeadIds = [...new Set(linkedLeadsViaContacts
+            .filter(ll => ll.newlead_id)
+            .map(ll => ll.newlead_id)
+          )];
+          
+          // Get unique legacy lead IDs
+          const legacyLeadIds = [...new Set(linkedLeadsViaContacts
+            .filter(ll => ll.lead_id)
+            .map(ll => ll.lead_id)
+          )];
+          
+          // Fetch the actual new leads
+          if (newLeadIds.length > 0) {
+            const { data: newLeadsFromContacts } = await supabase
+              .from('leads')
+              .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+              .in('id', newLeadIds);
+            
+            if (newLeadsFromContacts && newLeadsFromContacts.length > 0 && !directNewLeadMatch) {
+              directNewLeadMatch = newLeadsFromContacts[0];
+            }
+          }
+          
+          // Fetch the actual legacy leads
+          if (legacyLeadIds.length > 0) {
+            const { data: legacyLeadsFromContacts } = await supabase
+              .from('leads_lead')
+              .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+              .in('id', legacyLeadIds);
+            
+            if (legacyLeadsFromContacts && legacyLeadsFromContacts.length > 0 && !directLegacyLeadMatch) {
+              directLegacyLeadMatch = legacyLeadsFromContacts[0];
+            }
+          }
+        }
+      }
+      
+      // Also search directly in leads table (new leads) for phone and mobile columns
+      // This catches leads that might not have contacts linked yet
+      if (!directNewLeadMatch) {
+        const { data: newLeadsMatches } = await supabase
+          .from('leads')
+          .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
+          .limit(1);
+        
+        if (newLeadsMatches && newLeadsMatches.length > 0) {
+          directNewLeadMatch = newLeadsMatches[0];
+          
+          // Try to find associated contacts via lead_leadcontact
+          const { data: linkedContacts } = await supabase
+            .from('lead_leadcontact')
+            .select('contact_id')
+            .eq('newlead_id', directNewLeadMatch.id);
+          
+          if (linkedContacts && linkedContacts.length > 0) {
+            const contactIds = linkedContacts.map(lc => lc.contact_id);
+            const { data: contacts } = await supabase
+              .from('leads_contact')
+              .select(contactSelectColumns)
+              .in('id', contactIds);
+            if (contacts) addContacts(contacts);
+          }
+        }
+      }
+      
+      // Also search directly in leads_lead table (legacy leads) for phone and mobile columns
+      // This catches legacy leads that might not have contacts linked yet
+      if (!directLegacyLeadMatch) {
+        const { data: legacyLeadsMatches } = await supabase
+          .from('leads_lead')
+          .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
+          .limit(1);
+        
+        if (legacyLeadsMatches && legacyLeadsMatches.length > 0) {
+          directLegacyLeadMatch = legacyLeadsMatches[0];
+          
+          // Try to find associated contacts via lead_leadcontact
+          const { data: linkedContacts } = await supabase
+            .from('lead_leadcontact')
+            .select('contact_id')
+            .eq('lead_id', directLegacyLeadMatch.id);
+          
+          if (linkedContacts && linkedContacts.length > 0) {
+            const contactIds = linkedContacts.map(lc => lc.contact_id);
+            const { data: contacts } = await supabase
+              .from('leads_contact')
+              .select(contactSelectColumns)
+              .in('id', contactIds);
+            if (contacts) addContacts(contacts);
+          }
+        }
       }
     }
 
@@ -351,6 +471,28 @@ const findLeadAndContactByPhone = async (phoneNumber, incomingVariations, incomi
         leadData,
         leadType
       };
+    }
+
+    // If no contacts found but we found leads directly via last 8 digits matching,
+    // return the first matching lead
+    if (!contactCandidatesMap.size) {
+      if (directNewLeadMatch) {
+        return {
+          contact: null,
+          contactId: null,
+          leadData: directNewLeadMatch,
+          leadType: 'new'
+        };
+      }
+      
+      if (directLegacyLeadMatch) {
+        return {
+          contact: null,
+          contactId: null,
+          leadData: directLegacyLeadMatch,
+          leadType: 'legacy'
+        };
+      }
     }
 
     return null;
@@ -546,6 +688,36 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     }
 
+    // If no exact matches found, try partial matching using last 8 digits
+    // This handles cases like 972507825939 vs 9720507825939 (both end with same 8 digits)
+    if (matchingLeads.length === 0 && incomingNormalized && incomingNormalized.length >= 8) {
+      const last8Digits = incomingNormalized.slice(-8);
+      
+      // Search in new leads using last 8 digits
+      const { data: newLeadsByLast8 } = await supabase
+        .from('leads')
+        .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`);
+      
+      if (newLeadsByLast8 && newLeadsByLast8.length > 0) {
+        newLeadsByLast8.forEach(lead => {
+          matchingLeads.push({ type: 'new', data: lead });
+        });
+      }
+      
+      // Search in legacy leads using last 8 digits
+      const { data: legacyLeadsByLast8 } = await supabase
+        .from('leads_lead')
+        .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`);
+      
+      if (legacyLeadsByLast8 && legacyLeadsByLast8.length > 0) {
+        legacyLeadsByLast8.forEach(lead => {
+          matchingLeads.push({ type: 'legacy', data: lead });
+        });
+      }
+    }
+
     // Find ALL matching contacts and their associated leads
     const matchingContacts = [];
     const matchingContactsWithLeads = [];
@@ -576,6 +748,90 @@ const processIncomingMessage = async (message, webhookContacts = []) => {
       }
     });
     
+    // If no exact contact matches found, try partial matching using last 8 digits
+    if (allContactsMap.size === 0 && incomingNormalized && incomingNormalized.length >= 8) {
+      const last8Digits = incomingNormalized.slice(-8);
+      
+      // Search in leads_contact table with last 8 digits
+      const { data: contactPartialMatches } = await supabase
+        .from('leads_contact')
+        .select('id, name, phone, mobile, additional_phones, newlead_id, lead_leadcontact(lead_id, newlead_id, main)')
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+      
+      if (contactPartialMatches) {
+        contactPartialMatches.forEach(contact => {
+          if (!allContactsMap.has(contact.id)) {
+            allContactsMap.set(contact.id, contact);
+          }
+        });
+      }
+      
+      // Also search via lead_leadcontact junction table to find leads associated with matching contacts
+      // First, find all contacts matching last 8 digits
+      const { data: matchingContactsByLast8 } = await supabase
+        .from('leads_contact')
+        .select('id')
+        .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+      
+      if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
+        const matchingContactIds = matchingContactsByLast8.map(c => c.id);
+        
+        // Find all leads (new and legacy) linked to these contacts via lead_leadcontact
+        const { data: linkedLeadsViaContacts } = await supabase
+          .from('lead_leadcontact')
+          .select('newlead_id, lead_id')
+          .in('contact_id', matchingContactIds);
+        
+        if (linkedLeadsViaContacts && linkedLeadsViaContacts.length > 0) {
+          // Get unique new lead IDs
+          const newLeadIds = [...new Set(linkedLeadsViaContacts
+            .filter(ll => ll.newlead_id)
+            .map(ll => ll.newlead_id)
+          )];
+          
+          // Get unique legacy lead IDs
+          const legacyLeadIds = [...new Set(linkedLeadsViaContacts
+            .filter(ll => ll.lead_id)
+            .map(ll => ll.lead_id)
+          )];
+          
+          // Fetch the actual new leads and add to matchingLeads if not already there
+          if (newLeadIds.length > 0) {
+            const { data: newLeadsFromContacts } = await supabase
+              .from('leads')
+              .select('id, name, lead_number, phone, mobile, scheduler, closer, handler, meeting_manager_id, expert_id, meeting_lawyer_id, case_handler_id')
+              .in('id', newLeadIds);
+            
+            if (newLeadsFromContacts && newLeadsFromContacts.length > 0) {
+              newLeadsFromContacts.forEach(lead => {
+                const alreadyExists = matchingLeads.some(ml => ml.type === 'new' && ml.data.id === lead.id);
+                if (!alreadyExists) {
+                  matchingLeads.push({ type: 'new', data: lead });
+                }
+              });
+            }
+          }
+          
+          // Fetch the actual legacy leads and add to matchingLeads if not already there
+          if (legacyLeadIds.length > 0) {
+            const { data: legacyLeadsFromContacts } = await supabase
+              .from('leads_lead')
+              .select('id, name, phone, mobile, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, closer_id, case_handler_id')
+              .in('id', legacyLeadIds);
+            
+            if (legacyLeadsFromContacts && legacyLeadsFromContacts.length > 0) {
+              legacyLeadsFromContacts.forEach(lead => {
+                const alreadyExists = matchingLeads.some(ml => ml.type === 'legacy' && ml.data.id === lead.id);
+                if (!alreadyExists) {
+                  matchingLeads.push({ type: 'legacy', data: lead });
+                }
+              });
+            }
+          }
+        }
+      }
+    }
+
     const allContacts = Array.from(allContactsMap.values());
     const contactsError = contactResults.find(r => r.error)?.error;
     

@@ -2167,7 +2167,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const handleCreateContract = async () => {
     console.log('handleCreateContract called with:', { contractForm, clientId: client?.id });
     
-    // Check if stage is >= 50 (Mtng sum+Agreement sent and on)
+    // Check if stage is >= 40 (Waiting for mtng sum and on)
     // Handle both numeric and string stages
     let currentStage = 0;
     if (typeof client.stage === 'number') {
@@ -2177,8 +2177,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       currentStage = isNaN(parsed) ? 0 : parsed;
     }
     
-    if (currentStage < 50) {
-      toast.error('Contracts can only be created from stage 50 (Mtng sum+Agreement sent) onwards.');
+    if (currentStage < 40) {
+      toast.error('Contracts can only be created from stage 40 (Waiting for mtng sum) onwards.');
       return;
     }
     
@@ -3073,7 +3073,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </div>
                           ) : (
                             (() => {
-                              // Check if stage is >= 50 (Mtng sum+Agreement sent and on)
+                              // Check if stage is >= 40 (Waiting for mtng sum and on)
                               // Handle both numeric and string stages
                               let currentStage = 0;
                               if (typeof client.stage === 'number') {
@@ -3083,7 +3083,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 currentStage = isNaN(parsed) ? 0 : parsed;
                               }
                               
-                              const canCreateContract = currentStage >= 50;
+                              const canCreateContract = currentStage >= 40;
                               
                               if (!canCreateContract) {
                                 return (

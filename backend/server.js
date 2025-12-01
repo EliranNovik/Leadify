@@ -19,6 +19,7 @@ const emailRoutes = require('./src/routes/emailRoutes');
 const syncRoutes = require('./src/routes/syncRoutes');
 const pushNotificationRoutes = require('./src/routes/pushNotificationRoutes');
 const { startMailboxSyncScheduler } = require('./src/services/mailboxSyncScheduler');
+const { startMeetingNotificationScheduler } = require('./src/services/meetingNotificationScheduler');
 const accessLogger = require('./src/middleware/accessLogger');
 const { notifyConversationParticipants } = require('./src/services/rmqNotificationService');
 
@@ -359,6 +360,7 @@ server.listen(PORT, () => {
   console.log(`🌐 Frontend should connect to: ${process.env.FRONTEND_URL || "http://localhost:5173"}`);
 
   startMailboxSyncScheduler();
+  startMeetingNotificationScheduler();
 });
 
 // Graceful shutdown

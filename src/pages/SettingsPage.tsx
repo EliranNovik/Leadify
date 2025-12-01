@@ -17,6 +17,7 @@ import {
 import EmployeeAvailability from '../components/EmployeeAvailability';
 import EmployeeAvailabilityManager from '../components/EmployeeAvailabilityManager';
 import OutlookSignature from '../components/OutlookSignature';
+import CompanySignatureTemplate from '../components/CompanySignatureTemplate';
 import {
   isPushNotificationSupported,
   getNotificationPermission,
@@ -822,8 +823,13 @@ const SettingsPage: React.FC = () => {
                       )}
                       
                       {activeCalendarTab === 'outlook' && (
-                        <div>
-                          <OutlookSignature />
+                        <div className="space-y-6">
+                          <div className="border-b border-base-300 pb-4">
+                            <OutlookSignature />
+                          </div>
+                          <div className="pt-4">
+                            <CompanySignatureTemplate />
+                          </div>
                         </div>
                       )}
                     </div>

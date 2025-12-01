@@ -196,6 +196,27 @@ const CreateNewLead: React.FC = () => {
       const newLead = data?.[0] as NewLeadResult;
       if (!newLead) throw new Error("Could not create lead.");
 
+      // Update the lead with facts and special_notes if provided
+      const updateData: { facts?: string; special_notes?: string } = {};
+      if (form.facts && form.facts.trim()) {
+        updateData.facts = form.facts.trim();
+      }
+      if (form.specialNotes && form.specialNotes.trim()) {
+        updateData.special_notes = form.specialNotes.trim();
+      }
+
+      if (Object.keys(updateData).length > 0) {
+        const { error: updateError } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', newLead.id);
+
+        if (updateError) {
+          console.error('Error updating facts/special_notes:', updateError);
+          // Don't throw - lead was created successfully, just log the error
+        }
+      }
+
       // Navigate to the new lead's page
       navigate(`/clients/${newLead.lead_number}`);
     } catch (error) {

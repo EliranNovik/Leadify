@@ -1165,11 +1165,11 @@ const Clients: React.FC<ClientsProps> = ({
     date: '',
     time: '09:00',
     location: 'Teams',
+    calendar: 'current',
     manager: '',
     helper: '',
     amount: '',
     currency: 'NIS',
-    brief: '',
     attendance_probability: 'Medium',
     complexity: 'Simple',
     car_number: '',
@@ -1303,6 +1303,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
       precommunication: 11,
       communicationstarted: 15,
       meetingscheduled: 20,
+      meetingrescheduled: 21,
       meetingcomplete: 30,
       meetingirrelevant: 35,
       waitingformtngsum: 40,
@@ -2132,6 +2133,33 @@ useEffect(() => {
 
   // Essential data loading for initial page display
   useEffect(() => {
+    // Prevent running if we're currently setting up a client to avoid race conditions
+    if (isSettingUpClientRef.current) {
+      return;
+    }
+    
+    // If we already have a selectedClient that matches the current route, don't refetch
+    if (selectedClient && lead_number) {
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const currentClientId = isLegacy 
+        ? selectedClient.id?.toString().replace('legacy_', '')
+        : selectedClient.id?.toString();
+      const currentLeadNumber = selectedClient.lead_number;
+      
+      // For legacy leads, compare by ID; for new leads, compare by lead_number
+      if (isLegacy) {
+        // Legacy lead: compare numeric ID
+        if (currentClientId === lead_number) {
+          return; // Already have the correct legacy client loaded
+        }
+      } else {
+        // New lead: compare by lead_number or manual_id
+        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          return; // Already have the correct new client loaded
+        }
+      }
+    }
+    
     let isMounted = true;
     const fetchEssentialData = async () => {
       setLocalLoading(true);
@@ -2361,6 +2389,8 @@ useEffect(() => {
           }, 100);
         } else if (!clientData) {
           // If still no client found, try to get latest lead
+          // Only do this if there's no lead_number in the URL (empty route)
+          // If there IS a lead_number, it means we're trying to load a specific client, so don't jump to latest
           if (!lead_number && isMounted) {
             const allLeads = await fetchAllLeads();
             if (allLeads.length > 0 && isMounted) {
@@ -2442,7 +2472,7 @@ useEffect(() => {
     fetchEssentialData();
     
     return () => { isMounted = false; };
-  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, location.pathname, droppedStageId, userManuallyExpanded]); // Added buildClientRoute and location.pathname for correctness
+  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, selectedClient?.id]); // Removed location.pathname to prevent unnecessary re-runs when navigating
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
     const loadBackgroundData = async () => {
@@ -4170,6 +4200,69 @@ useEffect(() => {
     setMeetingEndedData(prev => ({ ...prev, [field]: value }));
   };
 
+  // Initialize meeting ended data with proposal total and currency when drawer opens
+  useEffect(() => {
+    if (showMeetingEndedDrawer && selectedClient && currencies.length > 0) {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      
+      // Get proposal total
+      let proposalTotal = '0.0';
+      if (isLegacyLead) {
+        // For legacy leads: use total or balance
+        const totalValue = (selectedClient as any).total || selectedClient.balance;
+        if (totalValue && Number(totalValue) > 0) {
+          proposalTotal = typeof totalValue === 'number' ? totalValue.toString() : String(totalValue);
+        }
+      } else {
+        // For new leads: use proposal_total or balance
+        const totalValue = (selectedClient as any).proposal_total || selectedClient.balance;
+        if (totalValue && Number(totalValue) > 0) {
+          proposalTotal = typeof totalValue === 'number' ? totalValue.toString() : String(totalValue);
+        }
+      }
+
+      // Get currency
+      let proposalCurrency = '₪'; // Default
+      if (isLegacyLead) {
+        // For legacy leads: use balance_currency or convert currency_id to symbol
+        if (selectedClient.balance_currency) {
+          proposalCurrency = selectedClient.balance_currency;
+        } else if ((selectedClient as any).currency_id) {
+          const currencyId = (selectedClient as any).currency_id;
+          // Use the existing getCurrencySymbol helper function
+          proposalCurrency = getCurrencySymbol(currencyId, selectedClient.balance_currency || '₪');
+        }
+      } else {
+        // For new leads: use proposal_currency or balance_currency
+        proposalCurrency = (selectedClient as any).proposal_currency || selectedClient.balance_currency || '₪';
+      }
+
+      // Normalize currency to match dropdown format (ISO code or name)
+      if (proposalCurrency && currencies.length > 0) {
+        // Try to find matching currency in the list
+        const matchingCurrency = currencies.find(c => 
+          c.iso_code === proposalCurrency || 
+          c.front_name === proposalCurrency || 
+          c.name === proposalCurrency ||
+          (proposalCurrency === '₪' && (c.iso_code === 'ILS' || c.iso_code === 'NIS')) ||
+          (proposalCurrency === '$' && c.iso_code === 'USD') ||
+          (proposalCurrency === '€' && c.iso_code === 'EUR') ||
+          (proposalCurrency === '£' && c.iso_code === 'GBP')
+        );
+        if (matchingCurrency) {
+          // Use the format that matches the dropdown (iso_code or name)
+          proposalCurrency = matchingCurrency.iso_code || matchingCurrency.front_name || matchingCurrency.name || proposalCurrency;
+        }
+      }
+
+      setMeetingEndedData(prev => ({
+        ...prev,
+        proposalTotal: proposalTotal !== '0.0' ? proposalTotal : prev.proposalTotal,
+        proposalCurrency: proposalCurrency || prev.proposalCurrency,
+      }));
+    }
+  }, [showMeetingEndedDrawer, selectedClient?.id, currencies.length]);
+
   const handleMeetingIrrelevant = () => {
     setMeetingIrrelevantReason('');
     setShowMeetingIrrelevantModal(true);
@@ -5426,7 +5519,7 @@ useEffect(() => {
       toast.success('Meeting canceled and client notified.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS', brief: '', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -5462,8 +5555,70 @@ useEffect(() => {
         .eq('id', meetingToDelete)
         .single();
 
+      // Get current user's full_name from database to match scheduler dropdown values
+      let currentUserFullName = '';
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', account.username)
+          .single();
+        if (userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        }
+      } catch (error) {
+        console.log('Could not fetch user full_name');
+      }
+
+      // Helper function to convert display name to employee ID
+      const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
+        if (!displayName || displayName === '---' || displayName.trim() === '') return null;
+        
+        // Try exact match first
+        let employee = allEmployees.find((emp: any) => 
+          emp.display_name && emp.display_name.trim() === displayName.trim()
+        );
+        
+        // If not found, try case-insensitive match
+        if (!employee) {
+          employee = allEmployees.find((emp: any) => 
+            emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
+          );
+        }
+        
+        if (!employee) {
+          console.warn(`Employee not found for display name: "${displayName}"`);
+          return null;
+        }
+        
+        // Ensure ID is a number (bigint)
+        const employeeId = typeof employee.id === 'string' ? parseInt(employee.id, 10) : Number(employee.id);
+        if (isNaN(employeeId)) {
+          console.error(`Invalid employee ID for "${displayName}":`, employee.id);
+          return null;
+        }
+        
+        return employeeId;
+      };
+
+      // Resolve manager and helper employee IDs
+      const managerEmployeeId = getEmployeeIdFromDisplayName(rescheduleFormData.manager);
+      const helperEmployeeId = getEmployeeIdFromDisplayName(rescheduleFormData.helper);
+      
+      // Resolve scheduler employee ID (for legacy leads, need numeric ID)
+      const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      
+      // Resolve expert employee ID (for legacy leads, need numeric ID)
+      const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
+
       // 2. Create the new meeting
       let teamsMeetingUrl = '';
+      const selectedLocation = meetingLocations.find(
+        loc => loc.name === rescheduleFormData.location
+      );
+
+      // If this is a Teams meeting, create an online event via Graph as before.
+      // Otherwise, if the chosen location has a default_link, use that as the join URL.
       if (rescheduleFormData.location === 'Teams') {
         let accessToken;
         try {
@@ -5477,44 +5632,190 @@ useEffect(() => {
             throw error;
           }
         }
+
+        // Convert date and time to start/end times
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000);
-        const teamsMeetingData = await createTeamsMeeting(accessToken, {
-          subject: `[#${selectedClient.lead_number}] ${selectedClient.name} - ${selectedClient.category || 'No Category'} - Meeting`,
-          startDateTime: start.toISOString(),
-          endDateTime: end.toISOString(),
-          manager: rescheduleFormData.manager,
-          helper: rescheduleFormData.helper,
-          brief: rescheduleFormData.brief,
-          attendance_probability: rescheduleFormData.attendance_probability,
-          complexity: rescheduleFormData.complexity,
-          car_number: rescheduleFormData.car_number,
-          expert: selectedClient.expert || '---',
-          amount: 0,
-          currency: '₪',
-        });
-        teamsMeetingUrl = teamsMeetingData.joinUrl;
+        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+
+        // Test calendar access first
+        const calendarEmail = rescheduleFormData.calendar === 'active_client' 
+          ? 'shared-newclients@lawoffice.org.il' 
+          : 'shared-potentialclients@lawoffice.org.il';
+        
+        console.log('🔍 Testing calendar access for:', calendarEmail);
+        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+        
+        if (!hasAccess) {
+          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
+            duration: 5000,
+            position: 'top-right',
+            style: {
+              background: '#ef4444',
+              color: '#fff',
+              fontWeight: '500',
+              maxWidth: '500px',
+            },
+            icon: '🔒',
+          });
+          return;
+        }
+
+        // Create calendar event with client name, category, and lead number in subject
+        const categoryName = selectedClient.category || 'No Category';
+        const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
+        
+        try {
+          const calendarEventData = await createCalendarEvent(accessToken, {
+            subject: meetingSubject,
+            startDateTime: start.toISOString(),
+            endDateTime: end.toISOString(),
+            location: rescheduleFormData.location,
+            calendar: rescheduleFormData.calendar,
+            manager: rescheduleFormData.manager,
+            helper: rescheduleFormData.helper,
+            attendance_probability: rescheduleFormData.attendance_probability,
+            complexity: rescheduleFormData.complexity,
+            car_number: rescheduleFormData.car_number,
+            expert: selectedClient.expert || '---',
+            amount: 0,
+            currency: '₪',
+          });
+          teamsMeetingUrl = calendarEventData.joinUrl;
+          console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
+        } catch (calendarError) {
+          console.error('❌ Calendar creation failed:', calendarError);
+          const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+          toast.error(`Failed to create calendar event: ${errorMessage}`, {
+            duration: 6000,
+            position: 'top-right',
+            style: {
+              background: '#ef4444',
+              color: '#fff',
+              fontWeight: '500',
+              maxWidth: '500px',
+            },
+          });
+          return;
+        }
+      } else if (selectedLocation?.default_link) {
+        // For non-Teams online locations, use the default_link from tenants_meetinglocation
+        teamsMeetingUrl = selectedLocation.default_link;
       }
-      const { error: meetingError } = await supabase
+
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      
+      // For both new and legacy leads, create meeting record in meetings table
+      const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+
+      const meetingData = {
+        client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
+        legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
+        meeting_date: rescheduleFormData.date,
+        meeting_time: rescheduleFormData.time,
+        meeting_location: rescheduleFormData.location,
+        meeting_manager: rescheduleFormData.manager || '',
+        meeting_currency: rescheduleFormData.currency || '₪',
+        meeting_amount: rescheduleFormData.amount ? parseFloat(rescheduleFormData.amount) : 0,
+        expert: selectedClient.expert || '---',
+        helper: rescheduleFormData.helper || '---',
+        teams_meeting_url: teamsMeetingUrl,
+        meeting_brief: '',
+        attendance_probability: rescheduleFormData.attendance_probability,
+        complexity: rescheduleFormData.complexity,
+        car_number: rescheduleFormData.car_number || '',
+        scheduler: currentUserFullName, // Always use Supabase user's full_name
+        last_edited_timestamp: new Date().toISOString(),
+        last_edited_by: currentUserFullName,
+        calendar_type: rescheduleFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+      };
+
+      const { data: insertedData, error: meetingError } = await supabase
         .from('meetings')
-        .insert([{
-          client_id: selectedClient.id,
-          meeting_date: rescheduleFormData.date,
-          meeting_time: rescheduleFormData.time,
-          meeting_location: rescheduleFormData.location,
-          meeting_manager: rescheduleFormData.manager, // do not default to account.name
-          meeting_currency: rescheduleFormData.currency,
-          meeting_amount: rescheduleFormData.amount ? parseFloat(rescheduleFormData.amount) : 0,
-          expert: selectedClient.expert || '---',
-          helper: rescheduleFormData.helper || '---',
-          teams_meeting_url: teamsMeetingUrl,
-          meeting_brief: '',
-          last_edited_timestamp: new Date().toISOString(),
-          last_edited_by: account?.name,
-        }]);
-      if (meetingError) throw meetingError;
+        .insert([meetingData])
+        .select();
+
+      if (meetingError) {
+        console.error('Meeting creation error:', meetingError);
+        throw meetingError;
+      }
+
+      // Update lead stage and roles
+      const stageActor = await fetchStageActorInfo();
+      const stageTimestamp = new Date().toISOString();
+      const rescheduledStageId = 21; // Meeting rescheduled
+
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        const updatePayload: any = { 
+          stage: rescheduledStageId,
+          stage_changed_by: stageActor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
+        if (schedulerEmployeeId !== null) {
+          updatePayload.meeting_scheduler_id = schedulerEmployeeId;
+        }
+
+        // Update manager and helper for legacy leads
+        if (managerEmployeeId !== null) {
+          updatePayload.meeting_manager_id = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.meeting_lawyer_id = helperEmployeeId;
+        }
+        
+        // Update expert for legacy leads (must be numeric employee ID, not display name)
+        if (expertEmployeeId !== null) {
+          updatePayload.expert_id = expertEmployeeId;
+        }
+
+        const { error } = await supabase
+          .from('leads_lead')
+          .update(updatePayload)
+          .eq('id', legacyId);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: rescheduledStageId,
+          actor: stageActor,
+          timestamp: stageTimestamp,
+        });
+      } else {
+        const updatePayload: any = { 
+          stage: rescheduledStageId,
+          scheduler: currentUserFullName,
+          stage_changed_by: stageActor.fullName,
+          stage_changed_at: stageTimestamp,
+        };
+
+        // Update manager and helper for new leads (as employee IDs)
+        if (managerEmployeeId !== null) {
+          updatePayload.manager = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.helper = helperEmployeeId;
+        }
+
+        const { error } = await supabase
+          .from('leads')
+          .update(updatePayload)
+          .eq('id', selectedClient.id);
+
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: rescheduledStageId,
+          actor: stageActor,
+          timestamp: stageTimestamp,
+        });
+      }
 
       // 3. Send notification email to client
       if (selectedClient.email) {
@@ -5580,14 +5881,11 @@ useEffect(() => {
         });
       }
 
-      // 4. Update stage to "Meeting scheduled" (ID 20) since a new meeting was created
-      await updateLeadStage(20);
-
       // 5. Show toast and close drawer
       toast.success('Meeting rescheduled and client notified.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS', brief: '', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -6485,16 +6783,8 @@ useEffect(() => {
       </li>
     );
   }
-  else if (selectedClient && areStagesEquivalent(currentStageName, 'Meeting rescheduling')) {
-    dropdownItems = (
-      <li>
-        <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
-          <CalendarDaysIcon className="w-5 h-5 text-black" />
-          {scheduleMenuLabel}
-        </a>
-      </li>
-    );
-  }
+  // Note: "Meeting rescheduling" (stage 21) is now handled in the main condition below
+  // to show the same options as meeting_scheduled (Reschedule Meeting and Meeting Ended)
   else if (selectedClient && (() => {
     const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
     const isUnactivated = isLegacy
@@ -6540,10 +6830,12 @@ useEffect(() => {
       <>
         {areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
         areStagesEquivalent(currentStageName, 'another_meeting') ||
-        (isStageNumeric && stageNumeric === 55) ? (
+        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21)) ? (
           <>
-            {/* Only show Schedule Meeting button for "another_meeting" and stage 55, not for "Meeting scheduled" */}
-            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') && (
+            {/* Only show Schedule Meeting button for "another_meeting" and stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
+            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') && 
+             !areStagesEquivalent(currentStageName, 'Meeting rescheduling') && (
               <li>
                 <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
                   <CalendarDaysIcon className="w-5 h-5 text-black" />
@@ -6590,9 +6882,11 @@ useEffect(() => {
           </li>
         )}
         {(() => {
-          const communicationExcludedStages = ['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned'];
+          const communicationExcludedStages = ['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];
           const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
-          return !isCommunicationExcluded;
+          // Also exclude if current stage is 21 (Meeting rescheduled)
+          const isStage21 = (isStageNumeric && stageNumeric === 21) || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
+          return !isCommunicationExcluded && !isStage21;
         })() && (
           <li>
             <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
@@ -10991,7 +11285,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             onClick={() => {
               setShowRescheduleDrawer(false);
               setMeetingToDelete(null);
-              setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS', brief: '', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+              setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
               setRescheduleOption('cancel');
             }}
           />
@@ -11004,7 +11298,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 onClick={() => {
                   setShowRescheduleDrawer(false);
                   setMeetingToDelete(null);
-                  setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS', brief: '', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                  setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                   setRescheduleOption('cancel');
                 }}
               >
@@ -11032,11 +11326,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             date: selectedMeeting.meeting_date || '',
                             time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
                             location: selectedMeeting.meeting_location || 'Teams',
+                            calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
                             manager: selectedMeeting.meeting_manager || '',
                             helper: selectedMeeting.helper || '',
                             amount: selectedMeeting.meeting_amount?.toString() || '',
                             currency: selectedMeeting.meeting_currency || 'NIS',
-                            brief: selectedMeeting.meeting_brief || '',
                             attendance_probability: selectedMeeting.attendance_probability || 'Medium',
                             complexity: selectedMeeting.complexity || 'Simple',
                             car_number: selectedMeeting.car_number || '',
@@ -11100,6 +11394,19 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </select>
                 </div>
 
+                {/* Calendar */}
+                <div>
+                  <label className="block font-semibold mb-1">Calendar</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={rescheduleFormData.calendar}
+                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
+                  >
+                    <option value="current">Potential Client</option>
+                    <option value="active_client">Active Client</option>
+                  </select>
+                </div>
+
                 {/* Date */}
                 <div>
                   <label className="block font-semibold mb-1">New Date</label>
@@ -11138,46 +11445,41 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 {/* Manager (Optional) */}
                 <div>
                   <label className="block font-semibold mb-1">Manager (Optional)</label>
-                  <select
-                    className="select select-bordered w-full"
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a manager..."
+                    list="reschedule-meeting-manager-options"
                     value={rescheduleFormData.manager}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))}
-                  >
-                    <option value="">Select a manager...</option>
-                    {['Anna Zh', 'Mindi', 'Sarah L', 'David K'].map((m) => (
-                      <option key={m} value={m}>
-                        {m}
-                      </option>
+                    onChange={(e) =>
+                      setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))
+                    }
+                  />
+                  <datalist id="reschedule-meeting-manager-options">
+                    {allEmployees.map(emp => (
+                      <option key={emp.id} value={emp.display_name} />
                     ))}
-                  </select>
+                  </datalist>
                 </div>
 
                 {/* Helper (Optional) */}
                 <div>
                   <label className="block font-semibold mb-1">Helper (Optional)</label>
-                  <select
-                    className="select select-bordered w-full"
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a helper..."
+                    list="reschedule-meeting-helper-options"
                     value={rescheduleFormData.helper}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))}
-                  >
-                    <option value="">Select a helper...</option>
-                    {['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'].map((h) => (
-                      <option key={h} value={h}>
-                        {h}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Meeting Brief (Optional) */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Brief (Optional)</label>
-                  <textarea
-                    className="textarea textarea-bordered w-full min-h-[80px]"
-                    value={rescheduleFormData.brief || ''}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, brief: e.target.value }))}
-                    placeholder="Brief description of the meeting topic..."
+                    onChange={(e) =>
+                      setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))
+                    }
                   />
+                  <datalist id="reschedule-meeting-helper-options">
+                    {allEmployees.map(emp => (
+                      <option key={emp.id} value={emp.display_name} />
+                    ))}
+                  </datalist>
                 </div>
 
                 {/* Meeting Attendance Probability */}
@@ -11232,7 +11534,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   onClick={() => {
                     setShowRescheduleDrawer(false);
                     setMeetingToDelete(null);
-                    setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', manager: '', helper: '', amount: '', currency: 'NIS', brief: '', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                    setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                     setRescheduleOption('cancel');
                   }}
                 >

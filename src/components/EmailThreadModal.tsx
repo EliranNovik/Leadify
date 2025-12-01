@@ -331,6 +331,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const currentLoadingContactIdRef = useRef<string | number | null>(null);
   const isFetchingRef = useRef(false);
   const isSettingUpContactRef = useRef(false);
+  const [setupComplete, setSetupComplete] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [databaseUserId, setDatabaseUserId] = useState<string | number | null>(null); // Database user ID for read_by
@@ -738,6 +739,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   // Fetch all contacts
   useEffect(() => {
     const fetchContactsWithEmailConversations = async () => {
+      // If "My Contacts" is enabled but user info isn't loaded yet, wait for it
+      if (showMyContactsOnly && !currentUserEmployeeId && !currentUserFullName) {
+        console.log('⏳ Waiting for user info before fetching "My Contacts"');
+        return;
+      }
+      
       try {
         setIsLoading(true);
         
@@ -765,15 +772,45 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
         });
 
-        // Fetch new leads with email conversations (including role fields)
+        // Fetch new leads with email conversations (with role filter if enabled)
         const newLeadIds = Array.from(uniqueClientIds);
         let newLeadsData: any[] = [];
         
         if (newLeadIds.length > 0) {
-          const { data: leadsData, error: leadsError } = await supabase
+          let query = supabase
             .from('leads')
-            .select('id, name, email, lead_number, phone, mobile, created_at, topic, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
-            .in('id', newLeadIds);
+            .select('id, name, email, lead_number, phone, mobile, created_at, topic, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id');
+          
+          // Apply role filter if "My Contacts" is enabled AND we have user info
+          if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+            // Build filter conditions for new leads
+            const newLeadConditions: string[] = [];
+            
+            // Text fields (saved as display names): closer, scheduler, handler
+            if (currentUserFullName) {
+              const fullNameLower = currentUserFullName.trim().toLowerCase();
+              newLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
+              newLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
+              newLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
+            }
+            
+            // Numeric fields (saved as employee IDs): manager, helper, expert, case_handler_id
+            if (currentUserEmployeeId) {
+              newLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
+            }
+            
+            if (newLeadConditions.length > 0) {
+              query = query.or(newLeadConditions.join(','));
+            }
+          }
+          
+          // Always filter by lead IDs that have email conversations
+          query = query.in('id', newLeadIds);
+
+          const { data: leadsData, error: leadsError } = await query;
 
           if (leadsError) {
             console.error('Error fetching new leads:', leadsError);
@@ -786,15 +823,33 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
         }
 
-        // Fetch legacy leads with email conversations (including role fields)
+        // Fetch legacy leads with email conversations (with role filter if enabled)
         const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
         let legacyLeadsData: any[] = [];
         
         if (legacyLeadIds.length > 0) {
-          const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          let query = supabase
             .from('leads_lead')
-            .select('id, name, email, phone, mobile, cdate, category_id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
-            .in('id', legacyLeadIds);
+            .select('id, name, email, phone, mobile, cdate, category_id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id');
+          
+          // Apply role filter if "My Contacts" is enabled AND we have user info
+          if (showMyContactsOnly && currentUserEmployeeId) {
+            // Build filter conditions for legacy leads (all numeric IDs)
+            const legacyConditions = [
+              `closer_id.eq.${currentUserEmployeeId}`,
+              `meeting_scheduler_id.eq.${currentUserEmployeeId}`,
+              `meeting_manager_id.eq.${currentUserEmployeeId}`,
+              `meeting_lawyer_id.eq.${currentUserEmployeeId}`,
+              `expert_id.eq.${currentUserEmployeeId}`,
+              `case_handler_id.eq.${currentUserEmployeeId}`
+            ];
+            query = query.or(legacyConditions.join(','));
+          }
+          
+          // Always filter by lead IDs that have email conversations
+          query = query.in('id', legacyLeadIds);
+
+          const { data: legacyLeads, error: legacyLeadsError } = await query;
 
           if (legacyLeadsError) {
             console.error('Error fetching legacy leads:', legacyLeadsError);
@@ -828,29 +883,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
         }
 
-        // Combine all contacts
+        // Combine all contacts (already filtered at database level)
         let allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
         
-        console.log(`📧 Before filtering: ${allContacts.length} contacts (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
-        console.log(`📧 Filter settings: showMyContactsOnly=${showMyContactsOnly}, employeeId=${currentUserEmployeeId}, fullName=${currentUserFullName}`);
-        
-        // Apply role-based filtering if "My Contacts" toggle is enabled
-        if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
-          const beforeFilterCount = allContacts.length;
-          allContacts = allContacts.filter(contact => {
-            const matches = contactMatchesUserRoles(contact, currentUserEmployeeId, currentUserFullName);
-            if (!matches && contact.lead_type === 'legacy') {
-              console.log(`❌ Legacy contact ${contact.id} (${contact.name}) did not match:`, {
-                closer_id: (contact as any).closer_id,
-                meeting_scheduler_id: (contact as any).meeting_scheduler_id,
-                employeeId: currentUserEmployeeId,
-                fullName: currentUserFullName
-              });
-            }
-            return matches;
-          });
-          console.log(`📧 After filtering: ${allContacts.length} contacts (filtered from ${beforeFilterCount})`);
-        }
+        console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
         
         console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
         
@@ -1715,6 +1751,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     if (!selectedContact) {
       lastFetchedKeyRef.current = null;
       isSettingUpContactRef.current = false;
+      setSetupComplete(false);
       return;
     }
     
@@ -1735,12 +1772,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     
     // Mark this as the last fetched key BEFORE fetching to prevent race conditions
     lastFetchedKeyRef.current = fetchKey;
-    console.log(`🔄 Triggering fetch for key: ${fetchKey}`);
+    console.log(`🔄 Triggering fetch for key: ${fetchKey} (contact: ${selectedContact.name}, contactId: ${selectedContactId || 'null'})`);
     
-    // Fetch emails when selectedContact or selectedContactId changes
+    // Fetch emails when selectedContact, selectedContactId, or setupComplete changes
     fetchEmailThread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedContact?.id, selectedContactId]); // Removed fetchEmailThread to prevent recreations from triggering useEffect
+  }, [selectedContact?.id, selectedContactId, setupComplete]); // Added setupComplete to trigger when setup is done
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -1773,6 +1810,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     
     // Set flag to prevent fetches while we're setting up the contact
     isSettingUpContactRef.current = true;
+    setSetupComplete(false); // Reset setup completion state
     console.log(`🔄 Setup flag set to true for contact: ${contact.name}`);
     
     // Clear previous contact's data immediately and set loading state FIRST
@@ -1869,39 +1907,41 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       
       // Always clear the setup flag - we're ready to fetch now (even if contactId is null)
       console.log(`✅ Contact setup complete, selectedContactId: ${finalContactId || 'null'}`);
-      isSettingUpContactRef.current = false;
-      clearTimeout(safetyTimeout); // Make sure to clear safety timeout
       
-      // Clear all fetching flags and keys to allow fresh fetch
+      // Clear all fetching flags and keys to allow fresh fetch BEFORE clearing setup flag
       isFetchingRef.current = false;
       lastFetchedKeyRef.current = null;
       
-      // Manually trigger fetch since useEffect might not fire if dependencies haven't changed
-      // Use setTimeout to ensure state updates have processed
-      console.log(`🚀 Manually triggering fetch after setup completion, selectedContact: ${selectedContact?.name || 'null'}`);
-      setTimeout(() => {
-        console.log(`🚀 Executing fetchEmailThread() now...`);
-        fetchEmailThread().catch(err => {
-          console.error('❌ Error in manual fetchEmailThread call:', err);
-        });
-      }, 100);
+      // Clear setup flag LAST - this will allow the useEffect to trigger
+      isSettingUpContactRef.current = false;
+      clearTimeout(safetyTimeout); // Make sure to clear safety timeout
+      
+      // Set setup complete state to trigger useEffect
+      setSetupComplete(true);
+      
+      // The useEffect will automatically trigger now that:
+      // 1. isSettingUpContactRef.current is false
+      // 2. selectedContact is set
+      // 3. selectedContactId is set (or null)
+      // 4. All fetching flags are cleared
+      // 5. setupComplete state changed (triggers re-render)
+      console.log(`✅ Setup complete, useEffect should trigger fetch automatically`);
     } catch (error) {
       console.error('❌ Error fetching contacts for selected contact:', error);
       clearTimeout(safetyTimeout); // Clear safety timeout on error
       // On error, clear everything and allow fetch with null contactId
       setSelectedContactId(null);
-      lastFetchedKeyRef.current = null;
-      // CRITICAL: Always clear the setup flag even on error so we can still try to fetch
-      isSettingUpContactRef.current = false;
-      console.log(`⚠️ Setup flag cleared after error, will attempt to fetch emails anyway`);
       
-      // Manually trigger fetch even on error so user can see emails
-      // Clear the fetching flag first to allow the fetch
+      // Clear all fetching flags and keys BEFORE clearing setup flag
       isFetchingRef.current = false;
       lastFetchedKeyRef.current = null;
-      setTimeout(() => {
-        fetchEmailThread();
-      }, 100);
+      
+      // CRITICAL: Always clear the setup flag even on error so we can still try to fetch
+      isSettingUpContactRef.current = false;
+      setSetupComplete(true); // Trigger useEffect even on error
+      console.log(`⚠️ Setup flag cleared after error, useEffect will attempt to fetch emails`);
+      
+      // The useEffect will automatically trigger now that the setup flag is cleared
     }
     
     if (isMobile) {

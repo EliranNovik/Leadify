@@ -79,6 +79,20 @@ const Dashboard: React.FC = () => {
   const [allOverdueLeads, setAllOverdueLeads] = useState<any[]>([]);
   const [loadingMoreLeads, setLoadingMoreLeads] = useState(false);
   const [overdueCountFetched, setOverdueCountFetched] = useState(false);
+  
+  // State for follow-ups tabs and view mode
+  const [followUpTab, setFollowUpTab] = useState<'today' | 'overdue' | 'tomorrow'>('today');
+  const [followUpViewMode, setFollowUpViewMode] = useState<'table' | 'card'>(() => {
+    // Default to table on desktop, card on mobile
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768 ? 'table' : 'card';
+    }
+    return 'table';
+  });
+  const [todayFollowUps, setTodayFollowUps] = useState<any[]>([]);
+  const [tomorrowFollowUps, setTomorrowFollowUps] = useState<any[]>([]);
+  const [todayFollowUpsLoading, setTodayFollowUpsLoading] = useState(false);
+  const [tomorrowFollowUpsLoading, setTomorrowFollowUpsLoading] = useState(false);
 
 
   const navigate = useNavigate();
@@ -225,8 +239,8 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Optimized function to fetch overdue leads data using employee relationship
-  const fetchOverdueLeadsData = async (fetchAll = false) => {
+  // Optimized function to fetch follow-up leads data using employee relationship
+  const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow', fetchAll = false) => {
     try {
       // Get current user's data with employee relationship using JOIN
       const { data: { user } } = await supabase.auth.getUser();
@@ -272,44 +286,170 @@ const Dashboard: React.FC = () => {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
       
-      const today = new Date().toISOString().split('T')[0];
+      // Get today's date as YYYY-MM-DD string
+      const today = new Date();
+      const todayStr = today.toISOString().split('T')[0];
+      
+      // Get tomorrow's date as YYYY-MM-DD string
+      const tomorrow = new Date(today);
+      tomorrow.setDate(tomorrow.getDate() + 1);
+      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      
       const fiftyDaysAgo = new Date();
       fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
       const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
       
       // Fetch new leads (using display_name for filtering)
-      const { data: newLeadsData, error: newLeadsError } = await supabase
+      let newLeadsQuery = supabase
         .from('leads')
-        .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, balance, balance_currency, probability')
-        .lte('next_followup', today)
-        .gte('next_followup', fiftyDaysAgoStr)
-        .not('next_followup', 'is', null)
-        .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`)
-        .limit(fetchAll ? 1000 : 12);
-
+        .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, category_id, balance, balance_currency, probability, handler, scheduler, closer, meeting_manager_id, expert_id, case_handler_id')
+        .not('next_followup', 'is', null);
+      
+      // Apply date filter - exact date matching
+      if (dateType === 'today') {
+        // Exact match for today's date
+        newLeadsQuery = newLeadsQuery.eq('next_followup', todayStr);
+      } else if (dateType === 'tomorrow') {
+        // Exact match for tomorrow's date
+        newLeadsQuery = newLeadsQuery.eq('next_followup', tomorrowStr);
+      } else {
+        // overdue: less than today (before today)
+        newLeadsQuery = newLeadsQuery.lt('next_followup', todayStr).gte('next_followup', fiftyDaysAgoStr);
+      }
+      
+      // Apply role filter for new leads - check both text and numeric fields
+      const roleConditions: string[] = [];
+      // Text fields (display names)
+      if (userFullName) {
+        roleConditions.push(`expert.eq.${userFullName}`);
+        roleConditions.push(`manager.eq.${userFullName}`);
+        roleConditions.push(`meeting_manager.eq.${userFullName}`);
+        roleConditions.push(`handler.eq.${userFullName}`);
+        roleConditions.push(`scheduler.eq.${userFullName}`);
+        roleConditions.push(`closer.eq.${userFullName}`);
+      }
+      // Numeric fields (employee IDs)
+      if (userEmployeeId) {
+        roleConditions.push(`meeting_manager_id.eq.${userEmployeeId}`);
+        roleConditions.push(`expert_id.eq.${userEmployeeId}`);
+        roleConditions.push(`case_handler_id.eq.${userEmployeeId}`);
+      }
+      
+      if (roleConditions.length > 0) {
+        newLeadsQuery = newLeadsQuery.or(roleConditions.join(','));
+      }
+      
+      newLeadsQuery = newLeadsQuery.limit(fetchAll ? 1000 : 1000);
+      
+      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery;
       if (newLeadsError) throw newLeadsError;
 
       // Fetch legacy leads (using employee ID for efficient filtering)
+      // Strategy: Filter by role first (indexed), then filter by date in JavaScript
+      // This avoids slow text comparisons on next_followup in the database
       let legacyLeadsData: any[] = [];
       let legacyLeadsError: any = null;
       
       if (userEmployeeId) {
-        const { data, error } = await supabase
-          .from('leads_lead')
-          .select('id, name, stage, topic, next_followup, expert_id, meeting_manager_id, category_id, total, currency_id')
-          .lte('next_followup', today)
-          .gte('next_followup', fiftyDaysAgoStr)
-          .not('next_followup', 'is', null)
-          .eq('status', 0)
-          .lt('stage', 100)
-          .or(`expert_id.eq."${userEmployeeId}",meeting_manager_id.eq."${userEmployeeId}"`)
-          .limit(fetchAll ? 1000 : 12);
+        console.log(`🔍 Fetching legacy leads for ${dateType} follow-ups, userEmployeeId: ${userEmployeeId}, todayStr: ${todayStr}`);
         
-        legacyLeadsData = data || [];
-        legacyLeadsError = error;
+        const baseSelect = 'id, name, stage, topic, next_followup, expert_id, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, case_handler_id, closer_id, category_id, total, currency_id';
+        
+        // Query each role separately (using indexed columns) and fetch all with next_followup
+        // Then filter by date in JavaScript
+        const roleQueries = [
+          { name: 'expert_id', query: supabase.from('leads_lead').select(baseSelect).eq('expert_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'meeting_manager_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_manager_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'meeting_lawyer_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_lawyer_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'meeting_scheduler_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_scheduler_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'case_handler_id', query: supabase.from('leads_lead').select(baseSelect).eq('case_handler_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'closer_id', query: supabase.from('leads_lead').select(baseSelect).eq('closer_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+        ];
+        
+        // Execute all queries with timeout protection
+        const queryPromises = roleQueries.map(async ({ name, query }) => {
+          try {
+            const timeoutPromise = new Promise((_, reject) => 
+              setTimeout(() => reject(new Error(`Query timeout for ${name}`)), 10000)
+            );
+            const queryPromise = query;
+            const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+            console.log(`✅ ${name} query: ${result?.data?.length || 0} results`);
+            return { name, ...result };
+          } catch (err: any) {
+            console.warn(`❌ ${name} query timeout or error:`, err?.message || err);
+            return { name, data: null, error: err };
+          }
+        });
+        
+        const results = await Promise.allSettled(queryPromises);
+        
+        // Combine results and deduplicate by lead ID
+        const leadMap = new Map<number, any>();
+        
+        results.forEach((result) => {
+          if (result.status === 'fulfilled') {
+            const { name, data, error } = result.value as any;
+            if (!error && data) {
+              data.forEach((lead: any) => {
+                if (!leadMap.has(lead.id)) {
+                  leadMap.set(lead.id, lead);
+                }
+              });
+            } else if (error) {
+              console.warn(`Legacy lead query ${name} error:`, error);
+              if (!legacyLeadsError) legacyLeadsError = error;
+            }
+          } else {
+            console.warn(`Legacy lead query failed:`, result.reason);
+          }
+        });
+        
+        // Now filter by date in JavaScript (handles various date formats)
+        const allLeads = Array.from(leadMap.values());
+        console.log(`📊 Total leads with next_followup: ${allLeads.length}`);
+        
+        // Helper to normalize date strings for comparison
+        const normalizeDate = (dateStr: string | null): string | null => {
+          if (!dateStr) return null;
+          // Try to parse various date formats
+          const date = new Date(dateStr);
+          if (isNaN(date.getTime())) {
+            // If parsing fails, try to extract YYYY-MM-DD pattern
+            const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
+            if (match) return match[0];
+            return null;
+          }
+          return date.toISOString().split('T')[0];
+        };
+        
+        // Filter by date type
+        legacyLeadsData = allLeads.filter((lead) => {
+          const followupDate = normalizeDate(lead.next_followup);
+          if (!followupDate) return false;
+          
+          if (dateType === 'today') {
+            return followupDate === todayStr;
+          } else if (dateType === 'tomorrow') {
+            return followupDate === tomorrowStr;
+          } else {
+            // overdue: less than today but not more than 50 days ago
+            return followupDate < todayStr && followupDate >= fiftyDaysAgoStr;
+          }
+        });
+        
+        console.log(`✅ Filtered to ${legacyLeadsData.length} legacy leads for ${dateType} follow-ups`);
+        legacyLeadsData.forEach((lead) => {
+          console.log(`📋 Legacy lead: ID=${lead.id}, name=${lead.name}, next_followup=${lead.next_followup} (normalized: ${normalizeDate(lead.next_followup)})`);
+        });
+      } else {
+        console.warn('⚠️ No userEmployeeId available for legacy leads query');
       }
 
-      if (legacyLeadsError) throw legacyLeadsError;
+      if (legacyLeadsError) {
+        console.warn('Legacy leads error (non-fatal):', legacyLeadsError);
+        // Don't throw, just log - we'll return what we have
+      }
 
       const result = {
         newLeads: newLeadsData || [],
@@ -319,9 +459,14 @@ const Dashboard: React.FC = () => {
       
       return result;
     } catch (error) {
-      console.warn('Error fetching overdue leads data:', error);
+      console.warn('Error fetching follow-up leads data:', error);
       return { newLeads: [], legacyLeads: [], totalCount: 0 };
     }
+  };
+  
+  // Keep old function name for backward compatibility
+  const fetchOverdueLeadsData = async (fetchAll = false) => {
+    return fetchFollowUpLeadsData('overdue', fetchAll);
   };
 
   // Helper function to extract valid Teams link from stored data
@@ -1500,7 +1645,7 @@ const Dashboard: React.FC = () => {
 
   // Fetch summary data (mocked for now, replace with real queries)
   useEffect(() => {
-    // Fetch overdue followups - optimized count query using employee relationship
+    // Fetch today's followups count - optimized count query using employee relationship
     (async () => {
       // Prevent multiple calls
       if (overdueCountFetched) return;
@@ -1514,7 +1659,7 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        console.log('🔍 Dashboard - Fetching user data for overdue followups, auth_id:', user.id);
+        console.log('🔍 Dashboard - Fetching user data for today followups, auth_id:', user.id);
         const { data: userData, error: userDataError } = await supabase
           .from('users')
           .select(`
@@ -1530,7 +1675,7 @@ const Dashboard: React.FC = () => {
           .single();
 
         if (userDataError) {
-          console.error('❌ Dashboard - Error fetching user data for overdue followups:', userDataError);
+          console.error('❌ Dashboard - Error fetching user data for today followups:', userDataError);
           console.error('❌ Dashboard - User data error details:', {
             message: userDataError.message,
             details: userDataError.details,
@@ -1556,34 +1701,29 @@ const Dashboard: React.FC = () => {
         }
         
         const todayStr = new Date().toISOString().split('T')[0];
-        const fiftyDaysAgo = new Date();
-        fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
-        const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
         
-        // Optimized count queries using employee relationship
-        const countPromises = [
-          supabase
-            .from('leads')
-            .select('*', { count: 'exact', head: true })
-            .lte('next_followup', todayStr)
-            .gte('next_followup', fiftyDaysAgoStr)
-            .not('next_followup', 'is', null)
-            .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName}`)
-        ];
+        // Fetch today's follow-ups count for new leads
+        const newLeadsPromise = supabase
+          .from('leads')
+          .select('*', { count: 'exact', head: true })
+          .eq('next_followup', todayStr)
+          .not('next_followup', 'is', null)
+          .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName},handler.eq.${userFullName},scheduler.eq.${userFullName},closer.eq.${userFullName}`);
         
-        // Only add legacy leads query if we have employee ID
+        // Fetch today's follow-ups count for legacy leads
+        let legacyLeadsPromise: any = null;
         if (userEmployeeId) {
-          countPromises.push(
-            supabase
-              .from('leads_lead')
-              .select('*', { count: 'exact', head: true })
-              .lte('next_followup', todayStr)
-              .gte('next_followup', fiftyDaysAgoStr)
-              .not('next_followup', 'is', null)
-              .eq('status', 0)
-              .lt('stage', 100)
-              .or(`expert_id.eq."${userEmployeeId}",meeting_manager_id.eq."${userEmployeeId}"`)
-          );
+          legacyLeadsPromise = supabase
+            .from('leads_lead')
+            .select('*', { count: 'exact', head: true })
+            .eq('next_followup', todayStr)
+            .not('next_followup', 'is', null)
+            .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId},meeting_lawyer_id.eq.${userEmployeeId},meeting_scheduler_id.eq.${userEmployeeId},case_handler_id.eq.${userEmployeeId},closer_id.eq.${userEmployeeId}`);
+        }
+        
+        const countPromises = [newLeadsPromise];
+        if (legacyLeadsPromise) {
+          countPromises.push(legacyLeadsPromise);
         }
         
         const results = await Promise.all(countPromises);
@@ -1591,9 +1731,10 @@ const Dashboard: React.FC = () => {
         
         const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount?.count || 0);
         setOverdueFollowups(totalCount);
+        console.log(`✅ Today's follow-ups count: ${totalCount} (new: ${newLeadsCount.count || 0}, legacy: ${legacyLeadsCount?.count || 0})`);
         
       } catch (error) {
-        console.warn('Error fetching overdue count:', error);
+        console.warn('Error fetching today followups count:', error);
         setOverdueFollowups(0);
       }
     })();
@@ -2349,66 +2490,156 @@ const Dashboard: React.FC = () => {
         // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
         // Fetch data for Today and Last 30d (always current date range)
         console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for Today and Last 30d...');
-        // Fetch legacy leads stage records
-        const { data: stageRecords, error: stageError } = await supabase
-          .from('leads_leadstage')
-          .select('id, date, cdate, lead_id')
-          .eq('stage', 60)
-          .not('lead_id', 'is', null) // Legacy leads only
-          .gte('date', thirtyDaysAgoStr)
-          .lte('date', todayStr);
+        // Fetch legacy leads stage records with timeout protection
+        let stageRecords: any[] = [];
+        let stageError: any = null;
+        
+        try {
+          const queryPromise = supabase
+            .from('leads_leadstage')
+            .select('id, date, cdate, lead_id')
+            .eq('stage', 60)
+            .not('lead_id', 'is', null) // Legacy leads only
+            .gte('date', thirtyDaysAgoStr)
+            .lte('date', todayStr)
+            .limit(5000); // Add limit to prevent timeout
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), 15000)
+          );
+          
+          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+          
+          if (result?.error) {
+            stageError = result.error;
+            console.error('❌ Error fetching stage records:', stageError);
+          } else {
+            stageRecords = result?.data || [];
+          }
+        } catch (err: any) {
+          stageError = err;
+          console.error('❌ Timeout or error fetching stage records:', err?.message || err);
+        }
         
         if (stageError) {
-          console.error('❌ Error fetching stage records:', stageError);
-          throw stageError;
+          console.warn('⚠️ Continuing without legacy stage records due to error');
+          // Don't throw, continue without stage records
         }
         
         console.log('✅ Legacy stage records fetched:', stageRecords?.length || 0, 'records');
         
         // Fetch new leads signed agreements from multiple sources
-        // 1. Fetch contracts with signed_at
-        const { data: contractsData, error: contractsError } = await supabase
-          .from('contracts')
-          .select('id, client_id, signed_at, total_amount')
-          .not('client_id', 'is', null)
-          .not('signed_at', 'is', null)
-          .eq('status', 'signed')
-          .gte('signed_at', thirtyDaysAgoStr)
-          .lt('signed_at', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0]); // Add one day for inclusive range
+        // 1. Fetch contracts with signed_at (with timeout protection)
+        let contractsData: any[] = [];
+        let contractsError: any = null;
+        
+        try {
+          const queryPromise = supabase
+            .from('contracts')
+            .select('id, client_id, signed_at, total_amount')
+            .not('client_id', 'is', null)
+            .not('signed_at', 'is', null)
+            .eq('status', 'signed')
+            .gte('signed_at', thirtyDaysAgoStr)
+            .lt('signed_at', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
+            .limit(5000); // Add limit to prevent timeout
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), 15000)
+          );
+          
+          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+          
+          if (result?.error) {
+            contractsError = result.error;
+            console.error('❌ Error fetching contracts:', contractsError);
+          } else {
+            contractsData = result?.data || [];
+          }
+        } catch (err: any) {
+          contractsError = err;
+          console.error('❌ Timeout or error fetching contracts:', err?.message || err);
+        }
         
         if (contractsError) {
-          console.error('❌ Error fetching contracts:', contractsError);
+          console.warn('⚠️ Continuing without contracts due to error');
           // Don't throw, continue without contracts
         }
         
         console.log('✅ Contracts fetched:', contractsData?.length || 0, 'records');
         
         // 2. Fetch new leads stage records (newlead_id)
-        const { data: newLeadStageRecords, error: newLeadStageError } = await supabase
-          .from('leads_leadstage')
-          .select('id, date, cdate, newlead_id')
-          .eq('stage', 60)
-          .not('newlead_id', 'is', null) // New leads only
-          .gte('cdate', thirtyDaysAgoStr)
-          .lte('cdate', todayStr);
+        // Add timeout protection and limit to prevent query timeout
+        let newLeadStageRecords: any[] = [];
+        let newLeadStageError: any = null;
+        
+        try {
+          const queryPromise = supabase
+            .from('leads_leadstage')
+            .select('id, date, cdate, newlead_id')
+            .eq('stage', 60)
+            .not('newlead_id', 'is', null) // New leads only
+            .gte('cdate', thirtyDaysAgoStr)
+            .lte('cdate', todayStr)
+            .limit(5000); // Add limit to prevent timeout
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), 15000)
+          );
+          
+          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+          
+          if (result?.error) {
+            newLeadStageError = result.error;
+            console.error('❌ Error fetching new lead stage records:', newLeadStageError);
+          } else {
+            newLeadStageRecords = result?.data || [];
+          }
+        } catch (err: any) {
+          newLeadStageError = err;
+          console.error('❌ Timeout or error fetching new lead stage records:', err?.message || err);
+          // Continue without new lead stages
+        }
         
         if (newLeadStageError) {
-          console.error('❌ Error fetching new lead stage records:', newLeadStageError);
+          console.warn('⚠️ Continuing without new lead stage records due to error');
           // Don't throw, continue without new lead stages
         }
         
         console.log('✅ New lead stage records fetched:', newLeadStageRecords?.length || 0, 'records');
         
-        // 3. Fetch leads with date_signed
-        const { data: leadsWithDateSigned, error: dateSignedError } = await supabase
-          .from('leads')
-          .select('id, date_signed')
-          .not('date_signed', 'is', null)
-          .gte('date_signed', thirtyDaysAgoStr)
-          .lte('date_signed', todayStr);
+        // 3. Fetch leads with date_signed (with timeout protection)
+        let leadsWithDateSigned: any[] = [];
+        let dateSignedError: any = null;
+        
+        try {
+          const queryPromise = supabase
+            .from('leads')
+            .select('id, date_signed')
+            .not('date_signed', 'is', null)
+            .gte('date_signed', thirtyDaysAgoStr)
+            .lte('date_signed', todayStr)
+            .limit(5000); // Add limit to prevent timeout
+          
+          const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error('Query timeout')), 15000)
+          );
+          
+          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+          
+          if (result?.error) {
+            dateSignedError = result.error;
+            console.error('❌ Error fetching leads with date_signed:', dateSignedError);
+          } else {
+            leadsWithDateSigned = result?.data || [];
+          }
+        } catch (err: any) {
+          dateSignedError = err;
+          console.error('❌ Timeout or error fetching leads with date_signed:', err?.message || err);
+        }
         
         if (dateSignedError) {
-          console.error('❌ Error fetching leads with date_signed:', dateSignedError);
+          console.warn('⚠️ Continuing without date_signed leads due to error');
           // Don't throw, continue without date_signed leads
         }
         
@@ -5101,31 +5332,60 @@ const Dashboard: React.FC = () => {
     })();
   }, [showLeadsList]);
 
-  // 2. Add effect to fetch real overdue leads when expanded === 'overdue'
+  // 2. Add effect to fetch follow-up leads when expanded === 'overdue'
   useEffect(() => {
     if (expanded !== 'overdue') return;
-    
-    const fetchOverdueLeads = async () => {
-      setOverdueLeadsLoading(true);
-      try {
-        // Fetch first 12 leads for display
-        const { newLeads, legacyLeads, totalCount } = await fetchOverdueLeadsData(false);
-        
-        // Process the leads for display
-        const combinedLeads = [...newLeads, ...legacyLeads];
-        const processedLeads = await processOverdueLeadsForDisplay(combinedLeads);
-        
-        setRealOverdueLeads(processedLeads);
-      } catch (error) {
-        console.warn('Error fetching overdue leads for display:', error);
-        setRealOverdueLeads([]);
-      } finally {
-        setOverdueLeadsLoading(false);
+
+    const fetchFollowUpLeads = async () => {
+      if (followUpTab === 'today') {
+        setTodayFollowUpsLoading(true);
+        try {
+          const { newLeads, legacyLeads } = await fetchFollowUpLeadsData('today', true);
+          console.log('📊 Today follow-ups - Raw data:', { newLeads: newLeads.length, legacyLeads: legacyLeads.length });
+          console.log('📊 Sample legacy lead:', legacyLeads[0]);
+          const combinedLeads = [...newLeads, ...legacyLeads];
+          console.log('📊 Combined leads before processing:', combinedLeads.length);
+          const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
+          console.log('📊 Processed leads after processing:', processedLeads.length);
+          setTodayFollowUps(processedLeads);
+        } catch (error) {
+          console.warn('Error fetching today follow-ups:', error);
+          setTodayFollowUps([]);
+        } finally {
+          setTodayFollowUpsLoading(false);
+        }
+      } else if (followUpTab === 'tomorrow') {
+        setTomorrowFollowUpsLoading(true);
+        try {
+          const { newLeads, legacyLeads } = await fetchFollowUpLeadsData('tomorrow', true);
+          const combinedLeads = [...newLeads, ...legacyLeads];
+          const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
+          setTomorrowFollowUps(processedLeads);
+        } catch (error) {
+          console.warn('Error fetching tomorrow follow-ups:', error);
+          setTomorrowFollowUps([]);
+        } finally {
+          setTomorrowFollowUpsLoading(false);
+        }
+      } else {
+        // overdue
+        setOverdueLeadsLoading(true);
+        try {
+          const { newLeads, legacyLeads } = await fetchOverdueLeadsData(false);
+          const combinedLeads = [...newLeads, ...legacyLeads];
+          const processedLeads = await processOverdueLeadsForDisplay(combinedLeads);
+          setRealOverdueLeads(processedLeads);
+        } catch (error) {
+          console.warn('Error fetching overdue leads for display:', error);
+          setRealOverdueLeads([]);
+        } finally {
+          setOverdueLeadsLoading(false);
+        }
       }
     };
 
-    fetchOverdueLeads();
-  }, [expanded]);
+    fetchFollowUpLeads();
+  }, [expanded, followUpTab]);
 
   // Function to load all overdue leads
   const loadAllOverdueLeads = async () => {
@@ -5152,26 +5412,161 @@ const Dashboard: React.FC = () => {
       console.log('Sample lead data:', leadsData.slice(0, 2));
       
       // Separate new and legacy leads based on table structure
-      // New leads come from 'leads' table and have lead_number field
-      // Legacy leads come from 'leads_lead' table and have expert_id field
-      const newLeads = leadsData.filter(lead => lead.lead_number); // New leads have lead_number
-      const legacyLeads = leadsData.filter(lead => lead.expert_id); // Legacy leads have expert_id
+      // New leads come from 'leads' table and have lead_number field (string)
+      // Legacy leads come from 'leads_lead' table and don't have lead_number, or have any role ID fields
+      const newLeads = leadsData.filter(lead => {
+        // New leads have lead_number as a string field
+        return lead.lead_number && typeof lead.lead_number === 'string' && !lead.id?.toString().startsWith('legacy_');
+      });
+      
+      const legacyLeads = leadsData.filter(lead => {
+        // Legacy leads either:
+        // 1. Don't have lead_number (from leads_lead table)
+        // 2. Have any of the role ID fields (expert_id, meeting_manager_id, etc.)
+        // 3. Have id that starts with 'legacy_' (already processed)
+        // 4. Have id as a number (legacy leads have bigint id)
+        const hasRoleField = lead.expert_id || 
+                            lead.meeting_manager_id || 
+                            lead.meeting_lawyer_id || 
+                            lead.meeting_scheduler_id || 
+                            lead.case_handler_id || 
+                            lead.closer_id;
+        const isLegacyId = typeof lead.id === 'number' || lead.id?.toString().startsWith('legacy_');
+        return (!lead.lead_number && isLegacyId) || hasRoleField || isLegacyId;
+      });
       
       console.log('New leads:', newLeads.length, 'Legacy leads:', legacyLeads.length);
+      console.log('Sample legacy leads:', legacyLeads.slice(0, 2));
+      console.log('Sample new leads:', newLeads.slice(0, 2));
 
+      // Fetch stage names for new leads
+      let newLeadStageIds: number[] = [];
+      if (newLeads.length > 0) {
+        newLeadStageIds = [...new Set(newLeads.map(lead => lead.stage).filter((stage): stage is number => 
+          stage !== null && stage !== undefined && typeof stage === 'number'
+        ))];
+      }
+      
+      let newLeadStageNameMap: { [key: number]: string } = {};
+      if (newLeadStageIds.length > 0) {
+        const { data: newLeadStages, error: newLeadStagesError } = await supabase
+          .from('lead_stages')
+          .select('id, name')
+          .in('id', newLeadStageIds);
+        
+        if (!newLeadStagesError && newLeadStages) {
+          newLeadStageNameMap = newLeadStages.reduce((acc: { [key: number]: string }, stage: any) => {
+            acc[stage.id] = stage.name || getStageName(String(stage.id));
+            return acc;
+          }, {});
+        }
+      }
+      
+      // Fetch employee names for new leads (for expert_id and meeting_manager_id)
+      let newLeadEmployeeIds: number[] = [];
+      if (newLeads.length > 0) {
+        newLeadEmployeeIds = [...new Set([
+          ...newLeads.map(lead => lead.expert_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number'),
+          ...newLeads.map(lead => lead.meeting_manager_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
+        ])];
+      }
+      
+      let newLeadEmployeeNameMap: { [key: number]: string } = {};
+      if (newLeadEmployeeIds.length > 0) {
+        const { data: newLeadEmployees, error: newLeadEmployeesError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('id', newLeadEmployeeIds);
+        
+        if (!newLeadEmployeesError && newLeadEmployees) {
+          newLeadEmployeeNameMap = newLeadEmployees.reduce((acc: { [key: number]: string }, employee: any) => {
+            acc[employee.id] = employee.display_name;
+            return acc;
+          }, {});
+        }
+      }
+      
+      // Fetch categories with main categories for new leads
+      let newLeadCategoryIds: number[] = [];
+      let newLeadCategoryNameMap: { [key: number]: string } = {};
+      if (newLeads.length > 0) {
+        newLeadCategoryIds = [...new Set(newLeads.map(lead => lead.category_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number'))];
+        
+        if (newLeadCategoryIds.length > 0) {
+          const { data: newLeadCategories, error: newLeadCategoriesError } = await supabase
+            .from('misc_category')
+            .select(`
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name
+              )
+            `)
+            .in('id', newLeadCategoryIds);
+          
+          if (!newLeadCategoriesError && newLeadCategories) {
+            newLeadCategoryNameMap = newLeadCategories.reduce((acc: { [key: number]: string }, category: any) => {
+              // Format as "subcategory (main category)" or just "category" if no main category
+              const mainCategory = Array.isArray(category.misc_maincategory) 
+                ? category.misc_maincategory[0] 
+                : category.misc_maincategory;
+              
+              if (mainCategory?.name) {
+                acc[category.id] = `${category.name} (${mainCategory.name})`;
+              } else {
+                acc[category.id] = category.name;
+              }
+              return acc;
+            }, {});
+          }
+        }
+      }
+      
       // Process new leads
-      const processedNewLeads = newLeads.map(lead => ({
-        ...lead,
-        lead_type: 'new' as const,
-        stage_name: lead.stage || 'Follow-up Required',
-        expert_name: lead.expert || 'Not assigned',
-        manager_name: lead.manager || 'Not assigned',
-        category_name: lead.category || 'Not specified',
-        amount: lead.balance || 0,
-        currency: lead.balance_currency || '₪',
-        topic: lead.topic || 'Not specified',
-        probability: lead.probability || 0
-      }));
+      const processedNewLeads = newLeads.map(lead => {
+        // Resolve expert name - check if expert is a numeric ID or a text name
+        let expertName = 'Not assigned';
+        if (lead.expert_id && typeof lead.expert_id === 'number') {
+          expertName = newLeadEmployeeNameMap[lead.expert_id] || 'Not assigned';
+        } else if (lead.expert && typeof lead.expert === 'string') {
+          expertName = lead.expert;
+        }
+        
+        // Resolve manager name - check if meeting_manager_id is set, otherwise use manager text field
+        let managerName = 'Not assigned';
+        if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
+          managerName = newLeadEmployeeNameMap[lead.meeting_manager_id] || 'Not assigned';
+        } else if (lead.manager && typeof lead.manager === 'string') {
+          managerName = lead.manager;
+        } else if (lead.meeting_manager && typeof lead.meeting_manager === 'string') {
+          managerName = lead.meeting_manager;
+        }
+        
+        // Resolve category name - check if category_id is set, otherwise use category text field
+        let categoryName = 'Not specified';
+        if (lead.category_id && typeof lead.category_id === 'number') {
+          categoryName = newLeadCategoryNameMap[lead.category_id] || lead.category || 'Not specified';
+        } else if (lead.category && typeof lead.category === 'string') {
+          categoryName = lead.category;
+        }
+        
+        return {
+          ...lead,
+          lead_type: 'new' as const,
+          stage_name: (lead.stage !== null && lead.stage !== undefined) 
+            ? (newLeadStageNameMap[lead.stage] || getStageName(String(lead.stage)))
+            : 'Follow-up Required',
+          expert_name: expertName,
+          manager_name: managerName,
+          category_name: categoryName,
+          amount: lead.balance || 0,
+          currency: lead.balance_currency || '₪',
+          topic: lead.topic || 'Not specified',
+          probability: lead.probability || 0
+        };
+      });
 
       // Process legacy leads with related data
       let stageNameMap: { [key: number]: string } = {};
@@ -5195,13 +5590,21 @@ const Dashboard: React.FC = () => {
         const [stageResult, employeeResult, categoryResult] = await Promise.allSettled([
           stageIds.length > 0 ? supabase.from('lead_stages').select('id, name').in('id', stageIds) : Promise.resolve({ data: [] }),
           employeeIds.length > 0 ? supabase.from('tenants_employee').select('id, display_name').in('id', employeeIds) : Promise.resolve({ data: [] }),
-          categoryIds.length > 0 ? supabase.from('misc_category').select('id, name').in('id', categoryIds) : Promise.resolve({ data: [] })
+          categoryIds.length > 0 ? supabase.from('misc_category').select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          `).in('id', categoryIds) : Promise.resolve({ data: [] })
         ]);
 
         // Build maps from results
         if (stageResult.status === 'fulfilled' && stageResult.value.data) {
           stageNameMap = stageResult.value.data.reduce((acc: { [key: number]: string }, stage: any) => {
-            acc[stage.id] = stage.name;
+            acc[stage.id] = stage.name || getStageName(String(stage.id));
             return acc;
           }, {});
         }
@@ -5215,7 +5618,16 @@ const Dashboard: React.FC = () => {
 
         if (categoryResult.status === 'fulfilled' && categoryResult.value.data) {
           categoryNameMap = categoryResult.value.data.reduce((acc: { [key: number]: string }, category: any) => {
-            acc[category.id] = category.name;
+            // Format as "subcategory (main category)" or just "category" if no main category
+            const mainCategory = Array.isArray(category.misc_maincategory) 
+              ? category.misc_maincategory[0] 
+              : category.misc_maincategory;
+            
+            if (mainCategory?.name) {
+              acc[category.id] = `${category.name} (${mainCategory.name})`;
+            } else {
+              acc[category.id] = category.name;
+            }
             return acc;
           }, {});
         }
@@ -5229,7 +5641,7 @@ const Dashboard: React.FC = () => {
         id: `legacy_${lead.id}`,
         lead_number: lead.id?.toString() || '',
         lead_type: 'legacy' as const,
-        stage_name: stageNameMap[lead.stage] || `Stage ${lead.stage}`,
+        stage_name: stageNameMap[lead.stage] || getStageName(String(lead.stage)) || 'Follow-up Required',
         expert_name: employeeNameMap[lead.expert_id] || 'Not assigned',
         manager_name: employeeNameMap[lead.meeting_manager_id] || 'Not assigned',
         category_name: categoryNameMap[lead.category_id] || 'Not specified',
@@ -5351,7 +5763,7 @@ const Dashboard: React.FC = () => {
           <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-16 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 64 32"><path d="M2 28 Q16 8 32 20 T62 8" /></svg>
         </div>
 
-        {/* Overdue Follow-ups */}
+        {/* Follow ups */}
         <div
           className="flex-shrink-0 rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-4 md:p-6 w-[calc(50vw-0.75rem)] md:w-auto h-32 md:h-auto"
           onClick={() => setExpanded(expanded === 'overdue' ? null : 'overdue')}
@@ -5362,7 +5774,7 @@ const Dashboard: React.FC = () => {
             </div>
             <div>
               <div className="text-3xl md:text-4xl font-extrabold text-white leading-tight">{overdueFollowups}</div>
-              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Overdue Follow-ups</div>
+              <div className="text-white/80 text-sm md:text-sm font-medium mt-1">Today's Follow ups</div>
             </div>
           </div>
           {/* SVG Bar Chart Placeholder */}
@@ -5523,357 +5935,435 @@ const Dashboard: React.FC = () => {
       )}
       {expanded === 'overdue' && (
         <div className="glass-card mt-4 animate-fade-in">
-          <div className="flex justify-between items-center mb-4">
-            <div className="font-bold text-lg text-base-content/80">Overdue Follow-ups</div>
-            <div className="text-sm text-gray-500">
-              Showing {realOverdueLeads.length} of {overdueFollowups} leads
+          <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
+            <div className="font-bold text-lg text-base-content/80">Follow ups</div>
+            
+            {/* Tabs */}
+            <div className="flex gap-2">
+              <button
+                onClick={() => setFollowUpTab('today')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  followUpTab === 'today'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Today
+              </button>
+              <button
+                onClick={() => setFollowUpTab('overdue')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  followUpTab === 'overdue'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Overdue
+              </button>
+              <button
+                onClick={() => setFollowUpTab('tomorrow')}
+                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                  followUpTab === 'tomorrow'
+                    ? 'bg-purple-600 text-white shadow-sm'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Tomorrow
+              </button>
+            </div>
+            
+            {/* View Mode Toggle - Desktop only */}
+            <div className="hidden md:flex gap-2">
+              <button
+                onClick={() => setFollowUpViewMode('table')}
+                className={`px-3 py-1 rounded text-xs font-medium transition-all ${
+                  followUpViewMode === 'table'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Table
+              </button>
+              <button
+                onClick={() => setFollowUpViewMode('card')}
+                className={`px-3 py-1 rounded text-xs font-medium transition-all ${
+                  followUpViewMode === 'card'
+                    ? 'bg-purple-600 text-white'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                Cards
+              </button>
             </div>
           </div>
-          {overdueLeadsLoading ? (
-            <div className="flex justify-center items-center py-12">
-              <span className="loading loading-spinner loading-lg text-primary"></span>
-            </div>
-          ) : (
-            <>
-              {/* Desktop Card Grid View */}
-              <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
-                {realOverdueLeads.length === 0 ? (
-                  <div className="col-span-full text-center py-12 text-gray-500">
-                    No overdue follow-ups. Great job!
-                  </div>
-                ) : (
-                  realOverdueLeads.map((lead, index) => {
-                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                    return (
-                      <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
-                        <div className="flex-1 flex flex-col">
-                          {/* Lead Number and Name */}
-                          <div className="mb-3 flex items-center gap-2">
-                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                              {lead.lead_number}
-                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
-                            </span>
-                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                            <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
-                          </div>
-                          {/* Stage */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-sm font-semibold text-gray-500">Stage</span>
-                            <span className="text-sm font-bold text-black">
-                              {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
-                            </span>
-                          </div>
-                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                            {/* Category */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Category</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
-                              </span>
-                            </div>
-                            {/* Topic */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Topic</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
-                            </div>
-                            {/* Expert */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Expert</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
-                              </span>
-                            </div>
-                            {/* Amount */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Amount</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' 
-                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
-                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
-                                }
-                              </span>
-                            </div>
-                            {/* Manager */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Manager</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
-                              </span>
-                            </div>
-                            {/* Probability */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Probability</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-              {/* Mobile Card View */}
-              <div className="md:hidden space-y-4">
-                {realOverdueLeads.length === 0 ? (
-                  <div className="text-center py-12 text-gray-500">
-                    No overdue follow-ups. Great job!
-                  </div>
-                ) : (
-                  realOverdueLeads.map((lead, index) => {
-                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                    return (
-                      <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
-                        <div className="flex-1 flex flex-col">
-                          {/* Lead Number and Name */}
-                          <div className="mb-3 flex items-center gap-2">
-                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                              {lead.lead_number}
-                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
-                            </span>
-                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                            <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
-                          </div>
-                          {/* Stage */}
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-sm font-semibold text-gray-500">Stage</span>
-                            <span className="text-sm font-bold text-black">
-                              {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
-                            </span>
-                          </div>
-                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                            {/* Category */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Category</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
-                              </span>
-                            </div>
-                            {/* Topic */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Topic</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
-                            </div>
-                            {/* Expert */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Expert</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
-                              </span>
-                            </div>
-                            {/* Amount */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Amount</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' 
-                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
-                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
-                                }
-                              </span>
-                            </div>
-                            {/* Manager */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Manager</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
-                              </span>
-                            </div>
-                            {/* Probability */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Probability</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
-                            </div>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })
-                )}
-              </div>
-              
-              {/* Show More Button */}
-              {!showAllOverdueLeads && realOverdueLeads.length > 0 && (
-                <div className="flex justify-center mt-6">
-                  <button 
-                    className="btn btn-primary btn-lg gap-2"
-                    onClick={loadAllOverdueLeads}
-                    disabled={loadingMoreLeads}
-                  >
-                    {loadingMoreLeads ? (
-                      <>
-                        <span className="loading loading-spinner loading-sm"></span>
-                        Loading...
-                      </>
-                    ) : (
-                      <>
-                        Show All {overdueFollowups} Leads
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-                        </svg>
-                      </>
-                    )}
-                  </button>
+          
+          {/* Get current leads based on tab */}
+          {(() => {
+            const isLoading = followUpTab === 'today' ? todayFollowUpsLoading : 
+                             followUpTab === 'tomorrow' ? tomorrowFollowUpsLoading : 
+                             overdueLeadsLoading;
+            const currentLeads = followUpTab === 'today' ? todayFollowUps :
+                                followUpTab === 'tomorrow' ? tomorrowFollowUps :
+                                realOverdueLeads;
+            
+            if (isLoading) {
+              return (
+                <div className="flex justify-center items-center py-12">
+                  <span className="loading loading-spinner loading-lg text-primary"></span>
                 </div>
-              )}
-              
-              {/* Show All Leads */}
-              {showAllOverdueLeads && allOverdueLeads.length > 0 && (
+              );
+            }
+            
+            if (currentLeads.length === 0) {
+              return (
+                <div className="text-center py-12 text-gray-500">
+                  No {followUpTab} follow-ups. Great job!
+                </div>
+              );
+            }
+            
+            // Table View (Desktop only, Mobile always shows cards)
+            // Use CSS media query approach - hide table on mobile, show cards
+            if (followUpViewMode === 'table') {
+              return (
                 <>
-                  <div className="mt-6 mb-4">
-                    <h4 className="text-lg font-semibold text-gray-800 mb-2">All Overdue Follow-ups</h4>
-                    <p className="text-sm text-gray-600">Showing all {allOverdueLeads.length} leads</p>
-                  </div>
-                  
-                  {/* Desktop Card Grid View for All Leads */}
-                  <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
-                    {allOverdueLeads.map((lead, index) => {
-                      const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                      return (
-                        <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
-                          <div className="flex-1 flex flex-col">
-                            {/* Lead Number and Name */}
-                            <div className="mb-3 flex items-center gap-2">
+                  {/* Desktop Table View */}
+                  <div className="hidden md:block overflow-x-auto">
+                    <table className="table w-full">
+                    <thead>
+                      <tr>
+                        <th>Lead</th>
+                        <th>Stage</th>
+                        <th>Category</th>
+                        <th>Topic</th>
+                        <th>Expert</th>
+                        <th>Manager</th>
+                        <th>Amount</th>
+                        <th>Follow-up Date</th>
+                        {followUpTab === 'overdue' && <th>Days Overdue</th>}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {currentLeads.map((lead) => {
+                        const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                        return (
+                          <tr 
+                            key={lead.id} 
+                            className="cursor-pointer hover:bg-gray-50"
+                            onClick={() => {
+                              if (lead.lead_type === 'legacy') {
+                                // For legacy leads, remove "legacy_" prefix and navigate to {id}
+                                const legacyId = lead.id?.toString().replace('legacy_', '');
+                                navigate(`/clients/${legacyId}`);
+                              } else {
+                                // For new leads, use lead_number instead of id
+                                navigate(`/clients/${lead.lead_number}`);
+                              }
+                            }}
+                          >
+                            <td>
+                              <div className="flex flex-col">
+                                <span className="text-sm text-gray-500">
+                                  {lead.lead_number}
+                                  {lead.lead_type === 'legacy' && <span className="text-xs text-gray-400 ml-1">(L)</span>}
+                                </span>
+                                <span className="font-semibold text-gray-900">{lead.name}</span>
+                              </div>
+                            </td>
+                            <td>{lead.stage_name || 'N/A'}</td>
+                            <td>{lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'N/A')}</td>
+                            <td>{lead.topic || 'N/A'}</td>
+                            <td>{lead.expert_name || 'N/A'}</td>
+                            <td>{lead.manager_name || 'N/A'}</td>
+                            <td>
+                              {lead.lead_type === 'legacy' 
+                                ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
+                              }
+                            </td>
+                            <td>{lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}</td>
+                            {followUpTab === 'overdue' && (
+                              <td>{daysOverdue}</td>
+                            )}
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                {/* Mobile Card View (shown when table mode but on mobile) */}
+                <div className="md:hidden space-y-4">
+                  {currentLeads.map((lead) => {
+                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                    return (
+                      <div 
+                        key={lead.id} 
+                        className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
+                        onClick={() => {
+                          if (lead.lead_type === 'legacy') {
+                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
+                            const legacyId = lead.id?.toString().replace('legacy_', '');
+                            navigate(`/clients/legacy-${legacyId}`);
+                          } else {
+                            // For new leads, use lead_number instead of id
+                            navigate(`/clients/${lead.lead_number}`);
+                          }
+                        }}
+                      >
+                        <div className="flex-1 flex flex-col">
+                          <div className="mb-3 flex flex-col gap-1">
+                            <div className="flex items-center gap-2">
                               <span className="text-sm font-semibold text-gray-400 tracking-widest">
                                 {lead.lead_number}
                                 {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
                               </span>
-                              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                              <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
+                              {followUpTab === 'today' && (
+                                <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
+                              )}
+                              {followUpTab === 'tomorrow' && (
+                                <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
+                              )}
                             </div>
-                            {/* Stage */}
+                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate">{lead.name}</h3>
+                          </div>
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-sm font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-black">
+                              {lead.stage_name || 'Follow-up Required'}
+                            </span>
+                          </div>
+                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Stage</span>
-                              <span className="text-sm font-bold text-black">
-                                {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                              <span className="text-sm font-semibold text-gray-500">Category</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'Not specified')}
                               </span>
                             </div>
-                            <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                              {/* Category */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Category</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
-                                </span>
-                              </div>
-                              {/* Topic */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Topic</span>
-                                <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
-                              </div>
-                              {/* Expert */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Expert</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
-                                </span>
-                              </div>
-                              {/* Amount */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Amount</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' 
-                                    ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
-                                    : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
-                                  }
-                                </span>
-                              </div>
-                              {/* Manager */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Manager</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
-                                </span>
-                              </div>
-                              {/* Probability */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Probability</span>
-                                <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
-                              </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Topic</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                            </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Expert</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Amount</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' 
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
+                                }
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Manager</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                              </span>
+                            </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Probability</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
                             </div>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                  
-                  {/* Mobile Card View for All Leads */}
-                  <div className="md:hidden space-y-4">
-                    {allOverdueLeads.map((lead, index) => {
-                      const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                      return (
-                        <div key={lead.id} className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative">
-                          <div className="flex-1 flex flex-col">
-                            {/* Lead Number and Name */}
-                            <div className="mb-3 flex items-center gap-2">
-                              <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                                {lead.lead_number}
-                                {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
-                              </span>
-                              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
-                              <span className="text-sm font-bold px-2 py-1 rounded bg-[#3b28c7] text-white">{daysOverdue} days overdue</span>
-                            </div>
-                            {/* Stage */}
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+              );
+            }
+            
+            // Card View (Mobile default, Desktop optional)
+            return (
+              <>
+                {/* Desktop Card Grid View */}
+                <div className="hidden md:grid grid-cols-2 lg:grid-cols-3 gap-6">
+                  {currentLeads.map((lead) => {
+                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                    return (
+                      <div 
+                        key={lead.id} 
+                        className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
+                        onClick={() => {
+                          if (lead.lead_type === 'legacy') {
+                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
+                            const legacyId = lead.id?.toString().replace('legacy_', '');
+                            navigate(`/clients/legacy-${legacyId}`);
+                          } else {
+                            // For new leads, use lead_number instead of id
+                            navigate(`/clients/${lead.lead_number}`);
+                          }
+                        }}
+                      >
+                        <div className="flex-1 flex flex-col">
+                          {/* Lead Number and Name */}
+                          <div className="mb-3 flex items-center gap-2">
+                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                              {lead.lead_number}
+                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                            </span>
+                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            {followUpTab === 'today' && (
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
+                            )}
+                            {followUpTab === 'tomorrow' && (
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
+                            )}
+                          </div>
+                          {/* Stage */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-sm font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-black">
+                              {lead.stage_name || 'Follow-up Required'}
+                            </span>
+                          </div>
+                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                            {/* Category */}
                             <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Stage</span>
-                              <span className="text-sm font-bold text-black">
-                                {lead.lead_type === 'legacy' ? lead.stage_name : (lead.stage || 'Follow-up Required')}
+                              <span className="text-sm font-semibold text-gray-500">Category</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'Not specified')}
                               </span>
                             </div>
-                            <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                              {/* Category */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Category</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.category_name : (lead.category || 'Not specified')}
-                                </span>
-                              </div>
-                              {/* Topic */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Topic</span>
-                                <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
-                              </div>
-                              {/* Expert */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Expert</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
-                                </span>
-                              </div>
-                              {/* Amount */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Amount</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' 
-                                    ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
-                                    : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
-                                  }
-                                </span>
-                              </div>
-                              {/* Manager */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Manager</span>
-                                <span className="text-sm font-bold text-gray-800">
-                                  {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
-                                </span>
-                              </div>
-                              {/* Probability */}
-                              <div className="flex justify-between items-center py-1">
-                                <span className="text-sm font-semibold text-gray-500">Probability</span>
-                                <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
-                              </div>
+                            {/* Topic */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Topic</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                            </div>
+                            {/* Expert */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Expert</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                              </span>
+                            </div>
+                            {/* Amount */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Amount</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' 
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
+                                }
+                              </span>
+                            </div>
+                            {/* Manager */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Manager</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                              </span>
+                            </div>
+                            {/* Probability */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Probability</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
                             </div>
                           </div>
                         </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
-            </>
-          )}
+                      </div>
+                    );
+                  })}
+                </div>
+                {/* Mobile Card View */}
+                <div className="md:hidden space-y-4">
+                  {currentLeads.map((lead) => {
+                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                    return (
+                      <div 
+                        key={lead.id} 
+                        className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
+                        onClick={() => {
+                          if (lead.lead_type === 'legacy') {
+                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
+                            const legacyId = lead.id?.toString().replace('legacy_', '');
+                            navigate(`/clients/legacy-${legacyId}`);
+                          } else {
+                            // For new leads, use lead_number instead of id
+                            navigate(`/clients/${lead.lead_number}`);
+                          }
+                        }}
+                      >
+                        <div className="flex-1 flex flex-col">
+                          {/* Lead Number and Name */}
+                          <div className="mb-3 flex items-center gap-2">
+                            <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                              {lead.lead_number}
+                              {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                            </span>
+                            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name}</h3>
+                            {followUpTab === 'today' && (
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
+                            )}
+                            {followUpTab === 'tomorrow' && (
+                              <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
+                            )}
+                          </div>
+                          {/* Stage */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-sm font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-black">
+                              {lead.stage_name || 'Follow-up Required'}
+                            </span>
+                          </div>
+                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                            {/* Category */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Category</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'Not specified')}
+                              </span>
+                            </div>
+                            {/* Topic */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Topic</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                            </div>
+                            {/* Expert */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Expert</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                              </span>
+                            </div>
+                            {/* Amount */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Amount</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' 
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                  : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
+                                }
+                              </span>
+                            </div>
+                            {/* Manager */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Manager</span>
+                              <span className="text-sm font-bold text-gray-800">
+                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                              </span>
+                            </div>
+                            {/* Probability */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Probability</span>
+                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
       {expanded === 'messages' && (

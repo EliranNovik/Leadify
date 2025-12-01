@@ -630,6 +630,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Fetch only clients/leads with existing WhatsApp conversations
   useEffect(() => {
     const fetchClientsWithConversations = async () => {
+      // If "My Contacts" is enabled but user info isn't loaded yet, wait for it
+      if (showMyContactsOnly && !currentUserEmployeeId && !currentUserFullName) {
+        console.log('⏳ Waiting for user info before fetching "My Contacts"');
+        return;
+      }
+      
       try {
         setLoading(true);
         
@@ -680,10 +686,40 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         let newLeadsData: any[] = [];
         
         if (newLeadIds.length > 0) {
-          const { data: leadsData, error: leadsError } = await supabase
+          let query = supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants')
-            .in('id', newLeadIds);
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants');
+          
+          // Apply role filter if "My Contacts" is enabled AND we have user info
+          // If showMyContactsOnly is true but user info isn't loaded yet, skip filtering (will re-fetch when user info loads)
+          if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+            const newLeadConditions: string[] = [];
+            
+            // Text fields (saved as display names): closer, scheduler, handler
+            if (currentUserFullName) {
+              const fullNameLower = currentUserFullName.trim().toLowerCase();
+              newLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
+              newLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
+              newLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
+            }
+            
+            // Numeric fields (saved as employee IDs): manager, helper, expert, case_handler_id
+            if (currentUserEmployeeId) {
+              newLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
+              newLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
+            }
+            
+            if (newLeadConditions.length > 0) {
+              query = query.or(newLeadConditions.join(','));
+            }
+          }
+          
+          // Always filter by lead IDs that have WhatsApp conversations
+          query = query.in('id', newLeadIds);
+
+          const { data: leadsData, error: leadsError } = await query;
 
           if (leadsError) {
             console.error('Error fetching new leads:', leadsError);
@@ -701,10 +737,28 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         let legacyLeadsData: any[] = [];
         
         if (legacyLeadIds.length > 0) {
-          const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          let query = supabase
             .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
-            .in('id', legacyLeadIds);
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants');
+          
+          // Apply role filter if "My Contacts" is enabled AND we have user info
+          // If showMyContactsOnly is true but user info isn't loaded yet, skip filtering (will re-fetch when user info loads)
+          if (showMyContactsOnly && currentUserEmployeeId) {
+            const legacyConditions = [
+              `closer_id.eq.${currentUserEmployeeId}`,
+              `meeting_scheduler_id.eq.${currentUserEmployeeId}`,
+              `meeting_manager_id.eq.${currentUserEmployeeId}`,
+              `meeting_lawyer_id.eq.${currentUserEmployeeId}`,
+              `expert_id.eq.${currentUserEmployeeId}`,
+              `case_handler_id.eq.${currentUserEmployeeId}`
+            ];
+            query = query.or(legacyConditions.join(','));
+          }
+          
+          // Always filter by lead IDs that have WhatsApp conversations
+          query = query.in('id', legacyLeadIds);
+
+          const { data: legacyLeads, error: legacyLeadsError } = await query;
 
           if (legacyLeadsError) {
             console.error('Error fetching legacy leads:', legacyLeadsError);
@@ -719,20 +773,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               topic: lead.topic || '',
               status: lead.status ? String(lead.status) : '',
               stage: lead.stage ? String(lead.stage) : '',
-                      closer: lead.closer_id ? String(lead.closer_id) : '',
-                      scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
-                      closer_id: lead.closer_id || null,
-                      meeting_scheduler_id: lead.meeting_scheduler_id || null,
-                      meeting_manager_id: lead.meeting_manager_id || null,
-                      meeting_lawyer_id: lead.meeting_lawyer_id || null,
-                      expert_id: lead.expert_id || null,
-                      case_handler_id: lead.case_handler_id || null,
-                      next_followup: lead.next_followup || '',
-                      probability: lead.probability ? Number(lead.probability) : undefined,
-                      balance: lead.total ? Number(lead.total) : undefined,
-                      potential_applicants: lead.potential_applicants || '',
-                      lead_type: 'legacy' as const,
-                      isContact: false
+              closer: lead.closer_id ? String(lead.closer_id) : '',
+              scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
+              closer_id: lead.closer_id || null,
+              meeting_scheduler_id: lead.meeting_scheduler_id || null,
+              meeting_manager_id: lead.meeting_manager_id || null,
+              meeting_lawyer_id: lead.meeting_lawyer_id || null,
+              expert_id: lead.expert_id || null,
+              case_handler_id: lead.case_handler_id || null,
+              next_followup: lead.next_followup || '',
+              probability: lead.probability ? Number(lead.probability) : undefined,
+              balance: lead.total ? Number(lead.total) : undefined,
+              potential_applicants: lead.potential_applicants || '',
+              lead_type: 'legacy' as const,
+              isContact: false
             }));
           }
         }
@@ -742,24 +796,33 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         let contactClientsData: any[] = [];
         
         if (contactIdsArray.length > 0) {
-          // First, fetch relationships to ensure contacts are connected to leads
+          // First, fetch relationships to ensure contacts are connected to leads (both new and legacy)
           const { data: relationships, error: relationshipsError } = await supabase
             .from('lead_leadcontact')
             .select('contact_id, newlead_id, lead_id')
-            .in('contact_id', contactIdsArray)
-            .not('newlead_id', 'is', null);
+            .in('contact_id', contactIdsArray);
 
           if (relationshipsError) {
             console.error('Error fetching contact relationships:', relationshipsError);
           } else if (relationships && relationships.length > 0) {
-            // Get unique contact IDs that are actually connected to leads
+            // Separate new leads and legacy leads
+            const newLeadIdsForContacts = new Set<string>();
+            const legacyLeadIdsForContacts = new Set<number>();
+            const contactToNewLeadMap = new Map<number, string>();
+            const contactToLegacyLeadMap = new Map<number, number>();
             const connectedContactIds = new Set<number>();
-            const contactToLeadMap = new Map<number, string>();
             
             relationships.forEach((rel: any) => {
-              if (rel.contact_id && rel.newlead_id) {
+              if (rel.contact_id) {
                 connectedContactIds.add(Number(rel.contact_id));
-                contactToLeadMap.set(Number(rel.contact_id), String(rel.newlead_id));
+                if (rel.newlead_id) {
+                  newLeadIdsForContacts.add(String(rel.newlead_id));
+                  contactToNewLeadMap.set(Number(rel.contact_id), String(rel.newlead_id));
+                }
+                if (rel.lead_id) {
+                  legacyLeadIdsForContacts.add(Number(rel.lead_id));
+                  contactToLegacyLeadMap.set(Number(rel.contact_id), Number(rel.lead_id));
+                }
               }
             });
 
@@ -773,39 +836,105 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               if (contactsError) {
                 console.error('Error fetching contacts:', contactsError);
               } else if (contactsData && contactsData.length > 0) {
-                // Get unique lead IDs for these contacts
-                const leadIdsForContacts = new Set<string>();
-                contactsData.forEach((contact: any) => {
-                  const leadId = contactToLeadMap.get(contact.id);
-                  if (leadId) {
-                    leadIdsForContacts.add(leadId);
-                  }
-                });
-
-                // Fetch lead information for these contacts
-                let leadsForContacts: any[] = [];
-                if (leadIdsForContacts.size > 0) {
-                  const { data: leadsForContactsData, error: leadsForContactsError } = await supabase
+                // Fetch new leads for contacts (with role filter if enabled)
+                let newLeadsForContacts: any[] = [];
+                if (newLeadIdsForContacts.size > 0) {
+                  let contactsNewLeadsQuery = supabase
                     .from('leads')
                     .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants')
-                    .in('id', Array.from(leadIdsForContacts));
+                    .in('id', Array.from(newLeadIdsForContacts));
+                  
+                  // Apply role filter if "My Contacts" is enabled
+                  if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                    const contactLeadConditions: string[] = [];
+                    
+                    if (currentUserFullName) {
+                      const fullNameLower = currentUserFullName.trim().toLowerCase();
+                      contactLeadConditions.push(`closer.ilike.%${fullNameLower}%`);
+                      contactLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
+                      contactLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
+                    }
+                    
+                    if (currentUserEmployeeId) {
+                      contactLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
+                      contactLeadConditions.push(`helper.eq.${currentUserEmployeeId}`);
+                      contactLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
+                      contactLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
+                    }
+                    
+                    if (contactLeadConditions.length > 0) {
+                      contactsNewLeadsQuery = contactsNewLeadsQuery.or(contactLeadConditions.join(','));
+                    }
+                  }
 
-                  if (!leadsForContactsError && leadsForContactsData) {
-                    leadsForContacts = leadsForContactsData;
+                  const { data: newLeadsData, error: newLeadsError } = await contactsNewLeadsQuery;
+                  if (!newLeadsError && newLeadsData) {
+                    newLeadsForContacts = newLeadsData;
                   }
                 }
 
-                // Create Client objects for contacts that are connected to leads
+                // Fetch legacy leads for contacts (with role filter if enabled)
+                let legacyLeadsForContacts: any[] = [];
+                if (legacyLeadIdsForContacts.size > 0) {
+                  let contactsLegacyLeadsQuery = supabase
+                    .from('leads_lead')
+                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
+                    .in('id', Array.from(legacyLeadIdsForContacts));
+                  
+                  // Apply role filter if "My Contacts" is enabled AND we have user info
+                  if (showMyContactsOnly && currentUserEmployeeId) {
+                    const legacyConditions = [
+                      `closer_id.eq.${currentUserEmployeeId}`,
+                      `meeting_scheduler_id.eq.${currentUserEmployeeId}`,
+                      `meeting_manager_id.eq.${currentUserEmployeeId}`,
+                      `meeting_lawyer_id.eq.${currentUserEmployeeId}`,
+                      `expert_id.eq.${currentUserEmployeeId}`,
+                      `case_handler_id.eq.${currentUserEmployeeId}`
+                    ];
+                    contactsLegacyLeadsQuery = contactsLegacyLeadsQuery.or(legacyConditions.join(','));
+                  }
+
+                  const { data: legacyLeadsData, error: legacyLeadsError } = await contactsLegacyLeadsQuery;
+                  if (!legacyLeadsError && legacyLeadsData) {
+                    legacyLeadsForContacts = legacyLeadsData;
+                  }
+                }
+
+                // Create Client objects ONLY for contacts whose associated leads match the role filter
+                // If "My Contacts" is enabled, only include contacts whose leads passed the role filter
+                // If "All Contacts" is enabled, include all contacts
                 contactClientsData = contactsData
-                  .filter((contact: any) => contactToLeadMap.has(contact.id)) // Only include connected contacts
+                  .filter((contact: any) => {
+                    const newLeadId = contactToNewLeadMap.get(contact.id);
+                    const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                    
+                    // If "My Contacts" is enabled, only include contacts whose associated lead is in the filtered results
+                    if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
+                      if (newLeadId) {
+                        // Check if the new lead is in the filtered results
+                        return newLeadsForContacts.some(lead => lead.id === newLeadId);
+                      } else if (legacyLeadId) {
+                        // Check if the legacy lead is in the filtered results
+                        return legacyLeadsForContacts.some(lead => lead.id === legacyLeadId);
+                      }
+                      return false;
+                    }
+                    
+                    // If "All Contacts" is enabled, include all contacts that have an associated lead
+                    return !!(newLeadId || legacyLeadId);
+                  })
                   .map((contact: any) => {
-                    const leadId = contactToLeadMap.get(contact.id);
-                    const associatedLead = leadsForContacts.find(lead => lead.id === leadId);
+                    const newLeadId = contactToNewLeadMap.get(contact.id);
+                    const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                    const associatedNewLead = newLeadId ? newLeadsForContacts.find(lead => lead.id === newLeadId) : null;
+                    const associatedLegacyLead = legacyLeadId ? legacyLeadsForContacts.find(lead => lead.id === legacyLeadId) : null;
+                    const associatedLead = associatedNewLead || associatedLegacyLead;
+                    const isLegacy = !!associatedLegacyLead;
                     
                     return {
                       id: `contact_${contact.id}`,
-                      lead_id: leadId || null, // Store the actual lead_id from relationship
-                      contact_id: contact.id, // Store the contact_id
+                      lead_id: newLeadId || legacyLeadId || null,
+                      contact_id: contact.id,
                       lead_number: associatedLead?.lead_number || `Contact ${contact.id}`,
                       name: contact.name || '',
                       email: contact.email || '',
@@ -814,20 +943,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       topic: associatedLead?.topic || '',
                       status: associatedLead?.status || '',
                       stage: associatedLead?.stage || '',
-                      closer: associatedLead?.closer || '',
-                      scheduler: associatedLead?.scheduler || '',
+                      closer: isLegacy ? (associatedLead?.closer_id ? String(associatedLead.closer_id) : '') : (associatedLead?.closer || ''),
+                      scheduler: isLegacy ? (associatedLead?.meeting_scheduler_id ? String(associatedLead.meeting_scheduler_id) : '') : (associatedLead?.scheduler || ''),
                       handler: associatedLead?.handler || '',
                       manager: associatedLead?.manager || null,
                       helper: associatedLead?.helper || null,
                       expert: associatedLead?.expert || null,
                       case_handler_id: associatedLead?.case_handler_id || null,
                       next_followup: associatedLead?.next_followup || '',
-                      probability: associatedLead?.probability || undefined,
-                      balance: associatedLead?.balance || undefined,
+                      probability: associatedLead?.probability ? Number(associatedLead.probability) : undefined,
+                      balance: isLegacy ? (associatedLead?.total ? Number(associatedLead.total) : undefined) : (associatedLead?.balance || undefined),
                       potential_applicants: associatedLead?.potential_applicants || '',
-                      lead_type: 'new' as const,
-                      isContact: true, // Mark as contact
-                      whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null // Include profile picture URL
+                      lead_type: isLegacy ? 'legacy' as const : 'new' as const,
+                      isContact: true,
+                      whatsapp_profile_picture_url: contact.whatsapp_profile_picture_url || null
                     };
                   });
               }
@@ -836,36 +965,35 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
 
         // Combine all clients: leads and contacts
+        // Note: Role filtering is already done at the database level for all leads and contacts
         let allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
         
-        console.log(`📱 Before filtering: ${allClients.length} clients (${newLeadsData.length} new + ${legacyLeadsData.length} legacy + ${contactClientsData.length} contacts)`);
-        console.log(`📱 Filter settings: showMyContactsOnly=${showMyContactsOnly}, employeeId=${currentUserEmployeeId}, fullName=${currentUserFullName}`);
-        
-        // Apply role-based filtering if "My Contacts" toggle is enabled
-        if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
-          const beforeFilterCount = allClients.length;
-          allClients = allClients.filter(client => {
-            const matches = clientMatchesUserRoles(client, currentUserEmployeeId, currentUserFullName);
-            const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-            if (!matches && isLegacy) {
-              console.log(`❌ Legacy client ${client.id} (${client.name}) did not match:`, {
-                closer_id: (client as any).closer_id,
-                meeting_scheduler_id: (client as any).meeting_scheduler_id,
-                meeting_manager_id: (client as any).meeting_manager_id,
-                meeting_lawyer_id: (client as any).meeting_lawyer_id,
-                expert_id: (client as any).expert_id,
-                case_handler_id: (client as any).case_handler_id,
-                employeeId: currentUserEmployeeId,
-                fullName: currentUserFullName
-              });
-            }
-            if (matches && isLegacy) {
-              console.log(`✅ Legacy client ${client.id} (${client.name}) matched!`);
-            }
-            return matches;
+        // Filter out contacts that share the same lead_number and phone as a lead client
+        // This prevents showing duplicate entries with the same messages
+        const filteredContactClients = contactClientsData.filter(contact => {
+          // Check if this contact matches any lead client by lead_number and phone
+          const hasMatchingLead = [...newLeadsData, ...legacyLeadsData].some(lead => {
+            // Match by lead_number
+            const leadNumberMatch = lead.lead_number === contact.lead_number;
+            
+            // Match by phone (check both phone and mobile fields)
+            const contactPhone = contact.phone || contact.mobile || '';
+            const leadPhone = lead.phone || lead.mobile || '';
+            const phoneMatch = contactPhone && leadPhone && (
+              contactPhone === leadPhone ||
+              contactPhone.replace(/\D/g, '') === leadPhone.replace(/\D/g, '') // Compare normalized (digits only)
+            );
+            
+            // Only filter out if both lead_number AND phone match
+            return leadNumberMatch && phoneMatch;
           });
-          console.log(`📱 After filtering: ${allClients.length} clients (filtered from ${beforeFilterCount})`);
-        }
+          
+          // Keep contact only if no matching lead found
+          return !hasMatchingLead;
+        });
+        
+        // Rebuild allClients with filtered contacts
+        allClients = [...newLeadsData, ...legacyLeadsData, ...filteredContactClients];
         
         setClients(allClients);
       } catch (error) {
@@ -907,12 +1035,27 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         return;
       }
 
-      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
-        ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
-        : selectedClient.id;
+      // Check if this is a contact client (not a main lead)
+      const isContactClient = selectedClient.isContact;
+      
+      // For contacts, use the associated lead_id; for main leads, use the client id
+      let actualLeadId: string | number;
+      let isLegacyLead: boolean;
+      
+      if (isContactClient && selectedClient.lead_id) {
+        // This is a contact - use the associated lead_id
+        actualLeadId = selectedClient.lead_id;
+        // Determine if the associated lead is legacy based on lead_type
+        isLegacyLead = selectedClient.lead_type === 'legacy';
+      } else {
+        // This is a main lead
+        isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+        actualLeadId = isLegacyLead 
+          ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
+          : selectedClient.id;
+      }
 
-      const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+      const contacts = await fetchLeadContacts(actualLeadId, isLegacyLead);
       
       // Deduplicate contacts by ID to prevent duplicate key warnings
       const uniqueContacts = contacts.filter((contact, index, self) => 

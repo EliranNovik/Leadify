@@ -1,5 +1,6 @@
 const pushNotificationService = require('../services/pushNotificationService');
 const { notifyConversationParticipants } = require('../services/rmqNotificationService');
+const meetingNotificationService = require('../services/meetingNotificationService');
 
 /**
  * Send push notification to a user
@@ -32,8 +33,29 @@ const sendPushNotification = async (req, res) => {
   }
 };
 
+/**
+ * Manually trigger meeting notification check
+ * POST /api/push/meetings/check
+ */
+const checkMeetings = async (req, res) => {
+  try {
+    const result = await meetingNotificationService.checkAndNotifyMeetings();
+    return res.status(200).json({
+      success: true,
+      ...result,
+    });
+  } catch (error) {
+    console.error('Error in checkMeetings:', error);
+    return res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to check meetings'
+    });
+  }
+};
+
 module.exports = {
   sendPushNotification,
+  checkMeetings,
   sendRmqNotification: async (req, res) => {
     try {
       const { conversationId, senderId, content, messageType, attachmentName } = req.body || {};
