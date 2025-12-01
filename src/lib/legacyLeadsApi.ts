@@ -74,13 +74,18 @@ const buildPhoneSearchOrCondition = (digits: string): string => {
   // This will match "972507825939" (contains the pattern) or "0507825939" (contains the pattern)
   let searchPattern = digits;
   
-  // If user typed 7+ digits, use last 7 for better matching
-  // If 5-6 digits, use last 5
-  // If less than 5, use all digits
+  // More flexible pattern matching:
+  // - 7+ digits: use last 7 for better precision
+  // - 5-6 digits: use last 5 for good matching
+  // - 3-4 digits: use all digits (more responsive when typing fast)
+  // - Less than 3: use all digits (shouldn't happen, but handle gracefully)
   if (digits.length >= 7) {
     searchPattern = digits.slice(-7); // Last 7 digits for better precision
   } else if (digits.length >= 5) {
     searchPattern = digits.slice(-5); // Last 5 digits
+  } else {
+    // For 3-4 digits, use all digits to be more responsive when typing fast
+    searchPattern = digits;
   }
   
   // Simple search: match the pattern in phone and mobile columns
@@ -385,7 +390,9 @@ async function searchLegacyLeadsExact(query: string, limit = 20): Promise<Combin
 
   const isNumeric = /^\d+$/.test(noPrefix);
   const isEmail = looksLikeEmail(trimmed);
-  const isPhone = digits.length >= 7;
+  // Phone: require at least 3 digits (consistent with other searches)
+  // This makes the search more responsive when typing fast
+  const isPhone = digits.length >= 3 && !isNumeric;
 
   let rows: any[] = [];
 
@@ -435,18 +442,22 @@ async function searchLegacyLeadsExact(query: string, limit = 20): Promise<Combin
       // Phone search - search for phone/mobile numbers containing the digits in sequence
       // This works for any partial match: "050" finds "0501234567", "050-123-4567", etc.
       if (digits.length >= 3) {
+        // Use dynamic timeout and limit based on digit count for better responsiveness
+        const timeoutMs = digits.length >= 7 ? 2500 : digits.length >= 5 ? 2000 : 1500;
+        const searchLimit = digits.length >= 7 ? 20 : digits.length >= 5 ? 10 : 5;
+        
         const queryPromise = (async () => {
           const { data, error } = await supabase
             .from('leads_lead')
             .select('*')
             .or(buildPhoneSearchOrCondition(digits))  // Handles country codes
-            .limit(2);  // Very small limit, no ORDER BY
+            .limit(searchLimit);
           return { data, error };
     })();
 
         const result = await withTimeout(
           queryPromise,
-          500,  // Slightly longer timeout
+          timeoutMs,  // Dynamic timeout based on digit count
           'phone search timeout'
         ).catch(() => ({ data: null, error: null }));
         rows = (result as any)?.data || [];
@@ -532,16 +543,17 @@ async function searchContactsSimple(query: string, limit = 20): Promise<Combined
   const lower = trimmed.toLowerCase();
   const digits = getDigits(trimmed);
   const isEmail = looksLikeEmail(trimmed);
-  // Phone: require at least 3 digits (we'll use last 5 for matching)
-  // This allows searching while typing but keeps queries simple
+  // Phone: require at least 3 digits (same as new leads search for consistency)
+  // The buildPhoneSearchOrCondition will use appropriate pattern matching
   const isPhone = digits.length >= 3;
   let contacts: any[] = [];
 
   try {
     if (isPhone && !isEmail) {
       // Phone search - search leads_contact table only
-      // Only search when user has typed at least 5 digits to avoid timeouts
       // Handle country codes: numbers are often stored as "972507825939" when user types "0507825939"
+      // Use dynamic timeout based on digit count - more digits = longer timeout for better results
+      const timeoutMs = digits.length >= 7 ? 3000 : digits.length >= 5 ? 2500 : 2000;
       try {
         const { data, error } = await withTimeout(
           (async () => {
@@ -551,7 +563,7 @@ async function searchContactsSimple(query: string, limit = 20): Promise<Combined
               .or(buildPhoneSearchOrCondition(digits))
               .limit(50); // Increased limit to show more phone matches
           })(),
-          2000, // Increased timeout to 2 seconds for phone searches
+          timeoutMs, // Dynamic timeout based on digit count
           'leads_contact phone timeout'
         );
         

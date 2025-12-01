@@ -209,12 +209,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
+  const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
   const schedulerStageIdsRef = useRef<number[]>([10]);
   const stageIdsReadyRef = useRef(false);
   const resolvingStageIdsRef = useRef<Promise<void> | null>(null);
 
-  const unreadCount = rmqUnreadCount + whatsappLeadsUnreadCount + assignmentNotifications.length + emailLeadUnreadCount;
+  const unreadCount = rmqUnreadCount + (isSuperUser ? whatsappLeadsUnreadCount : 0) + assignmentNotifications.length + (isSuperUser ? emailLeadUnreadCount : 0);
 
   // Mobile detection
   const [isMobile, setIsMobile] = useState(false);
@@ -634,10 +635,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Fetch user name
         const { data, error } = await supabase
           .from('users')
-          .select('first_name, last_name, full_name')
+          .select('first_name, last_name, full_name, is_superuser')
           .eq('email', user.email)
           .single();
         if (!error && data) {
+          // Set superuser status
+          setIsSuperUser(data.is_superuser === true || data.is_superuser === 'true' || data.is_superuser === 1);
+          
           // Use first_name + last_name if available, otherwise fall back to full_name
           if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
             const fullName = `${data.first_name.trim()} ${data.last_name.trim()}`;
@@ -678,6 +682,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               full_name,
               email,
               employee_id,
+              is_superuser,
               tenants_employee!employee_id(
                 id,
                 display_name,
@@ -698,11 +703,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             .eq('auth_id', user.id)
             .single();
 
-          if (!userError && userData && userData.tenants_employee) {
-            const empData = userData.tenants_employee;
+          if (!userError && userData) {
+            // Set superuser status from userData if not already set
+            if (userData.is_superuser !== undefined) {
+              setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+            }
             
-            // Set current user for RMQ messages
-            setCurrentUser(userData);
+            if (userData.tenants_employee) {
+              const empData = userData.tenants_employee;
+              
+              // Set current user for RMQ messages
+              setCurrentUser(userData);
             
             setCurrentUserEmployee({
               ...empData,
@@ -790,9 +801,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               
               setAllEmployees(uniqueEmployees);
             }
+            } else {
+              // Set current user even if no employee data
+              setCurrentUser(userData);
+            }
           } else {
             // Set current user even if no employee data
-            setCurrentUser(userData);
+            if (userData) {
+              setCurrentUser(userData);
+              // Set superuser status from userData if available
+              const userDataWithSuperuser = userData as any;
+              if (userDataWithSuperuser.is_superuser !== undefined) {
+                setIsSuperUser(userDataWithSuperuser.is_superuser === true || userDataWithSuperuser.is_superuser === 'true' || userDataWithSuperuser.is_superuser === 1);
+              }
+            }
           }
         } catch (error) {
           console.error('Error fetching employee data:', error);
@@ -1328,21 +1350,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     if (currentUser) {
       fetchRmqMessages();
-      fetchWhatsappLeadsMessages();
+      if (isSuperUser) {
+        fetchWhatsappLeadsMessages();
+        fetchEmailLeadMessages();
+        fetchEmailUnreadCount();
+      }
       fetchWhatsappClientsUnreadCount();
-      fetchEmailLeadMessages();
-      fetchEmailUnreadCount();
       // Refresh messages every 60 seconds
       const interval = setInterval(() => {
         fetchRmqMessages();
-        fetchWhatsappLeadsMessages();
+        if (isSuperUser) {
+          fetchWhatsappLeadsMessages();
+          fetchEmailLeadMessages();
+          fetchEmailUnreadCount();
+        }
         fetchWhatsappClientsUnreadCount();
-        fetchEmailLeadMessages();
-        fetchEmailUnreadCount();
       }, 60000);
       return () => clearInterval(interval);
     }
-  }, [currentUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
+  }, [currentUser, isSuperUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
 
   // Send push notifications when new messages arrive
   // Only trigger on count changes, not on message array reference changes
@@ -1467,10 +1493,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // Fetch RMQ messages and WhatsApp leads messages when opening notifications
     if (newShowState && currentUser) {
       fetchRmqMessages();
-      fetchWhatsappLeadsMessages();
+      if (isSuperUser) {
+        fetchWhatsappLeadsMessages();
+        fetchEmailLeadMessages();
+        fetchEmailUnreadCount();
+      }
       fetchWhatsappClientsUnreadCount();
-      fetchEmailLeadMessages();
-      fetchEmailUnreadCount();
     }
     if (newShowState && (currentUser || currentUserEmployee)) {
       fetchAssignmentNotifications();
@@ -1515,45 +1543,48 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setRmqMessages([]);
       setRmqUnreadCount(0);
       
-      // Mark all WhatsApp leads messages as read
-      const whatsappMessageIds = whatsappLeadsMessages.map(m => m.id);
-      if (whatsappMessageIds.length > 0) {
-        const { error: whatsappError } = await supabase
-          .from('whatsapp_messages')
-          .update({ 
-            is_read: true, 
-            read_at: new Date().toISOString(),
-            read_by: currentUser.id 
-          })
-          .in('id', whatsappMessageIds);
+      // Mark all WhatsApp leads messages as read - Only for superusers
+      if (isSuperUser) {
+        const whatsappMessageIds = whatsappLeadsMessages.map(m => m.id);
+        if (whatsappMessageIds.length > 0) {
+          const { error: whatsappError } = await supabase
+            .from('whatsapp_messages')
+            .update({ 
+              is_read: true, 
+              read_at: new Date().toISOString(),
+              read_by: currentUser.id 
+            })
+            .in('id', whatsappMessageIds);
 
-        if (whatsappError) {
-          console.error('Error marking WhatsApp messages as read:', whatsappError);
+          if (whatsappError) {
+            console.error('Error marking WhatsApp messages as read:', whatsappError);
+          }
         }
-      }
 
-      // Clear WhatsApp leads messages from notifications
-      setWhatsappLeadsMessages([]);
-      setWhatsappLeadsUnreadCount(0);
-      // Mark email lead messages as read
-      const emailIds = emailLeadMessages.flatMap(message => message.message_ids);
-      if (emailIds.length > 0) {
-        const { error: emailError } = await supabase
-          .from('emails')
-          .update({
-            is_read: true,
-            read_at: new Date().toISOString(),
-            read_by: currentUser.id
-          })
-          .in('id', emailIds);
+        // Clear WhatsApp leads messages from notifications
+        setWhatsappLeadsMessages([]);
+        setWhatsappLeadsUnreadCount(0);
+        
+        // Mark email lead messages as read
+        const emailIds = emailLeadMessages.flatMap(message => message.message_ids);
+        if (emailIds.length > 0) {
+          const { error: emailError } = await supabase
+            .from('emails')
+            .update({
+              is_read: true,
+              read_at: new Date().toISOString(),
+              read_by: currentUser.id
+            })
+            .in('id', emailIds);
 
-        if (emailError) {
-          console.error('Error marking email lead messages as read:', emailError);
+          if (emailError) {
+            console.error('Error marking email lead messages as read:', emailError);
+          }
         }
+        setEmailLeadMessages([]);
+        setEmailLeadUnreadCount(0);
+        fetchEmailUnreadCount();
       }
-      setEmailLeadMessages([]);
-      setEmailLeadUnreadCount(0);
-      fetchEmailUnreadCount();
       if (assignmentNotifications.length > 0) {
         rememberAssignments(assignmentNotifications.map(notification => notification.key));
         setAssignmentNotifications([]);
@@ -2234,7 +2265,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   <span className="text-sm font-medium">My Profile</span>
                 </button>
                 
-                {navTabs.map(tab => {
+                {navTabs
+                  .filter(tab => isSuperUser || tab.path !== '/new-cases')
+                  .map(tab => {
                   const Icon = tab.icon;
                   const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
                   
@@ -2333,7 +2366,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   <span className="text-sm font-medium">My Profile</span>
                 </button>
                 
-                {navTabs.map(tab => {
+                {navTabs
+                  .filter(tab => isSuperUser || tab.path !== '/new-cases')
+                  .map(tab => {
                   const Icon = tab.icon;
                   const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
                   if (false) { // Removed action check
@@ -3117,8 +3152,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   </div>
                 </div>
                 <div className="max-h-96 overflow-y-auto">
-                  {/* WhatsApp Leads Messages Section */}
-                  {whatsappLeadsMessages.length > 0 && (
+                  {/* WhatsApp Leads Messages Section - Only for superusers */}
+                  {isSuperUser && whatsappLeadsMessages.length > 0 && (
                     <div className="border-b border-base-200">
                       <div className="p-3 bg-green-50 border-b border-green-100">
                         <div className="flex items-center gap-2">
@@ -3186,8 +3221,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       ))}
                     </div>
                   )}
-                  {/* Email Leads Messages Section */}
-                  {emailLeadMessages.length > 0 && (
+                  {/* Email Leads Messages Section - Only for superusers */}
+                  {isSuperUser && emailLeadMessages.length > 0 && (
                     <div className="border-b border-base-200">
                       <div className="p-3 bg-blue-50 border-b border-blue-100">
                         <div className="flex items-center gap-2">
@@ -3380,7 +3415,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   )}
                   
                   {/* Empty state - only show if no messages at all */}
-                  {rmqMessages.length === 0 && whatsappLeadsMessages.length === 0 && !currentUser && (
+                  {rmqMessages.length === 0 && 
+                   (isSuperUser ? (whatsappLeadsMessages.length === 0 && emailLeadMessages.length === 0) : true) && 
+                   assignmentNotifications.length === 0 && 
+                   !currentUser && (
                     <div className="p-8 text-center text-gray-500">
                       <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
                       <p className="font-medium">No new messages</p>

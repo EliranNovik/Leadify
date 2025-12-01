@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { EditorContent, useEditor } from '@tiptap/react';
@@ -690,6 +690,10 @@ const ContractPage: React.FC = () => {
 
   // Add at the top, after useState declarations
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
+
+  // Track last content hash to prevent unnecessary updates
+  const lastContentHashRef = useRef<string>('');
+  const lastEditingStateRef = useRef<boolean>(false);
 
   // Fetch client data
   useEffect(() => {
@@ -1403,83 +1407,101 @@ const ContractPage: React.FC = () => {
 
   // Update editor content when switching between edit/view modes
   useEffect(() => {
-    if (editor && contract && template) {
-      console.log('🎯 Editor content effect triggered:', { editing, hasContract: !!contract, hasTemplate: !!template, hasCustomPricing: !!customPricing, hasClient: !!client });
+    if (!editor || !contract || !template) return;
 
-      // Always load the content (custom_content if available, otherwise template)
-      const content = contract.custom_content || template.content;
-      console.log('🎯 Content to load:', content);
+    // Always load the content (custom_content if available, otherwise template)
+    const content = contract.custom_content || template.content;
+    
+    if (!content) return;
 
-      if (content) {
-        // ALWAYS process the content the same way for both edit and view modes
-        // This ensures consistent paragraph structure and spacing
-        // First normalize to ensure valid TipTap JSON
-        let processedContent = normalizeTiptapContent(content);
-        processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
+    // Create a hash of the content and dependencies to detect actual changes
+    // Only include fields that affect the processed content
+    const contentHash = JSON.stringify({
+      contentSource: contract.custom_content ? JSON.stringify(contract.custom_content) : JSON.stringify(template.content),
+      customPricingHash: customPricing ? JSON.stringify({
+        applicant_count: customPricing.applicant_count,
+        total_amount: customPricing.total_amount,
+        final_amount: customPricing.final_amount,
+        discount_percentage: customPricing.discount_percentage,
+        discount_amount: customPricing.discount_amount,
+        currency: customPricing.currency,
+        pricing_tiers: customPricing.pricing_tiers,
+        payment_plan: customPricing.payment_plan,
+      }) : null,
+      clientHash: client ? JSON.stringify({
+        name: client.name,
+        email: client.email,
+        phone: client.phone,
+        mobile: client.mobile,
+      }) : null,
+      contractHash: contract ? JSON.stringify({
+        contact_name: contract.contact_name,
+        contact_email: contract.contact_email,
+        contact_phone: contract.contact_phone,
+        contact_mobile: contract.contact_mobile,
+      }) : null,
+      editing,
+      renderKey,
+    });
 
-        if (customPricing && client) {
-          // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
-          processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
-        }
+    // Only update if content hash changed or editing state changed
+    const contentChanged = lastContentHashRef.current !== contentHash;
+    const editingChanged = lastEditingStateRef.current !== editing;
 
-        // Clean up any empty nodes
-        processedContent = cleanTiptapContent(processedContent);
-        
-        // Final validation before setting content
-        if (!processedContent || processedContent.type !== 'doc') {
-          console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
-          processedContent = { type: 'doc', content: [] };
-        }
-        
-        console.log('🎯 Setting processed content for both modes:', processedContent);
-        try {
-          editor.commands.setContent(processedContent);
-        } catch (error) {
-          console.error('❌ Error setting editor content:', error);
-          console.error('❌ Content that failed:', processedContent);
-          editor.commands.setContent({ type: 'doc', content: [] });
-        }
+    // If we're in edit mode and content hasn't changed, don't update (preserve user edits)
+    if (editing && !contentChanged) {
+      // Only update editability if it changed
+      if (editingChanged) {
+        editor.setEditable(editing);
+        lastEditingStateRef.current = editing;
       }
-
-      // Set editability
-      editor.setEditable(editing);
+      return;
     }
-  }, [editing, editor, contract, template, customPricing, client, renderKey]);
 
-  // Ensure editor content is loaded when template is first set
-  useEffect(() => {
-    if (editor && template && template.content && !contract?.custom_content) {
-      console.log('🎯 Initial template load - setting editor content:', template.content);
-      
-      // First normalize to ensure valid TipTap JSON
-      let processedContent = normalizeTiptapContent(template.content);
-      processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
+    // If content hasn't changed and editing state hasn't changed, skip update
+    if (!contentChanged && !editingChanged) {
+      return;
+    }
 
-      if (customPricing && client) {
-        // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
-        processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
-      }
+    console.log('🎯 Editor content effect triggered:', { editing, contentChanged, editingChanged });
 
-      // Clean up any empty nodes
-      processedContent = cleanTiptapContent(processedContent);
-      
-      // Final validation before setting content
-      if (!processedContent || processedContent.type !== 'doc') {
-        console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
-        processedContent = { type: 'doc', content: [] };
-      }
-      
+    // Process the content
+    let processedContent = normalizeTiptapContent(content);
+    processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
+
+    if (customPricing && client) {
+      // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
+      processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
+    }
+
+    // Clean up any empty nodes
+    processedContent = cleanTiptapContent(processedContent);
+    
+    // Final validation before setting content
+    if (!processedContent || processedContent.type !== 'doc') {
+      console.error('❌ Invalid content after processing, resetting to empty doc. Content:', processedContent);
+      processedContent = { type: 'doc', content: [] };
+    }
+    
+    // Only set content if it actually changed
+    if (contentChanged) {
+      console.log('🎯 Setting processed content:', processedContent);
       try {
         editor.commands.setContent(processedContent);
-        editor.setEditable(editing);
+        lastContentHashRef.current = contentHash;
       } catch (error) {
-        console.error('❌ Error setting editor content on initial template load:', error);
+        console.error('❌ Error setting editor content:', error);
         console.error('❌ Content that failed:', processedContent);
         editor.commands.setContent({ type: 'doc', content: [] });
-        editor.setEditable(editing);
+        lastContentHashRef.current = JSON.stringify({ content: 'empty' });
       }
     }
-  }, [editor, template, contract?.custom_content, editing, customPricing, client, contract]);
+
+    // Set editability
+    editor.setEditable(editing);
+    lastEditingStateRef.current = editing;
+  }, [editing, editor, contract, template, customPricing, client, renderKey]);
+
 
 
   // Save handler for edited contract
@@ -3150,9 +3172,7 @@ const ContractPage: React.FC = () => {
         <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-10 xl:gap-16 items-start">
           {/* Contract Content */}
           <div className="w-full xl:pr-0">
-            <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-              <div className="p-8 xl:p-10 2xl:p-12">
-                <div className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
+            <div className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
                   {editing ? (
                     <EditorContent editor={editor} />
                   ) : status === 'signed' ? (
@@ -3178,8 +3198,6 @@ const ContractPage: React.FC = () => {
                       key={`readonly-${renderKey}-${customPricing?.final_amount || 0}-${customPricing?.applicant_count || 0}-${customPricing?.pricing_tiers ? Object.values(customPricing.pricing_tiers).join('-') : ''}`}
                     />
                   )}
-                </div>
-              </div>
             </div>
           </div>
 
@@ -3355,36 +3373,42 @@ const ContractPage: React.FC = () => {
                         <label className="font-medium text-gray-700">Number of Applicants:</label>
                         <div className="flex items-center gap-3">
                           <button
-                            className="btn btn-circle btn-md bg-gray-200 hover:bg-blue-200 border-none flex items-center justify-center"
-                            style={{ width: 40, height: 40 }}
+                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
+                            style={{ width: 40, height: 40, '--hover-bg': '#391BC8' } as React.CSSProperties & { '--hover-bg': string }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                             onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
                             aria-label="Decrease number of applicants"
                             type="button"
                             disabled={status === 'signed'}
                           >
-                            <MinusIcon className="w-6 h-6 text-blue-600" />
+                            <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
                           </button>
                           <input
                             type="number"
                             min={1}
                             max={50}
-                            className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                            className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
+                            style={{ height: 48, borderColor: '#391BC8' }}
                             value={customPricing.applicant_count || 1}
                             onChange={e => handleApplicantCountChange(Number(e.target.value))}
-                            style={{ height: 48 }}
+                            onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                            onBlur={(e) => e.target.style.borderColor = '#391BC8'}
                             inputMode="numeric"
                             pattern="[0-9]*"
                             disabled={status === 'signed'}
                           />
                           <button
-                            className="btn btn-circle btn-md bg-gray-200 hover:bg-blue-200 border-none flex items-center justify-center"
+                            className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
                             style={{ width: 40, height: 40 }}
+                            onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                            onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                             onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
                             aria-label="Increase number of applicants"
                             type="button"
                             disabled={status === 'signed'}
                           >
-                            <PlusIcon className="w-6 h-6 text-blue-600" />
+                            <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
                           </button>
                         </div>
                       </div>
@@ -3421,41 +3445,49 @@ const ContractPage: React.FC = () => {
                               const isActive = tier.key === currentTierKey;
                               return (
                                 <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${isActive
-                                    ? 'bg-blue-50 border-2 border-blue-200'
-                                    : 'bg-gray-50 border border-gray-200'
-                                  }`}>
+                                    ? 'bg-white border-2'
+                                    : 'bg-white border border-gray-200'
+                                  }`}
+                                  style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
+                                >
                                   <span className="text-base font-semibold text-gray-700">
                                     {tier.label}:
                                   </span>
                                   <div className="flex items-center gap-3">
                                     <button
-                                      className="btn btn-circle btn-md bg-gray-200 hover:bg-blue-200 border-none flex items-center justify-center"
+                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
                                       style={{ width: 40, height: 40 }}
+                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                       onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
                                       aria-label={`Decrease price for ${tier.label}`}
                                       type="button"
                                       disabled={status === 'signed'}
                                     >
-                                      <MinusIcon className="w-6 h-6 text-blue-600" />
+                                      <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
                                     </button>
                                     <input
                                       type="number"
                                       min={0}
-                                      className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                      className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
+                                      style={{ height: 48, borderColor: '#391BC8' }}
                                       value={price}
                                       onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
-                                      style={{ height: 48 }}
+                                      onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                      onBlur={(e) => e.target.style.borderColor = '#391BC8'}
                                       disabled={status === 'signed'}
                                     />
                                     <button
-                                      className="btn btn-circle btn-md bg-gray-200 hover:bg-blue-200 border-none flex items-center justify-center"
+                                      className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
                                       style={{ width: 40, height: 40 }}
+                                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                       onClick={() => handleTierPriceChange(tier.key, price + 100)}
                                       aria-label={`Increase price for ${tier.label}`}
                                       type="button"
                                       disabled={status === 'signed'}
                                     >
-                                      <PlusIcon className="w-6 h-6 text-blue-600" />
+                                      <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
                                     </button>
                                     <span className="text-base font-semibold text-gray-600">{customPricing.currency}</span>
                                   </div>
@@ -3559,7 +3591,7 @@ const ContractPage: React.FC = () => {
                         </div>
                         <div className="flex items-center justify-between">
                           <span className="font-bold text-gray-900">Final Amount:</span>
-                          <span className="font-bold text-lg text-blue-600">{customPricing.currency} {finalAmountWithVat.toLocaleString()}</span>
+                          <span className="font-bold text-lg" style={{ color: '#391BC8' }}>{customPricing.currency} {finalAmountWithVat.toLocaleString()}</span>
                         </div>
                       </div>
 
@@ -3582,12 +3614,13 @@ const ContractPage: React.FC = () => {
                         })()}
                         <div className="space-y-3">
                           {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                            <div key={idx} className="flex items-center gap-3 bg-gray-50 p-4 rounded-lg">
+                            <div key={idx} className="flex items-center gap-3 bg-white p-4 rounded-lg border border-gray-200">
                               <input
                                 type="number"
                                 min={0}
                                 max={100}
-                                className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 no-arrows"
+                                style={{ borderColor: '#391BC8' }}
                                 value={row.percent === 0 ? '' : row.percent}
                                 onChange={e => {
                                   const value = e.target.value;
@@ -3595,6 +3628,8 @@ const ContractPage: React.FC = () => {
                                   const numValue = value === '' ? 0 : Number(value);
                                   handlePaymentPlanChange(idx, 'percent', numValue);
                                 }}
+                                onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                onBlur={(e) => e.target.style.borderColor = '#391BC8'}
                                 placeholder="%"
                                 disabled={status === 'signed'}
                               />
@@ -3602,9 +3637,12 @@ const ContractPage: React.FC = () => {
                               <span className="text-lg font-semibold text-gray-700">=</span>
                               <input
                                 type="text"
-                                className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 border-blue-300 focus:border-blue-500"
+                                className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2"
+                                style={{ borderColor: '#391BC8' }}
                                 value={row.value}
                                 onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
+                                onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                onBlur={(e) => e.target.style.borderColor = '#391BC8'}
                                 placeholder="Value + VAT"
                                 disabled={status === 'signed'}
                               />
@@ -3649,32 +3687,6 @@ const ContractPage: React.FC = () => {
                 </div>
               </div>
 
-              {/* Actions */}
-              {status === 'draft' && (
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                  <div className="p-6">
-                    <h3 className="text-lg font-semibold mb-4 text-gray-900">Actions</h3>
-                    <div className="space-y-3">
-                      <div className="alert alert-info bg-blue-50 border-blue-200">
-                        <div className="text-sm text-blue-800">
-                          <strong>Ready to sign?</strong><br />
-                          Please review the contract carefully and fill in all required fields before signing.
-                        </div>
-                      </div>
-                      <button
-                        className="btn btn-success btn-lg w-full"
-                        onClick={handleSignContract}
-                      >
-                        <CheckIcon className="w-5 h-5 mr-2" />
-                        Sign Contract
-                      </button>
-                      <p className="text-xs text-gray-500">
-                        Signing will generate payment plans and proforma invoices automatically.
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              )}
             </div>
           </div>
         </div>

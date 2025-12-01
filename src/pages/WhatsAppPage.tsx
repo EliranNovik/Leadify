@@ -50,6 +50,7 @@ interface Client {
   stage?: string;
   closer?: string;
   scheduler?: string;
+  handler?: string;
   next_followup?: string;
   probability?: number;
   balance?: number;
@@ -59,6 +60,17 @@ interface Client {
   lead_id?: string | null; // For contacts, this is the associated lead_id
   contact_id?: number; // For contacts, this is the contact_id
   whatsapp_profile_picture_url?: string | null; // WhatsApp profile picture URL
+  // Role fields for new leads (numeric IDs)
+  manager?: number | null;
+  helper?: number | null;
+  expert?: number | null;
+  case_handler_id?: number | null;
+  // Role fields for legacy leads (numeric IDs)
+  closer_id?: number | null;
+  meeting_scheduler_id?: number | null;
+  meeting_manager_id?: number | null;
+  meeting_lawyer_id?: number | null;
+  expert_id?: number | null;
 }
 
 interface WhatsAppMessage {
@@ -210,7 +222,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return hasNonAscii && isShort;
   };
 
-  // Helper function to check if a client matches user roles (same logic as Header.tsx assignment notifications)
+  // Helper function to check if a client matches user roles (matches RolesTab.tsx logic)
   const clientMatchesUserRoles = (
     client: Client,
     employeeId: number | null,
@@ -224,7 +236,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
 
     if (isLegacyLead) {
-      // For legacy leads, check numeric fields only (legacy leads use numeric IDs for roles)
+      // For legacy leads, all roles use numeric IDs (matching RolesTab.tsx)
       const roleFields = [
         (client as any).closer_id,
         (client as any).meeting_scheduler_id,
@@ -250,41 +262,44 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         return false;
       }
     } else {
-      // For new leads, check both text and numeric fields
+      // For new leads, match RolesTab.tsx logic:
+      // - Text fields (saved as display names): scheduler, closer, handler
+      // - Numeric ID fields (saved as employee IDs): manager, helper, expert, case_handler_id
       const textRoleFields = [
-        client.closer,
-        client.scheduler,
-        (client as any).handler,
-        (client as any).manager,
-        (client as any).helper,
-        (client as any).expert
+        client.closer,      // Text field
+        client.scheduler,   // Text field
+        (client as any).handler  // Text field
       ];
 
       const numericRoleFields = [
-        (client as any).closer_id,
-        (client as any).meeting_scheduler_id,
-        (client as any).meeting_manager_id,
-        (client as any).meeting_lawyer_id,
-        (client as any).expert_id,
-        (client as any).case_handler_id
+        (client as any).manager,        // Numeric ID field (NOT meeting_manager_id)
+        (client as any).helper,           // Numeric ID field (NOT meeting_lawyer_id)
+        (client as any).expert,           // Numeric ID field (NOT expert_id)
+        (client as any).case_handler_id  // Numeric ID field (for handler role)
       ];
 
-      // Check text fields
+      // Check text fields (scheduler, closer, handler are saved as display names)
       if (stringIdentifiers.length > 0) {
         const textMatch = textRoleFields.some(field => {
           if (!field || typeof field !== 'string') return false;
           return stringIdentifiers.includes(field.trim().toLowerCase());
         });
-        if (textMatch) return true;
+        if (textMatch) {
+          console.log(`✅ New lead ${client.id} matched by text role field`);
+          return true;
+        }
       }
 
-      // Check numeric fields
+      // Check numeric fields (manager, helper, expert, case_handler_id are saved as employee IDs)
       if (numericId) {
         const numericMatch = numericRoleFields.some(field => {
           if (field === null || field === undefined) return false;
           return String(field).trim() === numericId;
         });
-        if (numericMatch) return true;
+        if (numericMatch) {
+          console.log(`✅ New lead ${client.id} matched by numeric role field`);
+          return true;
+        }
       }
     }
 
@@ -801,6 +816,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       stage: associatedLead?.stage || '',
                       closer: associatedLead?.closer || '',
                       scheduler: associatedLead?.scheduler || '',
+                      handler: associatedLead?.handler || '',
+                      manager: associatedLead?.manager || null,
+                      helper: associatedLead?.helper || null,
+                      expert: associatedLead?.expert || null,
+                      case_handler_id: associatedLead?.case_handler_id || null,
                       next_followup: associatedLead?.next_followup || '',
                       probability: associatedLead?.probability || undefined,
                       balance: associatedLead?.balance || undefined,

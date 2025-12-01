@@ -134,6 +134,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
   const [userDepartment, setUserDepartment] = React.useState<string>('');
   const [userOfficialName, setUserOfficialName] = React.useState<string>('');
+  const [isSuperUser, setIsSuperUser] = React.useState<boolean>(false);
   
   // Helper function to get role display name
   const getRoleDisplayName = (role: string): string => {
@@ -180,6 +181,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               full_name,
               email,
               employee_id,
+              is_superuser,
               tenants_employee!employee_id(
                 id,
                 display_name,
@@ -195,23 +197,58 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             .eq('auth_id', user.id)
             .single();
 
-          if (!userError && userData && userData.tenants_employee) {
-            // Handle both array and single object responses
-            const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+          // If not found by auth_id, try by email
+          if ((userError || !userData) && user.email) {
+            const { data: userByEmail } = await supabase
+              .from('users')
+              .select(`
+                id,
+                full_name,
+                email,
+                employee_id,
+                is_superuser,
+                tenants_employee!employee_id(
+                  id,
+                  display_name,
+                  official_name,
+                  bonuses_role,
+                  department_id,
+                  tenant_departement!department_id(
+                    id,
+                    name
+                  )
+                )
+              `)
+              .eq('email', user.email)
+              .maybeSingle();
             
-            if (empData) {
-              // Set official name (use official_name if available, fallback to display_name or full_name)
-              const officialName = empData.official_name || empData.display_name || userData.full_name || '';
-              setUserOfficialName(officialName);
+            if (userByEmail) {
+              userData = userByEmail;
+            }
+          }
+
+          if (userData) {
+            // Set superuser status
+            setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+
+            if (userData.tenants_employee) {
+              // Handle both array and single object responses
+              const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
               
-              // Set role with proper mapping
-              const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
-              setUserRoleFromDB(roleDisplay);
-              
-              // Set department
-              const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
-              const deptName = deptData?.name || 'General';
-              setUserDepartment(deptName);
+              if (empData) {
+                // Set official name (use official_name if available, fallback to display_name or full_name)
+                const officialName = empData.official_name || empData.display_name || userData.full_name || '';
+                setUserOfficialName(officialName);
+                
+                // Set role with proper mapping
+                const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+                setUserRoleFromDB(roleDisplay);
+                
+                // Set department
+                const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
+                const deptName = deptData?.name || 'General';
+                setUserDepartment(deptName);
+              }
             }
           }
         }
@@ -294,6 +331,51 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
     setIsSidebarHovered(false);
   };
 
+  // Filter sidebar items based on superuser status
+  const filteredDesktopItems = React.useMemo(() => {
+    if (isSuperUser) return desktopSidebarItems;
+    return desktopSidebarItems
+      .filter(item => 
+        item.label !== 'WhatsApp Leads' && 
+        item.label !== 'Email Leads' && 
+        item.label !== 'Calls Ledger'
+      )
+      .map(item => {
+        // Filter subItems to remove "Assign Leads" for non-superusers
+        if (item.subItems) {
+          return {
+            ...item,
+            subItems: item.subItems.filter(subItem => 
+              isSuperUser || subItem.path !== '/new-cases'
+            )
+          };
+        }
+        return item;
+      });
+  }, [isSuperUser]);
+
+  const filteredMobileItems = React.useMemo(() => {
+    if (isSuperUser) return mobileSidebarItems;
+    return mobileSidebarItems
+      .filter(item => 
+        item.label !== 'WhatsApp Leads' && 
+        item.label !== 'Email Leads' && 
+        item.label !== 'Calls Ledger'
+      )
+      .map(item => {
+        // Filter subItems to remove "Assign Leads" for non-superusers
+        if (item.subItems) {
+          return {
+            ...item,
+            subItems: item.subItems.filter(subItem => 
+              isSuperUser || subItem.path !== '/new-cases'
+            )
+          };
+        }
+        return item;
+      });
+  }, [isSuperUser]);
+
   return (
     <>
       {/* Desktop/Tablet Sidebar */}
@@ -306,7 +388,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
         >
           {/* Navigation Items */}
           <nav className="flex flex-col mt-8 gap-2 flex-1 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-white/20 scrollbar-track-transparent hover:scrollbar-thumb-white/30 pb-4">
-            {desktopSidebarItems
+            {filteredDesktopItems
               .map((item, index) => {
               const Icon = item.icon;
               const hasSubItems = !!item.subItems;
@@ -440,7 +522,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
             {/* Navigation */}
             <nav className="flex-1 overflow-y-auto py-4">
               <ul className="space-y-2 px-2">
-                {mobileSidebarItems
+                {filteredMobileItems
                   .map((item, index) => {
                   const Icon = item.icon;
                   const isActive = item.path && location.pathname === item.path;

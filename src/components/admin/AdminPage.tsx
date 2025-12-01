@@ -166,6 +166,7 @@ const AdminPage: React.FC = () => {
   // State for current user
   const [currentUser, setCurrentUser] = useState<{ first_name?: string; email?: string } | null>(null);
   const [userLoading, setUserLoading] = useState(true);
+  const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const [isTopSectionCollapsed, setIsTopSectionCollapsed] = useState(false);
   const [dropdownPositions, setDropdownPositions] = useState<{[key: number]: 'left' | 'right'}>({});
   const dropdownRef = useRef<HTMLDivElement>(null);
@@ -343,6 +344,7 @@ const AdminPage: React.FC = () => {
           email,
           auth_id,
           employee_id,
+          is_superuser,
           tenants_employee!employee_id(
             id,
             display_name,
@@ -369,6 +371,7 @@ const AdminPage: React.FC = () => {
             email,
             auth_id,
             employee_id,
+            is_superuser,
             tenants_employee!employee_id(
               id,
               display_name,
@@ -414,6 +417,8 @@ const AdminPage: React.FC = () => {
           first_name: userData.first_name,
           email: userData.email
         });
+        // Set superuser status
+        setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
       } else {
         console.log('❌ No user found in users table for auth user:', user.id);
         console.log('🔍 This means either:');
@@ -700,6 +705,103 @@ const AdminPage: React.FC = () => {
     await supabase.auth.signOut();
     navigate('/login');
   };
+
+  // If user is not a superuser, show limited view
+  if (!isSuperUser) {
+    return (
+      <div className="min-h-screen bg-base-100 w-full overflow-y-auto">
+        <div className="max-w-6xl mx-auto px-4 py-8">
+          {/* Welcome Section */}
+          <div className="text-center py-8 mb-12">
+            <h1 className="text-4xl md:text-4xl lg:text-5xl font-bold mb-4 leading-tight" style={{ color: '#4218CC' }}>
+              {getTimeBasedGreeting()}{currentUser?.first_name ? `, ${currentUser.first_name}` : ''}!
+            </h1>
+            <p className="text-xl md:text-xl lg:text-2xl font-medium mb-8" style={{ color: '#4218CC' }}>Welcome to your CRM Admin Panel</p>
+          </div>
+
+          {/* Limited Access Boxes */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6 max-w-4xl mx-auto">
+            {/* Email Templates Box */}
+            <button
+              onClick={() => {
+                const miscTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
+                const emailTemplatesSub = ADMIN_TABS[miscTab]?.subcategories.findIndex(sub => sub === 'Email Templates');
+                setSelected({ tab: miscTab, sub: emailTemplatesSub || 0 });
+              }}
+              className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white relative overflow-hidden p-8 h-48"
+            >
+              <div className="flex items-center gap-4">
+                <div className="flex items-center justify-center w-16 h-16 rounded-full bg-white/20 shadow">
+                  <svg className="w-8 h-8 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M3 8l7.89 5.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-3xl font-extrabold text-white leading-tight">Email Templates</div>
+                  <div className="text-white/80 text-sm font-medium mt-2">Manage email templates</div>
+                </div>
+              </div>
+            </button>
+
+            {/* Public Messages Box */}
+            <button
+              onClick={() => {
+                const miscTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
+                const publicMessagesSub = ADMIN_TABS[miscTab]?.subcategories.findIndex(sub => sub === 'Public messages');
+                setSelected({ tab: miscTab, sub: publicMessagesSub || 0 });
+              }}
+              className="rounded-2xl cursor-pointer transition-all duration-300 hover:scale-[1.03] hover:shadow-2xl shadow-xl bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white relative overflow-hidden p-8 h-48"
+            >
+              <div className="flex items-center gap-4">
+                <div className="flex items-center justify-center w-16 h-16 rounded-full bg-white/20 shadow">
+                  <svg className="w-8 h-8 text-white opacity-90" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-3xl font-extrabold text-white leading-tight">Public Messages</div>
+                  <div className="text-white/80 text-sm font-medium mt-2">Manage public messages</div>
+                </div>
+              </div>
+            </button>
+          </div>
+
+          {/* Content Area for selected items */}
+          {selected.tab !== null && selected.sub !== null && (
+            <div className="bg-base-100 rounded-xl shadow p-4 md:p-8 min-h-[200px] mt-8">
+              {(() => {
+                const miscTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
+                const selectedTab = ADMIN_TABS[selected.tab];
+                const selectedSub = selectedTab?.subcategories[selected.sub];
+
+                if (selectedSub === 'Email Templates') {
+                  return <div className="w-full"><EmailTemplatesManager /></div>;
+                } else if (selectedSub === 'Public messages') {
+                  return (
+                    <div className="flex items-center justify-center text-xl font-semibold text-primary">
+                      <span className="text-base text-base-content/60 font-normal">Public Messages (Placeholder content)</span>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+            </div>
+          )}
+
+          {/* Logout Button */}
+          <div className="flex justify-center mt-8">
+            <button
+              onClick={handleLogout}
+              className="btn btn-outline btn-error"
+            >
+              <ArrowRightOnRectangleIcon className="w-5 h-5 mr-2" />
+              Logout
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen bg-base-100 w-full overflow-hidden">
