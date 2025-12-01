@@ -136,8 +136,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
+  const [cachedResults, setCachedResults] = useState<CombinedLead[]>([]); // Cache full results for filtering
   const [isSearching, setIsSearching] = useState(false);
   const currentSearchIdRef = useRef(0);
+  const lastQueryRef = useRef<string>(''); // Track last query to detect significant changes
   const isMouseOverSearchRef = useRef(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -451,41 +453,105 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, []);
 
+  // Helper function to extract digits from string
+  const getDigits = (str: string): string => {
+    return str.replace(/\D/g, '');
+  };
+
+  // Client-side filter function for instant results (finds all matches)
+  const filterResults = (results: CombinedLead[], query: string): CombinedLead[] => {
+    if (!query.trim()) return results;
+    
+    const lower = query.toLowerCase();
+    const digits = getDigits(query);
+    const isPhone = digits.length >= 3;
+    
+    return results.filter((lead) => {
+      const name = (lead.contactName || lead.name || '').toLowerCase();
+      const email = (lead.email || '').toLowerCase();
+      const leadNumber = (lead.lead_number || '').toLowerCase();
+      const phoneDigits = getDigits(lead.phone || '');
+      const mobileDigits = getDigits(lead.mobile || '');
+      
+      // Check if matches query (using contains for partial matches)
+      if (name.includes(lower) || email.includes(lower) || leadNumber.includes(lower)) {
+        return true;
+      }
+      
+      // For phone, check if digits are contained (not just ends with)
+      if (isPhone && (phoneDigits.includes(digits) || mobileDigits.includes(digits))) {
+        return true;
+      }
+      
+      return false;
+    });
+  };
+
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    // Clear results immediately when search value changes
-    setSearchResults([]);
-    
-    // Increment search ID to invalidate any pending searches
-    const searchId = Date.now(); // Use timestamp for unique ID
+    const searchId = Date.now();
     currentSearchIdRef.current = searchId;
+    const trimmed = searchValue.trim();
 
-    if (searchValue.trim()) {
-      setIsSearching(true);
-      // Add debounce (300ms) to prevent too many requests, especially for slow legacy searches
-      searchTimeoutRef.current = setTimeout(async () => {
-        try {
-          const results = await searchLeads(searchValue);
-          
-          // Only set results if this is still the current search
-          if (searchId === currentSearchIdRef.current) {
-            setSearchResults(results);
-            setIsSearching(false);
-          }
-        } catch (error) {
-          console.error('Search error:', error);
-          // Only clear results if this is still the current search
-          if (searchId === currentSearchIdRef.current) {
-            setSearchResults([]);
-            setIsSearching(false);
-          }
+    if (trimmed) {
+      const lastQuery = lastQueryRef.current;
+      const queryIsShorter = lastQuery && trimmed.length < lastQuery.length; // User deleted characters
+      const queryIsDifferent = !lastQuery || !trimmed.toLowerCase().startsWith(lastQuery.toLowerCase()); // Different search direction
+      const hasNoCache = cachedResults.length === 0;
+      const isVeryShort = trimmed.length < 3;
+
+      // Always filter cached results for instant feedback (if we have cache)
+      if (cachedResults.length > 0) {
+        const filtered = filterResults(cachedResults, trimmed);
+        setSearchResults(filtered);
+        setIsSearching(false); // Don't show loading when filtering cached results
+      } else if (searchResults.length > 0) {
+        // Fallback: filter current results if no cache
+        const filtered = filterResults(searchResults, trimmed);
+        if (filtered.length > 0) {
+          setSearchResults(filtered);
         }
-      }, 300); // 300ms debounce to reduce requests for slow legacy searches
+      }
+      
+      // Only fetch new results if:
+      // 1. Query is shorter (user deleted, need broader results)
+      // 2. Query is different (doesn't start with last query - new search direction)
+      // 3. No cache exists
+      // 4. Query is very short (< 3 chars) - always fetch for initial results
+      const needsNewSearch = queryIsShorter || queryIsDifferent || hasNoCache || isVeryShort;
+      
+      if (needsNewSearch) {
+        setIsSearching(true);
+        
+        // Debounce the actual API call
+        searchTimeoutRef.current = setTimeout(async () => {
+          try {
+            const results = await searchLeads(trimmed);
+            
+            // Only set results if this is still the current search
+            if (searchId === currentSearchIdRef.current) {
+              setCachedResults(results); // Cache full results
+              const filtered = filterResults(results, trimmed);
+              setSearchResults(filtered);
+              lastQueryRef.current = trimmed;
+              setIsSearching(false);
+            }
+          } catch (error) {
+            console.error('Search error:', error);
+            if (searchId === currentSearchIdRef.current) {
+              setIsSearching(false);
+            }
+          }
+        }, 300); // 300ms debounce
+      }
     } else {
-      // Only set isSearching to false if search value is empty
+      // Clear everything when search is empty
+      setSearchResults([]);
+      setCachedResults([]);
+      lastQueryRef.current = '';
       setIsSearching(false);
     }
 

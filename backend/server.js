@@ -359,7 +359,8 @@ server.listen(PORT, () => {
   console.log(`📡 WebSocket server enabled`);
   console.log(`🌐 Frontend should connect to: ${process.env.FRONTEND_URL || "http://localhost:5173"}`);
 
-  startMailboxSyncScheduler();
+  // Email fetching schedulers disabled
+  // startMailboxSyncScheduler();
   startMeetingNotificationScheduler();
 });
 

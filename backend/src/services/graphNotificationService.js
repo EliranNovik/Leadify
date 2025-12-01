@@ -72,6 +72,7 @@ class GraphNotificationService {
   }
 
   async _runUserSync(userId) {
+    // Webhook-triggered syncs are still enabled (only periodic scheduler is disabled)
     await graphMailboxSyncService.syncMailboxForUser(userId, { trigger: 'webhook' });
   }
 }
