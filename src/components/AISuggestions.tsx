@@ -485,8 +485,8 @@ const AISuggestions = forwardRef((props, ref) => {
         </div>
       </div>
 
-      {/* AI Message */}
-      {aiMessage && (
+      {/* AI Message - Commented out temporarily */}
+      {/* {aiMessage && (
         <div className="mt-4 relative flex flex-col bg-white rounded-2xl shadow-md p-5 w-full">
           <div className="flex items-start justify-between mb-2 flex-shrink-0">
             <div className="flex items-center gap-2">
@@ -506,7 +506,7 @@ const AISuggestions = forwardRef((props, ref) => {
             </div>
           )}
         </div>
-      )}
+      )} */}
 
 
     </div>

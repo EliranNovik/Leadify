@@ -4,6 +4,7 @@ import AISuggestions from './AISuggestions';
 import AISuggestionsModal from './AISuggestionsModal';
 import OverdueFollowups from './OverdueFollowups';
 import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
+import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
@@ -126,6 +127,43 @@ const Dashboard: React.FC = () => {
   }, []);
 
   // Fetch detailed unavailable employees data for table
+  // Helper function to map role codes to display names
+  const getRoleDisplayName = (roleCode: string | null | undefined): string => {
+    if (!roleCode) return 'N/A';
+    
+    const roleMap: { [key: string]: string } = {
+      'c': 'Closer',
+      's': 'Scheduler',
+      'h': 'Handler',
+      'n': 'No role',
+      'e': 'Expert',
+      'z': 'Manager',
+      'Z': 'Manager',
+      'p': 'Partner',
+      'm': 'Manager',
+      'dm': 'Department Manager',
+      'pm': 'Project Manager',
+      'se': 'Secretary',
+      'b': 'Book keeper',
+      'partners': 'Partners',
+      'dv': 'Developer',
+      'ma': 'Marketing',
+      'P': 'Partner',
+      'M': 'Manager',
+      'DM': 'Department Manager',
+      'PM': 'Project Manager',
+      'SE': 'Secretary',
+      'B': 'Book keeper',
+      'Partners': 'Partners',
+      'd': 'Diverse',
+      'f': 'Finance',
+      'col': 'Collection',
+      'lawyer': 'Helper Closer'
+    };
+    
+    return roleMap[roleCode] || roleCode || 'N/A';
+  };
+
   const fetchUnavailableEmployeesData = async () => {
     setUnavailableEmployeesLoading(true);
     try {
@@ -137,7 +175,15 @@ const Dashboard: React.FC = () => {
 
       const { data: employees, error } = await supabase
         .from('tenants_employee')
-        .select('id, display_name, unavailable_times, unavailable_ranges')
+        .select(`
+          id,
+          display_name,
+          unavailable_times,
+          unavailable_ranges,
+          bonuses_role,
+          department_id,
+          tenant_departement!department_id(id, name)
+        `)
         .not('unavailable_times', 'is', null);
 
       if (error) {
@@ -193,9 +239,12 @@ const Dashboard: React.FC = () => {
               month: '2-digit'
             });
 
+            const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
             detailedData.push({
               id: `${employee.id}-${time.id}`,
               employeeName: employee.display_name,
+              role: getRoleDisplayName(employee.bonuses_role),
+              department: departmentName,
               date: formattedDate,
               time: `${time.startTime} - ${time.endTime}`,
               reason: time.reason,
@@ -216,9 +265,12 @@ const Dashboard: React.FC = () => {
               month: '2-digit'
             });
 
+            const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
             detailedData.push({
               id: `${employee.id}-${range.id}`,
               employeeName: employee.display_name,
+              role: getRoleDisplayName(employee.bonuses_role),
+              department: departmentName,
               date: `${startDateFormatted} to ${endDateFormatted}`,
               time: 'All Day',
               reason: range.reason,
@@ -303,7 +355,10 @@ const Dashboard: React.FC = () => {
       let newLeadsQuery = supabase
         .from('leads')
         .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, category_id, balance, balance_currency, probability, handler, scheduler, closer, meeting_manager_id, expert_id, case_handler_id')
-        .not('next_followup', 'is', null);
+        .not('next_followup', 'is', null)
+        .not('lead_number', 'is', null) // Filter out deleted leads (those without lead_number)
+        .neq('lead_number', '') // Also filter out empty string lead_numbers
+        .is('unactivated_at', null); // Filter out inactive leads (same logic as closed deals widget)
       
       // Apply date filter - exact date matching
       if (dateType === 'today') {
@@ -356,14 +411,15 @@ const Dashboard: React.FC = () => {
         const baseSelect = 'id, name, stage, topic, next_followup, expert_id, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, case_handler_id, closer_id, category_id, total, currency_id';
         
         // Query each role separately (using indexed columns) and fetch all with next_followup
+        // Filter out inactive leads (status != 10) - same logic as closed deals widget
         // Then filter by date in JavaScript
         const roleQueries = [
-          { name: 'expert_id', query: supabase.from('leads_lead').select(baseSelect).eq('expert_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
-          { name: 'meeting_manager_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_manager_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
-          { name: 'meeting_lawyer_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_lawyer_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
-          { name: 'meeting_scheduler_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_scheduler_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
-          { name: 'case_handler_id', query: supabase.from('leads_lead').select(baseSelect).eq('case_handler_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
-          { name: 'closer_id', query: supabase.from('leads_lead').select(baseSelect).eq('closer_id', userEmployeeId).not('next_followup', 'is', null).limit(1000) },
+          { name: 'expert_id', query: supabase.from('leads_lead').select(baseSelect).eq('expert_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
+          { name: 'meeting_manager_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_manager_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
+          { name: 'meeting_lawyer_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_lawyer_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
+          { name: 'meeting_scheduler_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_scheduler_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
+          { name: 'case_handler_id', query: supabase.from('leads_lead').select(baseSelect).eq('case_handler_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
+          { name: 'closer_id', query: supabase.from('leads_lead').select(baseSelect).eq('closer_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
         ];
         
         // Execute all queries with timeout protection
@@ -4791,18 +4847,44 @@ const Dashboard: React.FC = () => {
 
   // Refs and state for matching AI Suggestions height
   const aiRef = useRef<HTMLDivElement>(null);
+  const performanceDashboardRef = useRef<HTMLDivElement>(null);
   const [aiHeight, setAiHeight] = useState<number | undefined>(undefined);
 
   useEffect(() => {
     function updateHeight() {
-      if (aiRef.current) {
-        setAiHeight(aiRef.current.offsetHeight);
+      // Measure performance dashboard height and apply to AI assistant
+      if (performanceDashboardRef.current && aiRef.current && !aiContainerCollapsed) {
+        const performanceHeight = performanceDashboardRef.current.offsetHeight;
+        setAiHeight(performanceHeight);
+      } else if (aiContainerCollapsed) {
+        setAiHeight(undefined);
       }
     }
-    updateHeight();
+    
+    // Initial update with delay to ensure DOM is ready
+    const timeoutId = setTimeout(updateHeight, 100);
+    
+    // Update on resize
     window.addEventListener('resize', updateHeight);
-    return () => window.removeEventListener('resize', updateHeight);
-  }, []);
+    
+    // Use ResizeObserver for more accurate height tracking
+    let resizeObserver: ResizeObserver | null = null;
+    if (performanceDashboardRef.current) {
+      resizeObserver = new ResizeObserver(() => {
+        // Small delay to ensure DOM is updated
+        setTimeout(updateHeight, 50);
+      });
+      resizeObserver.observe(performanceDashboardRef.current);
+    }
+    
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('resize', updateHeight);
+      if (resizeObserver) {
+        resizeObserver.disconnect();
+      }
+    };
+  }, [aiContainerCollapsed]);
 
   const [showAISuggestionsModal, setShowAISuggestionsModal] = useState(false);
 
@@ -5416,7 +5498,11 @@ const Dashboard: React.FC = () => {
       // Legacy leads come from 'leads_lead' table and don't have lead_number, or have any role ID fields
       const newLeads = leadsData.filter(lead => {
         // New leads have lead_number as a string field
-        return lead.lead_number && typeof lead.lead_number === 'string' && !lead.id?.toString().startsWith('legacy_');
+        // Filter out deleted leads (those without lead_number)
+        return lead.lead_number && 
+               typeof lead.lead_number === 'string' && 
+               lead.lead_number.trim() !== '' &&
+               !lead.id?.toString().startsWith('legacy_');
       });
       
       const legacyLeads = leadsData.filter(lead => {
@@ -5524,8 +5610,25 @@ const Dashboard: React.FC = () => {
         }
       }
       
-      // Process new leads
-      const processedNewLeads = newLeads.map(lead => {
+      // Process new leads - filter out any that don't have lead_number (deleted leads)
+      // Also filter out leads where lead_number equals the ID (which means it's deleted)
+      const validNewLeads = newLeads.filter(lead => {
+        if (!lead.lead_number || typeof lead.lead_number !== 'string' || lead.lead_number.trim() === '') {
+          return false; // No lead_number = deleted
+        }
+        // Check if lead_number is actually the ID (UUID or numeric ID) - this also means deleted
+        const leadIdStr = lead.id?.toString() || '';
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lead.lead_number);
+        const isRawId = lead.lead_number === leadIdStr || lead.lead_number === String(lead.id);
+        if (isUUID || isRawId) {
+          return false; // lead_number is the ID = deleted lead
+        }
+        return true; // Valid lead_number
+      });
+      
+      console.log(`Filtered out ${newLeads.length - validNewLeads.length} deleted leads (without valid lead_number)`);
+      
+      const processedNewLeads = validNewLeads.map(lead => {
         // Resolve expert name - check if expert is a numeric ID or a text name
         let expertName = 'Not assigned';
         if (lead.expert_id && typeof lead.expert_id === 'number') {
@@ -5552,9 +5655,12 @@ const Dashboard: React.FC = () => {
           categoryName = lead.category;
         }
         
+        // Use lead_number directly from database - it's already fetched from the leads table
+        // At this point we know lead_number exists and is valid (filtered above)
         return {
           ...lead,
           lead_type: 'new' as const,
+          lead_number: lead.lead_number, // Use lead_number from database, guaranteed to exist
           stage_name: (lead.stage !== null && lead.stage !== undefined) 
             ? (newLeadStageNameMap[lead.stage] || getStageName(String(lead.stage)))
             : 'Follow-up Required',
@@ -5651,13 +5757,32 @@ const Dashboard: React.FC = () => {
         probability: 0 // Legacy leads don't have probability field
       }));
 
-      // Combine and sort by follow-up date (oldest first)
-      const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => {
-        if (!a.next_followup && !b.next_followup) return 0;
-        if (!a.next_followup) return 1;
-        if (!b.next_followup) return -1;
-        return new Date(a.next_followup).getTime() - new Date(b.next_followup).getTime();
-      });
+      // Combine and filter out deleted leads (new leads without lead_number or with ID as lead_number)
+      const allLeads = [...processedNewLeads, ...processedLegacyLeads]
+        .filter(lead => {
+          // For new leads, ensure they have a valid lead_number (deleted leads don't have one)
+          if (lead.lead_type === 'new') {
+            if (!lead.lead_number || typeof lead.lead_number !== 'string' || lead.lead_number.trim() === '') {
+              return false; // No lead_number = deleted
+            }
+            // Check if lead_number is actually the ID (UUID or numeric ID) - this also means deleted
+            const leadIdStr = lead.id?.toString() || '';
+            const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(lead.lead_number);
+            const isRawId = lead.lead_number === leadIdStr || lead.lead_number === String(lead.id);
+            if (isUUID || isRawId) {
+              return false; // lead_number is the ID = deleted lead
+            }
+            return true; // Valid lead_number
+          }
+          // Legacy leads are always included (they use ID as lead_number)
+          return true;
+        })
+        .sort((a, b) => {
+          if (!a.next_followup && !b.next_followup) return 0;
+          if (!a.next_followup) return 1;
+          if (!b.next_followup) return -1;
+          return new Date(a.next_followup).getTime() - new Date(b.next_followup).getTime();
+        });
 
       console.log('Final processed leads:', allLeads.length);
       return allLeads;
@@ -6432,17 +6557,15 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* 2. AI Suggestions (left) and Scoreboard (right) side by side */}
-      <div className="flex flex-col md:flex-row mb-10 w-full relative transition-all duration-500 ease-in-out" style={{ alignItems: 'stretch' }}>
+      <div className="flex flex-col md:flex-row mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start">
         {/* AI Suggestions Box */}
+        {!aiContainerCollapsed && (
         <div 
           ref={aiRef} 
-          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out ${
-            aiContainerCollapsed 
-              ? 'w-0 p-0 border-0 shadow-none overflow-hidden opacity-0' 
-              : 'w-full md:w-1/5 opacity-100'
-          }`}
+          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 overflow-hidden`}
+          style={aiHeight ? { height: `${aiHeight}px`, minHeight: `${aiHeight}px`, maxHeight: `${aiHeight}px` } : undefined}
         >
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex justify-between items-center mb-4 flex-shrink-0">
             <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
             <button
               onClick={() => setAiContainerCollapsed(true)}
@@ -6452,15 +6575,25 @@ const Dashboard: React.FC = () => {
               <XMarkIcon className="w-5 h-5" />
             </button>
           </div>
-          <AISuggestions />
+          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+            <style>{`
+              .scrollbar-hide::-webkit-scrollbar {
+                display: none;
+              }
+            `}</style>
+            <AISuggestions />
+          </div>
         </div>
+        )}
         
         {/* Professional CRM Scoreboard */}
-        <div className={`bg-white border border-gray-200 rounded-2xl shadow-lg flex flex-col justify-between transition-all duration-500 ease-in-out ${
-          aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
-        } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}>
-          <div className="w-full relative overflow-hidden">
-            <div className="card-body p-8">
+        <div 
+          ref={performanceDashboardRef}
+          className={`bg-white border border-gray-200 rounded-2xl shadow-lg transition-all duration-500 ease-in-out ${
+            aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
+          } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}
+        >
+          <div className="p-8">
               {/* Header with gradient background */}
               <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
                 <div className="flex items-center gap-3">
@@ -7108,7 +7241,6 @@ const Dashboard: React.FC = () => {
 
               {/* Quick Actions removed per request */}
             </div>
-          </div>
         </div>
       </div>
 
@@ -7138,9 +7270,11 @@ const Dashboard: React.FC = () => {
           ) : unavailableEmployeesData.length > 0 ? (
             <div className="overflow-x-auto px-6 pb-6">
               <table className="table w-full">
-                <thead className="bg-gray-50 border-b border-gray-200">
+                <thead className="bg-white border-b border-gray-200">
                   <tr>
                     <th className="text-gray-700 font-medium">Employee</th>
+                    <th className="text-gray-700 font-medium">Role</th>
+                    <th className="text-gray-700 font-medium">Department</th>
                     <th className="text-gray-700 font-medium">Date</th>
                     <th className="text-gray-700 font-medium">Time</th>
                     <th className="text-gray-700 font-medium">Reason</th>
@@ -7150,6 +7284,8 @@ const Dashboard: React.FC = () => {
                   {unavailableEmployeesData.map((item) => (
                     <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
                       <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
+                      <td className="text-gray-700 py-3">{item.role}</td>
+                      <td className="text-gray-700 py-3">{item.department}</td>
                       <td className="text-gray-700 py-3">{item.date}</td>
                       <td className="text-gray-700 py-3">{item.time}</td>
                       <td className="text-gray-700 py-3">{item.reason}</td>
@@ -7172,6 +7308,11 @@ const Dashboard: React.FC = () => {
             </div>
           )}
         </div>
+      </div>
+
+      {/* Closed deals without Payments plan Box */}
+      <div className="w-full mt-12">
+        <ClosedDealsWithoutPaymentPlanWidget maxItems={10} />
       </div>
 
       {/* My Waiting Leads Box */}

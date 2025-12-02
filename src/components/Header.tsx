@@ -140,6 +140,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearching, setIsSearching] = useState(false);
   const currentSearchIdRef = useRef(0);
   const lastQueryRef = useRef<string>(''); // Track last query to detect significant changes
+  const lastSearchTypeRef = useRef<'name' | 'phone' | 'lead' | 'email'>('name'); // Track last search type
   const isMouseOverSearchRef = useRef(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -458,13 +459,35 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return str.replace(/\D/g, '');
   };
 
+  // Helper function to detect search type (same logic as API)
+  const getSearchType = useCallback((query: string): 'name' | 'phone' | 'lead' | 'email' => {
+    const trimmed = query.trim();
+    if (!trimmed) return 'name';
+    
+    const digits = getDigits(trimmed);
+    const noPrefix = trimmed.replace(/^[LC]/i, '');
+    const hasPrefix = /^[LC]/i.test(trimmed);
+    const isNumeric = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
+    const isEmail = trimmed.includes('@');
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    const isPhone = digits.length >= 6 || startsWithZero || (digits.length >= 3 && digits.length <= 5 && !isNumeric && !hasPrefix && trimmed.length > digits.length);
+    const isLeadNumber = hasPrefix || (isNumeric && digits.length <= 5 && !startsWithZero);
+    
+    if (isEmail) return 'email';
+    if (isLeadNumber) return 'lead';
+    if (isPhone) return 'phone';
+    return 'name';
+  }, []);
+
   // Client-side filter function for instant results (finds all matches)
-  const filterResults = (results: CombinedLead[], query: string): CombinedLead[] => {
+  const filterResults = useCallback((results: CombinedLead[], query: string): CombinedLead[] => {
     if (!query.trim()) return results;
     
     const lower = query.toLowerCase();
     const digits = getDigits(query);
-    const isPhone = digits.length >= 3;
+    const isPhone = digits.length >= 4; // Match API logic: 4+ digits for phone
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    const isPhoneSearch = digits.length >= 6 || startsWithZero;
     
     return results.filter((lead) => {
       const name = (lead.contactName || lead.name || '').toLowerCase();
@@ -478,14 +501,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return true;
       }
       
-      // For phone, check if digits are contained (not just ends with)
-      if (isPhone && (phoneDigits.includes(digits) || mobileDigits.includes(digits))) {
-        return true;
+      // For phone, check if digits are contained in stored phone numbers
+      // Handle both with and without leading zero
+      if (isPhoneSearch) {
+        // Check if search digits appear in stored phone/mobile (handles country codes)
+        const normalizedSearch = digits.startsWith('0') ? digits.slice(1) : digits;
+        const normalizedPhone = phoneDigits.startsWith('0') ? phoneDigits.slice(1) : phoneDigits;
+        const normalizedMobile = mobileDigits.startsWith('0') ? mobileDigits.slice(1) : mobileDigits;
+        
+        // Check if search digits appear anywhere in the stored number
+        if (phoneDigits.includes(digits) || mobileDigits.includes(digits) ||
+            phoneDigits.includes(normalizedSearch) || mobileDigits.includes(normalizedSearch) ||
+            normalizedPhone.includes(normalizedSearch) || normalizedMobile.includes(normalizedSearch)) {
+          return true;
+        }
       }
       
       return false;
     });
-  };
+  }, []);
 
   useEffect(() => {
     if (searchTimeoutRef.current) {
@@ -497,18 +531,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const trimmed = searchValue.trim();
 
     if (trimmed) {
-      const lastQuery = lastQueryRef.current;
-      const queryIsShorter = lastQuery && trimmed.length < lastQuery.length; // User deleted characters
-      const queryIsDifferent = !lastQuery || !trimmed.toLowerCase().startsWith(lastQuery.toLowerCase()); // Different search direction
-      const hasNoCache = cachedResults.length === 0;
-      const isVeryShort = trimmed.length < 3;
-
-      // Always filter cached results for instant feedback (if we have cache)
-      if (cachedResults.length > 0) {
+      // STEP 0: Check if search type changed - if so, clear cache to avoid stale results
+      const currentSearchType = getSearchType(trimmed);
+      const searchTypeChanged = lastSearchTypeRef.current !== currentSearchType;
+      
+      if (searchTypeChanged) {
+        // Clear cache when search type changes (e.g., name -> phone)
+        // This prevents empty name search cache from blocking phone searches
+        setCachedResults([]);
+        setSearchResults([]);
+      }
+      
+      // STEP 1: ALWAYS filter cached results FIRST for instant feedback
+      // This ensures users see immediate results when typing fast, even before API responds
+      if (cachedResults.length > 0 && !searchTypeChanged) {
         const filtered = filterResults(cachedResults, trimmed);
         setSearchResults(filtered);
-        setIsSearching(false); // Don't show loading when filtering cached results
-      } else if (searchResults.length > 0) {
+        setIsSearching(false); // Don't show loading when we have cached results
+      } else if (searchResults.length > 0 && !searchTypeChanged) {
         // Fallback: filter current results if no cache
         const filtered = filterResults(searchResults, trimmed);
         if (filtered.length > 0) {
@@ -516,17 +556,29 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
       
-      // Only fetch new results if:
-      // 1. Query is shorter (user deleted, need broader results)
-      // 2. Query is different (doesn't start with last query - new search direction)
-      // 3. No cache exists
-      // 4. Query is very short (< 3 chars) - always fetch for initial results
-      const needsNewSearch = queryIsShorter || queryIsDifferent || hasNoCache || isVeryShort;
+      // STEP 2: Determine if we need a new API call
+      const lastQuery = lastQueryRef.current;
+      const queryExtendsLast = lastQuery && trimmed.toLowerCase().startsWith(lastQuery.toLowerCase()) && trimmed.length > lastQuery.length;
+      const hasNoCache = cachedResults.length === 0;
+      const isVeryShort = trimmed.length < 2;
+      
+      // Fetch new results if:
+      // 1. No cache exists (first search)
+      // 2. Query is very short (< 2 chars) - always fetch for initial results
+      // 3. Query doesn't extend last query (new search direction, not continuation)
+      // 4. Search type changed (e.g., from name to phone) - CRITICAL: prevents empty cache from blocking phone searches
+      const needsNewSearch = hasNoCache || isVeryShort || !queryExtendsLast || searchTypeChanged;
       
       if (needsNewSearch) {
-        setIsSearching(true);
+        // Show loading spinner only if we don't have cached results to display
+        if (cachedResults.length === 0 && searchResults.length === 0) {
+          setIsSearching(true);
+        }
         
-        // Debounce the actual API call
+        // Debounce API calls to avoid excessive requests
+        // Shorter debounce for faster response
+        const debounceTime = trimmed.length <= 2 ? 150 : 200;
+        
         searchTimeoutRef.current = setTimeout(async () => {
           try {
             const results = await searchLeads(trimmed);
@@ -537,6 +589,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const filtered = filterResults(results, trimmed);
               setSearchResults(filtered);
               lastQueryRef.current = trimmed;
+              lastSearchTypeRef.current = currentSearchType; // Update search type
               setIsSearching(false);
             }
           } catch (error) {
@@ -545,13 +598,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               setIsSearching(false);
             }
           }
-        }, 300); // 300ms debounce
+        }, debounceTime);
+      } else {
+        // Query extends last query and we have cache - no need to fetch
+        // Results already filtered above
+        setIsSearching(false);
       }
     } else {
       // Clear everything when search is empty
       setSearchResults([]);
       setCachedResults([]);
       lastQueryRef.current = '';
+      lastSearchTypeRef.current = 'name';
       setIsSearching(false);
     }
 
@@ -560,7 +618,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         clearTimeout(searchTimeoutRef.current);
       }
     };
-  }, [searchValue]);
+  }, [searchValue, filterResults, getSearchType]);
 
   // Keep search active when filter dropdown is open
   useEffect(() => {
