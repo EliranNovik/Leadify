@@ -469,6 +469,15 @@ body, html, #root {
     outline: none !important;
   }
   
+  /* Override DaisyUI disabled button styles for white buttons */
+  .notify-btn-disabled.btn:disabled,
+  .notify-btn-disabled.btn[disabled] {
+    background-color: #ffffff !important;
+    opacity: 1 !important;
+    color: #111827 !important;
+    border-color: #d1d5db !important;
+  }
+  
   /* Navigation elements */
   .dark .navbar .btn,
   .dark .navbar .dropdown-content,

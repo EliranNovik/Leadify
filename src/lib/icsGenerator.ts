@@ -282,6 +282,12 @@ export function generateICS(details: ICSMeetingDetails): string {
   
   // Build ICS content with proper timezone handling
   // Use floating time (no timezone) or UTC, but we'll use UTC for maximum compatibility
+  // For Teams meetings, show "Microsoft Teams Meeting" without the link in location
+  // The link is provided in URL and other fields for the join button
+  const locationField = teamsJoinUrl && location.toLowerCase().includes('teams')
+    ? 'Microsoft Teams Meeting'
+    : escapeICS(location);
+  
   const icsLines = [
     'BEGIN:VCALENDAR',
     'PRODID:-//RMQ 2.0//Meeting Invitation//EN',
@@ -294,13 +300,20 @@ export function generateICS(details: ICSMeetingDetails): string {
     `DTSTART:${startUTC}`,
     `DTEND:${endUTC}`,
     `SUMMARY:${escapeICS(subject)}`,
-    `LOCATION:${escapeICS(location)}`,
+    `LOCATION:${locationField}`,
     ...(fullDescription ? [`DESCRIPTION:${escapeICS(fullDescription)}`] : []),
     `ORGANIZER;CN="${escapeICS(organizerName)}":MAILTO:${organizerEmail}`,
     `ATTENDEE;CN="${escapeICS(attendeeName || attendeeEmail)}";RSVP=TRUE:MAILTO:${attendeeEmail}`,
     'STATUS:CONFIRMED',
     'SEQUENCE:0',
-    ...(teamsJoinUrl ? [`URL:${teamsJoinUrl}`, `X-MICROSOFT-SKYPETEAMSMEETINGURL:${teamsJoinUrl}`] : []),
+    ...(teamsJoinUrl ? [
+      `URL:${teamsJoinUrl}`,
+      `X-MICROSOFT-SKYPETEAMSMEETINGURL:${teamsJoinUrl}`,
+      `X-MICROSOFT-SKYPETEAMSMEETINGURL;VALUE=URI:${teamsJoinUrl}`,
+      // Add Google Calendar specific fields for better Teams integration
+      `X-GOOGLE-CONFERENCE:${teamsJoinUrl}`,
+      `CONFERENCE;VALUE=URI;FEATURE=VIDEO:${teamsJoinUrl}`
+    ] : []),
     'END:VEVENT',
     'END:VCALENDAR'
   ];

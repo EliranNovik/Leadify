@@ -556,54 +556,54 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
       
-      // STEP 2: Determine if we need a new API call
+      // STEP 2: ALWAYS call API immediately (or with minimal debounce)
+      // This ensures consistent behavior and fresh results
       const lastQuery = lastQueryRef.current;
       const queryExtendsLast = lastQuery && trimmed.toLowerCase().startsWith(lastQuery.toLowerCase()) && trimmed.length > lastQuery.length;
       const hasNoCache = cachedResults.length === 0;
       const isVeryShort = trimmed.length < 2;
       
-      // Fetch new results if:
-      // 1. No cache exists (first search)
-      // 2. Query is very short (< 2 chars) - always fetch for initial results
-      // 3. Query doesn't extend last query (new search direction, not continuation)
-      // 4. Search type changed (e.g., from name to phone) - CRITICAL: prevents empty cache from blocking phone searches
-      const needsNewSearch = hasNoCache || isVeryShort || !queryExtendsLast || searchTypeChanged;
-      
-      if (needsNewSearch) {
-        // Show loading spinner only if we don't have cached results to display
-        if (cachedResults.length === 0 && searchResults.length === 0) {
-          setIsSearching(true);
-        }
-        
-        // Debounce API calls to avoid excessive requests
-        // Shorter debounce for faster response
-        const debounceTime = trimmed.length <= 2 ? 150 : 200;
-        
-        searchTimeoutRef.current = setTimeout(async () => {
-          try {
-            const results = await searchLeads(trimmed);
-            
-            // Only set results if this is still the current search
-            if (searchId === currentSearchIdRef.current) {
-              setCachedResults(results); // Cache full results
-              const filtered = filterResults(results, trimmed);
-              setSearchResults(filtered);
-              lastQueryRef.current = trimmed;
-              lastSearchTypeRef.current = currentSearchType; // Update search type
-              setIsSearching(false);
-            }
-          } catch (error) {
-            console.error('Search error:', error);
-            if (searchId === currentSearchIdRef.current) {
-              setIsSearching(false);
-            }
-          }
-        }, debounceTime);
-      } else {
-        // Query extends last query and we have cache - no need to fetch
-        // Results already filtered above
-        setIsSearching(false);
+      // Show loading spinner only if we don't have cached results to display
+      if (cachedResults.length === 0 && searchResults.length === 0) {
+        setIsSearching(true);
       }
+      
+      // For very short queries or when cache doesn't exist, call immediately (0ms debounce)
+      // For longer queries that extend the previous query, use minimal debounce (50ms)
+      // For new search directions, use slightly longer debounce (100ms)
+      let debounceTime = 0; // Default: immediate
+      
+      if (trimmed.length > 2) {
+        if (queryExtendsLast && cachedResults.length > 0) {
+          // User is continuing to type from cached results - minimal debounce
+          debounceTime = 50;
+        } else {
+          // New search direction or no cache - slightly longer debounce
+          debounceTime = 100;
+        }
+      }
+      
+      // Always call the API (no skipping)
+      searchTimeoutRef.current = setTimeout(async () => {
+        try {
+          const results = await searchLeads(trimmed);
+          
+          // Only set results if this is still the current search
+          if (searchId === currentSearchIdRef.current) {
+            setCachedResults(results); // Cache full results
+            const filtered = filterResults(results, trimmed);
+            setSearchResults(filtered);
+            lastQueryRef.current = trimmed;
+            lastSearchTypeRef.current = currentSearchType; // Update search type
+            setIsSearching(false);
+          }
+        } catch (error) {
+          console.error('Search error:', error);
+          if (searchId === currentSearchIdRef.current) {
+            setIsSearching(false);
+          }
+        }
+      }, debounceTime);
     } else {
       // Clear everything when search is empty
       setSearchResults([]);

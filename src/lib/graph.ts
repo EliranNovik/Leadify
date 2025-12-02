@@ -462,5 +462,114 @@ export const sendEmail = async (accessToken: string, email: {
   }
 
   // sendMail does not return content, a 202 Accepted status is success
+  // sendMail does not return content, a 202 Accepted status is success
   return { status: response.status };
-}; 
+};
+
+/**
+ * Creates a calendar event with attendees using Microsoft Graph API
+ * This sends a proper calendar invitation that email clients recognize automatically
+ */
+export async function createCalendarEventWithAttendee(accessToken: string, eventDetails: {
+  subject: string;
+  startDateTime: string; // ISO string
+  endDateTime: string;   // ISO string
+  location?: string;
+  description?: string;
+  attendeeEmail: string;
+  attendeeName?: string;
+  organizerEmail?: string;
+  organizerName?: string;
+  teamsJoinUrl?: string;
+  timeZone?: string;
+}) {
+  const {
+    subject,
+    startDateTime,
+    endDateTime,
+    location,
+    description,
+    attendeeEmail,
+    attendeeName,
+    organizerEmail,
+    organizerName,
+    teamsJoinUrl,
+    timeZone = 'Asia/Jerusalem'
+  } = eventDetails;
+
+  // Create the event body
+  // Convert ISO strings to proper format for Graph API
+  // Graph API expects dateTime in ISO format but interprets it according to timeZone
+  const eventBody: any = {
+    subject: subject,
+    start: {
+      dateTime: startDateTime,
+      timeZone: timeZone
+    },
+    end: {
+      dateTime: endDateTime,
+      timeZone: timeZone
+    },
+    attendees: [
+      {
+        emailAddress: {
+          address: attendeeEmail,
+          name: attendeeName || attendeeEmail
+        },
+        type: 'required'
+      }
+    ],
+    body: {
+      contentType: 'HTML',
+      content: description || ''
+    },
+    ...(location ? { location: { displayName: location } } : {})
+  };
+
+  // If we have an existing Teams URL, add it to the description and use it as onlineMeeting
+  // Otherwise, let Graph API create a new Teams meeting
+  if (teamsJoinUrl) {
+    // Add the Teams link to the description if not already there
+    if (description && !description.includes(teamsJoinUrl)) {
+      eventBody.body.content += `<br><br><strong>Join Teams Meeting:</strong> <a href="${teamsJoinUrl}">${teamsJoinUrl}</a>`;
+    }
+    // Use the existing Teams meeting URL
+    eventBody.isOnlineMeeting = true;
+    eventBody.onlineMeetingProvider = 'teamsForBusiness';
+    // Note: We can't set a custom joinUrl via Graph API, but we've added it to the description
+  } else if (location?.toLowerCase().includes('teams')) {
+    // Create a new Teams meeting
+    eventBody.isOnlineMeeting = true;
+    eventBody.onlineMeetingProvider = 'teamsForBusiness';
+  }
+
+  // If it's a Teams meeting, we'll create it in the calendar and the Teams link will be automatically generated
+  // But if we already have a Teams URL, we need to use it
+  // Note: When creating a Teams meeting via Graph API, the joinUrl is automatically generated
+  // If we have an existing Teams URL, we can add it to the body or create the meeting differently
+
+  const url = 'https://graph.microsoft.com/v1.0/me/calendar/events';
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${accessToken}`,
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(eventBody)
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    console.error('Calendar event creation error:', error);
+    throw new Error(error.error?.message || 'Failed to create calendar event');
+  }
+
+  const data = await response.json();
+  
+  return {
+    id: data.id,
+    joinUrl: data.onlineMeeting?.joinUrl || teamsJoinUrl,
+    webLink: data.webLink
+  };
+} 

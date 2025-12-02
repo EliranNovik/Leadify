@@ -22,7 +22,9 @@ import {
   PencilIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
+import { fetchLeadContacts, ContactInfo } from '../../lib/contactHelpers';
 import { useMsal } from '@azure/msal-react';
+import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
 import { createTeamsMeeting, sendEmail } from '../../lib/graph';
 import { generateICSFromDateTime } from '../../lib/icsGenerator';
@@ -101,7 +103,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
-  const [isSendingEmail, setIsSendingEmail] = useState(false);
+  const [sendingEmailMeetingId, setSendingEmailMeetingId] = useState<number | null>(null);
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
   const [expandedMeetingId, setExpandedMeetingId] = useState<number | null>(null);
@@ -147,10 +149,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [creatingTeamsMeetingId, setCreatingTeamsMeetingId] = useState<number | null>(null);
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [allMeetingLocations, setAllMeetingLocations] = useState<any[]>([]);
+  
+  // Notify modal state
+  const [showNotifyModal, setShowNotifyModal] = useState(false);
+  const [selectedMeetingForNotify, setSelectedMeetingForNotify] = useState<Meeting | null>(null);
+  const [contacts, setContacts] = useState<ContactInfo[]>([]);
+  const [loadingContacts, setLoadingContacts] = useState(false);
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
-    if (employeeId === null || employeeId === undefined || employeeId === '---') return 'Unknown';
+    if (employeeId === null || employeeId === undefined || employeeId === '---') return '--';
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
     return employee ? employee.display_name : employeeId.toString();
   };
@@ -677,14 +685,52 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const handleSendEmail = async (meeting: Meeting) => {
-    setIsSendingEmail(true);
+  const handleNotifyClick = async (meeting: Meeting) => {
+    setSelectedMeetingForNotify(meeting);
+    setLoadingContacts(true);
     try {
-      if (!client.email || !instance) throw new Error('Client email or MSAL instance missing');
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const normalizedLeadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      
+      const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
+      setContacts(fetchedContacts);
+      setShowNotifyModal(true);
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      toast.error('Failed to load contacts');
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+
+  const handleSendEmail = async (meeting: Meeting, emailAddress?: string | string[]) => {
+    setSendingEmailMeetingId(meeting.id);
+    setShowNotifyModal(false);
+    try {
+      const recipientEmail = emailAddress || client.email;
+      if (!recipientEmail || (Array.isArray(recipientEmail) && recipientEmail.length === 0) || !instance) {
+        throw new Error('Recipient email or MSAL instance missing');
+      }
       const accounts = instance.getAllAccounts();
       if (!accounts.length) throw new Error('No Microsoft account found');
       const account = accounts[0];
-      const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
+      
+      // Try silent token acquisition first, fall back to popup if needed
+      let tokenResponse;
+      try {
+        tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
+      } catch (error) {
+        // If silent acquisition fails (e.g., session expired), try interactive popup
+        if (error instanceof InteractionRequiredAuthError) {
+          toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+          tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account });
+        } else {
+          throw error; // Re-throw other errors
+        }
+      }
+      
       const senderName = account?.name || 'Your Team';
       const now = new Date();
       
@@ -698,8 +744,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       };
       const formattedDate = formatDate(meeting.date);
       
-      // Compose subject without time (date only)
-      const subject = `Meeting Invitation: ${formattedDate}`;
+      // Compose subject: Meeting with Decker, Pex, Levi Lawoffice - (meeting date)
+      const subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
       const joinLink = getValidTeamsLink(meeting.link);
       const category = client.category || '---';
       const topic = client.topic || '---';
@@ -709,13 +755,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         meetingDate: formattedDate,
         meetingTime: undefined, // Remove time from email body since calendar invite has it
         location: locationName,
-        category,
+        category: '', // Not displayed in email anymore, but required by template
         topic,
         joinLink,
         senderName: senderName,
       });
       
-      // Generate ICS calendar file for all meetings (helps with timezone handling)
+      // Generate ICS calendar file attachment (embedded in the email)
       let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
       try {
         // Build description
@@ -728,16 +774,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         }
         
         // Generate ICS content
+        // Subject for calendar: "Meeting with Decker, Pex, Levi Lawoffice - {topic}" (without date)
+        const calendarSubject = topic && topic !== '---' 
+          ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
+          : `Meeting with Decker, Pex, Levi Lawoffice`;
+        
         const icsContent = generateICSFromDateTime({
-          subject: `Meeting with ${client.name}`,
+          subject: calendarSubject,
           date: meeting.date,
           time: formattedTime,
           durationMinutes: 60, // Default 1 hour
-          location: locationName,
+          location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
           description: description,
           organizerEmail: account.username || 'noreply@lawoffice.org.il',
           organizerName: senderName,
-          attendeeEmail: client.email,
+          attendeeEmail: Array.isArray(recipientEmail) ? recipientEmail[0] : recipientEmail,
           attendeeName: client.name,
           teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
           timeZone: 'Asia/Jerusalem'
@@ -750,16 +801,16 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         attachments = [{
           name: 'meeting-invite.ics',
           contentBytes: icsBase64,
-          contentType: 'text/calendar; method=REQUEST; charset=utf-8'
+          contentType: 'text/calendar; charset=utf-8; method=REQUEST'
         }];
       } catch (icsError) {
         console.error('Failed to generate ICS file:', icsError);
         // Continue without ICS attachment if generation fails
       }
       
-      // Send email via Graph API (will use database signature if available, otherwise Outlook signature)
+      // Send email via Graph API with ICS attachment embedded in the same email
       await sendEmail(tokenResponse.accessToken, { 
-        to: client.email, 
+        to: recipientEmail, 
         subject, 
         body: htmlBody,
         attachments
@@ -773,7 +824,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           thread_id: null,
           sender_name: senderName,
           sender_email: account.username || account.name || 'Me',
-          recipient_list: client.email,
+          recipient_list: recipientEmail,
           subject,
           body_preview: htmlBody,
           sent_at: now.toISOString(),
@@ -787,8 +838,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     } catch (error) {
       toast.error('Failed to send email.');
       console.error(error);
+    } finally {
+      setSendingEmailMeetingId(null);
     }
-    setIsSendingEmail(false);
   };
 
   const handleCreateTeamsMeeting = async (meeting: Meeting) => {
@@ -797,7 +849,20 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (!instance) throw new Error('MSAL instance not available');
       const accounts = instance.getAllAccounts();
       if (!accounts.length) throw new Error('No Microsoft account found');
-      const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+      
+      // Try silent token acquisition first, fall back to popup if needed
+      let tokenResponse;
+      try {
+        tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+      } catch (error) {
+        // If silent acquisition fails (e.g., session expired), try interactive popup
+        if (error instanceof InteractionRequiredAuthError) {
+          toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+          tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
+        } else {
+          throw error; // Re-throw other errors
+        }
+      }
       
       // Check if meeting already has a Teams URL
       if (meeting.link) {
@@ -1083,8 +1148,21 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           
           console.log('🔧 MSAL instance and accounts available');
           
-          const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
-          console.log('🔧 Token acquired successfully');
+          // Try silent token acquisition first, fall back to popup if needed
+          let tokenResponse;
+          try {
+            tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account: accounts[0] });
+            console.log('🔧 Token acquired successfully');
+          } catch (error) {
+            // If silent acquisition fails (e.g., session expired), try interactive popup
+            if (error instanceof InteractionRequiredAuthError) {
+              toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+              tokenResponse = await instance.acquireTokenPopup({ ...loginRequest, account: accounts[0] });
+              console.log('🔧 Token acquired via popup');
+            } else {
+              throw error; // Re-throw other errors
+            }
+          }
           
           const startDateTime = new Date(`${editedMeeting.date}T${editedMeeting.time || '09:00'}`).toISOString();
           const endDateTime = new Date(new Date(startDateTime).getTime() + 60 * 60 * 1000).toISOString();
@@ -1214,10 +1292,25 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           try {
             const account = instance.getActiveAccount();
             if (account) {
-              const tokenResponse = await instance.acquireTokenSilent({
-                ...loginRequest,
-                account: account,
-              });
+              // Try silent token acquisition first, fall back to popup if needed
+              let tokenResponse;
+              try {
+                tokenResponse = await instance.acquireTokenSilent({
+                  ...loginRequest,
+                  account: account,
+                });
+              } catch (error) {
+                // If silent acquisition fails (e.g., session expired), try interactive popup
+                if (error instanceof InteractionRequiredAuthError) {
+                  toast('Your session has expired. Please sign in again.', { icon: '🔑' });
+                  tokenResponse = await instance.acquireTokenPopup({
+                    ...loginRequest,
+                    account: account,
+                  });
+                } else {
+                  throw error; // Re-throw other errors
+                }
+              }
               
               if (tokenResponse.accessToken) {
                 console.log('🔄 Updating Outlook meeting...');
@@ -1318,29 +1411,33 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="flex gap-2">
               {/* Edit Button */}
               <button
-                className="btn btn-sm text-white"
-                style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
                 onClick={() => handleEditMeeting(meeting)}
                 title="Edit Meeting"
               >
-                <PencilIcon className="w-4 h-4 sm:hidden" />
-                <span className="hidden sm:inline">Edit</span>
+                <PencilIcon className="w-4 h-4" />
               </button>
               {!past && (
                 <button
-                  className="btn btn-sm text-white"
-                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
-                  onClick={() => handleSendEmail(meeting)}
-                  disabled={isSendingEmail}
+                  className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white notify-btn-disabled"
+                  onClick={() => {
+                    if (sendingEmailMeetingId !== meeting.id) {
+                      handleNotifyClick(meeting);
+                    }
+                  }}
+                  disabled={sendingEmailMeetingId === meeting.id}
+                  title="Notify Client"
                 >
-                  <EnvelopeIcon className="w-4 h-4 sm:hidden" />
-                  <span className="hidden sm:inline">Notify</span>
+                  {sendingEmailMeetingId === meeting.id ? (
+                    <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                  ) : (
+                    <EnvelopeIcon className="w-4 h-4" />
+                  )}
                 </button>
               )}
               {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
                 <button
-                  className="btn btn-sm text-white"
-                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
                   onClick={() => handleCreateTeamsMeeting(meeting)}
                   disabled={creatingTeamsMeetingId === meeting.id}
                 >
@@ -1357,11 +1454,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   href={getValidTeamsLink(meeting.link)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm text-white"
-                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                  title="Join Teams Meeting"
                 >
-                  <LinkIcon className="w-4 h-4 sm:hidden" />
-                  <span className="hidden sm:inline">Join</span>
+                  <LinkIcon className="w-4 h-4" />
                 </a>
               )}
               {/* Legacy meeting URL link */}
@@ -1370,8 +1466,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   href={meeting.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm text-white"
-                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
                 >
                   <LinkIcon className="w-4 h-4 sm:hidden" />
                   <span className="hidden sm:inline">Link</span>
@@ -1380,8 +1475,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               {/* Cancel only for upcoming and not canceled */}
               {!isPastMeeting(meeting) && meeting.status !== 'canceled' && (
                 <button
-                  className="btn btn-sm text-white"
-                  style={{ backgroundColor: '#391BCB', border: '1px solid white' }}
+                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
                   title="Cancel Meeting"
                   onClick={async (e) => {
                     e.stopPropagation();
@@ -1401,8 +1495,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     }
                   }}
                 >
-                  <XMarkIcon className="w-4 h-4 sm:hidden" />
-                  <span className="hidden sm:inline">Cancel</span>
+                  <XMarkIcon className="w-4 h-4" />
                 </button>
               )}
             </div>
@@ -1949,6 +2042,110 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       </div>
+
+      {/* Notify Modal */}
+      {showNotifyModal && selectedMeetingForNotify && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowNotifyModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Select Recipient</h3>
+                <button
+                  onClick={() => setShowNotifyModal(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              
+              {loadingContacts ? (
+                <div className="flex justify-center items-center py-8">
+                  <span className="loading loading-spinner loading-md"></span>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {/* Email All Option */}
+                  {contacts.filter(c => c.email && c.email !== '---').length > 1 && (
+                    <button
+                      onClick={() => {
+                        // Send to all contacts at once
+                        const allEmails = contacts
+                          .filter(c => c.email && c.email !== '---')
+                          .map(c => c.email!);
+                        
+                        if (allEmails.length === 0) {
+                          toast.error('No email addresses found for contacts');
+                          return;
+                        }
+                        
+                        handleSendEmail(selectedMeetingForNotify, allEmails);
+                      }}
+                      className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <EnvelopeIcon className="w-5 h-5 text-purple-600" />
+                        <div>
+                          <div className="font-medium text-gray-900">Email All Contacts</div>
+                          <div className="text-sm text-gray-500">
+                            {contacts.filter(c => c.email && c.email !== '---').length} contact{contacts.filter(c => c.email && c.email !== '---').length !== 1 ? 's' : ''} with email
+                          </div>
+                        </div>
+                      </div>
+                    </button>
+                  )}
+                  
+                  {/* Individual Contacts */}
+                  {contacts
+                    .filter(c => c.email && c.email !== '---')
+                    .map((contact) => (
+                      <button
+                        key={contact.id}
+                        onClick={() => handleSendEmail(selectedMeetingForNotify, contact.email!)}
+                        className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <UserCircleIcon className="w-5 h-5 text-purple-600" />
+                          <div className="flex-1">
+                            <div className="font-medium text-gray-900">
+                              {contact.name || '---'}
+                              {contact.isMain && (
+                                <span className="ml-2 text-xs bg-purple-100 text-purple-700 px-2 py-0.5 rounded">Main</span>
+                              )}
+                            </div>
+                            <div className="text-sm text-gray-500">{contact.email}</div>
+                          </div>
+                        </div>
+                      </button>
+                    ))}
+                  
+                  {/* Client Email (fallback) */}
+                  {client.email && contacts.filter(c => c.email && c.email !== '---').length === 0 && (
+                    <button
+                      onClick={() => handleSendEmail(selectedMeetingForNotify, client.email)}
+                      className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
+                    >
+                      <div className="flex items-center gap-3">
+                        <EnvelopeIcon className="w-5 h-5 text-purple-600" />
+                        <div>
+                          <div className="font-medium text-gray-900">{client.name}</div>
+                          <div className="text-sm text-gray-500">{client.email}</div>
+                        </div>
+                      </div>
+                    </button>
+                  )}
+                  
+                  {contacts.filter(c => c.email && c.email !== '---').length === 0 && !client.email && (
+                    <div className="text-center py-8 text-gray-500">
+                      <EnvelopeIcon className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                      <p>No email addresses found</p>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {meetings.length === 0 && (
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">

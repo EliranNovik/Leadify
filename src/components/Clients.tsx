@@ -2150,11 +2150,13 @@ useEffect(() => {
       if (isLegacy) {
         // Legacy lead: compare numeric ID
         if (currentClientId === lead_number) {
+          setLocalLoading(false); // Ensure loading is cleared
           return; // Already have the correct legacy client loaded
         }
       } else {
         // New lead: compare by lead_number or manual_id
         if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          setLocalLoading(false); // Ensure loading is cleared
           return; // Already have the correct new client loaded
         }
       }
@@ -2162,7 +2164,10 @@ useEffect(() => {
     
     let isMounted = true;
     const fetchEssentialData = async () => {
-      setLocalLoading(true);
+      // Only set loading if we don't already have the client loaded
+      if (!selectedClient || (selectedClient && !isMounted)) {
+        setLocalLoading(true);
+      }
       if (lead_number) {
         // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
@@ -2471,8 +2476,11 @@ useEffect(() => {
 
     fetchEssentialData();
     
-    return () => { isMounted = false; };
-  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, selectedClient?.id]); // Removed location.pathname to prevent unnecessary re-runs when navigating
+    return () => { 
+      isMounted = false;
+      // Don't set loading to false here - it should only be set in the async function
+    };
+  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded]); // Removed selectedClient?.id to prevent infinite loop - the guard at the beginning handles checking if client is already loaded
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
     const loadBackgroundData = async () => {
@@ -4128,6 +4136,14 @@ useEffect(() => {
 
             toast.success(`Sublead ${subLeadNumber} created and meeting scheduled!`, {
               duration: 5000,
+              position: 'top-right',
+              style: {
+                background: '#ffffff',
+                color: '#111827',
+                fontWeight: '500',
+                border: '1px solid #d1d5db',
+              },
+              icon: '✅',
             });
           } catch (subleadError) {
             console.error('Error in sublead creation process (non-blocking):', subleadError);
@@ -4169,9 +4185,10 @@ useEffect(() => {
         duration: 4000,
         position: 'top-right',
         style: {
-          background: '#10b981',
-          color: '#fff',
+          background: '#ffffff',
+          color: '#111827',
           fontWeight: '500',
+          border: '1px solid #d1d5db',
         },
         icon: '✅',
       });
@@ -6420,29 +6437,31 @@ useEffect(() => {
     setPersistentMasterLeadNumber(null);
   }, [fullLeadNumber]); // Reset when URL changes, not when client data refreshes
 
-  // Debug logging for master lead detection
-  console.log('🔍 Master lead detection:', {
-    routeIdentifier: fullLeadNumber,
-    isSubLead,
-    masterLeadNumber,
-    persistentIsSubLead,
-    persistentMasterLeadNumber,
-    selectedClientId: selectedClient?.id,
-    selectedClientLeadNumber: selectedClient?.lead_number,
-    selectedClientManualId: selectedClient?.manual_id,
-    masterId: selectedClient?.master_id,
-    hasSlash: !!clientLeadNumber && clientLeadNumber.includes('/'),
-    hasMasterId: !!(selectedClient && selectedClient.master_id),
-    selectedClientData: selectedClient ? {
-      id: selectedClient.id,
-      lead_number: selectedClient.lead_number,
-      master_id: selectedClient.master_id,
-      manual_id: selectedClient.manual_id
-    } : null,
-    explanation: clientLeadNumber && clientLeadNumber.includes('/')
-      ? `Lead number "${clientLeadNumber}" contains "/" → Sub-lead detected`
-      : 'No sub-lead detected'
-  });
+  // Debug logging for master lead detection - only log when values actually change
+  useEffect(() => {
+    console.log('🔍 Master lead detection:', {
+      routeIdentifier: fullLeadNumber,
+      isSubLead,
+      masterLeadNumber,
+      persistentIsSubLead,
+      persistentMasterLeadNumber,
+      selectedClientId: selectedClient?.id,
+      selectedClientLeadNumber: selectedClient?.lead_number,
+      selectedClientManualId: selectedClient?.manual_id,
+      masterId: selectedClient?.master_id,
+      hasSlash: !!clientLeadNumber && clientLeadNumber.includes('/'),
+      hasMasterId: !!(selectedClient && selectedClient.master_id),
+      selectedClientData: selectedClient ? {
+        id: selectedClient.id,
+        lead_number: selectedClient.lead_number,
+        master_id: selectedClient.master_id,
+        manual_id: selectedClient.manual_id
+      } : null,
+      explanation: clientLeadNumber && clientLeadNumber.includes('/')
+        ? `Lead number "${clientLeadNumber}" contains "/" → Sub-lead detected`
+        : 'No sub-lead detected'
+    });
+  }, [fullLeadNumber, isSubLead, masterLeadNumber, persistentIsSubLead, persistentMasterLeadNumber, selectedClient?.id, selectedClient?.lead_number, selectedClient?.manual_id, selectedClient?.master_id, clientLeadNumber]);
 
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
@@ -7978,14 +7997,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
     ? (statusValue === 'inactive')
     : false;
   
-  console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
-    selectedClientId: selectedClient?.id,
-    isLegacyForView,
-    statusValue,
-    isUnactivated,
-    userManuallyExpanded,
-    hasSelectedClient: !!selectedClient
-  });
+  // Debug logging - only log when values actually change
+  useEffect(() => {
+    console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
+      selectedClientId: selectedClient?.id,
+      isLegacyForView,
+      statusValue,
+      isUnactivated,
+      userManuallyExpanded,
+      hasSelectedClient: !!selectedClient
+    });
+  }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
   
   // Show unactivated view if lead is unactivated and user hasn't clicked to expand
   // This takes priority over loading state to prevent flickering

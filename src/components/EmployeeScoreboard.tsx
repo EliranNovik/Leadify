@@ -824,7 +824,9 @@ const EmployeeScoreboard: React.FC<EmployeeScoreboardProps> = ({ className = '' 
       {/* Scoreboard Cards */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 md:gap-6 w-full mb-12">
         {/* Top Closers */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white h-full min-h-[180px] md:min-h-0">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center border border-white/20 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white h-full min-h-[180px] md:min-h-0" style={{
+          boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 40px -10px rgba(168, 85, 247, 0.4)'
+        }}>
           <div className="flex items-center gap-2 mb-2">
             <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
             <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Closers</span>
@@ -860,7 +862,9 @@ const EmployeeScoreboard: React.FC<EmployeeScoreboardProps> = ({ className = '' 
         </div>
         
         {/* Top Schedulers */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white h-full min-h-[180px] md:min-h-0">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center border border-white/20 bg-gradient-to-tr from-purple-600 via-blue-600 to-blue-500 text-white h-full min-h-[180px] md:min-h-0" style={{
+          boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 40px -10px rgba(79, 70, 229, 0.4)'
+        }}>
           <div className="flex items-center gap-2 mb-2">
             <CalendarIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
             <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Schedulers</span>
@@ -896,7 +900,9 @@ const EmployeeScoreboard: React.FC<EmployeeScoreboardProps> = ({ className = '' 
         </div>
         
         {/* Top Experts */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white h-full min-h-[180px] md:min-h-0">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center border border-white/20 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white h-full min-h-[180px] md:min-h-0" style={{
+          boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 40px -10px rgba(20, 184, 166, 0.4)'
+        }}>
           <div className="flex items-center gap-2 mb-2">
             <svg className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 14l9-5-9-5-9 5 9 5z" /><path d="M12 14l6.16-3.422A12.083 12.083 0 0112 21.5a12.083 12.083 0 01-6.16-10.922L12 14z" /></svg>
             <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Experts</span>
@@ -932,7 +938,9 @@ const EmployeeScoreboard: React.FC<EmployeeScoreboardProps> = ({ className = '' 
         </div>
         
         {/* Top Handlers */}
-        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center shadow-lg border border-white/20 bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white h-full min-h-[180px] md:min-h-0">
+        <div className="rounded-2xl p-3 md:p-8 flex flex-col items-center border border-white/20 bg-gradient-to-tr from-[#4b2996] via-[#6c4edb] to-[#3b28c7] text-white h-full min-h-[180px] md:min-h-0" style={{
+          boxShadow: '0 10px 30px -5px rgba(0, 0, 0, 0.3), 0 4px 6px -2px rgba(0, 0, 0, 0.2), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 40px -10px rgba(91, 33, 182, 0.4)'
+        }}>
           <div className="flex items-center gap-2 mb-2">
             <UserGroupIcon className="w-5 h-5 md:w-6 md:h-6 text-white opacity-90" />
             <span className="text-sm md:text-base font-bold text-white drop-shadow">Top Handlers</span>
