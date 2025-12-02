@@ -34,6 +34,10 @@ router.get('/hook/graph/emails/health', graphEmailController.health);
 router.get('/graph/webhook', graphEmailController.webhookValidation);
 router.post('/graph/webhook', graphEmailController.webhookNotification);
 
+// Graph subscription management
+router.post('/graph/subscriptions/refresh', graphEmailController.refreshSubscriptions);
+router.get('/graph/subscriptions/status', graphEmailController.checkSubscriptions);
+
 // Health check for webhook
 router.get('/hook/health', (req, res) => {
   res.status(200).json({

@@ -359,6 +359,20 @@ server.listen(PORT, () => {
   console.log(`📡 WebSocket server enabled`);
   console.log(`🌐 Frontend should connect to: ${process.env.FRONTEND_URL || "http://localhost:5173"}`);
 
+  // Log webhook configuration status
+  const webhookUrl = process.env.GRAPH_WEBHOOK_NOTIFICATION_URL;
+  if (webhookUrl) {
+    console.log(`✅ Graph webhook URL configured: ${webhookUrl}`);
+    console.log(`   Webhook endpoints:`);
+    console.log(`   - GET  /api/graph/webhook (validation)`);
+    console.log(`   - POST /api/graph/webhook (notifications)`);
+    console.log(`   - POST /api/graph/subscriptions/refresh (refresh all subscriptions)`);
+    console.log(`   - GET  /api/graph/subscriptions/status (check subscription status)`);
+  } else {
+    console.warn(`⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Webhook subscriptions will not work.`);
+    console.warn(`   Set GRAPH_WEBHOOK_NOTIFICATION_URL environment variable to enable webhook notifications.`);
+  }
+
   // Email fetching schedulers disabled
   // startMailboxSyncScheduler();
   startMeetingNotificationScheduler();

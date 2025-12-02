@@ -50,6 +50,13 @@ const graphEmailController = {
     res.sendStatus(202);
 
     try {
+      console.log('📨 Graph webhook notification received:', {
+        timestamp: new Date().toISOString(),
+        hasBody: !!req.body,
+        bodyKeys: req.body ? Object.keys(req.body) : [],
+        valueCount: Array.isArray(req.body?.value) ? req.body.value.length : 0,
+      });
+
       const notifications = Array.isArray(req.body?.value) ? req.body.value : [];
       if (!notifications.length) {
         console.warn('⚠️  Received Graph webhook with empty payload');
@@ -59,9 +66,17 @@ const graphEmailController = {
       for (const notification of notifications) {
         const userId = notification?.clientState;
         if (!userId) {
-          console.warn('⚠️  Graph notification missing clientState. Notification ignored.');
+          console.warn('⚠️  Graph notification missing clientState. Notification ignored.', {
+            notification: JSON.stringify(notification),
+          });
           continue;
         }
+
+        console.log(`✅ Processing Graph webhook notification for user ${userId}`, {
+          subscriptionId: notification?.subscriptionId,
+          resource: notification?.resource,
+          changeType: notification?.changeType,
+        });
 
         graphNotificationService.enqueueUserSync(userId, {
           subscriptionId: notification?.subscriptionId,
@@ -71,6 +86,40 @@ const graphEmailController = {
       }
     } catch (error) {
       console.error('❌ Webhook notification processing error:', error);
+    }
+  },
+
+  async refreshSubscriptions(req, res) {
+    try {
+      console.log('🔄 Refreshing Graph webhook subscriptions for all users...');
+      const summary = await graphMailboxSyncService.refreshAllSubscriptions();
+      res.status(200).json({
+        success: true,
+        message: 'Subscriptions refreshed',
+        data: summary,
+      });
+    } catch (error) {
+      console.error('❌ Failed to refresh subscriptions:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to refresh subscriptions',
+      });
+    }
+  },
+
+  async checkSubscriptions(req, res) {
+    try {
+      const status = await graphMailboxSyncService.checkSubscriptionsStatus();
+      res.status(200).json({
+        success: true,
+        data: status,
+      });
+    } catch (error) {
+      console.error('❌ Failed to check subscriptions:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to check subscriptions',
+      });
     }
   },
 };

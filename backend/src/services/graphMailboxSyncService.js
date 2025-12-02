@@ -221,12 +221,19 @@ class GraphMailboxSyncService {
     });
 
     if (WEBHOOK_URL) {
-      await this.ensureSubscription({
-        userId: resolvedUserId,
-        accessToken: tokenResponse.accessToken,
-        state,
-        mailboxAddress,
-      });
+      try {
+        await this.ensureSubscription({
+          userId: resolvedUserId,
+          accessToken: tokenResponse.accessToken,
+          state,
+          mailboxAddress,
+        });
+      } catch (error) {
+        console.error(`⚠️  Failed to ensure subscription for user ${resolvedUserId}:`, error.message || error);
+        // Don't fail the sync if subscription fails
+      }
+    } else {
+      console.warn('⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Webhook subscriptions will not be created.');
     }
 
     return {
@@ -320,9 +327,122 @@ class GraphMailboxSyncService {
         subscription_id: response.id,
         subscription_expiry: response.expirationDateTime,
       });
+
+      console.log(`✅ Graph subscription created/renewed for user ${userId}`, {
+        subscriptionId: response.id,
+        expiresAt: response.expirationDateTime,
+        webhookUrl: WEBHOOK_URL,
+      });
     } catch (error) {
       console.error('⚠️  Unable to create Graph subscription:', error.message || error);
+      throw error;
     }
+  }
+
+  async refreshAllSubscriptions() {
+    if (!WEBHOOK_URL) {
+      console.warn('⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Subscriptions cannot be created.');
+      return { processed: 0, successful: 0, failed: 0, details: [] };
+    }
+
+    const tokens = await mailboxTokenService.getAllTokens();
+    if (!tokens.length) {
+      return { processed: 0, successful: 0, failed: 0, details: [] };
+    }
+
+    const results = await tokens.reduce(
+      async (promise, token) => {
+        const acc = await promise;
+        if (!token?.user_id) {
+          return acc;
+        }
+
+        try {
+          const account = {
+            homeAccountId: token.home_account_id,
+            environment: token.environment,
+            tenantId: token.tenant_id,
+            username: token.mailbox_address,
+          };
+
+          const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(token.refresh_token, account);
+          if (!tokenResponse?.accessToken) {
+            throw new Error('Unable to acquire Microsoft Graph access token');
+          }
+
+          const state = await mailboxStateService.getState(token.user_id);
+          await this.ensureSubscription({
+            userId: token.user_id,
+            accessToken: tokenResponse.accessToken,
+            state,
+            mailboxAddress: token.mailbox_address,
+          });
+
+          acc.successful += 1;
+          acc.details.push({
+            userId: token.user_id,
+            mailbox: token.mailbox_address,
+            status: 'refreshed',
+          });
+        } catch (error) {
+          acc.failed += 1;
+          acc.details.push({
+            userId: token.user_id,
+            mailbox: token.mailbox_address,
+            error: error.message || 'Unknown error',
+          });
+        }
+
+        return acc;
+      },
+      Promise.resolve({ successful: 0, failed: 0, details: [] })
+    );
+
+    return {
+      processed: tokens.length,
+      ...results,
+    };
+  }
+
+  async checkSubscriptionsStatus() {
+    if (!WEBHOOK_URL) {
+      return {
+        webhookUrlConfigured: false,
+        webhookUrl: null,
+        message: 'GRAPH_WEBHOOK_NOTIFICATION_URL not configured',
+        subscriptions: [],
+      };
+    }
+
+    const tokens = await mailboxTokenService.getAllTokens();
+    const subscriptions = [];
+
+    for (const token of tokens) {
+      if (!token?.user_id) continue;
+
+      const state = await mailboxStateService.getState(token.user_id);
+      const expiresAt = state?.subscription_expiry ? new Date(state.subscription_expiry).getTime() : 0;
+      const now = Date.now();
+      const isExpired = expiresAt < now;
+      const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
+
+      subscriptions.push({
+        userId: token.user_id,
+        mailbox: token.mailbox_address,
+        subscriptionId: state?.subscription_id || null,
+        expiry: state?.subscription_expiry || null,
+        isExpired,
+        expiresSoon,
+        status: !state?.subscription_id ? 'missing' : isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
+      });
+    }
+
+    return {
+      webhookUrlConfigured: true,
+      webhookUrl: WEBHOOK_URL,
+      totalMailboxes: tokens.length,
+      subscriptions,
+    };
   }
 
   async fetchDeltaMessages({ accessToken, mailboxAddress, deltaLink }) {
