@@ -220,20 +220,30 @@ class GraphMailboxSyncService {
       last_synced_at: new Date().toISOString(),
     });
 
-    if (WEBHOOK_URL) {
-      try {
-        await this.ensureSubscription({
-          userId: resolvedUserId,
-          accessToken: tokenResponse.accessToken,
-          state,
-          mailboxAddress,
+    // Read subscription from database (subscriptions are managed elsewhere, not created here)
+    // Just log subscription status for debugging
+    try {
+      const dbState = await mailboxStateService.getState(resolvedUserId);
+      const subscriptionId = dbState?.subscription_id;
+      const subscriptionExpiry = dbState?.subscription_expiry;
+      
+      if (subscriptionId && subscriptionExpiry) {
+        const expiresAt = new Date(subscriptionExpiry).getTime();
+        const now = Date.now();
+        const isExpired = expiresAt < now;
+        const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
+        
+        console.log(`✅ Subscription found in DB for user ${resolvedUserId} (${mailboxAddress})`, {
+          subscriptionId,
+          expiresAt: subscriptionExpiry,
+          status: isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
         });
-      } catch (error) {
-        console.error(`⚠️  Failed to ensure subscription for user ${resolvedUserId}:`, error.message || error);
-        // Don't fail the sync if subscription fails
+      } else {
+        console.log(`ℹ️  No subscription found in DB for user ${resolvedUserId} (${mailboxAddress})`);
       }
-    } else {
-      console.warn('⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Webhook subscriptions will not be created.');
+    } catch (error) {
+      console.error(`⚠️  Error reading subscription from DB for user ${resolvedUserId}:`, error.message || error);
+      // Don't fail the sync if subscription check fails
     }
 
     return {
@@ -290,64 +300,44 @@ class GraphMailboxSyncService {
   }
 
   async ensureSubscription({ userId, accessToken, state, mailboxAddress }) {
+    // Subscriptions are stored in the database (mailbox_state table)
+    // We just read from DB - subscriptions are created/managed elsewhere
     try {
-      const expiresAt = state?.subscription_expiry ? new Date(state.subscription_expiry).getTime() : 0;
-      const now = Date.now();
-      const needsRenewal = !state?.subscription_id || !state?.subscription_expiry || expiresAt - now < 24 * 60 * 60 * 1000;
-      if (!needsRenewal) return;
+      const dbState = await mailboxStateService.getState(userId);
+      const subscriptionId = dbState?.subscription_id || state?.subscription_id;
+      const subscriptionExpiry = dbState?.subscription_expiry || state?.subscription_expiry;
 
-      if (state?.subscription_id) {
-        await fetch(`${GRAPH_BASE_URL}/subscriptions/${state.subscription_id}`, {
-          method: 'DELETE',
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }).catch(() => null);
+      if (subscriptionId && subscriptionExpiry) {
+        const expiresAt = new Date(subscriptionExpiry).getTime();
+        const now = Date.now();
+        const isExpired = expiresAt < now;
+        const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
+
+        console.log(`✅ Subscription found in DB for user ${userId} (${mailboxAddress})`, {
+          subscriptionId,
+          expiresAt: subscriptionExpiry,
+          isExpired,
+          expiresSoon,
+          status: isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
+        });
+      } else {
+        console.log(`ℹ️  No subscription found in DB for user ${userId} (${mailboxAddress})`);
       }
-
-      const payload = {
-        changeType: 'created,updated',
-        notificationUrl: WEBHOOK_URL,
-        // Monitor the root folder so all child folders are included
-        resource: `/users/${mailboxAddress}/mailFolders('MsgFolderRoot')/messages`,
-        expirationDateTime: new Date(Date.now() + 60 * 60 * 1000 * 48).toISOString(),
-        clientState: String(userId),
-      };
-
-      const response = await fetchJson(`${GRAPH_BASE_URL}/subscriptions`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      await mailboxStateService.upsertState(userId, {
-        subscription_id: response.id,
-        subscription_expiry: response.expirationDateTime,
-      });
-
-      console.log(`✅ Graph subscription created/renewed for user ${userId}`, {
-        subscriptionId: response.id,
-        expiresAt: response.expirationDateTime,
-        webhookUrl: WEBHOOK_URL,
-      });
     } catch (error) {
-      console.error('⚠️  Unable to create Graph subscription:', error.message || error);
-      throw error;
+      console.error('⚠️  Error reading subscription from DB:', {
+        userId,
+        mailbox: mailboxAddress,
+        error: error.message || error,
+      });
     }
   }
 
   async refreshAllSubscriptions() {
-    if (!WEBHOOK_URL) {
-      console.warn('⚠️  GRAPH_WEBHOOK_NOTIFICATION_URL not configured. Subscriptions cannot be created.');
-      return { processed: 0, successful: 0, failed: 0, details: [] };
-    }
-
+    // Read subscriptions from database (mailbox_state table)
+    // Subscriptions are created/managed elsewhere, we just read from DB
     const tokens = await mailboxTokenService.getAllTokens();
     if (!tokens.length) {
-      return { processed: 0, successful: 0, failed: 0, details: [] };
+      return { processed: 0, successful: 0, failed: 0, skipped: 0, details: [] };
     }
 
     const results = await tokens.reduce(
@@ -358,44 +348,46 @@ class GraphMailboxSyncService {
         }
 
         try {
-          const account = {
-            homeAccountId: token.home_account_id,
-            environment: token.environment,
-            tenantId: token.tenant_id,
-            username: token.mailbox_address,
-          };
-
-          const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(token.refresh_token, account);
-          if (!tokenResponse?.accessToken) {
-            throw new Error('Unable to acquire Microsoft Graph access token');
-          }
-
           const state = await mailboxStateService.getState(token.user_id);
-          await this.ensureSubscription({
-            userId: token.user_id,
-            accessToken: tokenResponse.accessToken,
-            state,
-            mailboxAddress: token.mailbox_address,
-          });
+          const subscriptionId = state?.subscription_id;
+          const subscriptionExpiry = state?.subscription_expiry;
 
-          acc.successful += 1;
-          acc.details.push({
-            userId: token.user_id,
-            mailbox: token.mailbox_address,
-            status: 'refreshed',
-          });
+          if (subscriptionId && subscriptionExpiry) {
+            const expiresAt = new Date(subscriptionExpiry).getTime();
+            const now = Date.now();
+            const isExpired = expiresAt < now;
+            const expiresSoon = expiresAt - now < 24 * 60 * 60 * 1000;
+
+            acc.successful += 1;
+            acc.details.push({
+              userId: token.user_id,
+              mailbox: token.mailbox_address,
+              subscriptionId,
+              expiry: subscriptionExpiry,
+              status: isExpired ? 'expired' : expiresSoon ? 'expires_soon' : 'active',
+            });
+          } else {
+            acc.skipped = (acc.skipped || 0) + 1;
+            acc.details.push({
+              userId: token.user_id,
+              mailbox: token.mailbox_address,
+              status: 'missing',
+              reason: 'No subscription found in database',
+            });
+          }
         } catch (error) {
           acc.failed += 1;
           acc.details.push({
             userId: token.user_id,
             mailbox: token.mailbox_address,
+            status: 'failed',
             error: error.message || 'Unknown error',
           });
         }
 
         return acc;
       },
-      Promise.resolve({ successful: 0, failed: 0, details: [] })
+      Promise.resolve({ successful: 0, failed: 0, skipped: 0, details: [] })
     );
 
     return {

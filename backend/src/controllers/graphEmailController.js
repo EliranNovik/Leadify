@@ -34,9 +34,18 @@ const graphEmailController = {
   },
 
   async webhookValidation(req, res) {
-    const token = req.query && (req.query.validationtoken || req.query['validationtoken']);
+    // Microsoft Graph sends validation token in query string (GET) or sometimes in POST body
+    const token = req.query?.validationtoken || 
+                  req.query?.validationToken || 
+                  req.body?.validationToken ||
+                  req.body?.validationtoken;
+    
     if (!token) {
-      console.warn('⚠️  Graph webhook validation attempt without token');
+      console.warn('⚠️  Graph webhook validation attempt without token', {
+        method: req.method,
+        query: req.query,
+        bodyKeys: req.body ? Object.keys(req.body) : [],
+      });
       return res.status(400).send('Missing validation token');
     }
 
@@ -46,20 +55,39 @@ const graphEmailController = {
   },
 
   async webhookNotification(req, res) {
-    // Graph requires an immediate 202 even if we perform async work later
-    res.sendStatus(202);
-
     try {
+      // Check if this is actually a validation request (sometimes sent as POST)
+      // MUST check BEFORE sending 202, as validation requires 200 response
+      const validationToken = req.query?.validationtoken || 
+                              req.query?.validationToken || 
+                              req.body?.validationToken ||
+                              req.body?.validationtoken;
+      
+      if (validationToken) {
+        console.log('✅ Received validation token in POST request, responding...');
+        res.set('Content-Type', 'text/plain');
+        return res.status(200).send(validationToken);
+      }
+
+      // Graph requires an immediate 202 for actual notifications (even if we perform async work later)
+      res.sendStatus(202);
+
       console.log('📨 Graph webhook notification received:', {
         timestamp: new Date().toISOString(),
+        method: req.method,
         hasBody: !!req.body,
+        bodyType: typeof req.body,
         bodyKeys: req.body ? Object.keys(req.body) : [],
         valueCount: Array.isArray(req.body?.value) ? req.body.value.length : 0,
+        rawBody: JSON.stringify(req.body).substring(0, 500), // First 500 chars for debugging
       });
 
       const notifications = Array.isArray(req.body?.value) ? req.body.value : [];
       if (!notifications.length) {
-        console.warn('⚠️  Received Graph webhook with empty payload');
+        console.warn('⚠️  Received Graph webhook with empty payload', {
+          body: req.body,
+          bodyString: JSON.stringify(req.body),
+        });
         return;
       }
 
