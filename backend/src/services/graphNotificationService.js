@@ -72,8 +72,21 @@ class GraphNotificationService {
   }
 
   async _runUserSync(userId) {
-    // Webhook-triggered syncs are still enabled (only periodic scheduler is disabled)
-    await graphMailboxSyncService.syncMailboxForUser(userId, { trigger: 'webhook' });
+    try {
+      console.log(`🔄 Starting webhook-triggered sync for user ${userId}...`);
+      // Webhook-triggered syncs are still enabled (only periodic scheduler is disabled)
+      const summary = await graphMailboxSyncService.syncMailboxForUser(userId, { trigger: 'webhook' });
+      console.log(`✅ Webhook sync completed for user ${userId}:`, {
+        synced: summary.synced,
+        inserted: summary.inserted,
+        skipped: summary.skipped,
+      });
+      return summary;
+    } catch (error) {
+      console.error(`❌ Webhook sync failed for user ${userId}:`, error.message || error);
+      console.error(`❌ Error stack:`, error.stack);
+      throw error;
+    }
   }
 }
 

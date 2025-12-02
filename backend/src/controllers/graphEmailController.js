@@ -34,6 +34,17 @@ const graphEmailController = {
   },
 
   async webhookValidation(req, res) {
+    // Log ALL incoming GET requests to help debug
+    console.log('='.repeat(80));
+    console.log('🔍🔍🔍 GRAPH WEBHOOK GET REQUEST RECEIVED 🔍🔍🔍');
+    console.log('🔍 Timestamp:', new Date().toISOString());
+    console.log('🔍 Method:', req.method);
+    console.log('🔍 URL:', req.url);
+    console.log('🔍 IP:', req.ip || req.connection.remoteAddress);
+    console.log('🔍 User-Agent:', req.get('User-Agent'));
+    console.log('🔍 Query:', JSON.stringify(req.query, null, 2));
+    console.log('='.repeat(80));
+
     // Microsoft Graph sends validation token in query string (GET) or sometimes in POST body
     const token = req.query?.validationtoken || 
                   req.query?.validationToken || 
@@ -50,12 +61,26 @@ const graphEmailController = {
     }
 
     res.set('Content-Type', 'text/plain');
-    console.log('✅ Responding to Microsoft Graph webhook validation request');
+    console.log('✅ Responding to Microsoft Graph webhook validation request with token:', token.substring(0, 20) + '...');
     return res.status(200).send(token);
   },
 
   async webhookNotification(req, res) {
     try {
+      // Log ALL incoming requests to help debug
+      console.log('='.repeat(80));
+      console.log('📨📨📨 GRAPH WEBHOOK POST REQUEST RECEIVED 📨📨📨');
+      console.log('📨 Timestamp:', new Date().toISOString());
+      console.log('📨 Method:', req.method);
+      console.log('📨 URL:', req.url);
+      console.log('📨 IP:', req.ip || req.connection.remoteAddress);
+      console.log('📨 Headers:', JSON.stringify(req.headers, null, 2));
+      console.log('📨 Query:', JSON.stringify(req.query, null, 2));
+      console.log('📨 Body exists:', !!req.body);
+      console.log('📨 Body type:', typeof req.body);
+      console.log('📨 Body keys:', req.body ? Object.keys(req.body) : []);
+      console.log('='.repeat(80));
+
       // Check if this is actually a validation request (sometimes sent as POST)
       // MUST check BEFORE sending 202, as validation requires 200 response
       const validationToken = req.query?.validationtoken || 
@@ -79,7 +104,7 @@ const graphEmailController = {
         bodyType: typeof req.body,
         bodyKeys: req.body ? Object.keys(req.body) : [],
         valueCount: Array.isArray(req.body?.value) ? req.body.value.length : 0,
-        rawBody: JSON.stringify(req.body).substring(0, 500), // First 500 chars for debugging
+        rawBody: JSON.stringify(req.body).substring(0, 1000), // First 1000 chars for debugging
       });
 
       const notifications = Array.isArray(req.body?.value) ? req.body.value : [];
@@ -90,6 +115,8 @@ const graphEmailController = {
         });
         return;
       }
+
+      console.log(`📨 Processing ${notifications.length} notification(s)`);
 
       for (const notification of notifications) {
         const userId = notification?.clientState;
@@ -114,6 +141,7 @@ const graphEmailController = {
       }
     } catch (error) {
       console.error('❌ Webhook notification processing error:', error);
+      console.error('❌ Error stack:', error.stack);
     }
   },
 
@@ -147,6 +175,26 @@ const graphEmailController = {
       res.status(500).json({
         success: false,
         error: error.message || 'Failed to check subscriptions',
+      });
+    }
+  },
+
+  async syncAllMailboxes(req, res) {
+    try {
+      console.log('🔄 Manual sync all mailboxes requested...');
+      const summary = await graphMailboxSyncService.syncAllMailboxes({
+        trigger: 'manual',
+      });
+      res.status(200).json({
+        success: true,
+        message: 'All mailboxes synced',
+        data: summary,
+      });
+    } catch (error) {
+      console.error('❌ Failed to sync all mailboxes:', error);
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to sync all mailboxes',
       });
     }
   },

@@ -674,21 +674,46 @@ class GraphMailboxSyncService {
       }
     }
 
-    if (!rows.length) {
-      return { processed: messages.length, inserted: 0, skipped: 0, trackedCount: 0 };
+    // Filter rows: only save emails that match client_id, contact_id, or office@lawoffice.org.il recipient
+    const OFFICE_EMAIL = 'office@lawoffice.org.il';
+    const filteredRows = rows.filter((row) => {
+      // Check if recipient email is office@lawoffice.org.il
+      const recipientList = (row.recipient_list || '').toLowerCase();
+      const hasOfficeRecipient = recipientList.includes(OFFICE_EMAIL.toLowerCase());
+      
+      // Check if email has client_id or legacy_id (matched to a lead)
+      const hasLeadMatch = !!(row.client_id || row.legacy_id);
+      
+      // Check if email has contact_id (matched to a contact)
+      const hasContactMatch = !!row.contact_id;
+      
+      // Save email if ANY of these conditions are met:
+      const shouldSave = hasOfficeRecipient || hasLeadMatch || hasContactMatch;
+      
+      if (shouldSave) {
+        const reasons = [];
+        if (hasOfficeRecipient) reasons.push('office@lawoffice.org.il recipient');
+        if (hasLeadMatch) reasons.push(`lead match (client_id=${row.client_id || 'null'}, legacy_id=${row.legacy_id || 'null'})`);
+        if (hasContactMatch) reasons.push(`contact match (contact_id=${row.contact_id})`);
+        console.log(
+          `✅ Saving email ${row.message_id.substring(0, 20)}... - reason: ${reasons.join(', ')} | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+      } else {
+        console.log(
+          `📭 Skipping email ${row.message_id.substring(0, 20)}... - no match: sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'} | client_id=${row.client_id || 'null'} | legacy_id=${row.legacy_id || 'null'} | contact_id=${row.contact_id || 'null'}`
+        );
+      }
+      
+      return shouldSave;
+    });
+
+    if (!filteredRows.length) {
+      console.log(`📭 No emails to save after filtering (${rows.length} processed, 0 matched criteria)`);
+      return { processed: messages.length, inserted: 0, skipped: rows.length, trackedCount: 0 };
     }
 
-    const { error } = await supabase
-      .from(EMAIL_HEADERS_TABLE)
-      .upsert(rows, { onConflict: 'message_id' });
-    if (error) {
-      console.error('❌ Failed to store email headers:', error.message || error);
-      throw new Error('Unable to store email headers');
-    }
-
-    // Check which emails are actually new (not already in database)
-    // This prevents sending duplicate notifications for emails that were already synced
-    const messageIds = rows.map(row => row.message_id).filter(Boolean);
+    // Check for duplicates before upserting - filter out emails that already exist in database
+    const messageIds = filteredRows.map(row => row.message_id).filter(Boolean);
     let existingMessageIds = new Set();
     
     if (messageIds.length > 0) {
@@ -702,7 +727,39 @@ class GraphMailboxSyncService {
       }
     }
 
-    const newLeadEmails = rows.filter((row) => {
+    // Filter out emails that already exist (duplicates)
+    const newEmailsToSave = filteredRows.filter((row) => {
+      if (!row.message_id) {
+        console.warn(`⚠️  Skipping email without message_id: ${JSON.stringify(row).substring(0, 100)}`);
+        return false;
+      }
+      const isDuplicate = existingMessageIds.has(row.message_id);
+      if (isDuplicate) {
+        console.log(`🔄 Skipping duplicate email ${row.message_id.substring(0, 20)}... (already exists in database)`);
+      }
+      return !isDuplicate;
+    });
+
+    if (!newEmailsToSave.length) {
+      console.log(`📭 No new emails to save (all ${filteredRows.length} matched emails already exist in database)`);
+      return { processed: messages.length, inserted: 0, skipped: rows.length, trackedCount: 0 };
+    }
+
+    console.log(`💾 Saving ${newEmailsToSave.length} new email(s) out of ${filteredRows.length} matched (${filteredRows.length - newEmailsToSave.length} duplicates skipped, ${rows.length - filteredRows.length} filtered out)`);
+
+    // Use upsert with onConflict to ensure no duplicates even if race condition occurs
+    const { error } = await supabase
+      .from(EMAIL_HEADERS_TABLE)
+      .upsert(newEmailsToSave, { onConflict: 'message_id' });
+    if (error) {
+      console.error('❌ Failed to store email headers:', error.message || error);
+      throw new Error('Unable to store email headers');
+    }
+
+    // Check which emails are actually new (not already in database)
+    // This prevents sending duplicate notifications for emails that were already synced
+    // Note: existingMessageIds was already populated above, so we can reuse it
+    const newLeadEmails = newEmailsToSave.filter((row) => {
       // Only include emails that are NEW (not already in database)
       if (existingMessageIds.has(row.message_id)) {
         return false; // Skip emails that already exist
@@ -742,24 +799,26 @@ class GraphMailboxSyncService {
         })
       );
     } else {
-      console.log(`ℹ️  No new email leads to notify (${rows.length} emails processed, ${existingMessageIds.size} already existed)`);
+      console.log(`ℹ️  No new email leads to notify (${newEmailsToSave.length} new emails processed)`);
     }
 
     // After storing headers, fetch full bodies for messages that need them
     // This runs asynchronously so it doesn't block the sync
     if (accessToken) {
-      this.fetchFullBodiesForMessages(userId, mailboxAddress, rows, accessToken).catch(err => {
+      this.fetchFullBodiesForMessages(userId, mailboxAddress, newEmailsToSave, accessToken).catch(err => {
         console.error('⚠️  Error fetching full email bodies:', err.message || err);
         // Don't throw - this is a background operation
       });
     }
 
-    console.log(`📥 Stored ${rows.length} emails (processed ${messages.length})`);
+    const duplicatesSkipped = filteredRows.length - newEmailsToSave.length;
+    const filteredOut = rows.length - filteredRows.length;
+    console.log(`📥 Stored ${newEmailsToSave.length} new emails (processed ${messages.length}, ${duplicatesSkipped} duplicates skipped, ${filteredOut} filtered out)`);
 
     return {
       processed: messages.length,
-      inserted: rows.length,
-      skipped: 0,
+      inserted: newEmailsToSave.length,
+      skipped: filteredOut + duplicatesSkipped,
       trackedCount: 0,
     };
   }

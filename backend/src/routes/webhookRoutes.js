@@ -31,12 +31,33 @@ router.post('/hook/graph/emails/sync', graphEmailController.syncEmails);
 router.get('/hook/graph/emails/health', graphEmailController.health);
 
 // Microsoft Graph push notifications
-router.get('/graph/webhook', graphEmailController.webhookValidation);
-router.post('/graph/webhook', graphEmailController.webhookNotification);
+// Add logging middleware to track all webhook requests
+router.get('/graph/webhook', (req, res, next) => {
+  console.log('🔍 GET /api/graph/webhook route middleware triggered');
+  next();
+}, graphEmailController.webhookValidation);
+
+router.post('/graph/webhook', (req, res, next) => {
+  console.log('📨 POST /api/graph/webhook route middleware triggered');
+  next();
+}, graphEmailController.webhookNotification);
+
+// Test endpoint to verify webhook is accessible
+router.get('/graph/webhook/test', (req, res) => {
+  res.status(200).json({
+    success: true,
+    message: 'Graph webhook endpoint is accessible',
+    timestamp: new Date().toISOString(),
+    webhookUrl: process.env.GRAPH_WEBHOOK_NOTIFICATION_URL || 'Not configured',
+  });
+});
 
 // Graph subscription management
 router.post('/graph/subscriptions/refresh', graphEmailController.refreshSubscriptions);
 router.get('/graph/subscriptions/status', graphEmailController.checkSubscriptions);
+
+// Manual sync all mailboxes (for testing/debugging)
+router.post('/graph/emails/sync-all', graphEmailController.syncAllMailboxes);
 
 // Health check for webhook
 router.get('/hook/health', (req, res) => {

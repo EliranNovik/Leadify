@@ -1,7 +1,7 @@
 const graphMailboxSyncService = require('./graphMailboxSyncService');
 
-const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '10');
-const SCHEDULER_ENABLED = false; // Disabled - email fetching schedulers stopped
+const DEFAULT_INTERVAL_MINUTES = Number(process.env.MAILBOX_SYNC_INTERVAL_MINUTES || '5');
+const SCHEDULER_ENABLED = true; // Enabled - fetches emails every 5 minutes
 
 let schedulerHandle = null;
 let isRunning = false;

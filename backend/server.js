@@ -373,8 +373,8 @@ server.listen(PORT, () => {
     console.warn(`   Set GRAPH_WEBHOOK_NOTIFICATION_URL environment variable to enable webhook notifications.`);
   }
 
-  // Email fetching schedulers disabled
-  // startMailboxSyncScheduler();
+  // Email fetching scheduler enabled - fetches emails every 5 minutes
+  startMailboxSyncScheduler();
   startMeetingNotificationScheduler();
 });
 
