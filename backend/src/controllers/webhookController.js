@@ -114,14 +114,19 @@ const webhookController = {
       console.log('📥 Received webhook data:', req.body);
       
       // Log the received form data
-      const parsedSourceCode = parseIntegerSourceCode(req.body.source_code);
+      // Accept both 'source_code' and 'lead_source' as aliases
+      const sourceCodeValue = req.body.source_code || req.body.lead_source;
+      const parsedSourceCode = parseIntegerSourceCode(sourceCodeValue);
+      
+      // Accept both 'facts' and 'desc' as aliases
+      const factsValue = req.body.facts || req.body.desc;
 
       const formData = {
         name: req.body.name,
         email: req.body.email,
         phone: req.body.phone,
         topic: req.body.topic,
-        facts: req.body.facts,
+        facts: factsValue,
         source: req.body.source || 'webhook',
         language: req.body.language || 'English',
         source_code: parsedSourceCode
