@@ -16,8 +16,11 @@ interface Suggestion {
 }
 
 interface PublicMessage {
-  id: number;
+  id: string;
+  title?: string;
   content: string;
+  start_date: string;
+  end_date: string;
   created_at: string;
   updated_at: string;
   is_active: boolean;
@@ -189,11 +192,15 @@ const AISuggestions = forwardRef((props, ref) => {
   const fetchPublicMessages = async () => {
     setIsLoadingPublicMessages(true);
     try {
+      const today = new Date().toISOString().split('T')[0]; // Get current date in YYYY-MM-DD format
+      
       const { data, error } = await supabase
         .from('public_messages')
-        .select('id, content, created_at, updated_at, is_active')
+        .select('id, title, content, start_date, end_date, created_at, updated_at, is_active')
         .eq('is_active', true)
-        .order('created_at', { ascending: false });
+        .lte('start_date', today) // start_date <= today
+        .gte('end_date', today)   // end_date >= today
+        .order('created_at', { ascending: false }); // Order by created_at (newest first)
 
       if (error) {
         console.error('Error fetching public messages:', error);
@@ -425,36 +432,54 @@ const AISuggestions = forwardRef((props, ref) => {
             <span className="text-sm font-semibold text-gray-800">Public Announcements</span>
           </div>
           <div className="space-y-3">
-            {publicMessages.map((message) => (
-              <div 
-                key={message.id} 
-                className="bg-white rounded-xl p-4 text-sm text-gray-900 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1"
-                style={{
-                  boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.05)'
-                }}
-              >
+            {publicMessages.map((message) => {
+              // Detect Hebrew text for RTL support
+              const hasHebrew = /[\u0590-\u05FF]/.test(
+                (message.title || '') + (message.content || '')
+              );
+              const isRTL = hasHebrew ? 'rtl' : 'ltr';
+              const textAlign = hasHebrew ? 'right' : 'left';
+              
+              return (
                 <div 
-                  className="whitespace-pre-wrap leading-relaxed"
-                  dir="auto"
-                  style={{ textAlign: 'start' }}
+                  key={message.id} 
+                  className="bg-white rounded-xl p-4 text-sm text-gray-900 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1"
+                  style={{
+                    boxShadow: '0 10px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04), 0 0 0 1px rgba(0, 0, 0, 0.05)'
+                  }}
                 >
-                  {message.content}
+                  {message.title && (
+                    <div className="font-semibold text-base mb-2 text-gray-900" dir={isRTL} style={{ textAlign }}>
+                      {message.title}
+                    </div>
+                  )}
+                  <div 
+                    className="whitespace-pre-wrap leading-relaxed"
+                    dir={isRTL}
+                    style={{ textAlign }}
+                  >
+                    {message.content}
+                  </div>
+                  <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-100">
+                    {new Date(message.start_date).toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric'
+                    })} - {new Date(message.end_date).toLocaleDateString('en-US', {
+                      year: 'numeric',
+                      month: 'short',
+                      day: 'numeric'
+                    })}
+                  </div>
                 </div>
-                <div className="text-xs text-gray-500 mt-2 pt-2 border-t border-gray-100">
-                  {new Date(message.created_at).toLocaleDateString('en-US', {
-                    year: 'numeric',
-                    month: 'short',
-                    day: 'numeric'
-                  })}
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
       
       <div 
-        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible max-h-[1200px] bg-white"
+        className="overflow-x-auto md:overflow-y-auto md:overflow-x-visible md:max-h-[1200px] bg-white"
         style={{ 
           scrollbarWidth: 'none', 
           msOverflowStyle: 'none',

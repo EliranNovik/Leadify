@@ -4852,11 +4852,15 @@ const Dashboard: React.FC = () => {
 
   useEffect(() => {
     function updateHeight() {
-      // Measure performance dashboard height and apply to AI assistant
-      if (performanceDashboardRef.current && aiRef.current && !aiContainerCollapsed) {
+      // Only match heights on desktop (md breakpoint and above)
+      // On mobile, let AI box have natural height
+      const isMobile = window.innerWidth < 768; // md breakpoint
+      
+      if (!isMobile && performanceDashboardRef.current && aiRef.current && !aiContainerCollapsed) {
         const performanceHeight = performanceDashboardRef.current.offsetHeight;
         setAiHeight(performanceHeight);
-      } else if (aiContainerCollapsed) {
+      } else {
+        // On mobile or when collapsed, don't set fixed height
         setAiHeight(undefined);
       }
     }
@@ -6557,12 +6561,12 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* 2. AI Suggestions (left) and Scoreboard (right) side by side */}
-      <div className="flex flex-col md:flex-row mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start">
+      <div className="flex flex-col md:flex-row mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start gap-4 md:gap-0">
         {/* AI Suggestions Box */}
         {!aiContainerCollapsed && (
         <div 
           ref={aiRef} 
-          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 overflow-hidden`}
+          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 md:overflow-hidden`}
           style={aiHeight ? { height: `${aiHeight}px`, minHeight: `${aiHeight}px`, maxHeight: `${aiHeight}px` } : undefined}
         >
           <div className="flex justify-between items-center mb-4 flex-shrink-0">
@@ -6575,7 +6579,8 @@ const Dashboard: React.FC = () => {
               <XMarkIcon className="w-5 h-5" />
             </button>
           </div>
-          <div className="flex-1 overflow-y-auto min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+          {/* On mobile: no flex-1, let content determine height. On desktop: flex-1 with scroll */}
+          <div className="md:flex-1 md:overflow-y-auto md:min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
             <style>{`
               .scrollbar-hide::-webkit-scrollbar {
                 display: none;

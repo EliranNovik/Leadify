@@ -45,10 +45,12 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
   }, [isOpen, leadNumber]);
 
   useEffect(() => {
-    if (onDocumentCountChange) {
+    // Only update count when modal is open and documents have been loaded
+    // This prevents resetting the count to 0 when modal is closed or during initial state
+    if (onDocumentCountChange && isOpen && !loading) {
       onDocumentCountChange(documents.length);
     }
-  }, [documents, onDocumentCountChange]);
+  }, [documents, onDocumentCountChange, loading, isOpen]);
 
   const fetchDocuments = async () => {
     setLoading(true);

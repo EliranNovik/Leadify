@@ -15,6 +15,7 @@ import {
   PaperAirplaneIcon,
   FaceSmileIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   SparklesIcon,
   ExclamationTriangleIcon,
   PlayIcon,
@@ -22,6 +23,7 @@ import {
   SpeakerWaveIcon,
   MagnifyingGlassIcon,
   PlusIcon,
+  DocumentTextIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -59,11 +61,91 @@ const normalizeEmailForFilter = (value?: string | null) =>
 const sanitizeEmailForFilter = (value: string) =>
   value.replace(/[^a-z0-9@._+!~-]/g, '');
 
-// Helper function to detect Hebrew/RTL characters
-const containsRTL = (text?: string | null) => !!text && /[\u0590-\u05FF]/.test(text);
+// Extract visible text from HTML for RTL detection (ignore HTML tags and metadata)
+const extractVisibleText = (html?: string | null): string => {
+  if (!html) return '';
+  // Remove HTML tags but preserve text content
+  const tempDiv = document.createElement('div');
+  tempDiv.innerHTML = html;
+  return tempDiv.textContent || tempDiv.innerText || '';
+};
 
-// Helper function to get text direction based on content
-const getTextDirection = (text?: string | null) => containsRTL(text) ? 'rtl' : 'ltr';
+const containsRTL = (text?: string | null) => {
+  if (!text) return false;
+  // Check only visible text content, not HTML tags
+  const visibleText = extractVisibleText(text);
+  return /[\u0590-\u05FF]/.test(visibleText);
+};
+
+// Get direction for plain text (no HTML)
+const getTextDirection = (text?: string | null): 'rtl' | 'ltr' => {
+  if (!text) return 'ltr';
+  return /[\u0590-\u05FF]/.test(text) ? 'rtl' : 'ltr';
+};
+
+const getMessageDirection = (message: any): 'rtl' | 'ltr' => {
+  // Check subject (plain text)
+  if (message.subject && /[\u0590-\u05FF]/.test(message.subject)) {
+    return 'rtl';
+  }
+  // Check body_html or bodyPreview (extract visible text only)
+  if (message.bodyPreview && containsRTL(message.bodyPreview)) {
+    return 'rtl';
+  }
+  return 'ltr';
+};
+
+// Format time with date and time - shows full date and time
+const formatTime = (timestamp: string) => {
+  const date = new Date(timestamp);
+  const now = new Date();
+  
+  // Compare dates by calendar day (ignore time) to properly detect today/yesterday
+  const dateStartOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+  const nowStartOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const diffDays = Math.round((nowStartOfDay.getTime() - dateStartOfDay.getTime()) / (1000 * 60 * 60 * 24));
+
+  const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+
+  if (diffDays === 0) {
+    // Today: show "Today at HH:MM"
+    return `Today at ${timeString}`;
+  } else if (diffDays === 1) {
+    // Yesterday: show "Yesterday at HH:MM"
+    return `Yesterday at ${timeString}`;
+  } else if (diffDays <= 7) {
+    // Within a week: show weekday, date, and time
+    const weekday = date.toLocaleDateString([], { weekday: 'short' });
+    const monthDay = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+    return `${weekday}, ${monthDay} at ${timeString}`;
+  } else {
+    // Older: show full date and time
+    const dateString = date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+    return `${dateString} at ${timeString}`;
+  }
+};
+
+// Format date separator
+const formatDateSeparator = (timestamp: string) => {
+  const date = new Date(timestamp);
+  const today = new Date();
+  const yesterday = new Date(today);
+  yesterday.setDate(yesterday.getDate() - 1);
+
+  if (date.toDateString() === today.toDateString()) {
+    return 'Today';
+  }
+  if (date.toDateString() === yesterday.toDateString()) {
+    return 'Yesterday';
+  }
+  const diffTime = today.getTime() - date.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  if (diffDays <= 7) {
+    return date.toLocaleDateString('en-US', { weekday: 'long' });
+  }
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
+};
 
 const collectClientEmails = (client: any): string[] => {
   const emails: string[] = [];
@@ -441,6 +523,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [emails, setEmails] = useState<any[]>([]);
   const [emailsLoading, setEmailsLoading] = useState(false);
   const [emailSearchQuery, setEmailSearchQuery] = useState('');
+  const [isSearchBarOpen, setIsSearchBarOpen] = useState(false);
   const [interactionsLoading, setInteractionsLoading] = useState(true);
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
@@ -753,6 +836,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [selectedFile]);
   const [showAiSummary, setShowAiSummary] = useState(false);
   const lastEmailRef = useRef<HTMLDivElement>(null);
+  const messagesEndRef = useRef<HTMLDivElement>(null);
   // 1. Add state for WhatsApp messages from DB
   const [whatsAppMessages, setWhatsAppMessages] = useState<any[]>([]);
   
@@ -2966,6 +3050,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [isEmailModalOpen]);
 
+  // Auto-scroll to bottom when new emails arrive
+  useEffect(() => {
+    if (isEmailModalOpen) {
+      messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+    }
+  }, [emails, isEmailModalOpen]);
+
   // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
   const openEditDrawer = async (idx: number) => {
     const row = interactions[idx];
@@ -3866,15 +3957,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </span>
                 </div>
               </div>
-              {selectedContactForEmail && (
-                <div className="flex items-center gap-2 px-3 py-1.5 bg-purple-100 rounded-lg border border-purple-200">
-                  <span className="text-xs font-medium text-purple-700">Contact:</span>
-                  <span className="text-sm font-semibold text-purple-900">{selectedContactForEmail.contact.name}</span>
-                  {selectedContactForEmail.contact.isMain && (
-                    <span className="px-2 py-0.5 text-xs font-medium bg-purple-200 text-purple-800 rounded-full">Main</span>
-                  )}
-                </div>
-              )}
               <div className="flex flex-col items-end gap-2">
                 <div className="flex items-center gap-2 text-xs text-gray-500">
                   <span
@@ -3921,32 +4003,57 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               </div>
             </div>
 
-            {/* Search Bar */}
-            <div className="px-4 md:px-6 py-3 border-b border-gray-200 bg-gray-50">
-              <div className="relative">
-                <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
-                  <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
-                </div>
-                <input
-                  type="text"
-                  className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-sm"
-                  placeholder="Search emails by keywords, sender name, or recipient..."
-                  value={emailSearchQuery}
-                  onChange={(e) => setEmailSearchQuery(e.target.value)}
-                />
+            {/* Search Bar - Collapsible */}
+            <div className="border-b border-gray-200 bg-white">
+              {/* Toggle Button */}
+              <div className="px-4 md:px-6 py-2 flex items-center justify-between">
+                <button
+                  onClick={() => setIsSearchBarOpen(!isSearchBarOpen)}
+                  className="flex items-center gap-2 text-sm text-gray-600 hover:text-gray-900 transition-colors"
+                >
+                  <span>Search emails</span>
+                  {isSearchBarOpen ? (
+                    <ChevronUpIcon className="h-4 w-4" />
+                  ) : (
+                    <ChevronDownIcon className="h-4 w-4" />
+                  )}
+                </button>
                 {emailSearchQuery && (
-                  <button
-                    onClick={() => setEmailSearchQuery('')}
-                    className="absolute inset-y-0 right-0 pr-3 flex items-center"
-                  >
-                    <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
-                  </button>
+                  <span className="text-xs text-gray-500">
+                    {emailSearchQuery.length} character{emailSearchQuery.length !== 1 ? 's' : ''}
+                  </span>
                 )}
               </div>
+              {/* Search Input - Collapsible */}
+              {isSearchBarOpen && (
+                <div className="px-4 md:px-6 pb-3 transition-all duration-200">
+                  <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
+                      <MagnifyingGlassIcon className="h-5 w-5 text-gray-400" />
+                    </div>
+                    <input
+                      type="text"
+                      className="block w-full pl-10 pr-3 py-2 border border-gray-300 rounded-md leading-5 bg-white placeholder-gray-500 focus:outline-none focus:placeholder-gray-400 focus:ring-1 focus:ring-purple-500 focus:border-purple-500 sm:text-sm"
+                      placeholder="Search emails by keywords, sender name, or recipient..."
+                      value={emailSearchQuery}
+                      onChange={(e) => setEmailSearchQuery(e.target.value)}
+                      autoFocus
+                    />
+                    {emailSearchQuery && (
+                      <button
+                        onClick={() => setEmailSearchQuery('')}
+                        className="absolute inset-y-0 right-0 pr-3 flex items-center"
+                      >
+                        <XMarkIcon className="h-5 w-5 text-gray-400 hover:text-gray-600" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
 
             {/* Email Thread */}
-            <div className="flex-1 overflow-y-auto p-3 md:p-6 bg-white">
+            <div className="flex-1 overflow-y-auto p-4 md:p-6 min-h-0 overscroll-contain bg-white" style={{ WebkitOverflowScrolling: 'touch' }}>
               {emailsLoading ? (
                 <div className="flex items-center justify-center h-full">
                   <div className="loading loading-spinner loading-lg text-purple-500"></div>
@@ -4002,7 +4109,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </div>
                 </div>
               ) : (
-                <div className="space-y-6">
+                <div className="space-y-4">
                   {[...emails]
                     .filter((message) => {
                       // STRICT filtering by selected contact if one is selected
@@ -4062,118 +4169,113 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       return false;
                     })
                     .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                    .map((message, index) => (
-                      <div key={message.id} className="space-y-2">
-                        {/* Email Header */}
-                        <div className="flex items-center gap-3">
-                          <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                            message.direction === 'outgoing'
-                              ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                              : 'bg-pink-100 text-pink-700 border border-pink-200'
-                          }`}>
-                            {message.direction === 'outgoing' ? 'Team' : 'Client'}
-                          </div>
-                          <div>
-                            <div className="font-semibold text-gray-900 text-sm">
-                              {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name}
-                            </div>
-                            <div className="text-xs text-gray-500">
-                              {new Date(message.date).toLocaleString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                year: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}
-                            </div>
-                          </div>
-                        </div>
-                        
-                        {/* Complete Email Content */}
-                        <div className="bg-white border border-gray-200 rounded-lg p-6 shadow-lg hover:shadow-xl transition-shadow duration-300" style={{
-                          boxShadow: '0 10px 25px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05)'
-                        }}>
-                          {/* Email Header */}
-                          <div className="mb-4 pb-4 border-b border-gray-200">
-                            <div className="text-sm text-gray-600 space-y-1">
-                              <div><strong>From:</strong> {message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name} &lt;{message.from}&gt;</div>
-                              <div><strong>To:</strong> {message.to || (message.direction === 'outgoing' ? `${client.name} <${client.email}>` : `eliran@lawoffice.org.il`)}</div>
-                              <div><strong>Date:</strong> {new Date(message.date).toLocaleString('en-US', {
-                                month: 'short',
-                                day: 'numeric',
-                                year: 'numeric',
-                                hour: '2-digit',
-                                minute: '2-digit'
-                              })}</div>
-                              {message.subject && (
-                                <div><strong>Subject:</strong> {message.subject}</div>
-                              )}
-                            </div>
-                          </div>
-                          
-                          {/* Complete Email Body - Full Content */}
-                          <div className="email-content">
-                              {message.bodyPreview ? (
-                                <div 
-                                  dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
-                                  className="prose prose-sm max-w-none email-body"
-                                  style={{
-                                    fontFamily: 'inherit',
-                                    lineHeight: '1.6',
-                                    color: '#374151'
-                                  }}
-                                />
-                              ) : (
-                              <div className="text-gray-500 italic p-4 bg-gray-50 rounded">
-                                No email content available
-                              </div>
-                            )}
-                          </div>
-                          
-                          {/* Attachments */}
-                          {message.attachments && message.attachments.length > 0 && (
-                            <div className="mt-6 pt-4 border-t border-gray-200">
-                              <div className="text-sm font-medium text-gray-700 mb-3">Attachments:</div>
-                              <div className="space-y-2">
-                                {message.attachments.map((attachment: Attachment, idx: number) => (
-                                  <div key={attachment.id} className="flex items-center gap-3 p-3 bg-gray-50 rounded-lg hover:bg-gray-100 transition-colors">
-                                    <PaperClipIcon className="w-5 h-5 text-gray-400" />
-                                    <div className="flex-1">
-                                      <div className="font-medium text-gray-900">{attachment.name}</div>
-                                      {attachment.sizeInBytes && (
-                                        <div className="text-sm text-gray-500">
-                                          {(attachment.sizeInBytes / 1024).toFixed(1)} KB
-                                        </div>
-                                      )}
-                                      {attachment.contentType && (
-                                        <div className="text-xs text-gray-400">
-                                          {attachment.contentType}
-                                        </div>
-                                      )}
-                                    </div>
-                                    <button
-                                      onClick={() => handleDownloadAttachment(message.id, attachment)}
-                                      disabled={downloadingAttachments[attachment.id]}
-                                      className="btn btn-sm btn-outline btn-primary"
-                                      title="Download attachment"
-                                    >
-                                      {downloadingAttachments[attachment.id] ? (
-                                        <span className="loading loading-spinner loading-xs" />
-                                      ) : (
-                                        <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                        </svg>
-                                      )}
-                                      Download
-                                    </button>
-                                  </div>
-                                ))}
+                    .map((message, index, filteredMessages) => {
+                      const showDateSeparator = index === 0 || 
+                        new Date(message.date).toDateString() !== new Date(filteredMessages[index - 1].date).toDateString();
+                      const isOutgoing = message.direction === 'outgoing';
+                      const senderDisplayName = isOutgoing 
+                        ? (currentUserFullName || message.from || 'Team')
+                        : (selectedContactForEmail?.contact.name || client.name || message.from || 'Client');
+                      const messageDirection = getMessageDirection(message);
+                      const isRTLMessage = messageDirection === 'rtl';
+                      
+                      return (
+                        <React.Fragment key={message.id || index}>
+                          {showDateSeparator && (
+                            <div className="flex justify-center my-4">
+                              <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">
+                                {formatDateSeparator(message.date)}
                               </div>
                             </div>
                           )}
-                        </div>
-                      </div>
-                    ))}
+                          
+                          <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                            <div className="flex items-center gap-2 mb-1">
+                              <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
+                                isOutgoing
+                                  ? 'bg-blue-100 text-blue-700 border border-blue-200'
+                                  : 'bg-pink-100 text-pink-700 border border-pink-200'
+                              }`}>
+                                {isOutgoing ? 'Team' : 'Client'}
+                              </div>
+                              <div
+                                className={`text-xs font-semibold ${
+                                  isOutgoing ? 'text-blue-600' : 'text-gray-600'
+                                }`}
+                                dir={getTextDirection(senderDisplayName)}
+                              >
+                                {senderDisplayName}
+                              </div>
+                            </div>
+                            <div
+                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
+                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', textAlign: 'left' }}
+                              dir="ltr"
+                            >
+                              <div className="mb-2">
+                                <div className="text-sm font-semibold text-gray-900" dir={getTextDirection(message.subject)}>{message.subject || '(no subject)'}</div>
+                                <div className="text-xs text-gray-500 mt-1" dir="ltr">{formatTime(message.date)}</div>
+                              </div>
+                              
+                              {message.bodyPreview ? (
+                                <div
+                                  dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
+                                  className="prose prose-sm max-w-none text-gray-700 break-words"
+                                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                  dir="auto"
+                                />
+                              ) : (
+                                <div className="text-gray-500 italic">No content available</div>
+                              )}
+
+                              {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
+                                <div className="mt-3 pt-3 border-t border-gray-200">
+                                  <div className="text-xs font-medium text-gray-600 mb-2">
+                                    Attachments ({message.attachments.length}):
+                                  </div>
+                                  <div className="space-y-1">
+                                    {message.attachments.map((attachment: any, idx: number) => {
+                                      if (!attachment || (!attachment.id && !attachment.name)) {
+                                        return null; // Skip invalid attachments
+                                      }
+                                      
+                                      const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
+                                      const attachmentName = attachment.name || `Attachment ${idx + 1}`;
+                                      const isDownloading = attachment.id && downloadingAttachments[attachment.id];
+                                      
+                                      return (
+                                        <button
+                                          key={attachmentKey}
+                                          type="button"
+                                          className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
+                                          onClick={() => handleDownloadAttachment(message.id, attachment)}
+                                          disabled={Boolean(isDownloading)}
+                                        >
+                                          {isDownloading ? (
+                                            <span className="loading loading-spinner loading-xs text-blue-500" />
+                                          ) : (
+                                            <DocumentTextIcon className="w-4 h-4 flex-shrink-0" />
+                                          )}
+                                          <span className="truncate flex-1">
+                                            {attachmentName}
+                                          </span>
+                                          {(attachment.sizeInBytes || attachment.size) && (
+                                            <span className="text-xs text-gray-500 flex-shrink-0">
+                                              ({((attachment.sizeInBytes || attachment.size) / 1024).toFixed(1)} KB)
+                                            </span>
+                                          )}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        </React.Fragment>
+                      );
+                    })}
+                  <div ref={messagesEndRef} />
                 </div>
               )}
             </div>

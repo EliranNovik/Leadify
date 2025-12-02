@@ -49,7 +49,8 @@ const graphClient = Client.initWithMiddleware({ authProvider: customAuthProvider
 
 // Helper: ensure we have a `/Leads/Lead_<number>` folder (with L/C prefix fallback)
 const ensureLeadFolder = async (leadNumber: string) => {
-  const normalizedLeadNumber = leadNumber.replace(/ /g, '_');
+  // Replace spaces and forward slashes (used in subleads) with underscores for Graph API compatibility
+  const normalizedLeadNumber = leadNumber.replace(/ /g, '_').replace(/\//g, '_');
   const primaryFolderName = `Lead_${normalizedLeadNumber}`;
 
   let alternateFolderName: string | null = null;

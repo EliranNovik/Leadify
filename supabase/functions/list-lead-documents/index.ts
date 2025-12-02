@@ -52,7 +52,12 @@ const graphClient = Client.initWithMiddleware({ authProvider: customAuthProvider
 // 2) Fallback to `/Documents/Leads/Lead_<number>` if it already exists
 // 3) If still not found, create `/Leads` and then `/Leads/Lead_<number>`
 const ensureLeadFolder = async (leadNumber: string) => {
-  const normalizedLeadNumber = leadNumber.replace(/ /g, '_');
+  // Normalize lead number to match folder naming convention
+  // Replace spaces and forward slashes (used in subleads) with underscores for Graph API compatibility
+  // This matches the normalization logic in upload-to-onedrive exactly
+  // Note: If lead numbers contain underscores that represent slashes in the actual lead number,
+  // they will be preserved as underscores in the folder name (folders cannot contain slashes)
+  const normalizedLeadNumber = leadNumber.trim().replace(/ /g, '_').replace(/\//g, '_');
 
   // Primary folder name uses the lead number as-is
   const primaryFolderName = `Lead_${normalizedLeadNumber}`;

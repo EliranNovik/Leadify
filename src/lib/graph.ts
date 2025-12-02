@@ -374,6 +374,11 @@ export const sendEmail = async (accessToken: string, email: {
   body: string;
   skipSignature?: boolean;
   cc?: string[];
+  attachments?: Array<{
+    name: string;
+    contentBytes: string; // Base64 encoded content
+    contentType?: string;
+  }>;
 }) => {
   // Get the user's email signature from the database
   const { getCurrentUserEmailSignature } = await import('./emailSignature');
@@ -411,7 +416,7 @@ export const sendEmail = async (accessToken: string, email: {
 
   const ccRecipients = normaliseRecipients(email.cc);
 
-  const emailToSend = {
+  const emailToSend: any = {
     message: {
       subject: email.subject,
       body: {
@@ -425,6 +430,16 @@ export const sendEmail = async (accessToken: string, email: {
         ? {
             ccRecipients: ccRecipients.map(address => ({
               emailAddress: { address },
+            })),
+          }
+        : {}),
+      ...(email.attachments && email.attachments.length > 0
+        ? {
+            attachments: email.attachments.map(att => ({
+              '@odata.type': '#microsoft.graph.fileAttachment',
+              name: att.name,
+              contentBytes: att.contentBytes,
+              contentType: att.contentType || 'application/octet-stream',
             })),
           }
         : {}),

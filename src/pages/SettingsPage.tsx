@@ -48,15 +48,35 @@ interface SettingItem {
   max?: number;
 }
 
+// Helper function to get and validate theme from localStorage (defined outside component to avoid re-initialization issues)
+const getValidatedTheme = (): string => {
+  try {
+    const storedTheme = localStorage.getItem('theme');
+    // Only accept valid theme values - explicitly check each valid option
+    const validThemes: string[] = ['light', 'dark', 'alternative'];
+    if (storedTheme && validThemes.includes(storedTheme)) {
+      return storedTheme;
+    }
+    // If invalid or missing, default to light and save it
+    console.warn('Invalid or missing theme in localStorage, defaulting to light mode. Stored value:', storedTheme);
+    localStorage.setItem('theme', 'light');
+    return 'light';
+  } catch (error) {
+    console.error('Error reading theme from localStorage:', error);
+    return 'light';
+  }
+};
+
 const SettingsPage: React.FC = () => {
   const [activeSection, setActiveSection] = useState('appearance');
   const [activeCalendarTab, setActiveCalendarTab] = useState('availability');
   const [pushNotificationPermission, setPushNotificationPermission] = useState<NotificationPermission>('default');
   const [isPushSupported, setIsPushSupported] = useState(false);
   const [isRequestingPermission, setIsRequestingPermission] = useState(false);
+
   const [settings, setSettings] = useState<Record<string, any>>({
     // Appearance Settings
-    theme: localStorage.getItem('theme') || 'light',
+    theme: getValidatedTheme(),
     compactMode: localStorage.getItem('compactMode') === 'true',
     sidebarCollapsed: localStorage.getItem('sidebarCollapsed') === 'true',
     
@@ -299,25 +319,53 @@ const SettingsPage: React.FC = () => {
     checkPushSupport();
   }, []);
 
-  // Apply theme changes immediately
+  // Apply theme changes immediately - explicitly remove all theme classes first to prevent stale classes
   useEffect(() => {
     const theme = settings.theme;
     const isDark = theme === 'dark';
     const isAlt = theme === 'alternative';
     const rootEl = document.getElementById('root');
 
+    // First, explicitly remove all theme classes to prevent stale classes from previous sessions
+    document.documentElement.classList.remove('dark', 'theme-alt');
+    document.body.classList.remove('dark', 'theme-alt');
+    rootEl?.classList.remove('dark', 'theme-alt');
+
+    // Set the data-theme attribute
     document.documentElement.setAttribute('data-theme', theme);
 
-    document.documentElement.classList.toggle('dark', isDark);
-    document.body.classList.toggle('dark', isDark);
-    rootEl?.classList.toggle('dark', isDark);
-
-    document.documentElement.classList.toggle('theme-alt', isAlt);
-    document.body.classList.toggle('theme-alt', isAlt);
-    rootEl?.classList.toggle('theme-alt', isAlt);
+    // Then apply the correct theme classes
+    if (isDark) {
+      document.documentElement.classList.add('dark');
+      document.body.classList.add('dark');
+      rootEl?.classList.add('dark');
+    } else if (isAlt) {
+      document.documentElement.classList.add('theme-alt');
+      document.body.classList.add('theme-alt');
+      rootEl?.classList.add('theme-alt');
+    }
 
     localStorage.setItem('theme', theme);
+    
+    // Debug log to help troubleshoot theme issues
+    console.log('Theme applied:', theme, {
+      isDark,
+      isAlt,
+      hasDarkClass: document.documentElement.classList.contains('dark'),
+      hasAltClass: document.documentElement.classList.contains('theme-alt'),
+      dataTheme: document.documentElement.getAttribute('data-theme')
+    });
   }, [settings.theme]);
+
+  // Ensure theme is applied on initial mount (runs once)
+  useEffect(() => {
+    // Validate and apply theme on mount to catch any initialization issues
+    const currentTheme = getValidatedTheme();
+    if (currentTheme !== settings.theme) {
+      // If there's a mismatch, update the settings
+      setSettings(prev => ({ ...prev, theme: currentTheme }));
+    }
+  }, []); // Empty dependency array - runs only on mount
 
   // Handle push notification toggle
   const handlePushNotificationToggle = async (enabled: boolean) => {

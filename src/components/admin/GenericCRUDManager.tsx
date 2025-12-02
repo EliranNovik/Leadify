@@ -36,7 +36,7 @@ interface Field {
   searchableSelect?: boolean;
   isMulti?: boolean;
   customComponent?: React.ComponentType<{ value: any; onChange: (value: any) => void; record?: Record | null; readOnly?: boolean }>;
-  customProps?: Record<string, any>; // Additional props to pass to custom component
+  customProps?: { [key: string]: any }; // Additional props to pass to custom component
 }
 
 interface GenericCRUDManagerProps {
@@ -271,14 +271,10 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                     value = `${item.first_name} ${item.last_name} (${item.email})`;
                   } else if (table === 'users' && item.email) {
                     value = item.email;
-                  } else if (table === 'misc_category' && joinTable && joinDisplayField) {
-                    // Format category display to show subcategory (main category)
-                    // item[joinTable] is already the object, not an array
-                    const mainCategory = item[joinTable]?.[joinDisplayField];
-                    if (mainCategory) {
-                      value = `${value} (${mainCategory})`;
-                    }
                   }
+                  // Note: For misc_category with joinTable, we don't append main category here
+                  // because it will be added via joinLabel in the display logic
+                  
                   if (joinTable && item[joinTable]) {
                     const joinValue = item[joinTable];
                     fkData[field.name][key] = {
@@ -330,36 +326,117 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             .select(selectQuery);
           console.log('📋 Category fetch result:', result);
         } else {
-          result = await supabase
+          console.log(`🔍 Fetching options for ${field.name} from table ${table}, fields: ${valueField}, ${displayField}`);
+          
+          // Try to get current user for debugging
+          const { data: { user } } = await supabase.auth.getUser();
+          console.log(`👤 Current user for ${field.name} query:`, user?.email || 'Not authenticated');
+          
+          // Build the query - try without order first to see if that's the issue
+          let query = supabase
             .from(table)
             .select(`${valueField}, ${displayField}`);
+          
+          // Order by display field if it exists, otherwise by value field
+          if (displayField) {
+            query = query.order(displayField, { ascending: true, nullsFirst: false });
+          } else {
+            query = query.order(valueField, { ascending: true });
+          }
+          
+          result = await query;
+          
+          console.log(`📊 Query result for ${field.name}:`, { 
+            data: result.data, 
+            dataLength: result.data?.length,
+            error: result.error,
+            table: table,
+            status: result.status,
+            statusText: result.statusText
+          });
+          
+          // If we got a 200 status but empty data, it's likely RLS blocking
+          if (result.status === 200 && (!result.data || result.data.length === 0) && !result.error) {
+            console.warn(`⚠️ Query succeeded but returned no data for ${field.name}. This might indicate an RLS policy is blocking access to table ${table}.`);
+            console.warn(`💡 Check your Supabase RLS policies for table ${table} to ensure authenticated users can SELECT from it.`);
+            console.warn(`💡 You can test the query directly in Supabase SQL editor: SELECT ${valueField}, ${displayField} FROM ${table} ORDER BY ${displayField || valueField};`);
+            
+            // Try a simpler query without ordering to see if that helps
+            console.log(`🔄 Retrying ${field.name} query without ordering...`);
+            const simpleResult = await supabase
+              .from(table)
+              .select(`${valueField}, ${displayField}`)
+              .limit(10);
+            console.log(`📊 Simple query result:`, simpleResult);
+            
+            if (simpleResult.data && simpleResult.data.length > 0) {
+              console.log(`✅ Simple query worked! Using that result.`);
+              result = simpleResult;
+            }
+          }
         }
         
         if (result.error) {
-          console.error(`❌ Error fetching options for ${field.name}:`, result.error);
+          console.error(`❌ Error fetching options for ${field.name} from table ${table}:`, result.error);
+          console.error(`❌ Error details:`, JSON.stringify(result.error, null, 2));
           continue;
         }
         
-        if (result.data) {
-          console.log(`📊 Sample data for ${field.name}:`, result.data[0]);
-          options[field.name] = result.data.map((item: any) => {
-            let label = item[displayField] || String(item[valueField]);
+        if (result.data && Array.isArray(result.data)) {
+          if (result.data.length > 0) {
+            console.log(`📊 Sample data for ${field.name}:`, result.data[0]);
+            // Filter out items with null/undefined values and map to options
+            const validItems = result.data.filter((item: any) => {
+              const hasValue = item[valueField] !== null && item[valueField] !== undefined;
+              const hasDisplay = item[displayField] !== null && item[displayField] !== undefined;
+              return hasValue && (hasDisplay || hasValue); // Need at least value, prefer display
+            });
             
-            // Format category display to show subcategory (main category)
-            if (table === 'misc_category' && joinTable && joinDisplayField) {
-              // item[joinTable] is already the object, not an array
-              const mainCategory = item[joinTable]?.[joinDisplayField];
-              if (mainCategory) {
-                label = `${label} (${mainCategory})`;
-              }
+            if (validItems.length > 0) {
+              options[field.name] = validItems.map((item: any) => {
+                let label = item[displayField] || `Item ${item[valueField]}` || String(item[valueField]);
+                
+                // Format category display to show subcategory (main category)
+                if (table === 'misc_category' && joinTable && joinDisplayField) {
+                  // item[joinTable] is already the object, not an array
+                  const mainCategory = item[joinTable]?.[joinDisplayField];
+                  if (mainCategory) {
+                    label = `${label} (${mainCategory})`;
+                  }
+                }
+                
+                // Convert value to string (important for bigint IDs and consistency)
+                const value = String(item[valueField]);
+                
+                return {
+                  value: value,
+                  label: label
+                };
+              });
+              console.log(`✅ Fetched ${validItems.length} valid options for ${field.name} (${result.data.length} total, ${result.data.length - validItems.length} filtered out):`, options[field.name]);
+            } else {
+              // All items were filtered out (null values)
+              options[field.name] = [];
+              console.warn(`⚠️ Table ${table} has ${result.data.length} records but all have null/undefined values for ${field.name}`);
             }
-            
-            return {
-              value: item[valueField],
-              label: label
-            };
-          });
-          console.log(`✅ Fetched ${result.data.length} options for ${field.name}`);
+          } else {
+            // Empty array - no records in table
+            options[field.name] = [];
+            console.warn(`⚠️ Table ${table} exists but has no records. You may need to add records to this table first.`);
+          }
+        } else {
+          // No data property or not an array
+          options[field.name] = [];
+          console.warn(`⚠️ No data returned for ${field.name} from table ${table}. Result:`, result);
+          if (result.error) {
+            const error = result.error as any;
+            console.error(`❌ Supabase error details:`, {
+              message: error.message,
+              details: error.details,
+              hint: error.hint,
+              code: error.code
+            });
+          }
         }
       } catch (error) {
         console.error(`❌ Error fetching options for ${field.name}:`, error);
@@ -1083,14 +1160,22 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
     switch (field.type) {
       case 'textarea':
+        // Detect Hebrew text for RTL support
+        const isRTL = value && /[\u0590-\u05FF]/.test(String(value));
         return (
           <textarea
             {...commonProps}
-            rows={4}
+            rows={8}
             value={value || ''}
             onChange={field.readOnly ? undefined : handleChange}
-            className="textarea textarea-bordered w-full"
-            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+            className="textarea textarea-bordered w-full whitespace-pre-wrap"
+            dir={isRTL ? 'rtl' : 'ltr'}
+            style={{ 
+              color: '#111827', 
+              WebkitTextFillColor: '#111827',
+              textAlign: isRTL ? 'right' : 'left',
+              whiteSpace: 'pre-wrap' // Preserve line breaks and whitespace
+            } as React.CSSProperties}
           />
         );
 
@@ -1125,6 +1210,11 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
 
         if (field.foreignKey) {
           const options = allForeignKeyOptions[field.name] || [];
+          
+          // Log for debugging
+          if (options.length === 0) {
+            console.warn(`⚠️ No options found for ${field.name}. Table: ${field.foreignKey.table}, ValueField: ${field.foreignKey.valueField}, DisplayField: ${field.foreignKey.displayField}`);
+          }
           
           if (field.searchableSelect) {
             const resolvedLabel = options.find(option => option.value === value)?.label || '';
@@ -1208,18 +1298,21 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
             );
           }
           
+          // Convert current value to string for comparison
+          const stringValue = value ? String(value) : '';
+          
           return (
             <select 
               {...commonProps} 
-              value={value || ''} 
+              value={stringValue} 
               onChange={field.readOnly ? undefined : handleChange} 
               className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
               style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
             >
-              <option value="">Select {field.label}</option>
+              <option value="">{field.placeholder || `Select ${field.label}`}</option>
               {options.map(option => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
+                <option key={String(option.value)} value={String(option.value)}>
+                  {option.label || String(option.value)}
                 </option>
               ))}
             </select>
@@ -1318,12 +1411,19 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         );
 
       default:
+        // Detect Hebrew text for RTL support
+        const isRTLText = value && /[\u0590-\u05FF]/.test(String(value));
         return (
           <input 
             {...commonProps} 
             type={field.type} 
             className={`input input-bordered w-full ${field.readOnly ? 'input-disabled bg-gray-100' : ''}`}
-            style={{ color: '#111827', WebkitTextFillColor: '#111827' } as React.CSSProperties}
+            dir={isRTLText ? 'rtl' : 'ltr'}
+            style={{ 
+              color: '#111827', 
+              WebkitTextFillColor: '#111827',
+              textAlign: isRTLText ? 'right' : 'left'
+            } as React.CSSProperties}
           />
         );
     }

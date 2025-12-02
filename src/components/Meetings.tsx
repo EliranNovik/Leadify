@@ -87,7 +87,7 @@ export const meetingInvitationEmailTemplate = ({
 }: {
   clientName: string;
   meetingDate: string;
-  meetingTime: string;
+  meetingTime?: string; // Optional - removed from email since calendar invite has it
   location: string;
   category: string;
   topic: string;
@@ -103,7 +103,7 @@ export const meetingInvitationEmailTemplate = ({
     <p>You are invited to a meeting with our office. Please find the details below:</p>
     <ul style="margin-bottom: 18px;">
       <li><strong>Date:</strong> ${meetingDate}</li>
-      <li><strong>Time:</strong> ${meetingTime}</li>
+      ${meetingTime ? `<li><strong>Time:</strong> ${meetingTime}</li>` : ''}
       <li><strong>Location:</strong> ${location}</li>
       <li><strong>Category:</strong> ${category}</li>
       <li><strong>Topic:</strong> ${topic}</li>
@@ -113,6 +113,7 @@ export const meetingInvitationEmailTemplate = ({
       <a href="${joinLink}" target="_blank" style="display: inline-block; background: #3b28c7; color: #fff; font-weight: 600; padding: 12px 28px; border-radius: 8px; text-decoration: none; font-size: 17px; letter-spacing: 0.5px;">Join Meeting</a>
     </div>
     ` : ''}
+    <p>Please check the calendar invitation attached for the exact meeting time.</p>
     <p>If you have any questions or need to reschedule, please let us know.</p>
   </div>
 `;

@@ -2257,19 +2257,33 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     });
   };
 
-  // Format time - matches EmailThreadLeadPage
+  // Format time with date and time - shows full date and time
   const formatTime = (timestamp: string) => {
     const date = new Date(timestamp);
     const now = new Date();
-    const diffTime = now.getTime() - date.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    // Compare dates by calendar day (ignore time) to properly detect today/yesterday
+    const dateStartOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    const nowStartOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+    const diffDays = Math.round((nowStartOfDay.getTime() - dateStartOfDay.getTime()) / (1000 * 60 * 60 * 24));
+
+    const timeString = date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
     if (diffDays === 0) {
-      return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      // Today: show "Today at HH:MM"
+      return `Today at ${timeString}`;
+    } else if (diffDays === 1) {
+      // Yesterday: show "Yesterday at HH:MM"
+      return `Yesterday at ${timeString}`;
     } else if (diffDays <= 7) {
-      return date.toLocaleDateString([], { weekday: 'short' });
+      // Within a week: show weekday, date, and time
+      const weekday = date.toLocaleDateString([], { weekday: 'short' });
+      const monthDay = date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      return `${weekday}, ${monthDay} at ${timeString}`;
     } else {
-      return date.toLocaleDateString([], { month: 'short', day: 'numeric' });
+      // Older: show full date and time
+      const dateString = date.toLocaleDateString([], { year: 'numeric', month: 'short', day: 'numeric' });
+      return `${dateString} at ${timeString}`;
     }
   };
 
@@ -2295,9 +2309,39 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
-  const containsRTL = (text?: string | null) => !!text && /[\u0590-\u05FF]/.test(text);
-  const getMessageDirection = (message: EmailMessage) => {
-    if (containsRTL(message.body_html) || containsRTL(message.body_preview) || containsRTL(message.subject)) {
+  // Extract visible text from HTML for RTL detection (ignore HTML tags and metadata)
+  const extractVisibleText = (html?: string | null): string => {
+    if (!html) return '';
+    // Remove HTML tags but preserve text content
+    const tempDiv = document.createElement('div');
+    tempDiv.innerHTML = html;
+    return tempDiv.textContent || tempDiv.innerText || '';
+  };
+
+  const containsRTL = (text?: string | null) => {
+    if (!text) return false;
+    // Check only visible text content, not HTML tags
+    const visibleText = extractVisibleText(text);
+    return /[\u0590-\u05FF]/.test(visibleText);
+  };
+
+  // Get direction for plain text (no HTML)
+  const getTextDirection = (text?: string | null): 'rtl' | 'ltr' => {
+    if (!text) return 'ltr';
+    return /[\u0590-\u05FF]/.test(text) ? 'rtl' : 'ltr';
+  };
+
+  const getMessageDirection = (message: EmailMessage): 'rtl' | 'ltr' => {
+    // Check subject (plain text)
+    if (message.subject && /[\u0590-\u05FF]/.test(message.subject)) {
+      return 'rtl';
+    }
+    // Check body_html (extract visible text only)
+    if (message.body_html && containsRTL(message.body_html)) {
+      return 'rtl';
+    }
+    // Check body_preview (extract visible text only)
+    if (message.body_preview && containsRTL(message.body_preview)) {
       return 'rtl';
     }
     return 'ltr';
@@ -2686,19 +2730,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                   className={`text-xs font-semibold ${
                                     isOutgoing ? 'text-blue-600' : 'text-gray-600'
                                   }`}
-                                  dir={messageDirection}
+                                  dir={getTextDirection(senderDisplayName)}
                                 >
                                   {senderDisplayName}
                                 </div>
                               </div>
                               <div
                                 className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                                dir={messageDirection}
+                                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', textAlign: 'left' }}
+                                dir="ltr"
                               >
                                 <div className="mb-2">
-                                  <div className="text-sm font-semibold text-gray-900" dir={messageDirection}>{message.subject}</div>
-                                  <div className="text-xs text-gray-500 mt-1" dir={messageDirection}>{formatTime(message.sent_at)}</div>
+                                  <div className="text-sm font-semibold text-gray-900" dir={getTextDirection(message.subject)}>{message.subject}</div>
+                                  <div className="text-xs text-gray-500 mt-1" dir="ltr">{formatTime(message.sent_at)}</div>
                                 </div>
                                 
                                 {message.body_html ? (
@@ -2706,13 +2750,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                     dangerouslySetInnerHTML={{ __html: message.body_html }}
                                     className="prose prose-sm max-w-none text-gray-700 break-words"
                                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                                    dir={messageDirection}
+                                    dir="auto"
                                   />
                                 ) : message.body_preview ? (
                                   <div
                                     className="text-gray-700 whitespace-pre-wrap break-words"
                                     style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                                    dir={messageDirection}
+                                    dir={getTextDirection(message.body_preview)}
                                   >
                                     {message.body_preview}
                                   </div>

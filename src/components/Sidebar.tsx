@@ -118,6 +118,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: UserGroupIcon, label: 'Employee Performance', path: '/employee-performance' },
   { icon: DocumentArrowUpIcon, label: 'Documents', path: '/documents' },
   { icon: ChatBubbleLeftRightIcon, label: 'WhatsApp Leads', path: '/whatsapp-leads' },
+  { icon: EnvelopeIcon, label: 'Email Leads', path: '/email-leads' },
   { icon: PhoneIcon, label: 'Calls Ledger', path: '/calls-ledger' },
   { icon: DocumentChartBarIcon, label: 'Reports', path: '/reports' },
   // { icon: UserGroupIcon, label: 'Teams', path: '/teams' },

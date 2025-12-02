@@ -17,7 +17,8 @@ import {
 } from '@heroicons/react/24/outline';
 import ContractTemplatesManager from './ContractTemplatesManager';
 import UsersManager from './UsersManager';
-import PaymentPlanRowsManager from './PaymentPlanRowsManager';
+// import PaymentPlanRowsManager from './PaymentPlanRowsManager';
+import PaymentPlansManager from './PaymentPlansManager';
 import AccessLogsManager from './AccessLogsManager';
 import CurrenciesManager from './CurrenciesManager';
 import DepartmentsManager from './DepartmentsManager';
@@ -34,6 +35,8 @@ import SubCategoriesManager from './SubCategoriesManager';
 import WhatsAppNumbersManager from './WhatsAppNumbersManager';
 import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
+import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
+import PublicMessagesManager from './PublicMessagesManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
@@ -61,7 +64,7 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Finances',
     icon: BanknotesIcon,
-    subcategories: ['Payment plan rows'],
+    subcategories: [/* 'Payment plan rows', */ 'Payment Plans'],
     requiresAdmin: true,
   },
   {
@@ -86,7 +89,7 @@ const ADMIN_TABS: AdminTab[] = [
     label: 'Misc',
     icon: Cog6ToothIcon,
     subcategories: [
-      'Bonus formulas', 'Contract templates', 'Countries', 'Email Templates', 'Holidays', 'Languages', 'Lead Stage Reasons', 'Lead Sources', 'Lead Tags', 'Main Categories', 'Public messages', 'sub categories', 'whatsapp template olds'
+      'Bonus formulas', 'Contract templates', 'Countries', 'Email Templates', 'Email Templates Placement', 'Holidays', 'Languages', 'Lead Stage Reasons', 'Lead Sources', 'Lead Tags', 'Main Categories', 'Public messages', 'sub categories', 'whatsapp template olds'
     ],
     requiresAdmin: false, // Everyone can access Misc
   },
@@ -777,11 +780,7 @@ const AdminPage: React.FC = () => {
                 if (selectedSub === 'Email Templates') {
                   return <div className="w-full"><EmailTemplatesManager /></div>;
                 } else if (selectedSub === 'Public messages') {
-                  return (
-                    <div className="flex items-center justify-center text-xl font-semibold text-primary">
-                      <span className="text-base text-base-content/60 font-normal">Public Messages (Placeholder content)</span>
-                    </div>
-                  );
+                  return <div className="w-full"><PublicMessagesManager /></div>;
                 }
                 return null;
               })()}
@@ -1356,9 +1355,12 @@ const AdminPage: React.FC = () => {
             ) : selectedTab?.label === 'Authentication' &&
             selectedTab?.subcategories[selected.sub] === 'Users' ? (
               <div className="w-full"><UsersManager /></div>
-            ) : selectedTab?.label === 'Finances' &&
+            ) : /* selectedTab?.label === 'Finances' &&
             selectedTab?.subcategories[selected.sub] === 'Payment plan rows' ? (
               <div className="w-full"><PaymentPlanRowsManager /></div>
+            ) : */ selectedTab?.label === 'Finances' &&
+            selectedTab?.subcategories[selected.sub] === 'Payment Plans' ? (
+              <div className="w-full"><PaymentPlansManager /></div>
             ) : selectedTab?.label === 'Hooks' &&
             selectedTab?.subcategories[selected.sub] === 'Access Logs' ? (
               <div className="w-full"><AccessLogsManager /></div>
@@ -1395,6 +1397,12 @@ const AdminPage: React.FC = () => {
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Email Templates' ? (
               <div className="w-full"><EmailTemplatesManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Email Templates Placement' ? (
+              <div className="w-full"><EmailTemplatesPlacementManager /></div>
+            ) : selectedTab?.label === 'Misc' &&
+            selectedTab?.subcategories[selected.sub] === 'Public messages' ? (
+              <div className="w-full"><PublicMessagesManager /></div>
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Main Categories' ? (
               <div className="w-full"><MainCategoriesManager /></div>

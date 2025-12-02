@@ -25,6 +25,7 @@ import { supabase } from '../../lib/supabase';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../../msalConfig';
 import { createTeamsMeeting, sendEmail } from '../../lib/graph';
+import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
 
@@ -687,26 +688,82 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const senderName = account?.name || 'Your Team';
       const now = new Date();
       
-      // Format time without seconds
+      // Format time without seconds (for ICS file)
       const formattedTime = meeting.time ? meeting.time.substring(0, 5) : meeting.time;
       
-      // Compose subject and HTML body using the template
-      const subject = `Meeting Invitation: ${meeting.date} at ${formattedTime}`;
+      // Format date as dd/mm/yyyy
+      const formatDate = (dateStr: string): string => {
+        const [year, month, day] = dateStr.split('-');
+        return `${day}/${month}/${year}`;
+      };
+      const formattedDate = formatDate(meeting.date);
+      
+      // Compose subject without time (date only)
+      const subject = `Meeting Invitation: ${formattedDate}`;
       const joinLink = getValidTeamsLink(meeting.link);
       const category = client.category || '---';
       const topic = client.topic || '---';
+      const locationName = getMeetingLocationName(meeting.location);
       const htmlBody = meetingInvitationEmailTemplate({
         clientName: client.name,
-        meetingDate: meeting.date,
-        meetingTime: formattedTime,
-        location: meeting.location,
+        meetingDate: formattedDate,
+        meetingTime: undefined, // Remove time from email body since calendar invite has it
+        location: locationName,
         category,
         topic,
         joinLink,
         senderName: senderName,
       });
+      
+      // Generate ICS calendar file for all meetings (helps with timezone handling)
+      let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
+      try {
+        // Build description
+        let description = `Meeting with ${client.name}\nCategory: ${category}\nTopic: ${topic}`;
+        if (joinLink) {
+          description += `\n\nJoin Teams Meeting: ${joinLink}`;
+        }
+        if (meeting.brief) {
+          description += `\n\nBrief: ${meeting.brief}`;
+        }
+        
+        // Generate ICS content
+        const icsContent = generateICSFromDateTime({
+          subject: `Meeting with ${client.name}`,
+          date: meeting.date,
+          time: formattedTime,
+          durationMinutes: 60, // Default 1 hour
+          location: locationName,
+          description: description,
+          organizerEmail: account.username || 'noreply@lawoffice.org.il',
+          organizerName: senderName,
+          attendeeEmail: client.email,
+          attendeeName: client.name,
+          teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+          timeZone: 'Asia/Jerusalem'
+        });
+        
+        // Convert to base64 (ICS files use CRLF line endings and should be ASCII-compatible)
+        // Use btoa with proper encoding for UTF-8 characters that might be in the content
+        const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+        
+        attachments = [{
+          name: 'meeting-invite.ics',
+          contentBytes: icsBase64,
+          contentType: 'text/calendar; method=REQUEST; charset=utf-8'
+        }];
+      } catch (icsError) {
+        console.error('Failed to generate ICS file:', icsError);
+        // Continue without ICS attachment if generation fails
+      }
+      
       // Send email via Graph API (will use database signature if available, otherwise Outlook signature)
-      await sendEmail(tokenResponse.accessToken, { to: client.email, subject, body: htmlBody });
+      await sendEmail(tokenResponse.accessToken, { 
+        to: client.email, 
+        subject, 
+        body: htmlBody,
+        attachments
+      });
       toast.success(`Email sent for meeting on ${meeting.date}`);
       // --- Optimistic upsert to emails table ---
       await supabase.from('emails').upsert([
