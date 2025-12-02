@@ -962,8 +962,13 @@ class GraphMailboxSyncService {
   }
 
   async fetchAndCacheBody(userId, header) {
-    const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
-    if (!tokenRecord) throw new Error('Mailbox is not connected');
+    // Use the email's owner user_id if available, otherwise fall back to the provided userId
+    // This ensures we fetch from the correct mailbox that owns the email
+    const emailOwnerId = header.user_id || userId;
+    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
+    if (!tokenRecord) {
+      throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
+    }
 
     const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
       homeAccountId: tokenRecord.home_account_id,
@@ -1001,8 +1006,14 @@ class GraphMailboxSyncService {
   async downloadAttachment(userId, emailId, attachmentId) {
     const header = await this.getEmailById(userId, emailId);
     if (!header) throw new Error('Email not found');
-    const tokenRecord = await mailboxTokenService.getTokenByUserId(userId);
-    if (!tokenRecord) throw new Error('Mailbox is not connected');
+    
+    // Use the email's owner user_id if available, otherwise fall back to the provided userId
+    // This ensures we fetch from the correct mailbox that owns the email
+    const emailOwnerId = header.user_id || userId;
+    const tokenRecord = await mailboxTokenService.getTokenByUserId(emailOwnerId);
+    if (!tokenRecord) {
+      throw new Error(`Mailbox is not connected for user ${emailOwnerId} (email owner)`);
+    }
 
     const tokenResponse = await graphAuthService.acquireTokenByRefreshToken(tokenRecord.refresh_token, {
       homeAccountId: tokenRecord.home_account_id,
