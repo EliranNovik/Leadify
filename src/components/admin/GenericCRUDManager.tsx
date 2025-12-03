@@ -1113,6 +1113,12 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
         } else if (tableName === 'tenants_employee' && field.name === 'preferred_category') {
           transformedRecord[field.name] = (record as any).preferred_category || [];
         }
+        // Ensure required fields with defaults are initialized if missing
+        if (field.required && field.defaultValue !== undefined && (transformedRecord[field.name] === null || transformedRecord[field.name] === undefined || transformedRecord[field.name] === '')) {
+          transformedRecord[field.name] = typeof field.defaultValue === 'function'
+            ? field.defaultValue()
+            : field.defaultValue;
+        }
       });
       setEditingRecord(transformedRecord);
     }
@@ -1533,19 +1539,42 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                         onClick={() => openModal(record)}
                       >
                         {fields.filter(field => !field.hideInTable).map(field => (
-                          <td key={field.name}>
+                          <td 
+                            key={field.name}
+                            onClick={(e) => {
+                              // Prevent row click if clicking on boolean toggle
+                              if (field.type === 'boolean') {
+                                e.stopPropagation();
+                              }
+                            }}
+                          >
                             {field.formatValue ? (
                               field.formatValue(record[field.name], record)
                             ) : field.type === 'boolean' ? (
-                              <input
-                                type="checkbox"
-                                className="toggle toggle-success toggle-sm"
-                                checked={record[field.name] || false}
-                                onChange={(e) => {
+                              <div 
+                                onClick={(e) => {
                                   e.stopPropagation();
-                                  handleToggleBoolean(record, field.name, e.target.checked);
+                                  e.preventDefault();
                                 }}
-                              />
+                                onMouseDown={(e) => {
+                                  e.stopPropagation();
+                                }}
+                              >
+                                <input
+                                  type="checkbox"
+                                  className="toggle toggle-success toggle-sm"
+                                  checked={record[field.name] || false}
+                                  onChange={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                    handleToggleBoolean(record, field.name, e.target.checked);
+                                  }}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    e.preventDefault();
+                                  }}
+                                />
+                              </div>
                             ) : field.type === 'date' || field.type === 'datetime' ? (
                               new Date(record[field.name]).toLocaleDateString()
                             ) : field.foreignKey ? (
@@ -1719,32 +1748,65 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                   record[field.name] = editingRecord[field.name] || false;
                 });
 
+                // Ensure required fields with defaults are included even if missing
+                fields.forEach(field => {
+                  if (field.required && field.defaultValue !== undefined && (record[field.name] === null || record[field.name] === undefined || record[field.name] === '')) {
+                    record[field.name] = typeof field.defaultValue === 'function'
+                      ? field.defaultValue()
+                      : field.defaultValue;
+                  }
+                });
+
                 saveRecord(record);
               }}>
                 <div className="grid grid-cols-1 gap-6">
-                  {fields.filter(field => field.type !== 'boolean' && field.type !== 'custom' && field.type !== 'jsonb' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => (
-                    <div key={field.name} className="form-control">
-                      <label className="label">
-                        <span className="label-text font-semibold text-gray-700">
-                          {field.label}
-                          {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
-                        </span>
-                      </label>
-                      {renderField(
-                        field,
-                        editingRecord?.[field.name],
-                        (value) => {
-                          setEditingRecord(prev => prev ? {
-                            ...prev,
-                            [field.name]: value
-                          } : null);
-                        }
-                      )}
-                    </div>
-                  ))}
+                  {fields.filter(field => field.type !== 'boolean' && field.type !== 'custom' && field.type !== 'jsonb' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => {
+                    // Ensure required fields with defaults are initialized
+                    let fieldValue = editingRecord?.[field.name];
+                    if (field.required && field.defaultValue !== undefined && (fieldValue === null || fieldValue === undefined || fieldValue === '')) {
+                      fieldValue = typeof field.defaultValue === 'function'
+                        ? field.defaultValue()
+                        : field.defaultValue;
+                      // Update editingRecord if needed
+                      if (editingRecord && fieldValue !== editingRecord[field.name]) {
+                        setEditingRecord(prev => prev ? {
+                          ...prev,
+                          [field.name]: fieldValue
+                        } : null);
+                      }
+                    }
+                    return (
+                      <div key={field.name} className="form-control">
+                        <label className="label">
+                          <span className="label-text font-semibold text-gray-700">
+                            {field.label}
+                            {field.required && !editingRecord?.id && <span className="text-error ml-1">*</span>}
+                          </span>
+                        </label>
+                        {renderField(
+                          field,
+                          fieldValue,
+                          (value) => {
+                            setEditingRecord(prev => prev ? {
+                              ...prev,
+                              [field.name]: value
+                            } : null);
+                          }
+                        )}
+                      </div>
+                    );
+                  })}
                   
                   {/* Boolean fields */}
-                  {fields.filter(field => field.type === 'boolean' && (!editingRecord?.id || !field.hideInAdd) && (!editingRecord?.id || !field.hideInEdit)).map(field => (
+                  {fields.filter(field => {
+                    if (field.type !== 'boolean') return false;
+                    // If we're adding (no id), check hideInAdd - only show if NOT hidden
+                    if (!editingRecord?.id) {
+                      return field.hideInAdd !== true;
+                    }
+                    // If we're editing (has id), check hideInEdit - only show if NOT hidden
+                    return field.hideInEdit !== true;
+                  }).map(field => (
                     <div key={field.name} className="form-control">
                       <label className="label">
                         <span className="label-text font-semibold text-gray-700">

@@ -43,6 +43,17 @@ const PublicMessagesManager: React.FC = () => {
       }
     },
     {
+      name: 'display_mode',
+      label: 'Display Mode',
+      type: 'select' as const,
+      required: true,
+      defaultValue: 'Everywhere',
+      options: [
+        { value: 'Scheduling screen only', label: 'Scheduling screen only' },
+        { value: 'Everywhere', label: 'Everywhere' }
+      ]
+    },
+    {
       name: 'start_date',
       label: 'Start Date',
       type: 'date' as const,
