@@ -3152,23 +3152,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       setShowTemplateDropdown(false); // Close dropdown when closing
             setTemplateSearchQuery(''); // Reset search when closing
           }} />
-          <div className="fixed top-0 right-0 h-screen w-full max-w-md bg-white shadow-2xl p-8 flex flex-col animate-slideInRight z-[10000]" style={{ minHeight: '100vh' }}>
-            <button className="btn btn-ghost btn-circle absolute top-4 right-4" onClick={() => {
-              setShowContractCreation(false);
-      setTemplateSearchQuery(''); // Reset search when closing
-      setShowTemplateDropdown(false); // Close dropdown when closing
-              setTemplateSearchQuery(''); // Reset search when closing
-            }}>
-              <XMarkIcon className="w-6 h-6" />
-            </button>
-            <h2 className="text-2xl font-bold mb-2">Create Contract</h2>
-            {contractForm.contactId && (
-              <p className="text-sm text-gray-600 mb-6">
-                For: {contacts.find(c => c.id === contractForm.contactId)?.name || 'Unknown Contact'}
-              </p>
-            )}
+          <div className="fixed top-0 right-0 h-screen w-full max-w-md bg-white shadow-2xl flex flex-col animate-slideInRight z-[10000] overflow-hidden">
+            {/* Header - Fixed at top */}
+            <div className="flex-shrink-0 p-8 pb-4 border-b border-gray-200">
+              <button className="btn btn-ghost btn-circle absolute top-4 right-4" onClick={() => {
+                setShowContractCreation(false);
+                setTemplateSearchQuery(''); // Reset search when closing
+                setShowTemplateDropdown(false); // Close dropdown when closing
+              }}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+              <h2 className="text-2xl font-bold mb-2 pr-10">Create Contract</h2>
+              {contractForm.contactId && (
+                <p className="text-sm text-gray-600">
+                  For: {contacts.find(c => c.id === contractForm.contactId)?.name || 'Unknown Contact'}
+                </p>
+              )}
+            </div>
             
-            <div className="flex-1 space-y-6">
+            {/* Scrollable Content Area */}
+            <div className="flex-1 overflow-y-auto p-8 pt-6 space-y-6">
               {/* Applicant Count */}
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-2">Number of Applicants</label>
@@ -3474,20 +3477,27 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               </div>
             </div>
 
-            <div className="flex gap-3 pt-6">
-              <button
-                className="btn btn-primary flex-1"
-                onClick={handleCreateContract}
-                disabled={!contractForm.selectedTemplateId}
-              >
-                Create Contract
-              </button>
-              <button
-                className="btn btn-ghost"
-                onClick={() => setShowContractCreation(false)}
-              >
-                Cancel
-              </button>
+            {/* Footer - Fixed at bottom */}
+            <div className="flex-shrink-0 p-8 pt-4 border-t border-gray-200 bg-white">
+              <div className="flex gap-3">
+                <button
+                  className="btn btn-primary flex-1"
+                  onClick={handleCreateContract}
+                  disabled={!contractForm.selectedTemplateId}
+                >
+                  Create Contract
+                </button>
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowContractCreation(false);
+                    setTemplateSearchQuery(''); // Reset search when closing
+                    setShowTemplateDropdown(false); // Close dropdown when closing
+                  }}
+                >
+                  Cancel
+                </button>
+              </div>
             </div>
           </div>
         </>,

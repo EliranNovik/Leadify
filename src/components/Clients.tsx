@@ -64,7 +64,7 @@ import InteractionsTab from './client-tabs/InteractionsTab';
 import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
-import { createTeamsMeeting, sendEmail } from '../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../lib/graph';
 import { ClientInteractionsCache, ClientTabProps } from '../types/client';
 import { useAdminRole } from '../hooks/useAdminRole';
 import {
@@ -1156,13 +1156,18 @@ const Clients: React.FC<ClientsProps> = ({
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
 
-
+  // Helper function to get tomorrow's date in YYYY-MM-DD format (moved here for use in state initialization)
+  const getTomorrowDate = () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  };
 
   // 1. Add state for the rescheduling drawer and meetings list
   const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [rescheduleFormData, setRescheduleFormData] = useState<any>({
-    date: '',
+    date: getTomorrowDate(), // Default to tomorrow so button is enabled
     time: '09:00',
     location: 'Teams',
     calendar: 'current',
@@ -1816,12 +1821,24 @@ useEffect(() => {
   useEffect(() => {
     const fetchMeetings = async () => {
       if (!selectedClient?.id || !showRescheduleDrawer) return;
-      const { data, error } = await supabase
+      
+      // Check if this is a legacy lead
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      
+      let query = supabase
         .from('meetings')
         .select('*')
-        .eq('client_id', selectedClient.id)
-        .neq('status', 'canceled') // Only fetch non-canceled meetings
-        .order('meeting_date', { ascending: false });
+        .neq('status', 'canceled'); // Only fetch non-canceled meetings
+      
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        query = query.eq('legacy_lead_id', legacyId);
+      } else {
+        query = query.eq('client_id', selectedClient.id);
+      }
+      
+      const { data, error } = await query.order('meeting_date', { ascending: false });
+      
       if (!error && data) setRescheduleMeetings(data);
       else setRescheduleMeetings([]);
     };
@@ -5536,7 +5553,7 @@ useEffect(() => {
       toast.success('Meeting canceled and client notified.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -5545,32 +5562,56 @@ useEffect(() => {
     }
   };
 
-  // Handler for canceling and creating new meeting
+  // Handler for canceling and creating new meeting (or just creating new meeting in stage 21)
   const handleRescheduleMeeting = async () => {
-    if (!selectedClient || !meetingToDelete || !rescheduleFormData.date || !rescheduleFormData.time) return;
+    if (!selectedClient || !rescheduleFormData.date || !rescheduleFormData.time) return;
+    
+    // Check if we're in stage 21 and no meeting is selected - allow rescheduling without canceling
+    const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
+                        (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
+    const isStage21 = currentStage === 21;
+    
+    // Determine which meeting to cancel:
+    // 1. If a meeting is explicitly selected, use that
+    // 2. If no meeting is selected but we're not in stage 21, auto-select the first upcoming meeting
+    // 3. If we're in stage 21 and no meeting is selected, don't cancel anything
+    let meetingIdToCancel = meetingToDelete;
+    if (!meetingIdToCancel && !isStage21 && rescheduleMeetings.length > 0) {
+      // Auto-select the first (most recent) upcoming meeting to cancel
+      meetingIdToCancel = rescheduleMeetings[0]?.id;
+    }
+    
+    const shouldCancelMeeting = meetingIdToCancel && !isStage21;
+    
     try {
       const account = instance.getAllAccounts()[0];
       
-      // 1. Cancel the selected meeting (set status to 'canceled')
-      const { data: { user } } = await supabase.auth.getUser();
-      const editor = user?.email || account?.name || 'system';
-      const { error: cancelError } = await supabase
-        .from('meetings')
-        .update({ 
-          status: 'canceled', 
-          last_edited_timestamp: new Date().toISOString(), 
-          last_edited_by: editor 
-        })
-        .eq('id', meetingToDelete);
+      let canceledMeeting = null;
       
-      if (cancelError) throw cancelError;
+      // 1. Cancel the selected meeting only if we have a meeting to cancel and not in stage 21 without selection
+      if (shouldCancelMeeting && meetingIdToCancel) {
+        const { data: { user } } = await supabase.auth.getUser();
+        const editor = user?.email || account?.name || 'system';
+        const { error: cancelError } = await supabase
+          .from('meetings')
+          .update({ 
+            status: 'canceled', 
+            last_edited_timestamp: new Date().toISOString(), 
+            last_edited_by: editor 
+          })
+          .eq('id', meetingIdToCancel);
+        
+        if (cancelError) throw cancelError;
 
-      // Get canceled meeting details for email
-      const { data: canceledMeeting } = await supabase
-        .from('meetings')
-        .select('*')
-        .eq('id', meetingToDelete)
-        .single();
+        // Get canceled meeting details for email
+        const { data: canceledMeetingData } = await supabase
+          .from('meetings')
+          .select('*')
+          .eq('id', meetingIdToCancel)
+          .single();
+        
+        canceledMeeting = canceledMeetingData;
+      }
 
       // Get current user's full_name from database to match scheduler dropdown values
       let currentUserFullName = '';
@@ -5760,11 +5801,19 @@ useEffect(() => {
       }
 
       // Update lead stage and roles
+      // Only update stage if we're not already in stage 21, or if we canceled a meeting
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
+      const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
+                          (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
+      
+      // If we canceled a meeting, update to stage 21. If we're already in stage 21 and just creating a new meeting, stay in stage 21
+      // If we're in stage 20 and rescheduling, update to stage 21
+      const shouldUpdateStage = shouldCancelMeeting || currentStage !== 21;
       const rescheduledStageId = 21; // Meeting rescheduled
 
-      if (isLegacyLead) {
+      if (shouldUpdateStage) {
+        if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const updatePayload: any = { 
           stage: rescheduledStageId,
@@ -5819,22 +5868,23 @@ useEffect(() => {
           updatePayload.helper = helperEmployeeId;
         }
 
-        const { error } = await supabase
-          .from('leads')
-          .update(updatePayload)
-          .eq('id', selectedClient.id);
+          const { error } = await supabase
+            .from('leads')
+            .update(updatePayload)
+            .eq('id', selectedClient.id);
 
-        if (error) throw error;
+          if (error) throw error;
 
-        await recordLeadStageChange({
-          lead: selectedClient,
-          stage: rescheduledStageId,
-          actor: stageActor,
-          timestamp: stageTimestamp,
-        });
+          await recordLeadStageChange({
+            lead: selectedClient,
+            stage: rescheduledStageId,
+            actor: stageActor,
+            timestamp: stageTimestamp,
+          });
+        }
       }
 
-      // 3. Send notification email to client
+      // 3. Send notification email to client with calendar invitation
       if (selectedClient.email) {
         let accessToken;
         try {
@@ -5848,12 +5898,14 @@ useEffect(() => {
             throw error;
           }
         }
-        // Compose the new template
+        
+        // Compose the email template
         const userName = account?.name || 'Staff';
         let signature = (account && (account as any).signature) ? (account as any).signature : null;
         if (!signature) {
           signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
         }
+        
         // Fetch the latest meeting for the client to get the correct teams_meeting_url
         const { data: latestMeetings, error: fetchMeetingError } = await supabase
           .from('meetings')
@@ -5870,39 +5922,104 @@ useEffect(() => {
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
             </div>`
           : '';
-        const emailBody = `
-          <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-            <p>Dear ${selectedClient.name},</p>
-            <p>We regret to inform you that your previous meeting scheduled for:</p>
-            <ul style='margin:16px 0 16px 0;padding-left:20px;'>
-              <li><strong>Date:</strong> ${canceledMeeting?.meeting_date || 'N/A'}</li>
-              <li><strong>Time:</strong> ${canceledMeeting?.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : 'N/A'}</li>
-              <li><strong>Location:</strong> ${canceledMeeting?.meeting_location || 'Teams'}</li>
-            </ul>
-            <p>has been canceled. Please find below the details for your new meeting:</p>
-            <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-              <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
-              <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
-              <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
-            </ul>
-            ${joinButton}
-            <p>If you have any questions or need to reschedule again, please let us know.</p>
-            <div style='margin-top:32px;'>${signature}</div>
-          </div>
-        `;
-        const subject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
-        await sendEmail(accessToken, {
-          to: selectedClient.email,
-          subject,
-          body: emailBody,
-        });
+        
+        // Build email body based on whether we canceled a meeting or not
+        let emailBody = '';
+        let emailSubject = '';
+        
+        if (canceledMeeting) {
+          // Meeting was canceled and rescheduled
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${selectedClient.name},</p>
+              <p>We regret to inform you that your previous meeting scheduled for:</p>
+              <ul style='margin:16px 0 16px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${canceledMeeting.meeting_date || 'N/A'}</li>
+                <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : 'N/A'}</li>
+                <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
+              </ul>
+              <p>has been canceled. Please find below the details for your new meeting:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
+                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
+                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+              </ul>
+              ${joinButton}
+              <p>Please check the calendar invitation attached for the exact meeting time.</p>
+              <p>If you have any questions or need to reschedule again, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+          emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
+        } else {
+          // Just scheduling a new meeting (stage 21, no meeting to cancel)
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${selectedClient.name},</p>
+              <p>We have scheduled a new meeting for you. Please find the details below:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
+                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
+                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+              </ul>
+              ${joinButton}
+              <p>Please check the calendar invitation attached for the exact meeting time.</p>
+              <p>If you have any questions or need to reschedule, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+          emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - New Meeting Scheduled`;
+        }
+        
+        // Convert date and time to ISO format for calendar invitation
+        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+        const startDateTime = new Date(year, month - 1, day, hours, minutes);
+        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
+        
+        const categoryName = selectedClient.category || 'No Category';
+        const meetingSubject = canceledMeeting 
+          ? `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting Rescheduled`
+          : `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
+        
+        // Create calendar invitation with attendee
+        try {
+          await createCalendarEventWithAttendee(accessToken, {
+            subject: meetingSubject,
+            startDateTime: startDateTime.toISOString(),
+            endDateTime: endDateTime.toISOString(),
+            location: rescheduleFormData.location === 'Teams' ? 'Microsoft Teams Meeting' : rescheduleFormData.location,
+            description: emailBody,
+            attendeeEmail: selectedClient.email,
+            attendeeName: selectedClient.name,
+            organizerEmail: account.username || 'noreply@lawoffice.org.il',
+            organizerName: userName,
+            teamsJoinUrl: meetingLink || undefined,
+            timeZone: 'Asia/Jerusalem'
+          });
+          
+          // Calendar invitation automatically sends email, but we also send a confirmation email
+          await sendEmail(accessToken, {
+            to: selectedClient.email,
+            subject: emailSubject,
+            body: emailBody,
+          });
+        } catch (calendarError) {
+          console.error('Failed to create calendar invitation:', calendarError);
+          // Fallback to just sending email if calendar creation fails
+          await sendEmail(accessToken, {
+            to: selectedClient.email,
+            subject: emailSubject,
+            body: emailBody,
+          });
+        }
       }
 
       // 5. Show toast and close drawer
       toast.success('Meeting rescheduled and client notified.');
       setShowRescheduleDrawer(false);
       setMeetingToDelete(null);
-      setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+      setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
       if (onClientUpdate) await onClientUpdate();
     } catch (error) {
@@ -11307,7 +11424,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             onClick={() => {
               setShowRescheduleDrawer(false);
               setMeetingToDelete(null);
-              setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+              setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
               setRescheduleOption('cancel');
             }}
           />
@@ -11320,7 +11437,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 onClick={() => {
                   setShowRescheduleDrawer(false);
                   setMeetingToDelete(null);
-                  setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                  setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                   setRescheduleOption('cancel');
                 }}
               >
@@ -11331,45 +11448,61 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
               <div className="flex flex-col gap-4">
-                {/* Select Meeting */}
-                {rescheduleMeetings.length > 0 && (
-                  <div>
-                    <label className="block font-semibold mb-1">Select Meeting</label>
-                    <select
-                      className="select select-bordered w-full"
-                      value={meetingToDelete || ''}
-                      onChange={(e) => {
-                        const meetingId = e.target.value ? parseInt(e.target.value) : null;
-                        setMeetingToDelete(meetingId);
-                        // Pre-fill form with selected meeting data
-                        const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
-                        if (selectedMeeting) {
-                          setRescheduleFormData({
-                            date: selectedMeeting.meeting_date || '',
-                            time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
-                            location: selectedMeeting.meeting_location || 'Teams',
-                            calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
-                            manager: selectedMeeting.meeting_manager || '',
-                            helper: selectedMeeting.helper || '',
-                            amount: selectedMeeting.meeting_amount?.toString() || '',
-                            currency: selectedMeeting.meeting_currency || 'NIS',
-                            attendance_probability: selectedMeeting.attendance_probability || 'Medium',
-                            complexity: selectedMeeting.complexity || 'Simple',
-                            car_number: selectedMeeting.car_number || '',
-                          });
-                        }
-                      }}
-                      required
-                    >
-                      <option value="">Select a meeting...</option>
-                      {rescheduleMeetings.map((meeting) => (
-                        <option key={meeting.id} value={meeting.id}>
-                          {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
+                {/* Select Meeting - Optional for stage 21 */}
+                {(() => {
+                  const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage : 
+                                      (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
+                  const isStage21 = currentStage === 21;
+                  const showMeetingSelection = rescheduleMeetings.length > 0 && (rescheduleOption === 'cancel' || !isStage21);
+                  
+                  if (!showMeetingSelection) return null;
+                  
+                  return (
+                    <div>
+                      <label className="block font-semibold mb-1">
+                        Select Meeting {isStage21 && rescheduleOption === 'reschedule' ? '(Optional)' : ''}
+                      </label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={meetingToDelete || ''}
+                        onChange={(e) => {
+                          const meetingId = e.target.value ? parseInt(e.target.value) : null;
+                          setMeetingToDelete(meetingId);
+                          // Pre-fill form with selected meeting data
+                          const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
+                          if (selectedMeeting) {
+                            setRescheduleFormData({
+                              date: selectedMeeting.meeting_date || getTomorrowDate(),
+                              time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
+                              location: selectedMeeting.meeting_location || 'Teams',
+                              calendar: selectedMeeting.calendar_type === 'active_client' ? 'active_client' : 'current',
+                              manager: selectedMeeting.meeting_manager || '',
+                              helper: selectedMeeting.helper || '',
+                              amount: selectedMeeting.meeting_amount?.toString() || '',
+                              currency: selectedMeeting.meeting_currency || 'NIS',
+                              attendance_probability: selectedMeeting.attendance_probability || 'Medium',
+                              complexity: selectedMeeting.complexity || 'Simple',
+                              car_number: selectedMeeting.car_number || '',
+                            });
+                          }
+                        }}
+                        required={rescheduleOption === 'cancel' || (rescheduleOption === 'reschedule' && !isStage21)}
+                      >
+                        <option value="">Select a meeting...</option>
+                        {rescheduleMeetings.map((meeting) => (
+                          <option key={meeting.id} value={meeting.id}>
+                            {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
+                          </option>
+                        ))}
+                      </select>
+                      {isStage21 && rescheduleOption === 'reschedule' && (
+                        <p className="text-sm text-gray-500 mt-1">
+                          In stage 21, you can reschedule without canceling an existing meeting.
+                        </p>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* Reschedule Options */}
                 <div>
@@ -11556,7 +11689,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   onClick={() => {
                     setShowRescheduleDrawer(false);
                     setMeetingToDelete(null);
-                    setRescheduleFormData({ date: '', time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
+                    setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                     setRescheduleOption('cancel');
                   }}
                 >
@@ -11574,7 +11707,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <button
                     className="btn btn-primary px-8"
                     onClick={handleRescheduleMeeting}
-                    disabled={!meetingToDelete || !rescheduleFormData.date || !rescheduleFormData.time}
+                    disabled={!rescheduleFormData.date || !rescheduleFormData.time}
                   >
                     Reschedule Meeting
                   </button>
