@@ -432,6 +432,16 @@ const LoginPage: React.FC = () => {
           <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] animate-gradient z-0" />
           {/* Welcome message and icon */}
           <div className="relative z-10 flex flex-col items-center justify-center w-full h-full gap-6">
+            {/* Welcome text above */}
+            <div className="flex flex-col items-center gap-2 slide-fade-in">
+              <div className="text-4xl font-bold text-white">
+                Welcome to RMQ 2.0.
+              </div>
+              <div className="text-xl text-white/90 font-medium">
+                Enjoy the future today.
+              </div>
+            </div>
+            
             {/* Employee Image or Success Icon */}
             {welcomeImage ? (
               <div className="checkmark-pop">

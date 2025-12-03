@@ -26,7 +26,7 @@ import { fetchLeadContacts, ContactInfo } from '../../lib/contactHelpers';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
-import { createTeamsMeeting, sendEmail } from '../../lib/graph';
+import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../../lib/graph';
 import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
@@ -750,73 +750,125 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const category = client.category || '---';
       const topic = client.topic || '---';
       const locationName = getMeetingLocationName(meeting.location);
+      
+      // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
+      const isMicrosoftEmail = (email: string | string[]): boolean => {
+        const emails = Array.isArray(email) ? email : [email];
+        const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
+        return emails.some(addr => 
+          microsoftDomains.some(domain => addr.toLowerCase().includes(`@${domain}`))
+        );
+      };
+      
+      const recipientEmailArray = Array.isArray(recipientEmail) ? recipientEmail : [recipientEmail];
+      const primaryRecipientEmail = recipientEmailArray[0];
+      const useOutlookCalendarInvite = isMicrosoftEmail(recipientEmail);
+      
+      // Build description HTML
+      let descriptionHtml = `<p>Meeting with <strong>${client.name}</strong></p>`;
+      if (category && category !== '---') {
+        descriptionHtml += `<p><strong>Category:</strong> ${category}</p>`;
+      }
+      if (topic && topic !== '---') {
+        descriptionHtml += `<p><strong>Topic:</strong> ${topic}</p>`;
+      }
+      if (joinLink) {
+        descriptionHtml += `<p><strong>Join Teams Meeting:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
+      }
+      if (meeting.brief) {
+        descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
+      }
+      
+      // Calendar subject (without date, with topic if available)
+      const calendarSubject = topic && topic !== '---' 
+        ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
+        : `Meeting with Decker, Pex, Levi Lawoffice`;
+      
+      // Prepare date/time for calendar
+      const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
+      const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
+      
+      // Build HTML body for email (used for both Outlook and non-Outlook clients)
       const htmlBody = meetingInvitationEmailTemplate({
         clientName: client.name,
         meetingDate: formattedDate,
-        meetingTime: undefined, // Remove time from email body since calendar invite has it
+        meetingTime: undefined,
         location: locationName,
-        category: '', // Not displayed in email anymore, but required by template
+        category: '',
         topic,
         joinLink,
         senderName: senderName,
       });
       
-      // Generate ICS calendar file attachment (embedded in the email)
-      let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
-      try {
-        // Build description
-        let description = `Meeting with ${client.name}\nCategory: ${category}\nTopic: ${topic}`;
-        if (joinLink) {
-          description += `\n\nJoin Teams Meeting: ${joinLink}`;
+      if (useOutlookCalendarInvite) {
+        // Use Microsoft Graph API to create a calendar event with attendees
+        // This automatically sends a proper Outlook meeting invitation that appears as a calendar box, not an attachment
+        // The invitation email is sent automatically by Outlook/Exchange, so we don't need to send a separate email
+        try {
+          await createCalendarEventWithAttendee(tokenResponse.accessToken, {
+            subject: calendarSubject,
+            startDateTime: startDateTime.toISOString(),
+            endDateTime: endDateTime.toISOString(),
+            location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+            description: descriptionHtml,
+            attendeeEmail: primaryRecipientEmail,
+            attendeeName: client.name,
+            organizerEmail: account.username || 'noreply@lawoffice.org.il',
+            organizerName: senderName,
+            teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+            timeZone: 'Asia/Jerusalem'
+          });
+          
+          // The calendar event creation automatically sends a meeting invitation email via Outlook
+          // This invitation appears as a proper calendar box in Outlook, not as an attachment
+        } catch (calendarError) {
+          console.error('Failed to create Outlook calendar event:', calendarError);
+          // Fallback to ICS attachment if Outlook calendar creation fails
+          throw calendarError; // Will be caught by outer catch
         }
-        if (meeting.brief) {
-          description += `\n\nBrief: ${meeting.brief}`;
+      } else {
+        // For non-Microsoft email clients (Gmail, etc.), use ICS attachment
+        // Generate ICS calendar file attachment
+        let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
+        try {
+          const icsContent = generateICSFromDateTime({
+            subject: calendarSubject,
+            date: meeting.date,
+            time: formattedTime,
+            durationMinutes: 60,
+            location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+            description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
+            organizerEmail: account.username || 'noreply@lawoffice.org.il',
+            organizerName: senderName,
+            attendeeEmail: primaryRecipientEmail,
+            attendeeName: client.name,
+            teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+            timeZone: 'Asia/Jerusalem'
+          });
+          
+          const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+          
+          attachments = [{
+            name: 'meeting-invite.ics',
+            contentBytes: icsBase64,
+            contentType: 'text/calendar; charset=utf-8; method=REQUEST'
+          }];
+        } catch (icsError) {
+          console.error('Failed to generate ICS file:', icsError);
         }
         
-        // Generate ICS content
-        // Subject for calendar: "Meeting with Decker, Pex, Levi Lawoffice - {topic}" (without date)
-        const calendarSubject = topic && topic !== '---' 
-          ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
-          : `Meeting with Decker, Pex, Levi Lawoffice`;
-        
-        const icsContent = generateICSFromDateTime({
-          subject: calendarSubject,
-          date: meeting.date,
-          time: formattedTime,
-          durationMinutes: 60, // Default 1 hour
-          location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
-          description: description,
-          organizerEmail: account.username || 'noreply@lawoffice.org.il',
-          organizerName: senderName,
-          attendeeEmail: Array.isArray(recipientEmail) ? recipientEmail[0] : recipientEmail,
-          attendeeName: client.name,
-          teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
-          timeZone: 'Asia/Jerusalem'
+        // Send email with ICS attachment
+        await sendEmail(tokenResponse.accessToken, { 
+          to: recipientEmail, 
+          subject, 
+          body: htmlBody,
+          attachments
         });
-        
-        // Convert to base64 (ICS files use CRLF line endings and should be ASCII-compatible)
-        // Use btoa with proper encoding for UTF-8 characters that might be in the content
-        const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-        
-        attachments = [{
-          name: 'meeting-invite.ics',
-          contentBytes: icsBase64,
-          contentType: 'text/calendar; charset=utf-8; method=REQUEST'
-        }];
-      } catch (icsError) {
-        console.error('Failed to generate ICS file:', icsError);
-        // Continue without ICS attachment if generation fails
       }
-      
-      // Send email via Graph API with ICS attachment embedded in the same email
-      await sendEmail(tokenResponse.accessToken, { 
-        to: recipientEmail, 
-        subject, 
-        body: htmlBody,
-        attachments
-      });
-      toast.success(`Email sent for meeting on ${meeting.date}`);
+      toast.success(`Meeting invitation sent for meeting on ${meeting.date}`);
       // --- Optimistic upsert to emails table ---
+      // For Outlook calendar invites, the email is sent automatically by Exchange
+      // For non-Outlook, we send the email with ICS attachment
       await supabase.from('emails').upsert([
         {
           message_id: `optimistic_${now.getTime()}`,

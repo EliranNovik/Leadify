@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon } from '@heroicons/react/24/solid';
+import React, { useMemo, useState, useEffect } from 'react';
+import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon } from '@heroicons/react/24/solid';
 import FullSearchReport from './FullSearchReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
@@ -3914,7 +3914,987 @@ const StatisticsReport = () => <div className="p-6">Statistics Analysis Content<
 const PiesReport = () => <div className="p-6">Pies Analysis Content</div>;
 const TasksReport = () => <div className="p-6">Tasks Analysis Content</div>;
 const ProfitabilityReport = () => <div className="p-6">Profitability Finances Content</div>;
-const CollectionDueReport = () => <div className="p-6">Collection Due Finances Content</div>;
+const CollectionDueReport = () => {
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
+
+  const [filters, setFilters] = useState({
+    fromDate: firstDayOfMonth,
+    toDate: lastDayOfMonth,
+    category: '',
+    order: '',
+    department: '',
+    employee: '',
+  });
+  const [employeeData, setEmployeeData] = useState<any[]>([]);
+  const [departmentData, setDepartmentData] = useState<any[]>([]);
+  const [totalDue, setTotalDue] = useState<number>(0);
+  const [loading, setLoading] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    const fetchOptions = async () => {
+      // Fetch employees
+      const { data: empData } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .order('display_name');
+      if (empData) {
+        setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+      }
+
+      // Fetch departments from tenant_departement (like Dashboard does)
+      const { data: deptData } = await supabase
+        .from('tenant_departement')
+        .select('id, name')
+        .order('name');
+      if (deptData) {
+        setDepartments(deptData.map(dept => ({ id: dept.id.toString(), name: dept.name })));
+      }
+
+      // Fetch categories
+      const { data: catData } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .order('name');
+      if (catData) {
+        setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
+      }
+    };
+    fetchOptions();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const handleSearch = async () => {
+    setLoading(true);
+    setSearchPerformed(true);
+    try {
+      console.log('🔍 Collection Due Report - Starting search with filters:', filters);
+      
+      // First, let's check what exists in the database without filters to debug
+      console.log('🔍 Collection Due Report - DEBUG: Checking all payment_plans in date range...');
+      const { data: debugNewPayments, error: debugNewError } = await supabase
+        .from('payment_plans')
+        .select('id, lead_id, due_date, ready_to_pay, cancel_date, paid')
+        .gte('due_date', filters.fromDate || '2020-01-01')
+        .lte('due_date', filters.toDate || '2030-12-31')
+        .limit(10);
+      
+      if (debugNewError) {
+        console.error('❌ Collection Due Report - DEBUG Error:', debugNewError);
+      } else {
+        console.log('📊 Collection Due Report - DEBUG: Sample new payments (first 10):', debugNewPayments);
+        console.log('📊 Collection Due Report - DEBUG: ready_to_pay values:', debugNewPayments?.map(p => ({ id: p.id, ready_to_pay: p.ready_to_pay, due_date: p.due_date })));
+      }
+      
+      // Fetch new payment plans - only unpaid ones that are ready to pay
+      console.log('🔍 Collection Due Report - Fetching new payment plans...');
+      let newPaymentsQuery = supabase
+        .from('payment_plans')
+        .select(`
+          id,
+          lead_id,
+          value,
+          value_vat,
+          currency,
+          due_date,
+          cancel_date,
+          ready_to_pay,
+          paid
+        `)
+        .eq('ready_to_pay', true)
+        .eq('paid', false) // Only unpaid payments
+        .not('due_date', 'is', null)
+        .is('cancel_date', null);
+
+      if (filters.fromDate) {
+        console.log('🔍 Collection Due Report - Filtering new payments from date:', filters.fromDate);
+        newPaymentsQuery = newPaymentsQuery.gte('due_date', filters.fromDate);
+      }
+      if (filters.toDate) {
+        console.log('🔍 Collection Due Report - Filtering new payments to date:', filters.toDate);
+        newPaymentsQuery = newPaymentsQuery.lte('due_date', filters.toDate);
+      }
+
+      const { data: newPayments, error: newError } = await newPaymentsQuery;
+      if (newError) {
+        console.error('❌ Collection Due Report - Error fetching new payments:', newError);
+        throw newError;
+      }
+      console.log('✅ Collection Due Report - Fetched new payments:', newPayments?.length || 0);
+      
+      // DEBUG: Check without ready_to_pay filter
+      console.log('🔍 Collection Due Report - DEBUG: Checking new payments WITHOUT ready_to_pay filter...');
+      const { data: debugNewWithoutFilter, error: debugNewWithoutError } = await supabase
+        .from('payment_plans')
+        .select('id, lead_id, due_date, ready_to_pay, cancel_date, paid')
+        .not('due_date', 'is', null)
+        .is('cancel_date', null)
+        .gte('due_date', filters.fromDate || '2020-01-01')
+        .lte('due_date', filters.toDate || '2030-12-31')
+        .limit(10);
+      
+      if (!debugNewWithoutError) {
+        console.log('📊 Collection Due Report - DEBUG: New payments without ready_to_pay filter:', debugNewWithoutFilter?.length || 0);
+        console.log('📊 Collection Due Report - DEBUG: Sample:', debugNewWithoutFilter);
+      }
+
+      // DEBUG: Check legacy payments
+      console.log('🔍 Collection Due Report - DEBUG: Checking all finances_paymentplanrow in date range...');
+      const { data: debugLegacyPayments, error: debugLegacyError } = await supabase
+        .from('finances_paymentplanrow')
+        .select('id, lead_id, due_date, date, ready_to_pay, cancel_date, actual_date')
+        .gte('date', filters.fromDate || '2020-01-01')
+        .lte('date', filters.toDate || '2030-12-31')
+        .limit(10);
+      
+      if (debugLegacyError) {
+        console.error('❌ Collection Due Report - DEBUG Error:', debugLegacyError);
+      } else {
+        console.log('📊 Collection Due Report - DEBUG: Sample legacy payments (first 10):', debugLegacyPayments);
+        console.log('📊 Collection Due Report - DEBUG: ready_to_pay values:', debugLegacyPayments?.map(p => ({ 
+          id: p.id, 
+          lead_id: p.lead_id,
+          ready_to_pay: p.ready_to_pay, 
+          ready_to_pay_type: typeof p.ready_to_pay,
+          date: p.date, 
+          due_date: p.due_date,
+          actual_date: p.actual_date,
+          cancel_date: p.cancel_date
+        })));
+        
+        // Check how many have ready_to_pay = true
+        const withReadyToPay = debugLegacyPayments?.filter(p => p.ready_to_pay === true || p.ready_to_pay === 'true' || p.ready_to_pay === 1);
+        console.log('📊 Collection Due Report - DEBUG: Legacy payments with ready_to_pay=true:', withReadyToPay?.length || 0);
+      }
+      
+      // Fetch legacy payment plans from finances_paymentplanrow
+      // Filter by 'date' column like CollectionFinancesReport does
+      console.log('🔍 Collection Due Report - Fetching legacy payment plans from finances_paymentplanrow...');
+      let legacyPaymentsQuery = supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          value,
+          vat_value,
+          currency_id,
+          due_date,
+          date,
+          cancel_date,
+          ready_to_pay,
+          actual_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+        `)
+        .is('actual_date', null) // Only unpaid payments (actual_date IS NULL means not paid)
+        .is('cancel_date', null)
+        .not('due_date', 'is', null); // due_date IS NOT NULL means ready_to_pay (sent to finances)
+
+      // For Collection Due, we filter by due_date value, not date column
+      // This ensures we get all payments DUE in the selected period, regardless of when they were created
+      if (filters.fromDate) {
+        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date from:', filters.fromDate);
+        legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', filters.fromDate);
+      }
+      if (filters.toDate) {
+        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date to:', filters.toDate);
+        legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', filters.toDate);
+      }
+
+      const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
+      if (legacyError) {
+        console.error('❌ Collection Due Report - Error fetching legacy payments:', legacyError);
+        throw legacyError;
+      }
+      console.log('✅ Collection Due Report - Fetched legacy payments (due_date in range, ready_to_pay):', legacyPayments?.length || 0);
+      
+      // No need to filter again - we already filtered by due_date in the query
+      const filteredLegacyPayments = legacyPayments || [];
+      
+      console.log('✅ Collection Due Report - Filtered legacy payments:', filteredLegacyPayments.length);
+      if (filteredLegacyPayments.length > 0) {
+        console.log('📊 Collection Due Report - Sample filtered legacy payments:', filteredLegacyPayments.slice(0, 3).map((p: any) => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          due_date: p.due_date,
+          date: p.date,
+          value: p.value,
+          ready_to_pay: p.ready_to_pay
+        })));
+      }
+      if (filteredLegacyPayments.length > 0) {
+        console.log('📊 Collection Due Report - Sample filtered legacy payments:', filteredLegacyPayments.slice(0, 3).map(p => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          due_date: p.due_date,
+          date: p.date,
+          value: p.value
+        })));
+      }
+
+      // Get unique lead IDs
+      const newLeadIds = Array.from(new Set((newPayments || []).map(p => p.lead_id).filter(Boolean)));
+      const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
+      
+      console.log('🔍 Collection Due Report - Unique new lead IDs:', newLeadIds.length);
+      console.log('🔍 Collection Due Report - Unique legacy lead IDs:', legacyLeadIds.length);
+
+      // Fetch lead metadata
+      let newLeadsMap = new Map();
+      if (newLeadIds.length > 0) {
+        console.log('🔍 Collection Due Report - Fetching new leads metadata...');
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            handler,
+            case_handler_id,
+            category_id,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', newLeadIds);
+
+        if (newLeadsError) {
+          console.error('❌ Collection Due Report - Error fetching new leads:', newLeadsError);
+        } else {
+          console.log('✅ Collection Due Report - Fetched new leads:', newLeads?.length || 0);
+          if (newLeads) {
+            newLeads.forEach(lead => {
+              newLeadsMap.set(lead.id, lead);
+            });
+          }
+        }
+      }
+
+      let legacyLeadsMap = new Map();
+      if (legacyLeadIds.length > 0) {
+        console.log('🔍 Collection Due Report - Fetching legacy leads metadata...');
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            case_handler_id,
+            category_id,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', legacyLeadIds);
+
+        if (legacyLeadsError) {
+          console.error('❌ Collection Due Report - Error fetching legacy leads:', legacyLeadsError);
+        } else {
+          console.log('✅ Collection Due Report - Fetched legacy leads:', legacyLeads?.length || 0);
+          if (legacyLeads) {
+            legacyLeads.forEach(lead => {
+              // Store with string key to match payment.lead_id (which might be string or number)
+              const key = lead.id?.toString() || String(lead.id);
+              legacyLeadsMap.set(key, lead);
+              // Also store with number key for compatibility
+              if (typeof lead.id === 'number') {
+                legacyLeadsMap.set(lead.id, lead);
+              }
+            });
+            console.log('📊 Collection Due Report - Legacy leads map keys:', Array.from(legacyLeadsMap.keys()));
+          }
+        }
+      }
+
+      // Fetch applicants count for new leads
+      console.log('🔍 Collection Due Report - Fetching applicants for new leads...');
+      const applicantsCountMap = new Map<string, number>();
+      if (newLeadIds.length > 0) {
+        const { data: contacts, error: contactsError } = await supabase
+          .from('contacts')
+          .select('lead_id')
+          .in('lead_id', newLeadIds)
+          .eq('is_persecuted', false);
+
+        if (contactsError) {
+          console.error('❌ Collection Due Report - Error fetching contacts:', contactsError);
+        } else {
+          console.log('✅ Collection Due Report - Fetched contacts:', contacts?.length || 0);
+          if (contacts) {
+            contacts.forEach(contact => {
+              const count = applicantsCountMap.get(contact.lead_id) || 0;
+              applicantsCountMap.set(contact.lead_id, count + 1);
+            });
+          }
+        }
+      }
+
+      // Fetch applicants count for legacy leads
+      console.log('🔍 Collection Due Report - Fetching applicants for legacy leads...');
+      const legacyApplicantsCountMap = new Map<string, number>();
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeadsForApplicants, error: legacyApplicantsError } = await supabase
+          .from('leads_lead')
+          .select('id, no_of_applicants')
+          .in('id', legacyLeadIds);
+
+        if (legacyApplicantsError) {
+          console.error('❌ Collection Due Report - Error fetching legacy applicants:', legacyApplicantsError);
+        } else {
+          console.log('✅ Collection Due Report - Fetched legacy leads for applicants:', legacyLeadsForApplicants?.length || 0);
+          if (legacyLeadsForApplicants) {
+            legacyLeadsForApplicants.forEach(lead => {
+              if (lead.no_of_applicants) {
+                legacyApplicantsCountMap.set(lead.id.toString(), Number(lead.no_of_applicants) || 0);
+              }
+            });
+          }
+        }
+      }
+
+      // Fetch handler names for all handler IDs (like CollectionFinancesReport does)
+      const normalizeHandlerId = (value: any): number | null => {
+        if (value === null || value === undefined) return null;
+        const numeric = Number(value);
+        return Number.isFinite(numeric) ? numeric : null;
+      };
+
+      // Collect handler names from new leads and handler IDs from legacy leads
+      const allHandlerNames = new Set<string>(); // For new leads - handler is text field
+      const allHandlerIds: number[] = []; // For legacy leads - case_handler_id is numeric
+      
+      if (newLeadsMap.size > 0) {
+        console.log('🔍 Collection Due Report - Collecting handler names from new leads...');
+        newLeadsMap.forEach((lead, leadId) => {
+          console.log('📊 New lead handler info:', {
+            leadId,
+            handler: lead.handler,
+            case_handler_id: lead.case_handler_id
+          });
+          // For new leads, use the handler text field (display_name)
+          if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+            allHandlerNames.add(lead.handler.trim());
+            console.log('✅ Added handler name:', lead.handler.trim());
+          }
+        });
+      }
+      if (legacyLeadsMap.size > 0) {
+        console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads...');
+        legacyLeadsMap.forEach((lead: any, leadId: any) => {
+          console.log('📊 Legacy lead handler info:', {
+            leadId,
+            case_handler_id: lead.case_handler_id,
+            case_handler_id_type: typeof lead.case_handler_id
+          });
+          const handlerId = normalizeHandlerId(lead.case_handler_id);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            console.log('✅ Added handler ID:', handlerId);
+          } else {
+            console.log('⚠️ Handler ID is null for lead:', leadId);
+          }
+        });
+      }
+      console.log('📊 Collection Due Report - All collected handler names (new):', Array.from(allHandlerNames));
+      console.log('📊 Collection Due Report - All collected handler IDs (legacy):', allHandlerIds);
+
+      // Fetch handler information:
+      // 1. For new leads: fetch employees by display_name (handler text field) to get their IDs
+      // 2. For legacy leads: fetch employees by ID (case_handler_id) to get their display_name
+      const handlerMap = new Map<number, string>(); // ID -> display_name
+      const handlerNameToIdMap = new Map<string, number>(); // display_name -> ID (for new leads)
+      
+      // Fetch employees by display_name for new leads
+      if (allHandlerNames.size > 0) {
+        const handlerNamesArray = Array.from(allHandlerNames);
+        console.log('🔍 Collection Due Report - Fetching employees by display_name for new leads:', handlerNamesArray);
+        const { data: handlerDataByName, error: handlerErrorByName } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('display_name', handlerNamesArray);
+        
+        if (handlerErrorByName) {
+          console.error('❌ Collection Due Report - Error fetching handlers by name:', handlerErrorByName);
+        } else {
+          console.log('📊 Collection Due Report - Handler data by name received:', handlerDataByName?.map(emp => ({ id: emp.id, display_name: emp.display_name })));
+          handlerDataByName?.forEach(emp => {
+            const empId = Number(emp.id);
+            const displayName = emp.display_name?.trim();
+            if (!Number.isNaN(empId) && displayName) {
+              handlerMap.set(empId, displayName);
+              handlerNameToIdMap.set(displayName, empId);
+            }
+          });
+        }
+      }
+      
+      // Fetch employees by ID for legacy leads
+      const uniqueHandlerIds = Array.from(new Set(allHandlerIds));
+      if (uniqueHandlerIds.length > 0) {
+        console.log('🔍 Collection Due Report - Fetching handler names by ID for', uniqueHandlerIds.length, 'legacy handlers:', uniqueHandlerIds);
+        const { data: handlerData, error: handlerError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('id', uniqueHandlerIds);
+        
+        if (handlerError) {
+          console.error('❌ Collection Due Report - Error fetching handlers by ID:', handlerError);
+        } else {
+          console.log('📊 Collection Due Report - Handler data by ID received:', handlerData?.map(emp => ({ id: emp.id, display_name: emp.display_name })));
+          handlerData?.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+              handlerMap.set(empId, displayName);
+            }
+          });
+        }
+      }
+      
+      console.log('✅ Collection Due Report - Handler map created:', Array.from(handlerMap.entries()).map(([id, name]) => ({ id, name })));
+      console.log('✅ Collection Due Report - Handler name to ID map:', Array.from(handlerNameToIdMap.entries()));
+
+      // Process payment data
+      type PaymentEntry = {
+        leadId: string;
+        leadType: 'new' | 'legacy';
+        amount: number;
+        handlerId: number | null;
+        handlerName: string;
+        departmentId: string | null;
+        departmentName: string;
+      };
+
+      const payments: PaymentEntry[] = [];
+      const missingHandlerIds = new Set<number>();
+
+      console.log('🔍 Collection Due Report - Processing new payments...');
+      // Process new payments
+      (newPayments || []).forEach(payment => {
+        const lead = newLeadsMap.get(payment.lead_id);
+        if (!lead) return;
+
+        // Get handler - for new leads, use handler text field (display_name), not case_handler_id
+        let handlerId: number | null = null;
+        let handlerName = '—';
+        
+        // For new leads, handler is stored as text (display_name) in the 'handler' column
+        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+          const handlerNameFromLead = lead.handler.trim();
+          // Look up the employee ID by display_name
+          handlerId = handlerNameToIdMap.get(handlerNameFromLead) || null;
+          if (handlerId !== null) {
+            handlerName = handlerMap.get(handlerId) || handlerNameFromLead;
+          } else {
+            // Handler name not found in map, use the name directly
+            handlerName = handlerNameFromLead;
+          }
+        }
+
+        // Get department from category -> main category -> department
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentId = department?.id?.toString() || null;
+        const departmentName = department?.name || mainCategory?.name || category?.name || '—';
+
+        const value = Number(payment.value || 0);
+        let vat = Number(payment.value_vat || 0);
+        if (!vat && (payment.currency || '₪') === '₪') {
+          vat = Math.round(value * 0.18 * 100) / 100;
+        }
+        const amount = value + vat;
+
+        payments.push({
+          leadId: payment.lead_id,
+          leadType: 'new',
+          amount,
+          handlerId,
+          handlerName,
+          departmentId,
+          departmentName,
+        });
+      });
+
+      console.log('🔍 Collection Due Report - Processing legacy payments...');
+      // Process legacy payments - use due_date if available, otherwise use date (like CollectionFinancesReport)
+      filteredLegacyPayments.forEach(payment => {
+        // Try both string and number keys for lead_id lookup
+        const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
+        const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
+        let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
+        
+        if (!lead) {
+          console.warn('⚠️ Collection Due Report - Legacy lead not found for payment:', {
+            payment_lead_id: payment.lead_id,
+            payment_lead_id_type: typeof payment.lead_id,
+            leadIdKey,
+            leadIdNum,
+            available_keys: Array.from(legacyLeadsMap.keys()).slice(0, 5)
+          });
+          return;
+        }
+
+        // Get handler - use handlerMap for consistent lookup
+        const handlerId = normalizeHandlerId(lead.case_handler_id);
+        let handlerName = '—';
+        if (handlerId !== null) {
+          handlerName = handlerMap.get(handlerId) || '—';
+          if (handlerName === '—') {
+            // Track missing handler IDs to fetch them
+            missingHandlerIds.add(handlerId);
+            console.warn('⚠️ Collection Due Report - Legacy lead handler not found in map, will fetch:', {
+              handlerId,
+              handlerIdType: typeof handlerId,
+              case_handler_id: lead.case_handler_id,
+              mapKeys: Array.from(handlerMap.keys()),
+              leadId: payment.lead_id
+            });
+          }
+        }
+
+        // Get department from category -> main category -> department
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentId = department?.id?.toString() || null;
+        const departmentName = department?.name || mainCategory?.name || category?.name || '—';
+
+        const value = Number(payment.value || 0);
+        let vat = Number(payment.vat_value || 0);
+        const currency = payment.accounting_currencies?.name || (payment.currency_id === 2 ? '€' : payment.currency_id === 3 ? '$' : payment.currency_id === 4 ? '£' : '₪');
+        if (!vat && currency === '₪') {
+          vat = Math.round(value * 0.18 * 100) / 100;
+        }
+        const amount = value + vat;
+
+        payments.push({
+          leadId: `legacy_${payment.lead_id}`,
+          leadType: 'legacy',
+          amount,
+          handlerId,
+          handlerName,
+          departmentId,
+          departmentName,
+        });
+      });
+
+      console.log('✅ Collection Due Report - Total payments processed:', payments.length);
+      
+      // Log all handler IDs in payments
+      const handlerIdsInPayments = payments.map(p => p.handlerId).filter(Boolean);
+      console.log('📊 Collection Due Report - Handler IDs in payments:', handlerIdsInPayments);
+      console.log('📊 Collection Due Report - Payment entries:', payments.map(p => ({ handlerId: p.handlerId, handlerName: p.handlerName, leadId: p.leadId })));
+
+      // Fetch any missing handler IDs that appeared in payments but weren't in our initial map
+      if (missingHandlerIds.size > 0) {
+        const missingIdsArray = Array.from(missingHandlerIds);
+        console.log('🔍 Collection Due Report - Fetching', missingIdsArray.length, 'missing handler IDs:', missingIdsArray);
+        const { data: missingHandlerData, error: missingHandlerError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('id', missingIdsArray);
+        
+        if (!missingHandlerError && missingHandlerData) {
+          missingHandlerData.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+              handlerMap.set(empId, displayName);
+              console.log('✅ Collection Due Report - Added missing handler to map:', { id: empId, name: displayName });
+            }
+          });
+          
+          // Update handler names in payments array for missing handlers
+          payments.forEach(payment => {
+            if (payment.handlerId !== null && missingHandlerIds.has(payment.handlerId) && payment.handlerName === '—') {
+              payment.handlerName = handlerMap.get(payment.handlerId) || '—';
+              console.log('✅ Collection Due Report - Updated payment handler name:', { handlerId: payment.handlerId, handlerName: payment.handlerName });
+            }
+          });
+        }
+      }
+
+      // Filter by category/department/employee if specified
+      let filteredPayments = payments;
+      console.log('🔍 Collection Due Report - Before filters, payments:', filteredPayments.length);
+      
+      if (filters.category) {
+        console.log('🔍 Collection Due Report - Filtering by category:', filters.category);
+        filteredPayments = filteredPayments.filter(p => p.departmentId === filters.category);
+        console.log('🔍 Collection Due Report - After category filter:', filteredPayments.length);
+      }
+      if (filters.department) {
+        console.log('🔍 Collection Due Report - Filtering by department:', filters.department);
+        filteredPayments = filteredPayments.filter(p => p.departmentId === filters.department);
+        console.log('🔍 Collection Due Report - After department filter:', filteredPayments.length);
+      }
+      if (filters.employee) {
+        console.log('🔍 Collection Due Report - Filtering by employee:', filters.employee);
+        const empId = Number(filters.employee);
+        filteredPayments = filteredPayments.filter(p => p.handlerId === empId);
+        console.log('🔍 Collection Due Report - After employee filter:', filteredPayments.length);
+      }
+      
+      console.log('✅ Collection Due Report - Final filtered payments:', filteredPayments.length);
+
+      // Group by employee
+      const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      filteredPayments.forEach(payment => {
+        const key = payment.handlerId?.toString() || 'unassigned';
+        if (!employeeMap.has(key)) {
+          employeeMap.set(key, {
+            handlerId: payment.handlerId,
+            handlerName: payment.handlerName,
+            departmentName: payment.departmentName,
+            cases: new Set(),
+            applicantsLeads: new Set(),
+            applicants: 0,
+            total: 0,
+          });
+        }
+        const entry = employeeMap.get(key)!;
+        entry.cases.add(payment.leadId);
+        entry.total += payment.amount;
+
+        // Add applicants count only once per lead
+        if (!entry.applicantsLeads.has(payment.leadId)) {
+          entry.applicantsLeads.add(payment.leadId);
+          if (payment.leadType === 'new') {
+            const applicants = applicantsCountMap.get(payment.leadId) || 0;
+            entry.applicants += applicants;
+          } else {
+            const legacyId = payment.leadId.replace('legacy_', '');
+            const applicants = legacyApplicantsCountMap.get(legacyId) || 0;
+            entry.applicants += applicants;
+          }
+        }
+      });
+
+      // Final check: fetch any handler IDs that appear in employee map but have "--" as name
+      const missingHandlerIdsFinal = new Set<number>();
+      employeeMap.forEach((entry, key) => {
+        if (entry.handlerId !== null && entry.handlerName === '—') {
+          missingHandlerIdsFinal.add(entry.handlerId);
+        }
+      });
+      
+      if (missingHandlerIdsFinal.size > 0) {
+        const missingIdsFinalArray = Array.from(missingHandlerIdsFinal);
+        console.log('🔍 Collection Due Report - Found handler IDs with "--" in employee map, fetching:', missingIdsFinalArray);
+        const { data: missingHandlerDataFinal, error: missingHandlerErrorFinal } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('id', missingIdsFinalArray);
+        
+        if (!missingHandlerErrorFinal && missingHandlerDataFinal) {
+          missingHandlerDataFinal.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+              handlerMap.set(empId, displayName);
+              // Update the employee map entry
+              const key = empId.toString();
+              const entry = employeeMap.get(key);
+              if (entry) {
+                entry.handlerName = displayName;
+                console.log('✅ Collection Due Report - Updated employee map entry:', { handlerId: empId, handlerName: displayName });
+              }
+            }
+          });
+        }
+      }
+
+      const employeeDataArray = Array.from(employeeMap.values()).map(entry => ({
+        employee: entry.handlerName,
+        department: entry.departmentName,
+        cases: entry.cases.size,
+        applicants: entry.applicants,
+        total: entry.total,
+      })).sort((a, b) => b.total - a.total);
+
+      console.log('✅ Collection Due Report - Employee data array:', employeeDataArray.length, 'employees');
+      console.log('📊 Collection Due Report - Employee data:', employeeDataArray);
+      console.log('📊 Collection Due Report - Employee map entries:', Array.from(employeeMap.entries()).map(([key, entry]) => ({ key, handlerId: entry.handlerId, handlerName: entry.handlerName })));
+
+      // Group by department
+      const departmentMap = new Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      filteredPayments.forEach(payment => {
+        const key = payment.departmentId || 'unassigned';
+        if (!departmentMap.has(key)) {
+          departmentMap.set(key, {
+            departmentName: payment.departmentName,
+            cases: new Set(),
+            applicantsLeads: new Set(),
+            applicants: 0,
+            total: 0,
+          });
+        }
+        const entry = departmentMap.get(key)!;
+        entry.cases.add(payment.leadId);
+        entry.total += payment.amount;
+
+        // Add applicants count only once per lead
+        if (!entry.applicantsLeads.has(payment.leadId)) {
+          entry.applicantsLeads.add(payment.leadId);
+          if (payment.leadType === 'new') {
+            const applicants = applicantsCountMap.get(payment.leadId) || 0;
+            entry.applicants += applicants;
+          } else {
+            const legacyId = payment.leadId.replace('legacy_', '');
+            const applicants = legacyApplicantsCountMap.get(legacyId) || 0;
+            entry.applicants += applicants;
+          }
+        }
+      });
+
+      const departmentDataArray = Array.from(departmentMap.values()).map(entry => ({
+        department: entry.departmentName,
+        cases: entry.cases.size,
+        applicants: entry.applicants,
+        total: entry.total,
+      })).sort((a, b) => b.total - a.total);
+
+      console.log('✅ Collection Due Report - Department data array:', departmentDataArray.length, 'departments');
+      console.log('📊 Collection Due Report - Department data:', departmentDataArray);
+
+      const calculatedTotal = employeeDataArray.reduce((sum, item) => sum + item.total, 0);
+      console.log('✅ Collection Due Report - Total due:', calculatedTotal);
+
+      setEmployeeData(employeeDataArray);
+      setDepartmentData(departmentDataArray);
+      setTotalDue(calculatedTotal);
+    } catch (error) {
+      console.error('Error fetching collection due data:', error);
+      alert('Failed to fetch collection due data.');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('he-IL', {
+      style: 'currency',
+      currency: 'ILS',
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    }).format(amount);
+  };
+
+  return (
+    <div>
+      {/* Filters */}
+      <div className="bg-white mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4 items-end">
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">From date:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.fromDate}
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">To date:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.toDate}
+              onChange={e => handleFilterChange('toDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Category:</span></label>
+            <select
+              className="select select-bordered"
+              value={filters.category}
+              onChange={e => handleFilterChange('category', e.target.value)}
+            >
+              <option value="">---------</option>
+              {categories.map(cat => (
+                <option key={cat.id} value={cat.id}>{cat.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Order:</span></label>
+            <select
+              className="select select-bordered"
+              value={filters.order}
+              onChange={e => handleFilterChange('order', e.target.value)}
+            >
+              <option value="">- ALL -</option>
+              <option value="1">First Payment</option>
+              <option value="5">Intermediate Payment</option>
+              <option value="9">Final Payment</option>
+            </select>
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">Department:</span></label>
+            <select
+              className="select select-bordered"
+              value={filters.department}
+              onChange={e => handleFilterChange('department', e.target.value)}
+            >
+              <option value="">All</option>
+              {departments.map(dept => (
+                <option key={dept.id} value={dept.id}>{dept.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">By employee:</span></label>
+            <select
+              className="select select-bordered"
+              value={filters.employee}
+              onChange={e => handleFilterChange('employee', e.target.value)}
+            >
+              <option value="">Case Handler</option>
+              {employees.map(emp => (
+                <option key={emp.id} value={emp.id.toString()}>{emp.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="mt-4">
+          <button
+            className="btn btn-primary"
+            onClick={handleSearch}
+            disabled={loading}
+          >
+            {loading ? 'Loading...' : 'Show'}
+          </button>
+        </div>
+      </div>
+
+      {/* Results */}
+      {searchPerformed && (
+        <div>
+          {/* Total Due Summary */}
+          <div className="mb-6">
+            <span className="text-lg font-semibold mr-2">Total Due:</span>
+            <div className="bg-green-500 text-white px-4 py-2 rounded-lg inline-block">
+              <span className="text-2xl font-bold">{formatCurrency(totalDue)}</span>
+            </div>
+          </div>
+
+          {/* By Employee Table */}
+          <div className="card bg-base-100 shadow-lg mb-6">
+            <div className="card-body">
+              <h3 className="text-xl font-bold mb-4">By Employee</h3>
+              <div className="overflow-x-auto">
+                <table className="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Employee</th>
+                      <th>Department</th>
+                      <th>Cases</th>
+                      <th>Applicants</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={5} className="text-center py-4">
+                          <span className="loading loading-spinner loading-md"></span>
+                        </td>
+                      </tr>
+                    ) : employeeData.length > 0 ? (
+                      employeeData.map((row, index) => (
+                        <tr key={index}>
+                          <td className="font-medium">{row.employee}</td>
+                          <td>{row.department}</td>
+                          <td className="text-center">{row.cases}</td>
+                          <td className="text-center">{row.applicants}</td>
+                          <td className="text-right font-semibold">
+                            {formatCurrency(row.total)}
+                            <InformationCircleIcon className="w-4 h-4 inline-block ml-2 text-gray-400" />
+                          </td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={5} className="text-center py-4 text-gray-500">No data found</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          {/* By Department Table */}
+          <div className="card bg-base-100 shadow-lg">
+            <div className="card-body">
+              <h3 className="text-xl font-bold mb-4">By Department</h3>
+              <div className="overflow-x-auto">
+                <table className="table w-full">
+                  <thead>
+                    <tr>
+                      <th>Department</th>
+                      <th>Cases</th>
+                      <th>Applicants</th>
+                      <th>Total</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {loading ? (
+                      <tr>
+                        <td colSpan={4} className="text-center py-4">
+                          <span className="loading loading-spinner loading-md"></span>
+                        </td>
+                      </tr>
+                    ) : departmentData.length > 0 ? (
+                      departmentData.map((row, index) => (
+                        <tr key={index}>
+                          <td className="font-medium">{row.department}</td>
+                          <td className="text-center">{row.cases}</td>
+                          <td className="text-center">{row.applicants}</td>
+                          <td className="text-right font-semibold">{formatCurrency(row.total)}</td>
+                        </tr>
+                      ))
+                    ) : (
+                      <tr>
+                        <td colSpan={4} className="text-center py-4 text-gray-500">No data found</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 const SumActiveReport = () => <div className="p-6">Sum Active Cases Content</div>;
 
 type ReportItem = {

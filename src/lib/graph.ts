@@ -388,12 +388,14 @@ export const sendEmail = async (accessToken: string, email: {
   
   // If we have a database signature, use it (unless explicitly skipped)
   if (!email.skipSignature && userSignature) {
+    // Signature is already sanitized by getCurrentUserEmailSignature
     // Check if signature is already HTML
     if (userSignature.includes('<') && userSignature.includes('>')) {
-      fullBody = email.body + `<br><br>${userSignature}`;
+      // Wrap signature in a div for better email client compatibility
+      fullBody = email.body + `<div style="margin-top: 1em;">${userSignature}</div>`;
     } else {
       // Convert plain text to HTML
-      const signatureHtml = `<br><br>${userSignature.replace(/\n/g, '<br>')}`;
+      const signatureHtml = `<div style="margin-top: 1em;">${userSignature.replace(/\n/g, '<br>')}</div>`;
       fullBody = email.body + signatureHtml;
     }
   }
