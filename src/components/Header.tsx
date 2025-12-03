@@ -5,6 +5,7 @@ import { searchLeads } from '../lib/legacyLeadsApi';
 import { supabase } from '../lib/supabase';
 import type { Lead } from '../lib/supabase';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
+import { generateSearchVariants, buildMultilingualSearchConditions, transliterateHebrew, transliterateArabic, containsHebrew, containsArabic } from '../lib/transliteration';
 import { toast } from 'react-hot-toast';
 import { usePushNotifications } from '../hooks/usePushNotifications';
 import {
@@ -136,11 +137,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearchActive, setIsSearchActive] = useState(false);
   const [searchValue, setSearchValue] = useState('');
   const [searchResults, setSearchResults] = useState<CombinedLead[]>([]);
-  const [cachedResults, setCachedResults] = useState<CombinedLead[]>([]); // Cache full results for filtering
   const [isSearching, setIsSearching] = useState(false);
-  const currentSearchIdRef = useRef(0);
-  const lastQueryRef = useRef<string>(''); // Track last query to detect significant changes
-  const lastSearchTypeRef = useRef<'name' | 'phone' | 'lead' | 'email'>('name'); // Track last search type
+  const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const isMouseOverSearchRef = useRef(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -149,7 +147,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const notificationsRef = useRef<HTMLDivElement>(null);
   const searchDropdownRef = useRef<HTMLDivElement>(null);
   const filterDropdownRef = useRef<HTMLDivElement>(null);
-  const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const { instance } = useMsal();
   const [isMsalLoading, setIsMsalLoading] = useState(false);
   const [userAccount, setUserAccount] = useState<any>(null);
@@ -454,171 +451,266 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, []);
 
-  // Helper function to extract digits from string
-  const getDigits = (str: string): string => {
-    return str.replace(/\D/g, '');
-  };
-
-  // Helper function to detect search type (same logic as API)
-  const getSearchType = useCallback((query: string): 'name' | 'phone' | 'lead' | 'email' => {
+  // Fuzzy search function for when no direct matches found
+  const performFuzzySearch = async (query: string): Promise<CombinedLead[]> => {
     const trimmed = query.trim();
-    if (!trimmed) return 'name';
-    
-    const digits = getDigits(trimmed);
-    const noPrefix = trimmed.replace(/^[LC]/i, '');
-    const hasPrefix = /^[LC]/i.test(trimmed);
-    const isNumeric = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-    const isEmail = trimmed.includes('@');
-    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-    const isPhone = digits.length >= 6 || startsWithZero || (digits.length >= 3 && digits.length <= 5 && !isNumeric && !hasPrefix && trimmed.length > digits.length);
-    const isLeadNumber = hasPrefix || (isNumeric && digits.length <= 5 && !startsWithZero);
-    
-    if (isEmail) return 'email';
-    if (isLeadNumber) return 'lead';
-    if (isPhone) return 'phone';
-    return 'name';
-  }, []);
+    if (!trimmed || trimmed.length < 2) return [];
 
-  // Client-side filter function for instant results (finds all matches)
-  const filterResults = useCallback((results: CombinedLead[], query: string): CombinedLead[] => {
-    if (!query.trim()) return results;
-    
-    const lower = query.toLowerCase();
-    const digits = getDigits(query);
-    const isPhone = digits.length >= 4; // Match API logic: 4+ digits for phone
-    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-    const isPhoneSearch = digits.length >= 6 || startsWithZero;
-    
-    return results.filter((lead) => {
-      const name = (lead.contactName || lead.name || '').toLowerCase();
-      const email = (lead.email || '').toLowerCase();
-      const leadNumber = (lead.lead_number || '').toLowerCase();
-      const phoneDigits = getDigits(lead.phone || '');
-      const mobileDigits = getDigits(lead.mobile || '');
-      
-      // Check if matches query (using contains for partial matches)
-      if (name.includes(lower) || email.includes(lower) || leadNumber.includes(lower)) {
-        return true;
+    const lower = trimmed.toLowerCase();
+    const digits = trimmed.replace(/\D/g, '');
+    const isEmail = trimmed.includes('@');
+    const isNumeric = /^\d+$/.test(trimmed);
+
+    try {
+      // Build conditions for fuzzy matching - search all relevant fields with multilingual support
+      const newLeadConditions: string[] = [];
+      const legacyLeadConditions: string[] = [];
+
+      // Generate search variants for multilingual matching (Hebrew, Arabic, English)
+      // This includes reverse transliteration: English -> Hebrew/Arabic equivalents
+      const searchVariants = generateSearchVariants(trimmed);
+
+      // Always search name (if query is at least 2 chars) - with multilingual support
+      if (trimmed.length >= 2) {
+        searchVariants.forEach(variant => {
+          // Search for each variant (English, Hebrew, Arabic equivalents)
+          newLeadConditions.push(`name.ilike.%${variant}%`);
+          legacyLeadConditions.push(`name.ilike.%${variant}%`);
+        });
       }
-      
-      // For phone, check if digits are contained in stored phone numbers
-      // Handle both with and without leading zero
-      if (isPhoneSearch) {
-        // Check if search digits appear in stored phone/mobile (handles country codes)
-        const normalizedSearch = digits.startsWith('0') ? digits.slice(1) : digits;
-        const normalizedPhone = phoneDigits.startsWith('0') ? phoneDigits.slice(1) : phoneDigits;
-        const normalizedMobile = mobileDigits.startsWith('0') ? mobileDigits.slice(1) : mobileDigits;
-        
-        // Check if search digits appear anywhere in the stored number
-        if (phoneDigits.includes(digits) || mobileDigits.includes(digits) ||
-            phoneDigits.includes(normalizedSearch) || mobileDigits.includes(normalizedSearch) ||
-            normalizedPhone.includes(normalizedSearch) || normalizedMobile.includes(normalizedSearch)) {
-          return true;
+
+      // Email fuzzy search - multilingual support
+      if (isEmail || trimmed.length >= 3) {
+        searchVariants.forEach(variant => {
+          newLeadConditions.push(`email.ilike.%${variant}%`);
+          legacyLeadConditions.push(`email.ilike.%${variant}%`);
+        });
+      }
+
+      // Lead number fuzzy search
+      if (isNumeric || digits.length > 0) {
+        newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
+        legacyLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
+        if (isNumeric) {
+          legacyLeadConditions.push(`id.eq.${trimmed}`);
         }
       }
-      
-      return false;
-    });
-  }, []);
 
+      // Phone number fuzzy search (if has digits)
+      if (digits.length >= 3) {
+        newLeadConditions.push(`phone.ilike.%${digits}%`);
+        newLeadConditions.push(`mobile.ilike.%${digits}%`);
+        legacyLeadConditions.push(`phone.ilike.%${digits}%`);
+        legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
+      }
+
+      const results: CombinedLead[] = [];
+      const isEnglishQuery = !/[\u0590-\u05FF\u0600-\u06FF]/.test(trimmed); // No Hebrew or Arabic characters
+
+      // Search new leads
+      if (newLeadConditions.length > 0) {
+        const { data: newLeads } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+          .or(newLeadConditions.join(','))
+          .limit(50); // Increased limit to include Hebrew/Arabic names for filtering
+
+        if (newLeads) {
+          newLeads.forEach((lead: any) => {
+            results.push({
+              id: lead.id,
+              lead_number: lead.lead_number || '',
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.created_at || '',
+              updated_at: lead.created_at || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'new',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: true,
+            });
+          });
+        }
+      }
+
+      // Search legacy leads
+      if (legacyLeadConditions.length > 0) {
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+          .or(legacyLeadConditions.join(','))
+          .limit(20);
+
+        if (legacyLeads) {
+          legacyLeads.forEach((lead: any) => {
+            const leadNumber = lead.lead_number ? String(lead.lead_number) : String(lead.id);
+            results.push({
+              id: `legacy_${lead.id}`,
+              lead_number: leadNumber,
+              manual_id: leadNumber,
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.cdate || '',
+              updated_at: lead.cdate || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'legacy',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: true,
+            });
+          });
+        }
+      }
+
+      // Search contacts (for both new and legacy leads) - fuzzy search on name, email, phone with multilingual support
+      if (trimmed.length >= 2) {
+        const contactConditions: string[] = [];
+        const contactSearchVariants = generateSearchVariants(trimmed);
+        
+        if (trimmed.length >= 2) {
+          // Search name with multilingual variants
+          contactSearchVariants.forEach(variant => {
+            contactConditions.push(`name.ilike.%${variant}%`);
+          });
+        }
+        if (isEmail || trimmed.length >= 3) {
+          // Search email with multilingual variants
+          contactSearchVariants.forEach(variant => {
+            contactConditions.push(`email.ilike.%${variant}%`);
+          });
+        }
+        if (digits.length >= 3) {
+          contactConditions.push(`phone.ilike.%${digits}%`);
+          contactConditions.push(`mobile.ilike.%${digits}%`);
+        }
+        
+        if (contactConditions.length > 0) {
+          const { data: contacts } = await supabase
+            .from('leads_contact')
+            .select('id, name, email, phone, mobile, newlead_id')
+            .or(contactConditions.join(','))
+            .limit(20);
+
+          if (contacts) {
+            for (const contact of contacts) {
+              // Get associated lead
+              if (contact.newlead_id) {
+                const { data: lead } = await supabase
+                  .from('leads')
+                  .select('id, lead_number, topic, stage, created_at')
+                  .eq('id', contact.newlead_id)
+                  .single();
+
+                if (lead) {
+                  results.push({
+                    id: lead.id,
+                    lead_number: lead.lead_number || '',
+                    name: contact.name || '',
+                    email: contact.email || '',
+                    phone: contact.phone || '',
+                    mobile: contact.mobile || '',
+                    topic: lead.topic || '',
+                    stage: String(lead.stage ?? ''),
+                    source: '',
+                    created_at: lead.created_at || '',
+                    updated_at: lead.created_at || '',
+                    notes: '',
+                    special_notes: '',
+                    next_followup: '',
+                    probability: '',
+                    category: '',
+                    language: '',
+                    balance: '',
+                    lead_type: 'new',
+                    unactivation_reason: null,
+                    deactivate_note: null,
+                    isFuzzyMatch: true,
+                    isContact: true,
+                    contactName: contact.name || '',
+                    isMainContact: false,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Deduplicate results
+      const seen = new Set<string>();
+      return results.filter((lead) => {
+        const key = lead.lead_type === 'legacy' ? `legacy_${lead.id}` : lead.id;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    } catch (error) {
+      console.error('Error performing fuzzy search:', error);
+      return [];
+    }
+  };
+
+  // Handle search - with fuzzy search fallback
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    const searchId = Date.now();
-    currentSearchIdRef.current = searchId;
-    const trimmed = searchValue.trim();
-
-    if (trimmed) {
-      // STEP 0: Check if search type changed - if so, clear cache to avoid stale results
-      const currentSearchType = getSearchType(trimmed);
-      const searchTypeChanged = lastSearchTypeRef.current !== currentSearchType;
-      
-      if (searchTypeChanged) {
-        // Clear cache when search type changes (e.g., name -> phone)
-        // This prevents empty name search cache from blocking phone searches
-        setCachedResults([]);
-        setSearchResults([]);
-      }
-      
-      // STEP 1: ALWAYS filter cached results FIRST for instant feedback
-      // This ensures users see immediate results when typing fast, even before API responds
-      if (cachedResults.length > 0 && !searchTypeChanged) {
-        const filtered = filterResults(cachedResults, trimmed);
-        setSearchResults(filtered);
-        setIsSearching(false); // Don't show loading when we have cached results
-      } else if (searchResults.length > 0 && !searchTypeChanged) {
-        // Fallback: filter current results if no cache
-        const filtered = filterResults(searchResults, trimmed);
-        if (filtered.length > 0) {
-          setSearchResults(filtered);
-        }
-      }
-      
-      // STEP 2: ALWAYS call API immediately (or with minimal debounce)
-      // This ensures consistent behavior and fresh results
-      const lastQuery = lastQueryRef.current;
-      const queryExtendsLast = lastQuery && trimmed.toLowerCase().startsWith(lastQuery.toLowerCase()) && trimmed.length > lastQuery.length;
-      const hasNoCache = cachedResults.length === 0;
-      const isVeryShort = trimmed.length < 2;
-      
-      // Show loading spinner only if we don't have cached results to display
-      if (cachedResults.length === 0 && searchResults.length === 0) {
-        setIsSearching(true);
-      }
-      
-      // For very short queries or when cache doesn't exist, call immediately (0ms debounce)
-      // For longer queries that extend the previous query, use minimal debounce (50ms)
-      // For new search directions, use slightly longer debounce (100ms)
-      let debounceTime = 0; // Default: immediate
-      
-      if (trimmed.length > 2) {
-        if (queryExtendsLast && cachedResults.length > 0) {
-          // User is continuing to type from cached results - minimal debounce
-          debounceTime = 50;
-        } else {
-          // New search direction or no cache - slightly longer debounce
-          debounceTime = 100;
-        }
-      }
-      
-      // Always call the API (no skipping)
-      searchTimeoutRef.current = setTimeout(async () => {
-        try {
-          const results = await searchLeads(trimmed);
-          
-          // Only set results if this is still the current search
-          if (searchId === currentSearchIdRef.current) {
-            setCachedResults(results); // Cache full results
-            const filtered = filterResults(results, trimmed);
-            setSearchResults(filtered);
-            lastQueryRef.current = trimmed;
-            lastSearchTypeRef.current = currentSearchType; // Update search type
-            setIsSearching(false);
-          }
-        } catch (error) {
-          console.error('Search error:', error);
-          if (searchId === currentSearchIdRef.current) {
-            setIsSearching(false);
-          }
-        }
-      }, debounceTime);
-    } else {
-      // Clear everything when search is empty
+    if (!searchValue.trim()) {
       setSearchResults([]);
-      setCachedResults([]);
-      lastQueryRef.current = '';
-      lastSearchTypeRef.current = 'name';
       setIsSearching(false);
+      return;
     }
 
-    return () => {
-      if (searchTimeoutRef.current) {
-        clearTimeout(searchTimeoutRef.current);
+    setIsSearching(true);
+
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        // First try direct search
+        const directResults = await searchLeads(searchValue.trim());
+        
+        // Check if we have direct matches (non-fuzzy)
+        const directMatches = directResults.filter(r => !r.isFuzzyMatch);
+        
+        if (directMatches.length > 0) {
+          // Show only direct matches
+          setSearchResults(directMatches);
+        } else {
+          // No direct matches, perform fuzzy search
+          const fuzzyResults = await performFuzzySearch(searchValue.trim());
+          setSearchResults(fuzzyResults);
+        }
+      } catch (error) {
+        console.error('Error searching leads:', error);
+        setSearchResults([]);
+      } finally {
+        setIsSearching(false);
       }
-    };
-  }, [searchValue, filterResults, getSearchType]);
+    }, 300);
+  }, [searchValue]);
 
   // Keep search active when filter dropdown is open
   useEffect(() => {
@@ -1572,13 +1664,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   const handleSearchChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const newValue = e.target.value;
-    setSearchValue(newValue);
-    
-    // Clear results immediately when user types to prevent showing old results
-    if (newValue.trim() !== searchValue.trim()) {
-      setSearchResults([]);
-    }
+    setSearchValue(e.target.value);
   };
 
   const handleSearchResultClick = (lead: CombinedLead) => {
@@ -2254,11 +2340,9 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     
     const stageStr = String(stage);
     const stageName = getStageName(stageStr);
-    const stageColor = getStageColour(stageStr);
-    const textColor = getContrastingTextColor(stageColor);
-    
-    // Use the stage color if available, otherwise use default purple
-    const backgroundColor = stageColor || '#3b28c7';
+    // Force all search result stage badges to use #391BC8
+    const backgroundColor = '#391BC8';
+    const textColor = getContrastingTextColor(backgroundColor);
     
     return (
       <span 
@@ -2697,162 +2781,59 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 <span className="ml-2">Searching...</span>
               </div>
             ) : searchResults.length > 0 ? (
-              <div>
-                {(() => {
-                  // Use the same exact matching logic as the search function
-                  const trimmedQuery = searchValue.trim();
-                  const normalizedQueryLower = trimmedQuery.toLowerCase();
-                  const digitsOnly = trimmedQuery.replace(/\D/g, '');
-                  const lastFiveDigits = digitsOnly.slice(-5);
-                  const isPhoneQuery = lastFiveDigits.length === 5;
+              <div className="space-y-2">
+                {searchResults.map((result, index) => {
+                  // Use a more unique key to avoid React key conflicts
+                  const uniqueKey = result.lead_type === 'legacy' 
+                    ? `legacy_${result.id}_${result.contactName || result.name}_${index}`
+                    : `${result.id}_${result.contactName || result.name}_${index}`;
                   
-                  const exactMatches = searchResults.filter(result => {
-                    // For phone queries, check if the last 5 digits match exactly
-                    if (isPhoneQuery) {
-                      const resultPhoneDigits = (result.phone || '').replace(/\D/g, '');
-                      const resultMobileDigits = (result.mobile || '').replace(/\D/g, '');
-                      return resultPhoneDigits.endsWith(lastFiveDigits) || resultMobileDigits.endsWith(lastFiveDigits);
-                    }
-                    
-                    // For other queries, use exact string matching
-                    const leadNumberLower = (result.lead_number || '').toLowerCase();
-                    const leadNumberDigits = (result.lead_number || '').replace(/\D/g, '');
-                    const emailLower = (result.email || '').toLowerCase();
-                    const nameLower = (result.name || '').toLowerCase();
-                    const phoneDigits = (result.phone || '').replace(/\D/g, '');
-                    const mobileDigits = (result.mobile || '').replace(/\D/g, '');
-
-                    if (nameLower === normalizedQueryLower) return true;
-                    if (emailLower === normalizedQueryLower) return true;
-                    if (leadNumberLower === normalizedQueryLower) return true;
-                    if (digitsOnly && leadNumberDigits === digitsOnly) return true;
-                    if (digitsOnly && (phoneDigits === digitsOnly || mobileDigits === digitsOnly)) return true;
-
-                    return (result.phone || '').toLowerCase() === normalizedQueryLower ||
-                           (result.mobile || '').toLowerCase() === normalizedQueryLower;
-                  });
-                  
-                  const otherResults = searchResults.filter(result => !exactMatches.includes(result));
+                  const displayName = result.contactName || result.name || '';
                   
                   return (
-                    <>
-                      {/* Exact Matches Section */}
-                      {exactMatches.length > 0 && (
-                        <div className="divide-y divide-gray-100">
-                          {exactMatches.map((result) => (
-                            <button
-                              key={result.id}
-                              className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
-                              onClick={() => handleSearchResultClick(result)}
-                            >
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-2 flex-1">
-                                    {result.stage && (
-                                      <div className="md:hidden">
-                                        {getStageBadge(result.stage)}
-                                      </div>
-                                    )}
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-semibold text-gray-900">
-                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{result.name}
-                                      </span>
-                                      <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
-                                    </div>
-                                  </div>
-                                  {result.stage && (
-                                    <div className="hidden md:block md:ml-auto">
-                                      {getStageBadge(result.stage)}
-                                    </div>
-                                  )}
-                                </div>
-                                {result.topic && (
-                                  <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
-                                )}
-                                {/* Unactivation Status */}
-                                {(() => {
-                                  const isLegacy = result.id?.toString().startsWith('legacy_');
-                                  const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
-                                  return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
-                                })() && (
-                                  <div className="flex items-center gap-2 mt-1">
-                                    <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                                    <span className="text-xs text-red-600 font-medium">
-                                      {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </button>
-                          ))}
+                    <button
+                      key={uniqueKey}
+                      onClick={() => handleSearchResultClick(result)}
+                      className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200"
+                    >
+                      <div className="flex items-start gap-3">
+                        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                          <span className="font-semibold text-white">
+                            {displayName.charAt(0).toUpperCase()}
+                          </span>
                         </div>
-                      )}
-                      
-                      {/* Separator and "Did you mean" section - only show if no exact matches */}
-                      {exactMatches.length === 0 && otherResults.length > 0 && (
-                        <div className="px-4 py-2 border-t border-gray-200 bg-gray-50">
-                          <div className="text-xs font-medium text-gray-600">Did you mean...</div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-1">
+                            <p className="font-semibold text-gray-900 truncate">
+                              {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                            </p>
+                            <span className="text-xs text-gray-500 font-mono">{result.lead_number}</span>
+                          </div>
+                          {result.category && (
+                            <p className="text-sm text-gray-600 truncate">
+                              <span className="font-medium">Category:</span> {result.category}
+                            </p>
+                          )}
+                          {result.topic && (
+                            <p className="text-sm text-gray-600 truncate">
+                              <span className="font-medium">Topic:</span> {result.topic}
+                            </p>
+                          )}
                         </div>
-                      )}
-                      
-                      {/* Other Results Section - only show if no exact matches */}
-                      {exactMatches.length === 0 && otherResults.length > 0 && (
-                        <div className="divide-y divide-gray-100">
-                          {otherResults.map((result) => (
-                            <button
-                              key={result.id}
-                              className="w-full px-4 py-3 flex items-center gap-3 text-left hover:bg-gray-50 transition-colors duration-200"
-                              onClick={() => handleSearchResultClick(result)}
-                            >
-                              <div className="flex-1">
-                                <div className="flex items-center gap-2 flex-wrap">
-                                  <div className="flex flex-col md:flex-row md:items-center gap-1 md:gap-2 flex-1">
-                                    {result.stage && (
-                                      <div className="md:hidden">
-                                        {getStageBadge(result.stage)}
-                                      </div>
-                                    )}
-                                    <div className="flex items-center gap-2">
-                                      <span className="font-semibold text-gray-900">
-                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{result.name}
-                                      </span>
-                                      <span className="text-sm text-gray-500 font-mono">{result.lead_number}</span>
-                                    </div>
-                                  </div>
-                                  {result.stage && (
-                                    <div className="hidden md:block md:ml-auto">
-                                      {getStageBadge(result.stage)}
-                                    </div>
-                                  )}
-                                </div>
-                                {result.topic && (
-                                  <div className="text-sm text-gray-600 mt-1">{result.topic}</div>
-                                )}
-                                {/* Unactivation Status */}
-                                {(() => {
-                                  const isLegacy = result.id?.toString().startsWith('legacy_');
-                                  const unactivationReason = isLegacy ? result.deactivate_note : result.unactivation_reason;
-                                  return unactivationReason || (result.stage && (result.stage === '91' || result.stage === 'unactivated'));
-                                })() && (
-                                  <div className="flex items-center gap-2 mt-1">
-                                    <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                                    <span className="text-xs text-red-600 font-medium">
-                                      {result.unactivation_reason ? 'Unactivated' : 'Dropped (Spam/Irrelevant)'}
-                                    </span>
-                                  </div>
-                                )}
-                              </div>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </>
+                        {result.stage && result.stage.trim() !== '' && (
+                          <div className="flex-shrink-0">
+                            {getStageBadge(result.stage)}
+                          </div>
+                        )}
+                      </div>
+                    </button>
                   );
-                })()}
+                })}
               </div>
             ) : searchValue.trim() ? (
-              <div className="p-4 text-center text-gray-500">
-                No leads found for "{searchValue}"
+              <div className="text-center py-8 text-gray-500">
+                <p className="text-sm">No contacts found</p>
+                <p className="text-xs mt-1">Try a different search term</p>
               </div>
             ) : null}
               </div>

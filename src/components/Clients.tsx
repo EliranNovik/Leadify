@@ -8768,21 +8768,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       </div>
-      {/* Vibrant 'Lead is cold' badge, top right, same height as Stages/Actions */}
-      <div className="hidden md:flex w-full justify-center mt-2 mb-2">
-        {isLeadCold && (
-          <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
-            <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-            Lead is cold: {coldLeadText}
-          </span>
-        )}
-      </div>
-
-      {/* Duplicate Contacts Badge */}
-      {duplicateContacts.length > 0 && (
-        <div className="w-full flex justify-center mt-2 mb-2 px-4">
-          <div className="relative">
-            {duplicateContacts.length === 1 ? (
+      {/* Badges section - Duplicate Contacts on left, Lead is cold on right */}
+      <div className="hidden md:flex w-full justify-between items-center mt-2 mb-2 px-4">
+        {/* Duplicate Contacts Badge - Left side */}
+        {duplicateContacts.length > 0 ? (
+          <div className="flex justify-start">
+            <div className="relative">
+              {duplicateContacts.length === 1 ? (
               <button
                 onClick={() => setIsDuplicateModalOpen(true)}
                 className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
@@ -8845,9 +8837,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 )}
               </div>
             )}
+            </div>
           </div>
+        ) : (
+          <div></div>
+        )}
+
+          {/* Vibrant 'Lead is cold' badge - Right side */}
+          {isLeadCold ? (
+            <div className="flex justify-end">
+              <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
+                <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                Lead is cold: {coldLeadText}
+              </span>
+            </div>
+          ) : (
+            <div></div>
+          )}
         </div>
-      )}
       {/* Client Details Section (desktop) */}
       <div className="hidden md:block bg-white dark:bg-gray-900 w-full">
         {/* Modern CRM Header */}

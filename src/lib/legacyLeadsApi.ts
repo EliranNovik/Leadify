@@ -1,4 +1,5 @@
 import { supabase } from './supabase';
+import { generateSearchVariants } from './transliteration';
 
 // -----------------------------------------------------
 // Types
@@ -378,7 +379,16 @@ async function searchNewLeadsSimple(query: string, limit = 20): Promise<Combined
       //   });
       // }
       // Name - starts-with for speed, works with 1+ chars
-      queryBuilder = queryBuilder.ilike('name', `${lower}%`);
+      // Include multilingual variants for Hebrew/Arabic/English matching
+      const nameVariants = generateSearchVariants(trimmed);
+      if (nameVariants.length > 1) {
+        // Multiple variants - use OR condition
+        const nameConditions = nameVariants.map(v => `name.ilike.${v}%`).join(',');
+        queryBuilder = queryBuilder.or(nameConditions);
+      } else {
+        // Single variant - use simple ilike
+        queryBuilder = queryBuilder.ilike('name', `${lower}%`);
+      }
     }
 
     const { data, error } = await queryBuilder.limit(limit);
@@ -917,7 +927,16 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         contactQuery = contactQuery.ilike('email', `%${lower}%`); // Use contains for email too
       } else {
         // For name searches, use contains (ilike with % on both sides) to find all matches
-        contactQuery = contactQuery.ilike('name', `%${lower}%`);
+        // Include multilingual variants for Hebrew/Arabic/English matching
+        const nameVariants = generateSearchVariants(trimmed);
+        if (nameVariants.length > 1) {
+          // Multiple variants - use OR condition with contains search
+          const nameConditions = nameVariants.map(v => `name.ilike.%${v}%`).join(',');
+          contactQuery = contactQuery.or(nameConditions);
+        } else {
+          // Single variant - use simple ilike
+          contactQuery = contactQuery.ilike('name', `%${lower}%`);
+        }
       }
 
       const { data: contactsData, error } = await contactQuery.limit(50); // Reduced for speed
@@ -1159,19 +1178,20 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           const key = `legacy:${r.lead_id}:${c.id}`;
           if (!seen.has(key)) {
             seen.add(key);
+            const legacyLead = legacyLeadMap.get(r.lead_id);
             results.push({
               id: String(r.lead_id),
-              lead_number: String(r.lead_id),
-              manual_id: String(r.lead_id),
+              lead_number: legacyLead?.lead_number ? String(legacyLead.lead_number) : String(r.lead_id),
+              manual_id: legacyLead?.lead_number ? String(legacyLead.lead_number) : String(r.lead_id),
               name: c.name || '',
               email: c.email || '',
               phone: c.phone || '',
               mobile: c.mobile || '',
-              topic: '',
-              stage: '',
+              topic: legacyLead?.topic || '',
+              stage: legacyLead ? String(legacyLead.stage ?? '') : '',
               source: '',
-              created_at: '',
-              updated_at: '',
+              created_at: legacyLead?.cdate || '',
+              updated_at: legacyLead?.cdate || '',
               notes: '',
               special_notes: '',
               next_followup: '',

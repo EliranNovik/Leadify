@@ -47,13 +47,19 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
           </p>
         </div>
 
-        {/* Closer */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
-          <p className="text-sm text-gray-900 text-right">
-            {getEmployeeDisplayName(selectedClient?.closer)}
-          </p>
-        </div>
+        {/* Closer (if assigned) */}
+        {selectedClient?.closer && 
+         selectedClient?.closer !== '---' && 
+         selectedClient?.closer !== null && 
+         selectedClient?.closer !== undefined &&
+         getEmployeeDisplayName(selectedClient?.closer) !== 'Not assigned' ? (
+          <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
+            <p className="text-sm text-gray-900 text-right">
+              {getEmployeeDisplayName(selectedClient?.closer)}
+            </p>
+          </div>
+        ) : null}
 
         {/* Handler (if saved) */}
         {(selectedClient?.case_handler_id != null && selectedClient?.case_handler_id !== undefined) || 

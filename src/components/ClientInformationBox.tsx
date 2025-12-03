@@ -20,6 +20,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
   const [isLoadingCategories, setIsLoadingCategories] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [categoryInputValue, setCategoryInputValue] = useState<string>('');
+  const [allSources, setAllSources] = useState<Array<{id: number | string, name: string}>>([]);
 
   // Fetch categories
   useEffect(() => {
@@ -49,6 +50,26 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
     };
 
     fetchCategories();
+  }, []);
+
+  // Fetch sources from misc_leadsource table
+  useEffect(() => {
+    const fetchSources = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_leadsource')
+          .select('id, name')
+          .eq('active', true)
+          .order('order', { ascending: true, nullsFirst: false });
+
+        if (error) throw error;
+        setAllSources(data || []);
+      } catch (error) {
+        console.error('Error fetching sources:', error);
+      }
+    };
+
+    fetchSources();
   }, []);
 
   // Handle category save
@@ -102,6 +123,33 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
       console.error('Error updating category:', error);
       toast.error('Failed to update category');
     }
+  };
+
+  // Helper function to get source display name from misc_leadsource
+  const getSourceDisplayName = (sourceId: string | number | null | undefined, fallbackSource?: string) => {
+    if (!sourceId || sourceId === '---' || sourceId === '' || sourceId === null || sourceId === undefined) {
+      return fallbackSource || '';
+    }
+    
+    // Convert sourceId to string/number for comparison (handle bigint)
+    const sourceIdStr = String(sourceId).trim();
+    if (sourceIdStr === '' || sourceIdStr === 'null' || sourceIdStr === 'undefined') {
+      return fallbackSource || '';
+    }
+    
+    // Find source in loaded sources - compare as numbers or strings
+    const source = allSources.find((src: any) => {
+      const srcId = String(src.id).trim();
+      const searchId = sourceIdStr;
+      return srcId === searchId || Number(srcId) === Number(searchId);
+    });
+    
+    if (source) {
+      return source.name;
+    }
+    
+    // Fallback to the source name if source_id not found
+    return fallbackSource || '';
   };
 
   // Helper function to get category display name with main category
@@ -453,6 +501,18 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             {selectedClient ? (selectedClient.topic || 'German Citizenship') : 'German Citizenship'}
           </p>
         </div>
+
+        {/* Source */}
+        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Source</p>
+          <p className="text-sm text-gray-900 text-right">
+            {selectedClient ? (() => {
+              // Prioritize source_id (foreign key to misc_leadsource), fallback to source field
+              const sourceId = selectedClient.source_id ?? selectedClient.source;
+              return getSourceDisplayName(sourceId, selectedClient.source) || '---';
+            })() : '---'}
+          </p>
+        </div>
       </div>
 
       {/* Separation line for mobile view */}
@@ -490,13 +550,19 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
           </p>
         </div>
 
-        {/* Closer */}
-        <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
-          <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
-          <p className="text-sm text-gray-900 text-right">
-            {getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) : (selectedClient?.closer || 'Not assigned')}
-          </p>
-        </div>
+        {/* Closer (if assigned) */}
+        {selectedClient?.closer && 
+         selectedClient?.closer !== '---' && 
+         selectedClient?.closer !== null && 
+         selectedClient?.closer !== undefined &&
+         (getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) !== 'Not assigned' : selectedClient?.closer !== 'Not assigned') ? (
+          <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+            <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
+            <p className="text-sm text-gray-900 text-right">
+              {getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) : selectedClient?.closer}
+            </p>
+          </div>
+        ) : null}
       </div>
     </div>
   );

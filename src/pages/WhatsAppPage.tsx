@@ -171,7 +171,16 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // State for user role filtering
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [currentUserFullName, setCurrentUserFullName] = useState<string | null>(null);
+  const [isSuperuser, setIsSuperuser] = useState<boolean | null>(null);
   const [showMyContactsOnly, setShowMyContactsOnly] = useState(true);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  
+  // Helper function to get employee display name from ID
+  const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
+    if (employeeId === null || employeeId === undefined || employeeId === '---') return '--';
+    const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+    return employee ? employee.display_name : employeeId.toString();
+  };
 
   // Helper function to fetch user name by ID
   const getUserName = async (userId: string) => {
@@ -552,6 +561,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               full_name, 
               email,
               employee_id,
+              is_superuser,
               tenants_employee!employee_id(
                 id,
                 display_name
@@ -563,6 +573,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           if (userRow) {
             console.log('✅ Found user in database:', userRow);
             setCurrentUser(userRow);
+            
+            // Set superuser status
+            const superuserStatus = userRow.is_superuser === true;
+            setIsSuperuser(superuserStatus);
+            
+            // For non-superusers, always show only their contacts (no tabs)
+            if (!superuserStatus) {
+              setShowMyContactsOnly(true);
+            }
             
             // Set employee ID and display name for role filtering
             if (userRow.employee_id && typeof userRow.employee_id === 'number') {
@@ -599,6 +618,52 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     };
     fetchCurrentUser();
   }, []);
+
+  // Fetch all employees for display name mapping
+  useEffect(() => {
+    const fetchEmployees = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .order('display_name', { ascending: true });
+        
+        if (!error && data) {
+          setAllEmployees(data);
+        }
+      } catch (error) {
+        console.error('Error fetching employees:', error);
+      }
+    };
+    
+    fetchEmployees();
+  }, []);
+
+  // Update client display names when employees are loaded
+  useEffect(() => {
+    if (allEmployees.length > 0 && clients.length > 0) {
+      setClients(prevClients => {
+        const updated = prevClients.map(client => {
+          // For legacy leads, update closer and scheduler display names if they're still IDs
+          if (client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_')) {
+            const currentCloser = client.closer_id ? getEmployeeDisplayName(client.closer_id) : client.closer;
+            const currentScheduler = client.meeting_scheduler_id ? getEmployeeDisplayName(client.meeting_scheduler_id) : client.scheduler;
+            
+            // Only update if the values changed (avoid unnecessary re-renders)
+            if (currentCloser !== client.closer || currentScheduler !== client.scheduler) {
+              return {
+                ...client,
+                closer: currentCloser,
+                scheduler: currentScheduler,
+              };
+            }
+          }
+          return client;
+        });
+        return updated;
+      });
+    }
+  }, [allEmployees.length]); // Only depend on employees, not clients
 
   // Fetch WhatsApp templates
   useEffect(() => {
@@ -773,8 +838,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               topic: lead.topic || '',
               status: lead.status ? String(lead.status) : '',
               stage: lead.stage ? String(lead.stage) : '',
-              closer: lead.closer_id ? String(lead.closer_id) : '',
-              scheduler: lead.meeting_scheduler_id ? String(lead.meeting_scheduler_id) : '',
+              closer: lead.closer_id ? getEmployeeDisplayName(lead.closer_id) : '',
+              scheduler: lead.meeting_scheduler_id ? getEmployeeDisplayName(lead.meeting_scheduler_id) : '',
               closer_id: lead.closer_id || null,
               meeting_scheduler_id: lead.meeting_scheduler_id || null,
               meeting_manager_id: lead.meeting_manager_id || null,
@@ -943,8 +1008,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       topic: associatedLead?.topic || '',
                       status: associatedLead?.status || '',
                       stage: associatedLead?.stage || '',
-                      closer: isLegacy ? (associatedLead?.closer_id ? String(associatedLead.closer_id) : '') : (associatedLead?.closer || ''),
-                      scheduler: isLegacy ? (associatedLead?.meeting_scheduler_id ? String(associatedLead.meeting_scheduler_id) : '') : (associatedLead?.scheduler || ''),
+                      closer: isLegacy ? (associatedLead?.closer_id ? getEmployeeDisplayName(associatedLead.closer_id) : '') : (associatedLead?.closer || ''),
+                      scheduler: isLegacy ? (associatedLead?.meeting_scheduler_id ? getEmployeeDisplayName(associatedLead.meeting_scheduler_id) : '') : (associatedLead?.scheduler || ''),
                       handler: associatedLead?.handler || '',
                       manager: associatedLead?.manager || null,
                       helper: associatedLead?.helper || null,
@@ -1713,8 +1778,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         topic: leadData?.topic || result.topic || '',
         status: leadData?.status || result.status || '',
         stage: leadData?.stage || result.stage || '',
-        closer: isLegacyLead ? (leadData?.closer_id ? String(leadData.closer_id) : '') : (leadData?.closer || ''),
-        scheduler: isLegacyLead ? (leadData?.meeting_scheduler_id ? String(leadData.meeting_scheduler_id) : '') : (leadData?.scheduler || ''),
+        closer: isLegacyLead ? (leadData?.closer_id ? getEmployeeDisplayName(leadData.closer_id) : '') : (leadData?.closer || ''),
+        scheduler: isLegacyLead ? (leadData?.meeting_scheduler_id ? getEmployeeDisplayName(leadData.meeting_scheduler_id) : '') : (leadData?.scheduler || ''),
         next_followup: leadData?.next_followup || result.next_followup || '',
         probability: leadData?.probability ? Number(leadData.probability) : undefined,
         balance: isLegacyLead ? (leadData?.total ? Number(leadData.total) : undefined) : (leadData?.balance || undefined),
@@ -2757,14 +2822,32 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     {selectedClient.closer && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Closer</span>
-                        <span className="text-sm font-semibold text-gray-700">{selectedClient.closer}</span>
+                        <span className="text-sm font-semibold text-gray-700">
+                          {(() => {
+                            const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                            if (isLegacy && selectedClient.closer_id) {
+                              return getEmployeeDisplayName(selectedClient.closer_id);
+                            }
+                            // For new leads or if already a display name, use directly
+                            return selectedClient.closer;
+                          })()}
+                        </span>
                       </div>
                     )}
                     
                     {selectedClient.scheduler && (
                       <div className="flex flex-col items-center">
                         <span className="text-xs font-medium text-gray-500 uppercase tracking-wide">Scheduler</span>
-                        <span className="text-sm font-semibold text-gray-700">{selectedClient.scheduler}</span>
+                        <span className="text-sm font-semibold text-gray-700">
+                          {(() => {
+                            const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                            if (isLegacy && selectedClient.meeting_scheduler_id) {
+                              return getEmployeeDisplayName(selectedClient.meeting_scheduler_id);
+                            }
+                            // For new leads or if already a display name, use directly
+                            return selectedClient.scheduler;
+                          })()}
+                        </span>
                       </div>
                     )}
                     
@@ -2867,31 +2950,33 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     : 'p-3 translate-y-0 border-b border-gray-200')
                 : 'p-3 border-b border-gray-200'
               }`}>
-              {/* Toggle Tabs */}
-              <div className="flex gap-2 mb-3">
-                <button
-                  type="button"
-                  onClick={() => setShowMyContactsOnly(false)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    !showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  All Contacts
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowMyContactsOnly(true)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    showMyContactsOnly
-                      ? 'bg-green-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  My Contacts
-                </button>
-              </div>
+              {/* Toggle Tabs - Only show for superusers */}
+              {isSuperuser === true && (
+                <div className="flex gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowMyContactsOnly(false)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      !showMyContactsOnly
+                        ? 'bg-green-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    All Contacts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowMyContactsOnly(true)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      showMyContactsOnly
+                        ? 'bg-green-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    My Contacts
+                  </button>
+                </div>
+              )}
               
               {/* Search Bar */}
               <div className="relative search-container">
@@ -3092,7 +3177,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               <div className="flex-none p-3 border-t border-gray-200 bg-white">
                 <button
                   onClick={() => setIsNewMessageModalOpen(true)}
-                  className="w-full btn btn-primary btn-sm flex items-center justify-center gap-2"
+                  className="w-full btn btn-sm flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white border-none"
                 >
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
@@ -4093,12 +4178,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       {/* Media Modal */}
       {selectedMedia && (
-        <div className="fixed inset-0 z-[9999] bg-black bg-opacity-90 backdrop-blur-sm flex items-center justify-center p-4">
+        <div className="fixed inset-0 z-[10005] bg-black bg-opacity-90 backdrop-blur-sm flex items-center justify-center p-4">
           <div className="relative w-full h-full flex items-center justify-center" onClick={() => setSelectedMedia(null)}>
             {/* Close button */}
             <button
               onClick={() => setSelectedMedia(null)}
-              className="absolute top-4 right-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+              className="absolute top-4 right-4 z-[10006] btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
             >
               <XMarkIcon className="w-6 h-6" />
             </button>
@@ -4112,7 +4197,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 link.download = `media_${Date.now()}.${selectedMedia.type === 'image' ? 'jpg' : 'mp4'}`;
                 link.click();
               }}
-              className="absolute top-4 left-4 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+              className="absolute top-4 left-4 z-[10006] btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
             >
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
@@ -4122,7 +4207,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {/* Delete button */}
             <button
               onClick={() => setShowDeleteConfirm(true)}
-              className="absolute top-4 left-20 z-10 btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
+              className="absolute top-4 left-20 z-[10006] btn btn-circle btn-ghost bg-black bg-opacity-50 text-white hover:bg-opacity-70 transition-all duration-200"
               title="Delete"
             >
               <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4131,7 +4216,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             </button>
 
             {showDeleteConfirm && (
-              <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black bg-opacity-60">
+              <div className="fixed inset-0 z-[10007] flex items-center justify-center bg-black bg-opacity-60">
                 <div className="bg-white rounded-lg shadow-xl p-8 max-w-xs w-full text-center">
                   <h2 className="text-lg font-semibold mb-4">Delete this media?</h2>
                   <p className="mb-6 text-gray-600">Are you sure you want to delete this media? This action cannot be undone.</p>
@@ -4229,7 +4314,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       {/* Delete Confirmation Modal */}
       {showDeleteConfirm && (
-        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black bg-opacity-60">
+        <div className="fixed inset-0 z-[10007] flex items-center justify-center bg-black bg-opacity-60">
           <div className="bg-white rounded-lg shadow-xl p-8 max-w-xs w-full text-center">
             <h2 className="text-lg font-semibold mb-4">Delete this media?</h2>
             <p className="mb-6 text-gray-600">Are you sure you want to delete this media? This action cannot be undone.</p>

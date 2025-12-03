@@ -347,6 +347,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   
   // State for role-based filtering
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [isSuperuser, setIsSuperuser] = useState<boolean | null>(null);
   const [showMyContactsOnly, setShowMyContactsOnly] = useState<boolean>(true);
 
   useEffect(() => {
@@ -417,7 +418,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             // Try by email first
             const { data: userRow, error } = await supabase
               .from('users')
-              .select('id, full_name, email, employee_id')
+              .select('id, full_name, email, employee_id, is_superuser')
               .eq('email', authUser.email)
               .maybeSingle();
             
@@ -429,11 +430,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               if (userRow.employee_id && typeof userRow.employee_id === 'number') {
                 setCurrentUserEmployeeId(userRow.employee_id);
               }
+              // Set superuser status
+              const superuserStatus = userRow.is_superuser === true;
+              setIsSuperuser(superuserStatus);
+              // For non-superusers, always show only their contacts (no tabs)
+              if (!superuserStatus) {
+                setShowMyContactsOnly(true);
+              }
             } else {
               // Try by auth_id if email lookup fails
               const { data: userByAuthId, error: authIdError } = await supabase
                 .from('users')
-                .select('id, full_name, email, employee_id')
+                .select('id, full_name, email, employee_id, is_superuser')
                 .eq('auth_id', authUser.id)
                 .maybeSingle();
               
@@ -444,6 +452,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 }
                 if (userByAuthId.employee_id && typeof userByAuthId.employee_id === 'number') {
                   setCurrentUserEmployeeId(userByAuthId.employee_id);
+                }
+                // Set superuser status
+                const superuserStatus = userByAuthId.is_superuser === true;
+                setIsSuperuser(superuserStatus);
+                // For non-superusers, always show only their contacts (no tabs)
+                if (!superuserStatus) {
+                  setShowMyContactsOnly(true);
                 }
               }
             }
@@ -2523,31 +2538,33 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             
             {/* Toggle Tabs and Search Bar */}
             <div className="p-3 border-b border-gray-200 bg-white">
-              {/* Toggle Tabs */}
-              <div className="flex gap-2 mb-3">
-                <button
-                  type="button"
-                  onClick={() => setShowMyContactsOnly(false)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    !showMyContactsOnly
-                      ? 'bg-purple-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  All Contacts
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setShowMyContactsOnly(true)}
-                  className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                    showMyContactsOnly
-                      ? 'bg-purple-600 text-white shadow-sm'
-                      : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                  }`}
-                >
-                  My Contacts
-                </button>
-              </div>
+              {/* Toggle Tabs - Only show for superusers */}
+              {isSuperuser === true && (
+                <div className="flex gap-2 mb-3">
+                  <button
+                    type="button"
+                    onClick={() => setShowMyContactsOnly(false)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      !showMyContactsOnly
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    All Contacts
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setShowMyContactsOnly(true)}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
+                      showMyContactsOnly
+                        ? 'bg-purple-600 text-white shadow-sm'
+                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                    }`}
+                  >
+                    My Contacts
+                  </button>
+                </div>
+              )}
               
               {/* Search Bar */}
               <div className="relative">
