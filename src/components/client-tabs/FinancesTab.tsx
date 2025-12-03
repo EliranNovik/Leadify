@@ -63,7 +63,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Only initialize if we haven't set up collapse state yet
       if (Object.keys(collapsedContacts).length === 0) {
         const initialCollapsedState = contacts.reduce((acc, contactName) => {
-          acc[contactName] = true; // true means collapsed
+          acc[contactName] = false; // false means open (expanded)
           return acc;
         }, {} as { [key: string]: boolean });
         setCollapsedContacts(initialCollapsedState);
@@ -118,6 +118,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Add state for legacy proformas
   const [legacyProformas, setLegacyProformas] = useState<any[]>([]);
+
+  // Add state for paid date modal
+  const [showPaidDateModal, setShowPaidDateModal] = useState(false);
+  const [selectedPaymentForPaid, setSelectedPaymentForPaid] = useState<string | number | null>(null);
+  const [paidDate, setPaidDate] = useState<string>('');
+
 
   // Update autoPlanData currency when client changes
   useEffect(() => {
@@ -206,11 +212,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  // Handler to mark a payment as paid
+  // Handler to mark a payment as ready to pay
   const handleMarkAsReadyToPay = async (payment: PaymentPlan) => {
     try {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
+      const currentUserEmployeeId = await getCurrentUserEmployeeId();
+      const currentUserName = await getCurrentUserName();
       
       let error;
       if (isLegacyLead) {
@@ -219,6 +227,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .from('finances_paymentplanrow')
           .update({ 
             ready_to_pay: true,
+            ready_to_pay_by: currentUserEmployeeId,
             date: currentDate,
             due_date: currentDate
           })
@@ -230,6 +239,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .from('payment_plans')
           .update({ 
             ready_to_pay: true,
+            ready_to_pay_by: currentUserEmployeeId,
             due_date: currentDate // Set due date to current date
           })
           .eq('id', payment.id);
@@ -240,6 +250,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         console.error('Error marking payment as ready to pay:', error);
         toast.error('Failed to mark payment as ready to pay');
         return;
+      }
+
+      // Log to finance_changes_history (only for new leads)
+      if (!isLegacyLead && client?.id) {
+        const { error: historyError } = await supabase
+          .from('finance_changes_history')
+          .insert({
+            lead_id: client.id,
+            change_type: 'payment_marked_ready_to_pay',
+            table_name: 'payment_plans',
+            record_id: payment.id,
+            old_values: { ready_to_pay: false },
+            new_values: { ready_to_pay: true, ready_to_pay_by: currentUserEmployeeId },
+            changed_by: currentUserName,
+            notes: `Payment marked as ready to pay by ${currentUserName}`
+          });
+        
+        if (historyError) console.error('Error logging payment marked as ready to pay:', historyError);
       }
 
       // Update the local state to reflect the change
@@ -256,13 +284,128 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       });
 
       toast.success('Payment marked as ready to pay! Due date set to today. It will now appear in the collection page.');
+      await refreshPaymentPlans();
     } catch (error) {
       console.error('Error marking payment as ready to pay:', error);
       toast.error('Failed to mark payment as ready to pay');
     }
   };
 
-  const handleMarkAsPaid = async (id: string | number) => {
+  // Handler to revert ready to pay
+  const handleRevertReadyToPay = async (payment: PaymentPlan) => {
+    if (!window.confirm('Are you sure you want to revert this payment from ready to pay?')) return;
+
+    const currentUserName = await getCurrentUserName();
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+
+    // Update local state immediately
+    setFinancePlan(prev => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        payments: prev.payments.map(p => 
+          p.id === payment.id 
+            ? { ...p, ready_to_pay: false } as PaymentPlan
+            : p
+        )
+      };
+    });
+
+    try {
+      let error;
+      if (isLegacyLead) {
+        // For legacy leads, update finances_paymentplanrow table
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({
+            ready_to_pay: false,
+            ready_to_pay_by: null,
+          })
+          .eq('id', payment.id);
+        error = legacyError;
+      } else {
+        // For new leads, update payment_plans table
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({
+            ready_to_pay: false,
+            ready_to_pay_by: null,
+          })
+          .eq('id', payment.id);
+        error = newError;
+      }
+
+      if (error) {
+        console.error('Error reverting ready to pay:', error);
+        // Revert the UI state if database update fails
+        setFinancePlan(prev => {
+          if (!prev) return prev;
+          return {
+            ...prev,
+            payments: prev.payments.map(p => 
+              p.id === payment.id 
+                ? { ...p, ready_to_pay: true } as PaymentPlan
+                : p
+            )
+          };
+        });
+        toast.error('Failed to revert ready to pay');
+        return;
+      }
+
+      // Log to finance_changes_history (only for new leads)
+      if (!isLegacyLead && client?.id) {
+        const { error: historyError } = await supabase
+          .from('finance_changes_history')
+          .insert({
+            lead_id: client.id,
+            change_type: 'payment_reverted_from_ready_to_pay',
+            table_name: 'payment_plans',
+            record_id: payment.id,
+            old_values: { ready_to_pay: true },
+            new_values: { ready_to_pay: false, ready_to_pay_by: null },
+            changed_by: currentUserName,
+            notes: `Payment reverted from ready to pay by ${currentUserName}`
+          });
+        
+        if (historyError) console.error('Error logging payment reverted from ready to pay:', historyError);
+      }
+
+      toast.success('Payment reverted from ready to pay');
+      await refreshPaymentPlans();
+    } catch (error) {
+      console.error('Error reverting ready to pay:', error);
+      // Revert the UI state if there's an error
+      setFinancePlan(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          payments: prev.payments.map(p => 
+            p.id === payment.id 
+              ? { ...p, ready_to_pay: true } as PaymentPlan
+              : p
+          )
+        };
+      });
+      toast.error('Failed to revert ready to pay');
+    }
+  };
+
+  // Handler to open paid date modal
+  const handleOpenPaidDateModal = (id: string | number) => {
+    setSelectedPaymentForPaid(id);
+    setPaidDate(new Date().toISOString().split('T')[0]); // Set default to today
+    setShowPaidDateModal(true);
+  };
+
+  // Handler to confirm mark as paid with date
+  const handleConfirmMarkAsPaid = async () => {
+    if (!selectedPaymentForPaid || !paidDate) {
+      toast.error('Please select a date');
+      return;
+    }
+
+    const id = selectedPaymentForPaid;
     // Find the payment to check if it's legacy
     const payment = financePlan?.payments.find(p => p.id === id);
     const isLegacyPayment = payment?.isLegacy;
@@ -277,7 +420,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         ...prev,
         payments: prev.payments.map(payment => 
           payment.id === id 
-            ? { ...payment, paid: true, paid_at: new Date().toISOString() }
+            ? { ...payment, paid: true, paid_at: new Date(paidDate).toISOString() }
             : payment
         )
       };
@@ -287,18 +430,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     
     try {
       const currentUserName = await getCurrentUserName();
+      const paidAtDate = new Date(paidDate).toISOString();
       
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
         const { error } = await supabase
           .from('finances_paymentplanrow')
           .update({
-            actual_date: new Date().toISOString().split('T')[0], // Set actual_date to today
+            actual_date: paidDate, // Set actual_date to selected date
           })
           .eq('id', id);
           
         if (!error) {
           toast.success('Legacy payment marked as paid!');
+          setShowPaidDateModal(false);
+          setSelectedPaymentForPaid(null);
+          setPaidDate('');
+          await refreshPaymentPlans();
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));
@@ -327,9 +475,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               table_name: 'payment_plans',
               record_id: id,
               old_values: { paid: false },
-              new_values: { paid: true, paid_at: new Date().toISOString(), paid_by: currentUserName },
+              new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
               changed_by: currentUserName,
-              notes: `Payment marked as paid by ${currentUserName}`
+              notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
             });
           
           if (historyError) console.error('Error logging payment marked as paid:', historyError);
@@ -347,7 +495,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const { error: legacyError } = await supabase
             .from('finances_paymentplanrow')
             .update({
-              actual_date: new Date().toISOString().split('T')[0], // Use actual_date for legacy
+              actual_date: paidDate, // Use actual_date for legacy
             })
             .eq('id', id);
           error = legacyError;
@@ -357,7 +505,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .from('payment_plans')
             .update({
               paid: true,
-              paid_at: new Date().toISOString(),
+              paid_at: paidAtDate,
               paid_by: currentUserName,
             })
             .eq('id', id);
@@ -366,6 +514,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           
         if (!error) {
           toast.success('Payment marked as paid!');
+          setShowPaidDateModal(false);
+          setSelectedPaymentForPaid(null);
+          setPaidDate('');
+          await refreshPaymentPlans();
         } else {
           // Revert the UI state if database update fails
           setPaidMap(prev => ({ ...prev, [id]: false }));
@@ -401,6 +553,54 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       toast.error('Failed to mark as paid.');
     }
   };
+
+  // Fetch current user's superuser status
+  useEffect(() => {
+    const fetchSuperuserStatus = async () => {
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError || !user) {
+          setIsSuperuser(false);
+          return;
+        }
+
+        // Try to find user by auth_id first
+        let { data: userData, error } = await supabase
+          .from('users')
+          .select('is_superuser')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        
+        // If not found by auth_id, try by email
+        if (!userData && user.email) {
+          const { data: userByEmail, error: emailError } = await supabase
+            .from('users')
+            .select('is_superuser')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          userData = userByEmail;
+          error = emailError;
+        }
+
+        if (!error && userData) {
+          // Check if user is superuser (handle boolean, string, or number)
+          const superuserStatus = userData.is_superuser === true || 
+                                  userData.is_superuser === 'true' || 
+                                  userData.is_superuser === 1;
+          setIsSuperuser(superuserStatus);
+        } else {
+          setIsSuperuser(false);
+        }
+      } catch (error) {
+        console.error('Error fetching superuser status:', error);
+        setIsSuperuser(false);
+      }
+    };
+
+    fetchSuperuserStatus();
+  }, []);
 
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
@@ -585,6 +785,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 currency,
                 isLegacy: true, // Flag to identify legacy payments
                 ready_to_pay: plan.ready_to_pay || false, // Include ready_to_pay field
+                ready_to_pay_text: (plan as any).ready_to_pay_text || null,
+                ready_to_pay_date: (plan as any).ready_to_pay_date || null,
+                ready_to_pay_by: (plan as any).ready_to_pay_by || null,
               };
             });
           } else {
@@ -615,6 +818,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 currency,
                 isLegacy: false,
                 ready_to_pay: plan.ready_to_pay || false, // Include ready_to_pay field
+                ready_to_pay_text: (plan as any).ready_to_pay_text || null,
+                ready_to_pay_date: (plan as any).ready_to_pay_date || null,
+                ready_to_pay_by: (plan as any).ready_to_pay_by || null,
               };
             });
           }
@@ -1768,6 +1974,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null); // table context
   const [showDrawerNewPayment, setShowDrawerNewPayment] = useState(false); // finance-plan drawer context
   const [newPaymentData, setNewPaymentData] = useState<any>({});
+  
+  // Add superuser state
+  const [isSuperuser, setIsSuperuser] = useState(false);
 
   // Shared initializer for new payment data
   const initNewPaymentData = (contactName: string) => {
@@ -2222,6 +2431,50 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
+  // Helper function to get current user's employee_id from Supabase users table
+  const getCurrentUserEmployeeId = async (): Promise<number | null> => {
+    try {
+      // Get current user from Supabase auth
+      const { data: { user } } = await supabase.auth.getUser();
+      
+      if (!user) {
+        return null;
+      }
+    
+      // Get user from users table with employee_id
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('employee_id')
+        .eq('auth_id', user.id)
+        .single();
+      
+      if (error || !userData) {
+        // Try by email as fallback
+        if (user.email) {
+          const { data: userDataByEmail } = await supabase
+            .from('users')
+            .select('employee_id')
+            .eq('email', user.email)
+            .single();
+          
+          if (userDataByEmail?.employee_id && typeof userDataByEmail.employee_id === 'number') {
+            return userDataByEmail.employee_id;
+          }
+        }
+        return null;
+      }
+      
+      if (userData?.employee_id && typeof userData.employee_id === 'number') {
+        return userData.employee_id;
+      }
+      
+      return null;
+    } catch (error) {
+      console.error('Error getting current user employee_id:', error);
+      return null;
+    }
+  };
+
   if (!financePlan) {
     return (
       <>
@@ -2671,10 +2924,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     <>
       <div className="overflow-x-auto w-full">
         {/* Contract Information Section */}
+        {/* COMMENTED OUT - Contract Information Section
         {contracts.length > 0 ? (
           <div className="mb-8">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
-              {/* Header */}
               <div className="px-6 py-4 border-b border-gray-200">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -2697,12 +2950,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 </div>
               </div>
               
-              {/* Contract Cards */}
               <div className="p-6">
                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
                   {contracts.map((contract) => (
                     <div key={contract.id} className="group relative bg-white rounded-xl p-6 border border-gray-200 hover:border-purple-300 shadow-lg hover:shadow-xl transition-all duration-300 hover:scale-[1.02]">
-                      {/* Status badge */}
                       <div className="absolute top-4 right-4">
                         <span className={`inline-flex items-center px-3 py-1 rounded-full text-xs font-bold ${
                           contract.status === 'signed' 
@@ -2713,7 +2964,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         </span>
                       </div>
                       
-                      {/* Contract title */}
                       <div className="mb-4">
                         <h4 className="text-lg font-bold text-gray-900 mb-1">
                           {contract.contract_templates?.name || 'Contract'}
@@ -2726,9 +2976,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         <div className="w-12 h-1 bg-gradient-to-r from-blue-500 to-purple-500 rounded-full"></div>
                       </div>
                       
-                      {/* Contract details */}
                       <div className="space-y-3">
-                        
                         <div className="flex items-center justify-between">
                           <span className="text-sm font-medium text-gray-500">Applicants</span>
                           <span className="text-sm font-bold text-gray-900">
@@ -2744,20 +2992,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </div>
                         )}
                         
-                        
-                        
                         {(contract.total_amount || contract.isLegacy) && (
                           <div className="flex items-center justify-between pt-2 border-t border-gray-100">
                             <span className="text-sm font-medium text-gray-500">Total Amount</span>
                             <span className="text-lg font-bold text-purple-700">
                               {contract.isLegacy ? (
-                                // For legacy contracts, use the calculated total from contract
                                 contract.total_amount > 0 ? (
                                   <>
                                     {getCurrencySymbol(client?.balance_currency)}{contract.total_amount.toLocaleString()}
                                   </>
                                 ) : (
-                                  // Fallback to finance plan total if contract total is 0
                                   financePlan ? (
                                     <>
                                       {getCurrencySymbol(financePlan.payments[0]?.currency || client?.balance_currency)}
@@ -2768,7 +3012,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   )
                                 )
                               ) : (
-                                // For new contracts, use the contract total
                                 <>
                                   {getCurrencySymbol(contract.client_country)}{contract.total_amount.toLocaleString()}
                                 </>
@@ -2789,8 +3032,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           </div>
                         )}
                       </div>
-                      
-
                     </div>
                   ))}
                 </div>
@@ -2800,7 +3041,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         ) : (
           <div className="mb-8">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 overflow-hidden">
-              {/* Header */}
               <div className="px-6 py-4 border-b border-gray-200">
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
@@ -2823,7 +3063,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 </div>
               </div>
               
-              {/* Empty state */}
               <div className="p-12 text-center">
                 <div className="w-20 h-20 bg-gradient-to-br from-gray-100 to-gray-200 rounded-full flex items-center justify-center mx-auto mb-6">
                   <DocumentTextIcon className="w-10 h-10 text-gray-400" />
@@ -2839,6 +3078,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             </div>
           </div>
         )}
+        */}
 
         {/* Payments Plan Section */}
         <div className="mb-8">
@@ -3268,42 +3508,52 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <PaperAirplaneIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {/* Sent to Finances indicator */}
+                                                {/* Sent to Finances indicator with revert button */}
                                                 {!isPaid && p.ready_to_pay && (
-                                                  <div className="flex items-center gap-1 text-red-600 text-xs font-bold">
-                                                    <ExclamationTriangleIcon className="w-4 h-4" />
-                                                    <span>Sent to Finances</span>
+                                                  <div className="tooltip tooltip-top" data-tip={(p as any).ready_to_pay_text || 'Ready to pay - Click to revert'}>
+                                                    <button
+                                                      className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
+                                                      title="Revert Ready to Pay"
+                                                      onClick={() => handleRevertReadyToPay(p)}
+                                                      style={{ padding: 0 }}
+                                                    >
+                                                      <XMarkIcon className="w-5 h-5" />
+                                                    </button>
                                                   </div>
                                                 )}
-                                                {/* Dollar icon (small) - available for all */}
-                                                {!isPaid && (
+                                                {/* Dollar icon (small) - only for superusers */}
+                                                {!isPaid && isSuperuser && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
                                                     title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                                    onClick={() => handleMarkAsPaid(p.id)}
+                                                    onClick={() => handleOpenPaidDateModal(p.id)}
                                                     style={{ padding: 0 }}
                                                   >
                                                     <CurrencyDollarIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {/* Edit icon (small) - available for all */}
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                  title="Edit"
-                                                  onClick={() => handleEditPayment(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <PencilIcon className="w-5 h-5" />
-                                                </button>
-                                                {/* Delete icon (small) - available for all */}
-                                                <button
-                                                  className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                                  title="Delete"
-                                                  onClick={() => handleDeletePayment(p)}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <TrashIcon className="w-5 h-5" />
-                                                </button>
+                                                {/* Edit icon (small) - only for superusers if paid, available for all if not paid */}
+                                                {(!isPaid || isSuperuser) && (
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                    title="Edit"
+                                                    onClick={() => handleEditPayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <PencilIcon className="w-5 h-5" />
+                                                  </button>
+                                                )}
+                                                {/* Delete icon (small) - only for superusers */}
+                                                {isSuperuser && (
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                                    title="Delete"
+                                                    onClick={() => handleDeletePayment(p)}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <TrashIcon className="w-5 h-5" />
+                                                  </button>
+                                                )}
                                               </>
                                             )
                                           ) : (
@@ -3651,7 +3901,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex gap-2 items-center ml-4">
                                             {p.id ? (
                                               <>
-                                                {!p.isLegacy && (
+                                                {!p.isLegacy && isSuperuser && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Delete"
@@ -3661,7 +3911,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <TrashIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {!p.isLegacy && (
+                                                {!p.isLegacy && (!isPaid || isSuperuser) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Edit"
@@ -3801,42 +4051,52 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <PaperAirplaneIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Sent to Finances indicator */}
+                                          {/* Sent to Finances indicator with revert button */}
                                           {!isPaid && p.ready_to_pay && (
-                                            <div className="flex items-center gap-1 text-red-600 text-xs font-bold bg-white px-2 py-1 rounded-full border border-red-200">
-                                              <ExclamationTriangleIcon className="w-4 h-4" />
-                                              <span>Sent to Finances</span>
+                                            <div className="tooltip tooltip-top" data-tip={(p as any).ready_to_pay_text || 'Ready to pay - Click to revert'}>
+                                              <button
+                                                className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
+                                                title="Revert Ready to Pay"
+                                                onClick={() => handleRevertReadyToPay(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <XMarkIcon className="w-5 h-5" />
+                                              </button>
                                             </div>
                                           )}
-                                          {/* Dollar icon (small) - available for all */}
-                                          {!isPaid && (
+                                          {/* Dollar icon (small) - only for superusers */}
+                                          {!isPaid && isSuperuser && (
                                             <button
                                               className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
                                               title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                              onClick={() => handleMarkAsPaid(p.id)}
+                                              onClick={() => handleOpenPaidDateModal(p.id)}
                                               style={{ padding: 0 }}
                                             >
                                               <CurrencyDollarIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Edit icon (small) - available for all */}
-                                          <button
-                                            className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                            title="Edit"
-                                            onClick={() => handleEditPayment(p)}
-                                            style={{ padding: 0 }}
-                                          >
-                                            <PencilIcon className="w-5 h-5" />
-                                          </button>
-                                          {/* Delete icon (small) - available for all */}
-                                          <button
-                                            className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                            title="Delete"
-                                            onClick={() => handleDeletePayment(p)}
-                                            style={{ padding: 0 }}
-                                          >
-                                            <TrashIcon className="w-5 h-5" />
-                                          </button>
+                                          {/* Edit icon (small) - only for superusers if paid, available for all if not paid */}
+                                          {(!isPaid || isSuperuser) && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                              title="Edit"
+                                              onClick={() => handleEditPayment(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <PencilIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
+                                          {/* Delete icon (small) - only for superusers */}
+                                          {isSuperuser && (
+                                            <button
+                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                              title="Delete"
+                                              onClick={() => handleDeletePayment(p)}
+                                              style={{ padding: 0 }}
+                                            >
+                                              <TrashIcon className="w-5 h-5" />
+                                            </button>
+                                          )}
                                         </div>
                                       </div>
                                     )}
@@ -4748,6 +5008,49 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           </div>
         </div>
       )}
+
+      {/* Paid Date Modal */}
+      {showPaidDateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-bold mb-4">Select Paid Date</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Paid Date
+                </label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={paidDate}
+                  onChange={(e) => setPaidDate(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowPaidDateModal(false);
+                    setSelectedPaymentForPaid(null);
+                    setPaidDate('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleConfirmMarkAsPaid}
+                  disabled={!paidDate}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
     </>
   );
 };

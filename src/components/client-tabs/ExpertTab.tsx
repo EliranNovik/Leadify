@@ -396,6 +396,152 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  // Fetch current user's superuser status and employee ID
+  useEffect(() => {
+    const fetchCurrentUserInfo = async () => {
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError || !user) {
+          setIsSuperuser(false);
+          setCurrentUserEmployeeId(null);
+          return;
+        }
+
+        // Try to find user by auth_id first
+        let { data: userData, error } = await supabase
+          .from('users')
+          .select('is_superuser, employee_id, tenants_employee!employee_id(display_name)')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        
+        // If not found by auth_id, try by email
+        if (!userData && user.email) {
+          const { data: userByEmail, error: emailError } = await supabase
+            .from('users')
+            .select('is_superuser, employee_id, tenants_employee!employee_id(display_name)')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          userData = userByEmail;
+          error = emailError;
+        }
+
+        if (!error && userData) {
+          // Check if user is superuser (handle boolean, string, or number)
+          const superuserStatus = userData.is_superuser === true || 
+                                  userData.is_superuser === 'true' || 
+                                  userData.is_superuser === 1;
+          setIsSuperuser(superuserStatus);
+          
+          // Set employee ID
+          if (userData.employee_id && typeof userData.employee_id === 'number') {
+            setCurrentUserEmployeeId(userData.employee_id);
+          } else {
+            setCurrentUserEmployeeId(null);
+          }
+          
+          // Set display name from employee relationship
+          if (userData.tenants_employee) {
+            const employee = Array.isArray(userData.tenants_employee) 
+              ? userData.tenants_employee[0] 
+              : userData.tenants_employee;
+            if (employee && employee.display_name) {
+              setCurrentUserDisplayName(employee.display_name);
+            } else {
+              setCurrentUserDisplayName(null);
+            }
+          } else {
+            setCurrentUserDisplayName(null);
+          }
+        } else {
+          setIsSuperuser(false);
+          setCurrentUserEmployeeId(null);
+          setCurrentUserDisplayName(null);
+        }
+      } catch (error) {
+        console.error('Error fetching current user info:', error);
+        setIsSuperuser(false);
+        setCurrentUserEmployeeId(null);
+      }
+    };
+
+    fetchCurrentUserInfo();
+  }, []);
+
+  // Fetch assigned expert ID and display name
+  // Based on RolesTab: 
+  // - Legacy leads: expert stored in 'expert_id' column (employee ID)
+  // - New leads: expert stored in 'expert' column (employee ID, not display_name)
+  useEffect(() => {
+    const fetchAssignedExpert = async () => {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        try {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('expert_id')
+            .eq('id', legacyId)
+            .single();
+          
+          if (!error && data && data.expert_id) {
+            const expertIdNum = typeof data.expert_id === 'string' ? parseInt(data.expert_id, 10) : Number(data.expert_id);
+            if (!isNaN(expertIdNum)) {
+              setAssignedExpertId(expertIdNum);
+              // Get display name from employee ID
+              const expertName = await getExpertName(expertIdNum);
+              setAssignedExpertDisplayName(expertName !== 'Not assigned' ? expertName : null);
+            } else {
+              setAssignedExpertId(null);
+              setAssignedExpertDisplayName(null);
+            }
+          } else {
+            setAssignedExpertId(null);
+            setAssignedExpertDisplayName(null);
+          }
+        } catch (error) {
+          console.error('Error fetching assigned expert (legacy):', error);
+          setAssignedExpertId(null);
+          setAssignedExpertDisplayName(null);
+        }
+      } else {
+        // For new leads, expert is stored in 'expert' column as employee ID (number)
+        try {
+          const { data, error } = await supabase
+            .from('leads')
+            .select('expert')
+            .eq('id', client.id)
+            .single();
+          
+          if (!error && data && data.expert) {
+            // Expert is stored as employee ID (number) in 'expert' column for new leads
+            const expertIdNum = typeof data.expert === 'string' ? parseInt(data.expert, 10) : Number(data.expert);
+            if (!isNaN(expertIdNum)) {
+              setAssignedExpertId(expertIdNum);
+              // Get display name from employee ID
+              const expertName = await getExpertName(expertIdNum);
+              setAssignedExpertDisplayName(expertName !== 'Not assigned' ? expertName : null);
+            } else {
+              setAssignedExpertId(null);
+              setAssignedExpertDisplayName(null);
+            }
+          } else {
+            setAssignedExpertId(null);
+            setAssignedExpertDisplayName(null);
+          }
+        } catch (error) {
+          console.error('Error fetching assigned expert (new lead):', error);
+          setAssignedExpertId(null);
+          setAssignedExpertDisplayName(null);
+        }
+      }
+    };
+
+    fetchAssignedExpert();
+  }, [client.id, client.lead_type, client.expert]);
+
   // Fetch legacy expert data on component mount
   useEffect(() => {
     fetchLegacyExpertData();
@@ -523,6 +669,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   
   // Expert name state
   const [expertName, setExpertName] = useState<string>(client.expert || 'Not assigned');
+  
+  // Current user state
+  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
+  const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
+  const [assignedExpertId, setAssignedExpertId] = useState<number | null>(null);
+  const [assignedExpertDisplayName, setAssignedExpertDisplayName] = useState<string | null>(null);
 
   // Save section/eligibility to DB
   const handleSectionChange = async (value: string) => {
@@ -1172,6 +1325,23 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const selectedEligibility = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value);
 
+  // Determine if user can edit eligibility dropdowns
+  // Can edit if: 
+  // 1. User is superuser (always enabled)
+  // 2. OR expert is assigned AND current user is the assigned expert (non-superuser expert can edit)
+  //    - Check by employee_id if expert is stored as ID
+  //    - Check by display_name if expert is stored as display_name
+  const canEditEligibility = isSuperuser || (
+    // Check by employee_id match
+    (assignedExpertId !== null && 
+     currentUserEmployeeId !== null && 
+     Number(assignedExpertId) === Number(currentUserEmployeeId)) ||
+    // Check by display_name match
+    (assignedExpertDisplayName !== null && 
+     currentUserDisplayName !== null && 
+     assignedExpertDisplayName.trim().toLowerCase() === currentUserDisplayName.trim().toLowerCase())
+  );
+
   // Debug: Log document count when it changes
   useEffect(() => {
     console.log('Document count state updated:', documentCount);
@@ -1298,21 +1468,24 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               {/* Eligibility Dropdown */}
               <div className="space-y-2">
                 <label className="text-base font-medium text-gray-500 uppercase tracking-wide">Eligibility Assessment</label>
-                <select 
-                  className="select select-bordered w-full"
-                  value={eligibilityStatus.value}
-                  onChange={(e) => handleEligibilityChange(e.target.value)}
-                >
-                  <option value="">Set Eligibility...</option>
-                  {eligibilityOptions.map((option) => (
-                    <option 
-                      key={option.value} 
-                      value={option.value}
-                    >
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
+                <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                  <select 
+                    className="select select-bordered w-full"
+                    value={eligibilityStatus.value}
+                    onChange={(e) => handleEligibilityChange(e.target.value)}
+                    disabled={!canEditEligibility}
+                  >
+                    <option value="">Set Eligibility...</option>
+                    {eligibilityOptions.map((option) => (
+                      <option 
+                        key={option.value} 
+                        value={option.value}
+                      >
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
               </div>
               
               {/* Citizenship Section Dropdown */}
@@ -1324,22 +1497,24 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   )}
                 </label>
                 <div className="relative">
-                  <select 
-                    className="select select-bordered w-full"
-                    value={selectedSection}
-                    onChange={(e) => handleSectionChange(e.target.value)}
-                    disabled={!eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
-                  >
-                    <option value="">Select citizenship section...</option>
-                    {sections.map((section) => (
-                      <option 
-                        key={section.value} 
-                        value={section.value}
-                      >
-                        {section.label}
-                      </option>
-                    ))}
-                  </select>
+                  <div className={!canEditEligibility ? "tooltip tooltip-top w-full" : ""} data-tip={!canEditEligibility ? "Only the assigned expert is able to save changes" : ""}>
+                    <select 
+                      className="select select-bordered w-full"
+                      value={selectedSection}
+                      onChange={(e) => handleSectionChange(e.target.value)}
+                      disabled={!canEditEligibility || !eligibilityStatus.value || eligibilityStatus.value === 'not_feasible'}
+                    >
+                      <option value="">Select citizenship section...</option>
+                      {sections.map((section) => (
+                        <option 
+                          key={section.value} 
+                          value={section.value}
+                        >
+                          {section.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
                   <HashtagIcon className="w-5 h-5 absolute right-10 top-1/2 transform -translate-y-1/2 pointer-events-none text-gray-400" />
                 </div>
               </div>

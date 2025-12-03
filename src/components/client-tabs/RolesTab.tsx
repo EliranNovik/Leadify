@@ -41,6 +41,7 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [isEditing, setIsEditing] = useState(false);
   const [originalRoles, setOriginalRoles] = useState<Role[]>([]);
   const [isRolesLocked, setIsRolesLocked] = useState<boolean>(false);
+  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
 
   // Update roles when client data changes
   useEffect(() => {
@@ -200,6 +201,54 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     };
     fetchEmployees();
+  }, []);
+
+  // Fetch current user's superuser status
+  useEffect(() => {
+    const fetchSuperuserStatus = async () => {
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError || !user) {
+          setIsSuperuser(false);
+          return;
+        }
+
+        // Try to find user by auth_id first
+        let { data: userData, error } = await supabase
+          .from('users')
+          .select('is_superuser')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        
+        // If not found by auth_id, try by email
+        if (!userData && user.email) {
+          const { data: userByEmail, error: emailError } = await supabase
+            .from('users')
+            .select('is_superuser')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          userData = userByEmail;
+          error = emailError;
+        }
+
+        if (!error && userData) {
+          // Check if user is superuser (handle boolean, string, or number)
+          const superuserStatus = userData.is_superuser === true || 
+                                  userData.is_superuser === 'true' || 
+                                  userData.is_superuser === 1;
+          setIsSuperuser(superuserStatus);
+        } else {
+          setIsSuperuser(false);
+        }
+      } catch (error) {
+        console.error('Error fetching superuser status:', error);
+        setIsSuperuser(false);
+      }
+    };
+
+    fetchSuperuserStatus();
   }, []);
 
   const handleRoleChange = (roleId: string, newAssignee: string) => {
@@ -570,28 +619,30 @@ const RolesTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         
         {/* Action Buttons */}
         <div className="flex flex-row gap-2 sm:gap-4 flex-wrap">
-          {/* Lock Button - Always visible */}
-          <button 
-            className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${
-              isRolesLocked 
-                ? 'btn-error text-white' 
-                : 'btn-ghost border border-gray-300'
-            }`}
-            onClick={handleToggleLock}
-            title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
-          >
-            {isRolesLocked ? (
-              <>
-                <LockClosedIcon className="w-5 h-5" />
-                Unlock Roles
-              </>
-            ) : (
-              <>
-                <LockOpenIcon className="w-5 h-5" />
-                Lock Roles
-              </>
-            )}
-          </button>
+          {/* Lock Button - Only visible for superusers */}
+          {isSuperuser && (
+            <button 
+              className={`btn gap-2 px-6 shadow-md hover:scale-105 transition-transform ${
+                isRolesLocked 
+                  ? 'btn-error text-white' 
+                  : 'btn-ghost border border-gray-300'
+              }`}
+              onClick={handleToggleLock}
+              title={isRolesLocked ? 'Unlock roles' : 'Lock roles'}
+            >
+              {isRolesLocked ? (
+                <>
+                  <LockClosedIcon className="w-5 h-5" />
+                  Unlock Roles
+                </>
+              ) : (
+                <>
+                  <LockOpenIcon className="w-5 h-5" />
+                  Lock Roles
+                </>
+              )}
+            </button>
+          )}
           
           {/* Set Roles and Set me as closer buttons - Hidden when locked */}
           {!isRolesLocked && (

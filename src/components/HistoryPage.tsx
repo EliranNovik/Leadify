@@ -202,6 +202,15 @@ const HistoryPage: React.FC = () => {
 
       console.log('Payment changes fetch result:', { paymentChanges, paymentChangesError });
 
+      // Add finance changes from finance_changes_history table (for ready_to_pay and other finance events)
+      const { data: financeHistory, error: financeHistoryError } = await supabase
+        .from('finance_changes_history')
+        .select('*')
+        .eq('lead_id', clientData.id)
+        .order('changed_at', { ascending: false });
+
+      console.log('Finance history fetch result:', { financeHistory, financeHistoryError });
+
       // Add lead changes from lead_changes table
       console.log('Fetching lead changes for lead_id:', clientData.id);
       
@@ -262,6 +271,43 @@ const HistoryPage: React.FC = () => {
               finance_change_type: 'payment_field_updated',
               finance_notes: `${fieldDisplayName} changed from "${oldValue}" to "${newValue}"`,
               user_full_name: change.changed_by // Will be updated later with actual user name
+            });
+          }
+        });
+      }
+
+      // Add finance history entries (ready_to_pay, payment_marked_paid, etc.)
+      if (!financeHistoryError && financeHistory) {
+        financeHistory.forEach((change: any) => {
+          if (change.change_type === 'payment_marked_ready_to_pay') {
+            historyEntries.push({
+              id: `finance_history_${change.id}`,
+              type: 'finance_change',
+              changed_by: change.changed_by,
+              changed_at: change.changed_at,
+              finance_change_type: 'payment_marked_ready_to_pay',
+              finance_notes: `Payment marked as ready to pay${change.notes ? ` - ${change.notes}` : ''}`,
+              user_full_name: change.changed_by
+            });
+          } else if (change.change_type === 'payment_reverted_from_ready_to_pay') {
+            historyEntries.push({
+              id: `finance_history_${change.id}`,
+              type: 'finance_change',
+              changed_by: change.changed_by,
+              changed_at: change.changed_at,
+              finance_change_type: 'payment_reverted_from_ready_to_pay',
+              finance_notes: `Payment reverted from ready to pay${change.notes ? ` - ${change.notes}` : ''}`,
+              user_full_name: change.changed_by
+            });
+          } else if (change.change_type === 'payment_marked_paid') {
+            historyEntries.push({
+              id: `finance_history_${change.id}`,
+              type: 'finance_change',
+              changed_by: change.changed_by,
+              changed_at: change.changed_at,
+              finance_change_type: 'payment_marked_paid',
+              finance_notes: `Payment marked as paid${change.notes ? ` - ${change.notes}` : ''}`,
+              user_full_name: change.changed_by
             });
           }
         });
@@ -407,6 +453,8 @@ const HistoryPage: React.FC = () => {
       'payment_updated': 'Payment Updated',
       'payment_deleted': 'Payment Deleted',
       'payment_marked_paid': 'Payment Marked as Paid',
+      'payment_marked_ready_to_pay': 'Payment Marked as Ready to Pay',
+      'payment_reverted_from_ready_to_pay': 'Payment Reverted from Ready to Pay',
       'payment_plan_created': 'Payment Plan Created',
       'auto_plan_created': 'Auto Finance Plan Created',
       'contract_created': 'Contract Created',

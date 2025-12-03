@@ -308,6 +308,8 @@ const Clients: React.FC<ClientsProps> = ({
   const [countryCodes, setCountryCodes] = useState<Array<{ code: string; country: string; name: string }>>([
     { code: '+972', country: 'IL', name: 'Israel' } // Default fallback
   ]);
+  // State to track if current user is a superuser
+  const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
 
   // Helper function to extract country code and number from full phone number
   const parsePhoneNumber = (fullNumber: string | undefined | null) => {
@@ -1070,6 +1072,54 @@ const Clients: React.FC<ClientsProps> = ({
     });
   }, []);
 
+  // Fetch current user's superuser status
+  useEffect(() => {
+    const fetchSuperuserStatus = async () => {
+      try {
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError || !user) {
+          setIsSuperuser(false);
+          return;
+        }
+
+        // Try to find user by auth_id first
+        let { data: userData, error } = await supabase
+          .from('users')
+          .select('is_superuser')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        
+        // If not found by auth_id, try by email
+        if (!userData && user.email) {
+          const { data: userByEmail, error: emailError } = await supabase
+            .from('users')
+            .select('is_superuser')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          userData = userByEmail;
+          error = emailError;
+        }
+
+        if (!error && userData) {
+          // Check if user is superuser (handle boolean, string, or number)
+          const superuserStatus = userData.is_superuser === true || 
+                                  userData.is_superuser === 'true' || 
+                                  userData.is_superuser === 1;
+          setIsSuperuser(superuserStatus);
+        } else {
+          setIsSuperuser(false);
+        }
+      } catch (error) {
+        console.error('Error fetching superuser status:', error);
+        setIsSuperuser(false);
+      }
+    };
+
+    fetchSuperuserStatus();
+  }, []);
+
   // Check if mobile tabs can scroll
   useEffect(() => {
     const checkScroll = () => {
@@ -1245,6 +1295,13 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
   const badgeStageListRef = useRef<HTMLDivElement | null>(null);
   const desktopStageListRef = useRef<HTMLDivElement | null>(null);
   const mobileStageListRef = useRef<HTMLDivElement | null>(null);
+
+  // Close stage dropdown if user is not a superuser
+  useEffect(() => {
+    if (!isSuperuser && stageDropdownAnchor !== null) {
+      setStageDropdownAnchor(null);
+    }
+  }, [isSuperuser, stageDropdownAnchor]);
 
   const getDropdownRef = (anchor: StageDropdownAnchor) => {
     switch (anchor) {
@@ -3299,7 +3356,11 @@ useEffect(() => {
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className="badge badge-sm ml-2 px-4 py-2 min-w-max whitespace-nowrap cursor-pointer transition-transform duration-200 flex items-center hover:scale-[1.02]"
+          className={`badge badge-sm ml-2 px-4 py-2 min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${
+            isSuperuser 
+              ? 'cursor-pointer hover:scale-[1.02]' 
+              : 'cursor-default'
+          }`}
           style={{
             background: fallbackStageColour,
             color: badgeTextColour,
@@ -3310,14 +3371,17 @@ useEffect(() => {
             border: `2px solid ${fallbackStageColour}`,
             boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
           }}
-          onClick={() =>
-            setStageDropdownAnchor(prev => (prev === anchor ? null : anchor))
-          }
+          onClick={() => {
+            if (isSuperuser) {
+              setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
+            }
+          }}
+          disabled={!isSuperuser}
         >
           {stageName}
-          <ChevronDownIcon className="w-3 h-3 ml-1" />
+          {isSuperuser && <ChevronDownIcon className="w-3 h-3 ml-1" />}
         </button>
-        {stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
+        {isSuperuser && stageDropdownAnchor === anchor && renderTimelineOverlay(anchor)}
       </div>
     );
   };
@@ -10445,37 +10509,51 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </button>
             </div>
             <div className="flex flex-col gap-6 flex-1">
-              <div className="alert alert-warning">
-                <ExclamationTriangleIcon className="w-6 h-6" />
-                <div>
-                  <h4 className="font-bold">Important Notice</h4>
-                  <p>Please contact your supervisor before choosing this option.</p>
-                </div>
-              </div>
-              <div className="text-base-content/80">
-                <p>Are you sure you want to mark this client as declined?</p>
-                <p className="mt-2 text-sm">This action will change the lead stage to "Client declined".</p>
-              </div>
-              {!isAdmin && !isAdminLoading && (
-                <div className="alert alert-error">
+              {isSuperuser ? (
+                <>
+                  <div className="alert alert-warning">
+                    <ExclamationTriangleIcon className="w-6 h-6" />
+                    <div>
+                      <h4 className="font-bold">Important Notice</h4>
+                      <p>Please contact your supervisor before choosing this option.</p>
+                    </div>
+                  </div>
+                  <div className="text-base-content/80">
+                    <p>Are you sure you want to mark this client as declined?</p>
+                    <p className="mt-2 text-sm">This action will change the lead stage to "Client declined".</p>
+                  </div>
+                  {!isAdmin && !isAdminLoading && (
+                    <div className="alert alert-error">
+                      <ExclamationTriangleIcon className="w-6 h-6" />
+                      <div>
+                        <h4 className="font-bold">Access Restricted</h4>
+                        <p>Only administrators can decline clients. Please contact your supervisor.</p>
+                      </div>
+                    </div>
+                  )}
+                </>
+              ) : (
+                <div className="alert alert-warning">
                   <ExclamationTriangleIcon className="w-6 h-6" />
                   <div>
                     <h4 className="font-bold">Access Restricted</h4>
-                    <p>Only administrators can decline clients. Please contact your supervisor.</p>
+                    <p>You do not have access to perform this action. Please contact a manager or admin for assistance.</p>
                   </div>
                 </div>
               )}
             </div>
-            <div className="mt-6 flex gap-3 justify-end">
-              <button className="btn btn-ghost" onClick={() => setShowDeclinedDrawer(false)}>
-                Cancel
-              </button>
-              {isAdmin && (
-                <button className="btn btn-error" onClick={handleConfirmDeclined}>
-                  Yes, decline client
+            {isSuperuser && (
+              <div className="mt-6 flex gap-3 justify-end">
+                <button className="btn btn-ghost" onClick={() => setShowDeclinedDrawer(false)}>
+                  Cancel
                 </button>
-              )}
-            </div>
+                {isAdmin && (
+                  <button className="btn btn-error" onClick={handleConfirmDeclined}>
+                    Yes, decline client
+                  </button>
+                )}
+              </div>
+            )}
           </div>
         </div>
       )}

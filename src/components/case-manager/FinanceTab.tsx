@@ -68,56 +68,79 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     includeVat: true
   });
   const [creatingProforma, setCreatingProforma] = useState<string | null>(null);
+  const [showPaidDateModal, setShowPaidDateModal] = useState(false);
+  const [selectedPaymentForPaid, setSelectedPaymentForPaid] = useState<string | number | null>(null);
+  const [paidDate, setPaidDate] = useState<string>('');
+  const [showReadyToPayModal, setShowReadyToPayModal] = useState(false);
+  const [selectedPaymentForReadyToPay, setSelectedPaymentForReadyToPay] = useState<any | null>(null);
+  const [readyToPayText, setReadyToPayText] = useState<string>('');
 
   // Get the current case from the leads array (assuming we're in a case context)
   const currentCase = leads.length > 0 ? leads[0] : null;
+  
+  // Check if current case is legacy lead
+  const isLegacyLead = currentCase?.id?.toString().startsWith('legacy_') || currentCase?.lead_type === 'legacy';
 
   // Fetch finance data for current case
   const fetchFinanceData = async (leadId: string) => {
     setLoading(true);
     try {
-      // Skip legacy leads (they don't have payment plans in the new system)
-      if (leadId.startsWith('legacy_')) {
-        console.log(`Skipping legacy lead ${leadId} for finance data fetch`);
-        setFinancePlan(null);
-        setContacts([]);
-        setLoading(false);
-        return;
-      }
+      const isLegacy = leadId.startsWith('legacy_');
+      const actualLeadId = isLegacy ? leadId.replace('legacy_', '') : leadId;
       
-      // Fetch payment plans
-      const { data: paymentPlans, error: paymentError } = await supabase
-        .from('payment_plans')
-        .select('*')
-        .eq('lead_id', leadId)
-        .order('due_date', { ascending: true });
-
-      if (paymentError) throw paymentError;
+      let paymentPlans: any[] = [];
+      
+      if (isLegacy) {
+        // Fetch from finances_paymentplanrow for legacy leads
+        const { data: legacyPlans, error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('*')
+          .eq('lead_id', actualLeadId)
+          .is('cancel_date', null)
+          .order('due_date', { ascending: true });
+        
+        if (legacyError) throw legacyError;
+        paymentPlans = legacyPlans || [];
+      } else {
+        // Fetch from payment_plans for new leads
+        const { data: newPlans, error: newError } = await supabase
+          .from('payment_plans')
+          .select('*')
+          .eq('lead_id', leadId)
+          .order('due_date', { ascending: true });
+        
+        if (newError) throw newError;
+        paymentPlans = newPlans || [];
+      }
 
       if (paymentPlans && paymentPlans.length > 0) {
-        const total = paymentPlans.reduce((sum, plan) => sum + Number(plan.value) + Number(plan.value_vat), 0);
-        const vat = paymentPlans.reduce((sum, plan) => sum + Number(plan.value_vat), 0);
+        const total = paymentPlans.reduce((sum, plan) => sum + Number(plan.value || 0) + Number(plan.value_vat || 0), 0);
+        const vat = paymentPlans.reduce((sum, plan) => sum + Number(plan.value_vat || 0), 0);
         
         const payments = paymentPlans.map(plan => {
-          const value = Number(plan.value);
-          let valueVat = 0;
+          const value = Number(plan.value || 0);
+          let valueVat = Number(plan.value_vat || 0);
           const currency = plan.currency || '₪';
-          if (currency === '₪') {
+          if (currency === '₪' && !valueVat) {
             valueVat = Math.round(value * 0.18 * 100) / 100;
           }
           return {
             id: plan.id,
             duePercent: String(plan.due_percent || plan.percent || 0),
-            dueDate: plan.due_date,
+            dueDate: plan.due_date || plan.date,
             value,
             valueVat,
-            client: plan.client_name,
-            order: plan.payment_order,
+            client: plan.client_name || plan.client,
+            order: plan.payment_order || plan.order,
             proforma: plan.proforma || null,
             notes: plan.notes || '',
-            paid: plan.paid || false,
-            paid_at: plan.paid_at || null,
+            paid: plan.paid || plan.actual_date ? true : false,
+            paid_at: plan.paid_at || plan.actual_date || null,
             paid_by: plan.paid_by || null,
+            ready_to_pay: plan.ready_to_pay || false,
+            ready_to_pay_text: (plan as any).ready_to_pay_text || null,
+            ready_to_pay_date: (plan as any).ready_to_pay_date || null,
+            ready_to_pay_by: (plan as any).ready_to_pay_by || null,
             currency,
           };
         });
@@ -149,33 +172,38 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
         setPaidMap({});
       }
 
-      // Fetch contracts
-      const { data: contractData, error: contractError } = await supabase
-        .from('contracts')
-        .select(`
-          *,
-          lead:leads(name, lead_number)
-        `)
-        .eq('lead_id', leadId);
+      // Fetch contracts (only for new leads)
+      if (!isLegacy) {
+        const { data: contractData, error: contractError } = await supabase
+          .from('contracts')
+          .select(`
+            *,
+            lead:leads(name, lead_number)
+          `)
+          .eq('lead_id', leadId);
 
-      if (!contractError && contractData) {
-        setContracts(contractData);
-      }
+        if (!contractError && contractData) {
+          setContracts(contractData);
+        }
 
-      // Fetch contacts
-      const { data: leadData, error: leadError } = await supabase
-        .from('leads')
-        .select('additional_contacts')
-        .eq('id', leadId)
-        .single();
-      
-      if (!leadError && leadData?.additional_contacts) {
-        const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
-          id: index + 1,
-          ...contact
-        }));
-        setContacts(contactsWithIds);
+        // Fetch contacts (only for new leads)
+        const { data: leadData, error: leadError } = await supabase
+          .from('leads')
+          .select('additional_contacts')
+          .eq('id', leadId)
+          .single();
+        
+        if (!leadError && leadData?.additional_contacts) {
+          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
+            id: index + 1,
+            ...contact
+          }));
+          setContacts(contactsWithIds);
+        } else {
+          setContacts([]);
+        }
       } else {
+        setContracts([]);
         setContacts([]);
       }
 
@@ -240,8 +268,21 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     }
   };
 
-  // Handler to mark a payment as paid
-  const handleMarkAsPaid = async (id: string | number) => {
+  // Handler to open paid date modal
+  const handleOpenPaidDateModal = (id: string | number) => {
+    setSelectedPaymentForPaid(id);
+    setPaidDate(new Date().toISOString().split('T')[0]); // Set default to today
+    setShowPaidDateModal(true);
+  };
+
+  // Handler to confirm mark as paid with date
+  const handleConfirmMarkAsPaid = async () => {
+    if (!selectedPaymentForPaid || !paidDate) {
+      toast.error('Please select a date');
+      return;
+    }
+
+    const id = selectedPaymentForPaid;
     setPaidMap((prev: { [id: string]: boolean }) => ({ ...prev, [id]: true }));
     
     setFinancePlan((prev: any) => {
@@ -250,7 +291,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
         ...prev,
         payments: prev.payments.map((payment: any) => 
           payment.id === id 
-            ? { ...payment, paid: true, paid_at: new Date().toISOString() }
+            ? { ...payment, paid: true, paid_at: new Date(paidDate).toISOString() }
             : payment
         )
       };
@@ -258,37 +299,61 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     
     try {
       const currentUserName = await getCurrentUserName();
+      const paidAtDate = new Date(paidDate).toISOString();
       
+      // Log history
       const { error: historyError } = await supabase
         .from('finance_changes_history')
         .insert({
           lead_id: currentCase?.id,
           change_type: 'payment_marked_paid',
-          table_name: 'payment_plans',
+          table_name: isLegacyLead ? 'finances_paymentplanrow' : 'payment_plans',
           record_id: id,
           old_values: { paid: false },
-          new_values: { paid: true, paid_at: new Date().toISOString(), paid_by: currentUserName },
+          new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
           changed_by: currentUserName,
-          notes: `Payment marked as paid by ${currentUserName}`
+          notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
         });
       
       if (historyError) console.error('Error logging payment marked as paid:', historyError);
       
-      const { error } = await supabase
-        .from('payment_plans')
-        .update({
-          paid: true,
-          paid_at: new Date().toISOString(),
-          paid_by: currentUserName,
-        })
-        .eq('id', id);
+      // Update database
+      let error;
+      if (isLegacyLead) {
+        // For legacy leads, update finances_paymentplanrow
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({
+            actual_date: paidDate,
+            paid: true,
+            paid_at: paidAtDate,
+            paid_by: currentUserName,
+          })
+          .eq('id', id);
+        error = legacyError;
+      } else {
+        // For new leads, update payment_plans
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({
+            paid: true,
+            paid_at: paidAtDate,
+            paid_by: currentUserName,
+          })
+          .eq('id', id);
+        error = newError;
+      }
         
       if (!error) {
         toast.success('Payment marked as paid!');
+        setShowPaidDateModal(false);
+        setSelectedPaymentForPaid(null);
+        setPaidDate('');
         // Refresh dashboard data to update the total balance
         if (refreshDashboardData) {
           await refreshDashboardData();
         }
+        await fetchFinanceData(currentCase!.id);
       } else {
         setPaidMap((prev: { [id: string]: boolean }) => ({ ...prev, [id]: false }));
         setFinancePlan((prev: any) => {
@@ -319,6 +384,113 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
         };
       });
       toast.error('Failed to mark as paid.');
+    }
+  };
+
+  // Handler to mark a payment as ready to pay
+  const handleMarkAsReadyToPay = async (payment: any) => {
+    setSelectedPaymentForReadyToPay(payment);
+    setReadyToPayText(payment.ready_to_pay_text || '');
+    setShowReadyToPayModal(true);
+  };
+
+  // Handler to confirm mark as ready to pay
+  const handleConfirmMarkAsReadyToPay = async () => {
+    if (!selectedPaymentForReadyToPay) return;
+
+    try {
+      const currentUserName = await getCurrentUserName();
+      const paymentId = selectedPaymentForReadyToPay.id;
+      
+      let error;
+      if (isLegacyLead) {
+        // For legacy leads, update finances_paymentplanrow
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({
+            ready_to_pay: true,
+            ready_to_pay_text: readyToPayText,
+            ready_to_pay_date: new Date().toISOString(),
+            ready_to_pay_by: currentUserName,
+          })
+          .eq('id', paymentId);
+        error = legacyError;
+      } else {
+        // For new leads, update payment_plans
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({
+            ready_to_pay: true,
+            ready_to_pay_text: readyToPayText,
+            ready_to_pay_date: new Date().toISOString(),
+            ready_to_pay_by: currentUserName,
+          })
+          .eq('id', paymentId);
+        error = newError;
+      }
+
+      if (error) {
+        console.error('Error marking payment as ready to pay:', error);
+        toast.error('Failed to mark payment as ready to pay');
+        return;
+      }
+
+      toast.success('Payment marked as ready to pay!');
+      setShowReadyToPayModal(false);
+      setSelectedPaymentForReadyToPay(null);
+      setReadyToPayText('');
+      await fetchFinanceData(currentCase!.id);
+    } catch (error) {
+      console.error('Error marking payment as ready to pay:', error);
+      toast.error('Failed to mark payment as ready to pay');
+    }
+  };
+
+  // Handler to revert ready to pay
+  const handleRevertReadyToPay = async (payment: any) => {
+    if (!window.confirm('Are you sure you want to revert this payment from ready to pay?')) return;
+
+    try {
+      const paymentId = payment.id;
+      
+      let error;
+      if (isLegacyLead) {
+        // For legacy leads, update finances_paymentplanrow
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({
+            ready_to_pay: false,
+            ready_to_pay_text: null,
+            ready_to_pay_date: null,
+            ready_to_pay_by: null,
+          })
+          .eq('id', paymentId);
+        error = legacyError;
+      } else {
+        // For new leads, update payment_plans
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({
+            ready_to_pay: false,
+            ready_to_pay_text: null,
+            ready_to_pay_date: null,
+            ready_to_pay_by: null,
+          })
+          .eq('id', paymentId);
+        error = newError;
+      }
+
+      if (error) {
+        console.error('Error reverting ready to pay:', error);
+        toast.error('Failed to revert ready to pay');
+        return;
+      }
+
+      toast.success('Payment reverted from ready to pay');
+      await fetchFinanceData(currentCase!.id);
+    } catch (error) {
+      console.error('Error reverting ready to pay:', error);
+      toast.error('Failed to revert ready to pay');
     }
   };
 
@@ -808,11 +980,33 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                               <button
                                                 className="btn btn-xs btn-circle bg-gradient-to-tr from-green-500 to-green-600 text-white border-none shadow-sm flex items-center justify-center hover:from-green-600 hover:to-green-700 transition-all duration-200"
                                                 title="Mark as Paid"
-                                                onClick={() => handleMarkAsPaid(p.id)}
+                                                onClick={() => handleOpenPaidDateModal(p.id)}
                                                 style={{ padding: 0 }}
                                               >
                                                 <CurrencyDollarIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                                               </button>
+                                            )}
+                                            {!p.ready_to_pay && !p.paid && (
+                                              <button
+                                                className="btn btn-xs btn-circle bg-gradient-to-tr from-blue-500 to-blue-600 text-white border-none shadow-sm flex items-center justify-center hover:from-blue-600 hover:to-blue-700 transition-all duration-200"
+                                                title="Mark as Ready to Pay"
+                                                onClick={() => handleMarkAsReadyToPay(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <CheckIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                                              </button>
+                                            )}
+                                            {p.ready_to_pay && (
+                                              <div className="tooltip tooltip-top" data-tip={p.ready_to_pay_text || 'Ready to pay'}>
+                                                <button
+                                                  className="btn btn-xs btn-circle bg-gradient-to-tr from-yellow-500 to-yellow-600 text-white border-none shadow-sm flex items-center justify-center hover:from-yellow-600 hover:to-yellow-700 transition-all duration-200"
+                                                  title="Revert Ready to Pay"
+                                                  onClick={() => handleRevertReadyToPay(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <XMarkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                                                </button>
+                                              </div>
                                             )}
                                             {!p.proforma && (
                                               <button
@@ -908,10 +1102,28 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                     {!p.paid && (
                                       <button
                                         className="btn btn-xs bg-gradient-to-tr from-green-500 to-green-600 text-white border-none shadow-sm text-xs hover:from-green-600 hover:to-green-700 transition-all duration-200"
-                                        onClick={() => handleMarkAsPaid(p.id)}
+                                        onClick={() => handleOpenPaidDateModal(p.id)}
                                       >
                                         Mark Paid
                                       </button>
+                                    )}
+                                    {!p.ready_to_pay && !p.paid && (
+                                      <button
+                                        className="btn btn-xs bg-gradient-to-tr from-blue-500 to-blue-600 text-white border-none shadow-sm text-xs hover:from-blue-600 hover:to-blue-700 transition-all duration-200"
+                                        onClick={() => handleMarkAsReadyToPay(p)}
+                                      >
+                                        Ready to Pay
+                                      </button>
+                                    )}
+                                    {p.ready_to_pay && (
+                                      <div className="tooltip tooltip-top" data-tip={p.ready_to_pay_text || 'Ready to pay - Click to revert'}>
+                                        <button
+                                          className="btn btn-xs bg-gradient-to-tr from-yellow-500 to-yellow-600 text-white border-none shadow-sm text-xs hover:from-yellow-600 hover:to-yellow-700 transition-all duration-200"
+                                          onClick={() => handleRevertReadyToPay(p)}
+                                        >
+                                          Revert
+                                        </button>
+                                      </div>
                                     )}
                                     {!p.proforma && (
                                       <button
@@ -971,6 +1183,94 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
           <ChartBarIcon className="w-16 h-16 text-gray-400 mx-auto mb-4" />
           <h4 className="text-lg font-bold text-gray-800 mb-2">Select a Case</h4>
           <p className="text-gray-600">Please select a case to view its finance information.</p>
+        </div>
+      )}
+
+      {/* Paid Date Modal */}
+      {showPaidDateModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-bold mb-4">Select Paid Date</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Paid Date
+                </label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={paidDate}
+                  onChange={(e) => setPaidDate(e.target.value)}
+                  max={new Date().toISOString().split('T')[0]}
+                />
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowPaidDateModal(false);
+                    setSelectedPaymentForPaid(null);
+                    setPaidDate('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleConfirmMarkAsPaid}
+                  disabled={!paidDate}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Ready to Pay Modal */}
+      {showReadyToPayModal && selectedPaymentForReadyToPay && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-bold mb-4">Mark as Ready to Pay</h3>
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Text Sent to Finance
+                </label>
+                <textarea
+                  className="textarea textarea-bordered w-full h-24"
+                  placeholder="Enter text sent to finance..."
+                  value={readyToPayText}
+                  onChange={(e) => setReadyToPayText(e.target.value)}
+                />
+              </div>
+              {selectedPaymentForReadyToPay.ready_to_pay_text && (
+                <div className="bg-gray-50 p-3 rounded border">
+                  <p className="text-xs text-gray-600 mb-1">Previous text:</p>
+                  <p className="text-sm text-gray-800">{selectedPaymentForReadyToPay.ready_to_pay_text}</p>
+                </div>
+              )}
+              <div className="flex justify-end gap-2">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowReadyToPayModal(false);
+                    setSelectedPaymentForReadyToPay(null);
+                    setReadyToPayText('');
+                  }}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="btn btn-primary"
+                  onClick={handleConfirmMarkAsReadyToPay}
+                >
+                  Confirm
+                </button>
+              </div>
+            </div>
+          </div>
         </div>
       )}
     </div>
