@@ -4076,7 +4076,7 @@ const CollectionDueReport = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow
-      // Filter by 'date' column like CollectionFinancesReport does
+      // Filter by 'date' column and only include payments with due_date NOT NULL (sent to finance)
       console.log('🔍 Collection Due Report - Fetching legacy payment plans from finances_paymentplanrow...');
       let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
@@ -4095,17 +4095,16 @@ const CollectionDueReport = () => {
         `)
         .is('actual_date', null) // Only unpaid payments (actual_date IS NULL means not paid)
         .is('cancel_date', null)
-        .not('due_date', 'is', null); // due_date IS NOT NULL means ready_to_pay (sent to finances)
+        .not('due_date', 'is', null); // due_date IS NOT NULL means sent to finance
 
-      // For Collection Due, we filter by due_date value, not date column
-      // This ensures we get all payments DUE in the selected period, regardless of when they were created
+      // Filter by 'date' column from finances_paymentplanrow
       if (filters.fromDate) {
-        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date from:', filters.fromDate);
-        legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', filters.fromDate);
+        console.log('🔍 Collection Due Report - Filtering legacy payments by date column from:', filters.fromDate);
+        legacyPaymentsQuery = legacyPaymentsQuery.gte('date', filters.fromDate);
       }
       if (filters.toDate) {
-        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date to:', filters.toDate);
-        legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', filters.toDate);
+        console.log('🔍 Collection Due Report - Filtering legacy payments by date column to:', filters.toDate);
+        legacyPaymentsQuery = legacyPaymentsQuery.lte('date', filters.toDate);
       }
 
       const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
@@ -4487,7 +4486,8 @@ const CollectionDueReport = () => {
 
         const value = Number(payment.value || 0);
         let vat = Number(payment.vat_value || 0);
-        const currency = payment.accounting_currencies?.name || (payment.currency_id === 2 ? '€' : payment.currency_id === 3 ? '$' : payment.currency_id === 4 ? '£' : '₪');
+        const accountingCurrency: any = payment.accounting_currencies ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) : null;
+        const currency = accountingCurrency?.name || (payment.currency_id === 2 ? '€' : payment.currency_id === 3 ? '$' : payment.currency_id === 4 ? '£' : '₪');
         if (!vat && currency === '₪') {
           vat = Math.round(value * 0.18 * 100) / 100;
         }
@@ -4630,6 +4630,76 @@ const CollectionDueReport = () => {
         }
       }
 
+      // Fetch department information from tenants_employee for all handlers
+      const handlerIdsWithDepartments = Array.from(employeeMap.values())
+        .map(entry => entry.handlerId)
+        .filter((id): id is number => id !== null);
+      
+      if (handlerIdsWithDepartments.length > 0) {
+        console.log('🔍 Collection Due Report - Fetching departments from tenants_employee for', handlerIdsWithDepartments.length, 'handlers');
+        const { data: employeeDepartmentData, error: employeeDepartmentError } = await supabase
+          .from('tenants_employee')
+          .select(`
+            id,
+            display_name,
+            department_id,
+            tenant_departement!department_id (
+              id,
+              name
+            )
+          `)
+          .in('id', handlerIdsWithDepartments);
+        
+        if (!employeeDepartmentError && employeeDepartmentData) {
+          console.log('📊 Collection Due Report - Employee department data received:', employeeDepartmentData.length, 'records');
+          
+          // Create maps for department name and display name
+          const handlerDepartmentMap = new Map<number, string>();
+          const handlerDisplayNameMap = new Map<number, string>();
+          
+          employeeDepartmentData.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              // Map display_name
+              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+              handlerDisplayNameMap.set(empId, displayName);
+              
+              // Map department
+              const department = emp.tenant_departement;
+              if (department) {
+                const dept = Array.isArray(department) ? department[0] : department;
+                const departmentName = dept?.name || '—';
+                handlerDepartmentMap.set(empId, departmentName);
+                console.log('✅ Collection Due Report - Mapped handler to department:', { handlerId: empId, departmentName });
+              } else {
+                handlerDepartmentMap.set(empId, '—');
+              }
+            }
+          });
+          
+          // Update employeeMap entries with correct department and display_name from tenants_employee
+          employeeMap.forEach((entry, key) => {
+            if (entry.handlerId !== null) {
+              // Update display_name
+              const correctDisplayName = handlerDisplayNameMap.get(entry.handlerId);
+              if (correctDisplayName !== undefined) {
+                entry.handlerName = correctDisplayName;
+                console.log('✅ Collection Due Report - Updated handler name in employee map:', { handlerId: entry.handlerId, handlerName: correctDisplayName });
+              }
+              
+              // Update department
+              const correctDepartment = handlerDepartmentMap.get(entry.handlerId);
+              if (correctDepartment !== undefined) {
+                entry.departmentName = correctDepartment;
+                console.log('✅ Collection Due Report - Updated department in employee map:', { handlerId: entry.handlerId, departmentName: correctDepartment });
+              }
+            }
+          });
+        } else if (employeeDepartmentError) {
+          console.error('❌ Collection Due Report - Error fetching employee departments:', employeeDepartmentError);
+        }
+      }
+
       const employeeDataArray = Array.from(employeeMap.values()).map(entry => ({
         employee: entry.handlerName,
         department: entry.departmentName,
@@ -4642,13 +4712,26 @@ const CollectionDueReport = () => {
       console.log('📊 Collection Due Report - Employee data:', employeeDataArray);
       console.log('📊 Collection Due Report - Employee map entries:', Array.from(employeeMap.entries()).map(([key, entry]) => ({ key, handlerId: entry.handlerId, handlerName: entry.handlerName })));
 
-      // Group by department
+      // Group by department - use employee's department from tenants_employee
+      // First, create a map from handlerId to department name from the employeeMap
+      const handlerIdToDepartmentMap = new Map<number | null, string>();
+      employeeMap.forEach((entry) => {
+        if (entry.handlerId !== null) {
+          handlerIdToDepartmentMap.set(entry.handlerId, entry.departmentName);
+        }
+      });
+
       const departmentMap = new Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
       filteredPayments.forEach(payment => {
-        const key = payment.departmentId || 'unassigned';
+        // Get department from employee's department_id, not from payment's category
+        const employeeDepartment = payment.handlerId !== null 
+          ? (handlerIdToDepartmentMap.get(payment.handlerId) || '—')
+          : '—';
+        const key = employeeDepartment;
+        
         if (!departmentMap.has(key)) {
           departmentMap.set(key, {
-            departmentName: payment.departmentName,
+            departmentName: employeeDepartment,
             cases: new Set(),
             applicantsLeads: new Set(),
             applicants: 0,

@@ -93,7 +93,7 @@ const ASSIGNMENT_ROLE_FIELDS = [
   {
     label: 'Expert',
     legacyField: 'expert_id',
-    newNumericField: 'expert_id', // Only field used for expert in new leads
+    newNumericField: 'expert', // Only field used for expert in new leads (not expert_id)
     newTextField: null // NOT used - expert is saved as ID, not text
   },
   {
@@ -230,19 +230,64 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  // Load dismissed assignment keys from database
   useEffect(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      const stored = localStorage.getItem(ASSIGNMENT_SEEN_STORAGE_KEY);
-      if (stored) {
-        const parsed = JSON.parse(stored);
-        if (Array.isArray(parsed)) {
-          setSeenAssignmentKeys(new Set(parsed));
+    const loadDismissedAssignments = async () => {
+      // Get auth user ID directly from Supabase auth
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser?.id) return;
+      
+      try {
+        // Try to load from database first
+        const { data: dismissals, error } = await supabase
+          .from('assignment_notification_dismissals')
+          .select('dismissal_key')
+          .eq('user_id', authUser.id);
+        
+        if (!error && dismissals) {
+          const dismissedKeys = new Set(dismissals.map((d: any) => d.dismissal_key));
+          setSeenAssignmentKeys(dismissedKeys);
+          // Also update localStorage as cache
+          if (typeof window !== 'undefined') {
+            try {
+              localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(dismissedKeys)));
+            } catch (e) {
+              // Ignore localStorage errors
+            }
+          }
+          return;
+        }
+        
+        // Fallback to localStorage if database query fails (for backward compatibility)
+        if (typeof window !== 'undefined') {
+          const stored = localStorage.getItem(ASSIGNMENT_SEEN_STORAGE_KEY);
+          if (stored) {
+            const parsed = JSON.parse(stored);
+            if (Array.isArray(parsed)) {
+              setSeenAssignmentKeys(new Set(parsed));
+            }
+          }
+        }
+      } catch (error) {
+        console.error('Failed to load assignment notification dismissals:', error);
+        // Fallback to localStorage
+        if (typeof window !== 'undefined') {
+          try {
+            const stored = localStorage.getItem(ASSIGNMENT_SEEN_STORAGE_KEY);
+            if (stored) {
+              const parsed = JSON.parse(stored);
+              if (Array.isArray(parsed)) {
+                setSeenAssignmentKeys(new Set(parsed));
+              }
+            }
+          } catch (e) {
+            // Ignore errors
+          }
         }
       }
-    } catch (error) {
-      console.error('Failed to load assignment notification cache', error);
-    }
+    };
+    
+    loadDismissedAssignments();
   }, []);
 
   useEffect(() => {
@@ -269,12 +314,69 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, []);
 
-  const persistSeenAssignments = useCallback((nextSet: Set<string>) => {
-    if (typeof window === 'undefined') return;
-    try {
-      localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
-    } catch (error) {
-      console.error('Failed to persist assignment notification cache', error);
+  const persistSeenAssignments = useCallback(async (nextSet: Set<string>, keysToAdd: string[] = []) => {
+    // Get auth user ID directly from Supabase auth
+    const { data: { user: authUser } } = await supabase.auth.getUser();
+    if (!authUser?.id) {
+      // Fallback to localStorage if no user
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
+        } catch (error) {
+          console.error('Failed to persist assignment notification cache', error);
+        }
+      }
+      return;
+    }
+    
+    // Save new keys to database
+    if (keysToAdd.length > 0) {
+      try {
+        // Insert each dismissal individually, using upsert to handle duplicates
+        for (const key of keysToAdd) {
+          const { error } = await supabase
+            .from('assignment_notification_dismissals')
+            .upsert({
+              user_id: authUser.id,
+              dismissal_key: key,
+              dismissed_at: new Date().toISOString()
+            }, {
+              onConflict: 'user_id,dismissal_key'
+            });
+          
+          if (error) {
+            console.error('Failed to save dismissal to database:', error);
+          }
+        }
+        
+        // Also update localStorage as cache
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
+          } catch (e) {
+            // Ignore localStorage errors
+          }
+        }
+      } catch (error) {
+        console.error('Error saving dismissals to database:', error);
+        // Fallback to localStorage
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
+          } catch (e) {
+            // Ignore localStorage errors
+          }
+        }
+      }
+    } else {
+      // Just update localStorage cache
+      if (typeof window !== 'undefined') {
+        try {
+          localStorage.setItem(ASSIGNMENT_SEEN_STORAGE_KEY, JSON.stringify(Array.from(nextSet)));
+        } catch (error) {
+          console.error('Failed to persist assignment notification cache', error);
+        }
+      }
     }
   }, []);
 
@@ -282,15 +384,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (!keys.length) return;
     setSeenAssignmentKeys(prev => {
       const next = new Set(prev);
-      let changed = false;
+      const keysToAdd: string[] = [];
       keys.forEach(key => {
         if (!next.has(key)) {
           next.add(key);
-          changed = true;
+          keysToAdd.push(key);
         }
       });
-      if (changed) {
-        persistSeenAssignments(next);
+      if (keysToAdd.length > 0) {
+        persistSeenAssignments(next, keysToAdd);
       }
       return next;
     });

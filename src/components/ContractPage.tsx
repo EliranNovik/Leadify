@@ -11,13 +11,15 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
 import { v4 as uuidv4 } from 'uuid';
 // Import Heroicons for plus/minus
 import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
+// @ts-ignore - html2pdf.js doesn't have TypeScript definitions
+import html2pdf from 'html2pdf.js';
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
@@ -691,9 +693,52 @@ const ContractPage: React.FC = () => {
   // Add at the top, after useState declarations
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
 
+  // Collapse/expand state for entire sidebar (both boxes together)
+  const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
+
   // Track last content hash to prevent unnecessary updates
   const lastContentHashRef = useRef<string>('');
   const lastEditingStateRef = useRef<boolean>(false);
+  
+  // Ref to measure header height for sidebar positioning
+  const headerRef = useRef<HTMLDivElement>(null);
+  const [headerHeight, setHeaderHeight] = useState(80);
+
+  // Ref for contract content area (for PDF generation)
+  const contractContentRef = useRef<HTMLDivElement>(null);
+  
+  // PDF loading state
+  const [pdfLoading, setPdfLoading] = useState(false);
+
+  // Measure header height for sidebar positioning
+  useEffect(() => {
+    const updateHeaderHeight = () => {
+      if (headerRef.current) {
+        const height = headerRef.current.offsetHeight;
+        setHeaderHeight(height);
+      }
+    };
+
+    // Initial measurement
+    updateHeaderHeight();
+
+    // Update on window resize
+    window.addEventListener('resize', updateHeaderHeight);
+    
+    // Use ResizeObserver for more accurate measurements
+    const resizeObserver = new ResizeObserver(() => {
+      updateHeaderHeight();
+    });
+
+    if (headerRef.current) {
+      resizeObserver.observe(headerRef.current);
+    }
+
+    return () => {
+      window.removeEventListener('resize', updateHeaderHeight);
+      resizeObserver.disconnect();
+    };
+  }, []); // ResizeObserver handles all changes automatically
 
   // Fetch client data
   useEffect(() => {
@@ -2291,21 +2336,33 @@ const ContractPage: React.FC = () => {
             
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
-                <span key={baseId} className="inline-block mx-2">
-                  <img
-                    src={signatureData}
-                    alt="Signature"
-                    style={{ width: 200, height: 80, display: 'block', borderRadius: 8, border: '1px solid #ccc' }}
-                  />
+                <span key={baseId} className="inline-flex items-center gap-4 mx-2">
+                  <span className="inline-block">
+                    <img
+                      src={signatureData}
+                      alt="Signature"
+                      style={{ width: 200, height: 80, display: 'block', borderRadius: 8, border: '1px solid #ccc' }}
+                    />
+                  </span>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
+                        display: 'block',
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
                 </span>
               );
             } else {
               parts.push(
-                <div
-                  key={baseId}
-                  className="inline-block mx-2 align-middle"
-                  style={{ minWidth: 220, minHeight: 100 }}
-                >
+                <span key={baseId} className="inline-flex items-center gap-4 mx-2 align-middle" style={{ minWidth: 220, minHeight: 100 }}>
                   <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
                     <SignaturePad
                       ref={ref => {
@@ -2331,7 +2388,21 @@ const ContractPage: React.FC = () => {
                     />
                     <div className="text-xs text-gray-500 text-center mt-2 font-medium">Sign here</div>
                   </div>
-                </div>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
+                        display: 'block',
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
+                </span>
               );
             }
             lastIndex = match.index + match[1].length;
@@ -2388,39 +2459,79 @@ const ContractPage: React.FC = () => {
             );
           } else if (placeholder === '{{signature}}') {
             const id = `signature-${signatureCounter++}`;
-            parts.push(
-              <div
-                key={id}
-                className="inline-block mx-2 align-middle"
-                style={{ minWidth: 220, minHeight: 100 }}
-              >
-                <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
-                  <SignaturePad
-                    ref={ref => {
-                      if (ref && signaturePads) signaturePads[id] = ref;
-                    }}
-                    penColor="#4c6fff"
-                    backgroundColor="transparent"
-                    canvasProps={{
-                      width: 200,
-                      height: 80,
-                      style: {
+            const signatureData = clientInputs[id];
+            
+            if (signatureData && signatureData.startsWith('data:image/')) {
+              parts.push(
+                <span key={id} className="inline-flex items-center gap-4 mx-2">
+                  <span className="inline-block">
+                    <img
+                      src={signatureData}
+                      alt="Signature"
+                      style={{ width: 200, height: 80, display: 'block', borderRadius: 8, border: '1px solid #ccc' }}
+                    />
+                  </span>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
                         display: 'block',
-                        borderRadius: 8,
-                        background: 'transparent',
-                      },
-                    }}
-                    onEnd={() => {
-                      if (signaturePads && signaturePads[id]) {
-                        const dataUrl = signaturePads[id].getTrimmedCanvas().toDataURL('image/png');
-                        setClientInputs(inputs => ({ ...inputs, [id]: dataUrl }));
-                      }
-                    }}
-                  />
-                  <div className="text-xs text-gray-500 text-center mt-2 font-medium">Sign here</div>
-                </div>
-              </div>
-            );
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
+                </span>
+              );
+            } else {
+              parts.push(
+                <span key={id} className="inline-flex items-center gap-4 mx-2 align-middle" style={{ minWidth: 220, minHeight: 100 }}>
+                  <div className="border-2 border-blue-300 rounded-lg bg-gray-50 p-3">
+                    <SignaturePad
+                      ref={ref => {
+                        if (ref && signaturePads) signaturePads[id] = ref;
+                      }}
+                      penColor="#4c6fff"
+                      backgroundColor="transparent"
+                      canvasProps={{
+                        width: 200,
+                        height: 80,
+                        style: {
+                          display: 'block',
+                          borderRadius: 8,
+                          background: 'transparent',
+                        },
+                      }}
+                      onEnd={() => {
+                        if (signaturePads && signaturePads[id]) {
+                          const dataUrl = signaturePads[id].getTrimmedCanvas().toDataURL('image/png');
+                          setClientInputs(inputs => ({ ...inputs, [id]: dataUrl }));
+                        }
+                      }}
+                    />
+                    <div className="text-xs text-gray-500 text-center mt-2 font-medium">Sign here</div>
+                  </div>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
+                        display: 'block',
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
+                </span>
+              );
+            }
           } else if (placeholder === '\n') {
             parts.push(<br key={keyPrefix + '-br-' + match.index} />);
           }
@@ -2666,11 +2777,46 @@ const ContractPage: React.FC = () => {
       );
     }
     if (content.type === 'text' && content.text) {
-      // Replace all {{text:ID}} and {{signature:ID}} with the value from clientInputs[ID]
-      // But preserve {{date:ID}} placeholders - they should be rendered as date pickers, not replaced with text
-      let newText = content.text.replace(/\{\{text:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '')
-        .replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
-      // Don't replace date placeholders here - they should remain as placeholders to be rendered as date pickers
+      let newText = content.text;
+      
+      // Replace {{text:ID}} fields with actual client input values
+      newText = newText.replace(/\{\{text:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '');
+      
+      // Replace {{signature:ID}} fields with signature data
+      newText = newText.replace(/\{\{signature:([^}]+)\}\}/g, (_m: string, id: string) => clientInputs[id] || '[Signed]');
+      
+      // Replace {{date:ID}} fields with formatted date values
+      newText = newText.replace(/\{\{date:([^}]+)\}\}/g, (_m: string, id: string) => {
+        const dateValue = clientInputs[id] || '';
+        if (!dateValue) return '';
+        
+        // Format date for display
+        try {
+          if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+            const date = new Date(dateValue + 'T00:00:00');
+            if (!isNaN(date.getTime())) {
+              return date.toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              });
+            }
+          } else {
+            const date = new Date(dateValue);
+            if (!isNaN(date.getTime())) {
+              return date.toLocaleDateString('en-US', { 
+                year: 'numeric', 
+                month: 'long', 
+                day: 'numeric' 
+              });
+            }
+          }
+        } catch (e) {
+          // If formatting fails, return the raw value
+        }
+        return dateValue;
+      });
+      
       return { ...content, text: newText };
     }
     if (content.content) {
@@ -2757,11 +2903,12 @@ const ContractPage: React.FC = () => {
       let text = content.text;
       text = fillAllPlaceholders(text, customPricing, client, contract);
 
-      // Handle both {{text}} and {{text:ID}} placeholders that might still be in signed contracts
-      if (text && /\{\{(text|signature)(:[^}]+)?\}\}/.test(text)) {
+      // Handle both {{text}}, {{date}}, and {{signature}} placeholders that might still be in signed contracts
+      if (text && /\{\{(text|date|signature)(:[^}]+)?\}\}/.test(text)) {
         const parts = [];
         let lastIndex = 0;
-        const regex = /({{text(:[^}]+)?}}|{{signature(:[^}]+)?}}|\n)/g;
+        // Match date FIRST, then signature, then text to prevent confusion
+        const regex = /({{date(:[^}]+)?}}|{{signature(:[^}]+)?}}|{{text(:[^}]+)?}}|\n)/g;
         let match;
         while ((match = regex.exec(text)) !== null) {
           if (match.index > lastIndex) {
@@ -2769,9 +2916,116 @@ const ContractPage: React.FC = () => {
             parts.push(normalText);
           }
           const placeholder = match[1];
+          const dateMatch = placeholder.match(/^{{date(:[^}]+)?}}$/);
           const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
           const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
-          if (textMatch) {
+          
+          // Handle date fields first
+          if (dateMatch) {
+            const id = dateMatch[1] ? dateMatch[1].substring(1) : null;
+            
+            // Try to find the date value in clientInputs
+            // The ID from placeholder might be like "date-1" or just a number
+            let dateValue = '';
+            
+            if (id) {
+              // Try exact match first
+              dateValue = clientInputs[id] || '';
+              
+              // If no exact match, try variations
+              if (!dateValue) {
+                // Try with different ID formats
+                const variations = [
+                  `date-${id}`,
+                  id.replace(/^date-/, ''),
+                  id,
+                  ...Object.keys(clientInputs).filter(key => 
+                    key.includes(id) || id.includes(key)
+                  )
+                ];
+                
+                for (const variant of variations) {
+                  if (clientInputs[variant]) {
+                    dateValue = clientInputs[variant];
+                    break;
+                  }
+                }
+              }
+            }
+            
+            // If still no value, try to find any date field
+            if (!dateValue) {
+              const dateKeys = Object.keys(clientInputs).filter(key => 
+                key.toLowerCase().includes('date')
+              );
+              
+              if (dateKeys.length === 1) {
+                // Only one date field, use it
+                dateValue = clientInputs[dateKeys[0]];
+              } else if (dateKeys.length > 0) {
+                // Multiple date fields - try to match by numeric part if ID has numbers
+                if (id) {
+                  const numericMatch = id.match(/\d+/);
+                  if (numericMatch) {
+                    const numId = numericMatch[0];
+                    const matchingKey = dateKeys.find(key => key.includes(numId));
+                    if (matchingKey) {
+                      dateValue = clientInputs[matchingKey];
+                    }
+                  }
+                }
+                
+                // If still no match and only one date key, use it
+                if (!dateValue && dateKeys.length === 1) {
+                  dateValue = clientInputs[dateKeys[0]];
+                }
+              }
+            }
+            
+            let displayDate = '';
+            
+            // Format date for display
+            if (dateValue) {
+              if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                // Already in YYYY-MM-DD format, convert to readable format
+                try {
+                  const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
+                  if (!isNaN(date.getTime())) {
+                    displayDate = date.toLocaleDateString('en-US', { 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    });
+                  }
+                } catch (e) {
+                  displayDate = dateValue;
+                }
+              } else {
+                try {
+                  const date = new Date(dateValue);
+                  if (!isNaN(date.getTime())) {
+                    displayDate = date.toLocaleDateString('en-US', { 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    });
+                  }
+                } catch (e) {
+                  displayDate = dateValue;
+                }
+              }
+            }
+            
+            // For signed contracts, show the formatted date
+            parts.push(
+              <span 
+                key={id || 'date-field'} 
+                className="inline-block bg-green-50 border-2 border-green-300 rounded-lg px-3 py-2 mx-1 text-sm font-medium text-green-800 min-w-[150px]"
+              >
+                {displayDate || dateValue || '[No date provided]'}
+              </span>
+            );
+          } else if (textMatch) {
             const id = textMatch[1] ? textMatch[1].substring(1) : 'text-input';
             const clientValue = clientInputs[id] || '[No input provided]';
             // For signed contracts, show the actual client input value
@@ -2786,18 +3040,50 @@ const ContractPage: React.FC = () => {
             // For signed contracts, show the actual signature if available
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
-                <span key={id} className="inline-block mx-1">
-                  <img
-                    src={signatureData}
-                    alt="Client Signature"
-                    style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
-                  />
+                <span key={id} className="inline-flex items-center gap-4 mx-1">
+                  <span className="inline-block">
+                    <img
+                      src={signatureData}
+                      alt="Client Signature"
+                      style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
+                    />
+                  </span>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
+                        display: 'block',
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
                 </span>
               );
             } else {
               parts.push(
-                <span key={id} className="inline-block bg-blue-50 border-2 border-blue-300 rounded-lg px-3 py-2 mx-1 text-sm font-medium text-blue-800">
-                  ✓ [Client Signature]
+                <span key={id} className="inline-flex items-center gap-4 mx-1">
+                  <span className="inline-block bg-blue-50 border-2 border-blue-300 rounded-lg px-3 py-2 text-sm font-medium text-blue-800">
+                    ✓ [Client Signature]
+                  </span>
+                  {/* Stamp image */}
+                  <div className="flex-shrink-0">
+                    <img 
+                      src="/חתימה מסמכים (5).png" 
+                      alt="Stamp" 
+                      style={{ 
+                        width: 'auto', 
+                        height: 150, 
+                        maxWidth: 250,
+                        display: 'block',
+                        objectFit: 'contain'
+                      }} 
+                    />
+                  </div>
                 </span>
               );
             }
@@ -2825,12 +3111,28 @@ const ContractPage: React.FC = () => {
           }
           const imageData = match[1];
           parts.push(
-            <span key={keyPrefix + '-img-' + match.index} className="inline-block mx-1">
-              <img
-                src={imageData}
-                alt="Signature"
-                style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
-              />
+            <span key={keyPrefix + '-img-' + match.index} className="inline-flex items-center gap-4 mx-1">
+              <span className="inline-block">
+                <img
+                  src={imageData}
+                  alt="Signature"
+                  style={{ width: 150, height: 60, display: 'block', borderRadius: 4, border: '1px solid #ccc' }}
+                />
+              </span>
+              {/* Stamp image */}
+              <div className="flex-shrink-0">
+                <img 
+                  src="/חתימה מסמכים (5).png" 
+                  alt="Stamp" 
+                  style={{ 
+                    width: 'auto', 
+                    height: 150, 
+                    maxWidth: 250,
+                    display: 'block',
+                    objectFit: 'contain'
+                  }} 
+                />
+              </div>
             </span>
           );
           lastIndex = match.index + match[1].length;
@@ -3025,6 +3327,128 @@ const ContractPage: React.FC = () => {
     }
   };
 
+  // Print contract handler
+  const handlePrint = () => {
+    window.print();
+  };
+
+  // Download PDF handler
+  const handleDownloadPDF = async () => {
+    if (!contractContentRef.current) return;
+    setPdfLoading(true);
+    const clientName = (contract && contract.contact_name) ? contract.contact_name : (client?.name || 'Client');
+    const filename = `contract-${clientName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${contract.id}.pdf`;
+    
+    try {
+      // Clone and pre-process the element to convert all colors to RGB
+      const elementToPrint = contractContentRef.current.cloneNode(true) as HTMLElement;
+      elementToPrint.id = 'contract-print-area-pdf';
+      
+      // Add to DOM temporarily for processing
+      elementToPrint.style.position = 'absolute';
+      elementToPrint.style.left = '-9999px';
+      elementToPrint.style.top = '0';
+      elementToPrint.style.visibility = 'hidden';
+      document.body.appendChild(elementToPrint);
+      
+      // Convert all computed styles to inline RGB styles
+      const convertColorsToRGB = (el: HTMLElement) => {
+        try {
+          const computed = window.getComputedStyle(el);
+          
+          // Convert background colors
+          const bgColor = computed.backgroundColor;
+          if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
+            el.style.setProperty('background-color', bgColor, 'important');
+          }
+          
+          // Remove gradient backgrounds
+          if (computed.backgroundImage && computed.backgroundImage !== 'none') {
+            el.style.setProperty('background-image', 'none', 'important');
+            if (!bgColor || bgColor === 'rgba(0, 0, 0, 0)' || bgColor === 'transparent') {
+              el.style.setProperty('background-color', '#ffffff', 'important');
+            }
+          }
+          
+          // Convert text colors
+          const textColor = computed.color;
+          if (textColor) {
+            el.style.setProperty('color', textColor, 'important');
+          }
+          
+          // Process children
+          Array.from(el.children).forEach(child => {
+            convertColorsToRGB(child as HTMLElement);
+          });
+        } catch (e) {
+          // Ignore errors for individual elements
+        }
+      };
+      
+      // Wait for clone to be in DOM, then process
+      setTimeout(() => {
+        convertColorsToRGB(elementToPrint);
+        
+        // Add CSS to override any remaining problematic styles
+        const styleOverride = document.createElement('style');
+        styleOverride.id = 'pdf-style-override';
+        styleOverride.textContent = `
+          #contract-print-area-pdf * {
+            background-image: none !important;
+          }
+          #contract-print-area-pdf [class*="gradient"] {
+            background: #ffffff !important;
+            background-color: #ffffff !important;
+            background-image: none !important;
+          }
+        `;
+        document.head.appendChild(styleOverride);
+        
+        // Wait a bit more for styles to apply
+        setTimeout(() => {
+          html2pdf(elementToPrint, {
+            margin: [10, 10, 10, 10],
+            filename: filename,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { 
+              scale: 2, 
+              useCORS: true, 
+              logging: false
+            },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+          }).then(() => {
+            cleanup();
+            setPdfLoading(false);
+          }).catch((error: any) => {
+            cleanup();
+            throw error;
+          });
+        }, 200);
+      }, 100);
+      
+      const cleanup = () => {
+        if (elementToPrint.parentNode) {
+          document.body.removeChild(elementToPrint);
+        }
+        const styleEl = document.getElementById('pdf-style-override');
+        if (styleEl) {
+          document.head.removeChild(styleEl);
+        }
+      };
+      
+    } catch (error: any) {
+      console.error('Error generating PDF:', error);
+      setPdfLoading(false);
+      
+      // Suggest using print instead
+      if (confirm('PDF generation failed due to unsupported color formats. Would you like to use the Print dialog instead? (You can save as PDF from there)')) {
+        handlePrint();
+      } else {
+        alert('Failed to generate PDF. Please try using the Print button and save as PDF from the print dialog.');
+      }
+    }
+  };
+
   if (loading) return (
     <div className="min-h-screen bg-white flex items-center justify-center">
       <div className="text-center">
@@ -3105,16 +3529,90 @@ const ContractPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
       {/* Header */}
-      <div className="bg-white shadow-sm border-b border-gray-200">
+      <div ref={headerRef} className="bg-white shadow-sm border-b border-gray-200 print-hide">
         <div className="w-full px-2 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-48">
           <div className="flex justify-between items-center py-2 sm:py-4">
-            <div className="flex items-center space-x-1 sm:space-x-4">
+            <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
               <div className="min-w-0 flex-1">
-                <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template.name || 'Contract'}</h1>
-                <div className="flex flex-col">
-                  <p className="text-xs sm:text-sm text-gray-500 truncate">
-                    Client: {client?.name} ({leadNumber})
-                  </p>
+                <div className="flex items-center gap-2 sm:gap-3 flex-wrap">
+                  {status === 'signed' && (
+                    <span className="badge badge-success badge-sm sm:badge-md">Signed</span>
+                  )}
+                  {status === 'draft' && (
+                    <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
+                  )}
+                  <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template.name || 'Contract'}</h1>
+                  {/* Buttons next to title on desktop only */}
+                  <div className="hidden sm:flex items-center gap-1 sm:gap-2">
+                    <button
+                      className="btn btn-xs sm:btn-sm text-white border-none"
+                      onClick={handleShareContractLink}
+                      title="Copy public contract link"
+                      style={{ backgroundColor: '#4218CC' }}
+                      onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
+                      onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
+                    >
+                      Share
+                    </button>
+                    {status === 'signed' && (
+                      <>
+                        <button
+                          className="btn btn-outline btn-xs sm:btn-sm"
+                          onClick={handleRefreshContract}
+                          title="Refresh contract data"
+                        >
+                          Refresh
+                        </button>
+                        <button
+                          className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
+                          onClick={handlePrint}
+                          title="Print contract"
+                        >
+                          <PrinterIcon className="w-4 h-4" />
+                          <span>Print</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:gap-2 sm:mt-1">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <p className="text-xs sm:text-sm text-gray-500 truncate">
+                      Client: {client?.name} • Lead #{leadNumber || client?.lead_number || 'N/A'}
+                    </p>
+                    {/* Buttons on same row as client info on mobile */}
+                    <div className="flex items-center gap-1 sm:hidden">
+                      <button
+                        className="btn btn-xs text-white border-none"
+                        onClick={handleShareContractLink}
+                        title="Copy public contract link"
+                        style={{ backgroundColor: '#4218CC' }}
+                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#3414A3'}
+                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#4218CC'}
+                      >
+                        Share
+                      </button>
+                      {status === 'signed' && (
+                        <>
+                          <button
+                            className="btn btn-outline btn-xs"
+                            onClick={handleRefreshContract}
+                            title="Refresh contract data"
+                          >
+                            Refresh
+                          </button>
+                          <button
+                            className="btn btn-outline btn-xs gap-1"
+                            onClick={handlePrint}
+                            title="Print contract"
+                          >
+                            <PrinterIcon className="w-4 h-4" />
+                            <span>Print</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
+                  </div>
                   {contract?.contact_name && contract.contact_name !== client?.name && (
                     <p className="text-xs sm:text-sm text-purple-600 font-medium truncate">
                       Contact: {contract.contact_name}
@@ -3133,33 +3631,12 @@ const ContractPage: React.FC = () => {
             <div className="flex items-center space-x-1 sm:space-x-2">
               {!editing && status === 'draft' && (
                 <button className="btn btn-outline btn-xs sm:btn-sm" onClick={() => setEditing(true)}>
-                  <span className="hidden sm:inline">Edit</span>
-                  <span className="sm:hidden">E</span>
+                  Edit
                 </button>
               )}
               {editing && (
                 <button className="btn btn-primary btn-xs sm:btn-sm" onClick={handleSaveEdit}>
-                  <span className="hidden sm:inline">Save</span>
-                  <span className="sm:hidden">S</span>
-                </button>
-              )}
-
-              <button
-                className="btn btn-info btn-xs sm:btn-sm"
-                onClick={handleShareContractLink}
-                title="Copy public contract link"
-              >
-                <span className="hidden sm:inline">Share</span>
-                <span className="sm:hidden">S</span>
-              </button>
-              {status === 'signed' && (
-                <button
-                  className="btn btn-outline btn-xs sm:btn-sm"
-                  onClick={handleRefreshContract}
-                  title="Refresh contract data"
-                >
-                  <span className="hidden sm:inline">Refresh</span>
-                  <span className="sm:hidden">R</span>
+                  Save
                 </button>
               )}
             </div>
@@ -3168,11 +3645,15 @@ const ContractPage: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 xl:px-16 2xl:px-32 py-8">
-        <div className="grid grid-cols-1 xl:grid-cols-[2fr_1fr] gap-10 xl:gap-16 items-start">
+      <div className="w-full px-2 sm:px-6 xl:px-16 2xl:px-32 py-8 print-content-wrapper">
+        <div className="relative">
           {/* Contract Content */}
-          <div className="w-full xl:pr-0">
-            <div className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
+          <div className={`w-full transition-all duration-300 ${
+            !isSidebarExpanded
+              ? 'xl:mr-0'
+              : 'xl:mr-[450px] 2xl:mr-[500px]'
+          }`}>
+            <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
                   {editing ? (
                     <EditorContent editor={editor} />
                   ) : status === 'signed' ? (
@@ -3201,80 +3682,126 @@ const ContractPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Sidebar */}
-          <div className="w-full xl:w-[450px] 2xl:w-[500px]">
-            <div className="space-y-6">
-              {/* Contact Information */}
-              {contract?.contact_name && (
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                  <div className="p-6">
-                    <h3 className="text-lg font-semibold mb-4 text-gray-900">Contact Information</h3>
-                    <div className="space-y-3 text-sm">
-                      <div className="text-gray-700">
-                        <span className="font-medium">Name:</span>
-                        <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
+          {/* Sidebar - Fixed to right edge */}
+          <div 
+            className={`fixed right-0 z-40 transition-all duration-300 ease-in-out hidden xl:block print-hide ${
+              !isSidebarExpanded
+                ? 'translate-x-[calc(100%-60px)]' 
+                : 'translate-x-0'
+            }`}
+            style={{
+              top: `${headerHeight}px`,
+              height: `calc(100vh - ${headerHeight}px)`
+            }}
+          >
+            <div className={`bg-white shadow-2xl border-l border-gray-200 overflow-y-auto h-full transition-all duration-300 ${
+              !isSidebarExpanded
+                ? 'w-[60px]' 
+                : 'w-[450px] 2xl:w-[500px]'
+            }`}>
+              {!isSidebarExpanded ? (
+                /* Collapsed state - show toggle button */
+                <div className="flex flex-col items-center justify-center h-full p-2">
+                  <button
+                    onClick={() => setIsSidebarExpanded(true)}
+                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors w-full"
+                  >
+                    <ChevronDownIcon className="w-6 h-6 text-gray-500 transform -rotate-90" />
+                    <span className="text-xs font-semibold text-gray-700" style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}>
+                      Expand
+                    </span>
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-6 p-6">
+                  {/* Toggle button at the top */}
+                  <button
+                    onClick={() => setIsSidebarExpanded(false)}
+                    className="w-full flex items-center justify-end gap-2 p-2 hover:bg-gray-50 rounded-lg transition-colors mb-2"
+                  >
+                    <span className="text-sm font-medium text-gray-700">Collapse</span>
+                    <ChevronUpIcon className="w-5 h-5 text-gray-500 transform rotate-90" />
+                  </button>
+
+                  {/* Combined Contact Information & Contract Details */}
+                  <div className="bg-white rounded-lg shadow-lg border border-gray-200">
+                    <div className="p-6">
+                      <h3 className="text-lg font-semibold mb-4 text-gray-900">Contract Details</h3>
+                      
+                      <div className="space-y-6">
+                    {/* Contact Information Section */}
+                    {contract?.contact_name && (
+                      <div>
+                        <h4 className="text-md font-semibold mb-3 text-gray-800">Contact Information</h4>
+                        <div className="space-y-3 text-sm">
+                          <div className="text-gray-700">
+                            <span className="font-medium">Name:</span>
+                            <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
+                          </div>
+                          {contract.contact_email && (
+                            <div className="text-gray-700">
+                              <span className="font-medium">Email:</span>
+                              <span className="ml-2">{contract.contact_email}</span>
+                            </div>
+                          )}
+                          {contract.contact_phone && (
+                            <div className="text-gray-700">
+                              <span className="font-medium">Phone:</span>
+                              <span className="ml-2">{contract.contact_phone}</span>
+                            </div>
+                          )}
+                          {contract.contact_mobile && (
+                            <div className="text-gray-700">
+                              <span className="font-medium">Mobile:</span>
+                              <span className="ml-2">{contract.contact_mobile}</span>
+                            </div>
+                          )}
+                        </div>
                       </div>
-                      {contract.contact_email && (
-                        <div className="text-gray-700">
-                          <span className="font-medium">Email:</span>
-                          <span className="ml-2">{contract.contact_email}</span>
-                        </div>
-                      )}
-                      {contract.contact_phone && (
-                        <div className="text-gray-700">
-                          <span className="font-medium">Phone:</span>
-                          <span className="ml-2">{contract.contact_phone}</span>
-                        </div>
-                      )}
-                      {contract.contact_mobile && (
-                        <div className="text-gray-700">
-                          <span className="font-medium">Mobile:</span>
-                          <span className="ml-2">{contract.contact_mobile}</span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </div>
-              )}
-
-              {/* Contract Details */}
-              <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                <div className="p-6">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="text-lg font-semibold text-gray-900">Contract Details</h3>
-                    {status !== 'signed' && (
-                      <button
-                        onClick={() => setShowChangeTemplateModal(true)}
-                        className="btn btn-sm btn-outline btn-primary"
-                      >
-                        Change Template
-                      </button>
                     )}
-                  </div>
-                  <div className="space-y-3 text-sm">
-                    <div>
-                      <span className="font-medium text-gray-700">Template:</span>
-                      <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
+                    
+                    {/* Contract Details Section */}
+                    <div className={contract?.contact_name ? "pt-3 border-t border-gray-200" : ""}>
+                      <div className="flex items-center justify-between mb-3">
+                        <h4 className="text-md font-semibold text-gray-800">Contract Information</h4>
+                        {status !== 'signed' && (
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setShowChangeTemplateModal(true);
+                            }}
+                            className="btn btn-sm btn-outline btn-primary"
+                          >
+                            Change Template
+                          </button>
+                        )}
+                      </div>
+                      <div className="space-y-3 text-sm">
+                        <div>
+                          <span className="font-medium text-gray-700">Template:</span>
+                          <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
+                        </div>
+                        <div>
+                          <span className="font-medium text-gray-700">Status:</span>
+                          <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
+                        </div>
+                        <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
+                        <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
+                        {contract.signed_at && (
+                          <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>
+                        )}
+                      </div>
                     </div>
-                    <div>
-                      <span className="font-medium text-gray-700">Status:</span>
-                      <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
+                      </div>
                     </div>
-                    <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
-                    <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
-                    {contract.signed_at && (
-                      <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>
-                    )}
                   </div>
-                </div>
-              </div>
 
-              {/* Editable Pricing Panel */}
-              <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                <div className="p-6 space-y-6">
-                  <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
-                  
-                  {/* Currency Selection */}
+                  {/* Editable Pricing Panel */}
+                  <div className="bg-white rounded-lg shadow-lg border border-gray-200">
+                    <div className="p-6 space-y-6">
+                      <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
+                      
+                      {/* Currency Selection */}
                   {status !== 'signed' && (
                     <div className="space-y-3 pb-4 border-b border-gray-200">
                       <label className="font-medium text-gray-700">Currency Type:</label>
@@ -3684,10 +4211,536 @@ const ContractPage: React.FC = () => {
                   ) : (
                     <div className="text-gray-500">Loading pricing data...</div>
                   )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Mobile Sidebar - Normal layout on mobile */}
+          <div className="xl:hidden w-full mt-6 print-hide">
+            <button
+              onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
+              className="w-full flex items-center justify-between p-4 mb-4 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+            >
+              <span className="text-sm font-semibold text-gray-700">
+                {isSidebarExpanded ? 'Collapse Sidebar' : 'Expand Sidebar'}
+              </span>
+              {isSidebarExpanded ? (
+                <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+              ) : (
+                <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+              )}
+            </button>
+            
+            {isSidebarExpanded && (
+              <div className="space-y-6">
+                {/* Combined Contact Information & Contract Details */}
+                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
+                  <div className="p-6">
+                    <h3 className="text-lg font-semibold mb-4 text-gray-900">Contract Details</h3>
+                    
+                    <div className="space-y-6">
+                      {/* Contact Information Section */}
+                      {contract?.contact_name && (
+                        <div>
+                          <h4 className="text-md font-semibold mb-3 text-gray-800">Contact Information</h4>
+                          <div className="space-y-3 text-sm">
+                            <div className="text-gray-700">
+                              <span className="font-medium">Name:</span>
+                              <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
+                            </div>
+                            {contract.contact_email && (
+                              <div className="text-gray-700">
+                                <span className="font-medium">Email:</span>
+                                <span className="ml-2">{contract.contact_email}</span>
+                              </div>
+                            )}
+                            {contract.contact_phone && (
+                              <div className="text-gray-700">
+                                <span className="font-medium">Phone:</span>
+                                <span className="ml-2">{contract.contact_phone}</span>
+                              </div>
+                            )}
+                            {contract.contact_mobile && (
+                              <div className="text-gray-700">
+                                <span className="font-medium">Mobile:</span>
+                                <span className="ml-2">{contract.contact_mobile}</span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      )}
+                      
+                      {/* Contract Details Section */}
+                      <div className={contract?.contact_name ? "pt-3 border-t border-gray-200" : ""}>
+                        <div className="flex items-center justify-between mb-3">
+                          <h4 className="text-md font-semibold text-gray-800">Contract Information</h4>
+                          {status !== 'signed' && (
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setShowChangeTemplateModal(true);
+                              }}
+                              className="btn btn-sm btn-outline btn-primary"
+                            >
+                              Change Template
+                            </button>
+                          )}
+                        </div>
+                        <div className="space-y-3 text-sm">
+                          <div>
+                            <span className="font-medium text-gray-700">Template:</span>
+                            <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
+                          </div>
+                          <div>
+                            <span className="font-medium text-gray-700">Status:</span>
+                            <span className={`badge badge-sm ml-2 ${status === 'signed' ? 'badge-success' : 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none'}`}>{status}</span>
+                          </div>
+                          <div className="text-gray-700 flex items-center"><span className="font-medium">Applicants:</span> <span className="ml-2">{customPricing?.applicant_count || ''}</span></div>
+                          <div className="text-gray-700"><span className="font-medium">Created:</span> {new Date(contract.created_at).toLocaleDateString()}</div>
+                          {contract.signed_at && (
+                            <div className="text-gray-700"><span className="font-medium">Signed:</span> {new Date(contract.signed_at).toLocaleDateString()}</div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Pricing Panel - Mobile */}
+                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
+                  <div className="p-6 space-y-6">
+                    <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
+                    
+                    {/* Currency Selection */}
+                    {status !== 'signed' && (
+                      <div className="space-y-3 pb-4 border-b border-gray-200">
+                        <label className="font-medium text-gray-700">Currency Type:</label>
+                        <div className="flex gap-2">
+                          <button
+                            type="button"
+                            className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
+                            onClick={() => {
+                              setCurrencyType('USD');
+                              // Reload pricing tiers from template for USD
+                              if (template?.default_pricing_tiers_usd) {
+                                const pricingTiers = template.default_pricing_tiers_usd;
+                                const currentTierKey = customPricing?.applicant_count 
+                                  ? (customPricing.applicant_count === 1 ? '1' :
+                                     customPricing.applicant_count === 2 ? '2' :
+                                     customPricing.applicant_count === 3 ? '3' :
+                                     customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
+                                     customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
+                                     customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
+                                  : '1';
+                                const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
+                                const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                                setCustomPricing((prev: any) => ({
+                                  ...prev,
+                                  pricing_tiers: pricingTiers,
+                                  currency: subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$',
+                                  total_amount: total,
+                                  final_amount: total - (prev.discount_amount || 0)
+                                }));
+                              }
+                            }}
+                          >
+                            USD/GBP/EUR
+                          </button>
+                          <button
+                            type="button"
+                            className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
+                            onClick={() => {
+                              setCurrencyType('NIS');
+                              // Reload pricing tiers from template for NIS
+                              if (template?.default_pricing_tiers_nis) {
+                                const pricingTiers = template.default_pricing_tiers_nis;
+                                const currentTierKey = customPricing?.applicant_count 
+                                  ? (customPricing.applicant_count === 1 ? '1' :
+                                     customPricing.applicant_count === 2 ? '2' :
+                                     customPricing.applicant_count === 3 ? '3' :
+                                     customPricing.applicant_count >= 4 && customPricing.applicant_count <= 7 ? '4-7' :
+                                     customPricing.applicant_count >= 8 && customPricing.applicant_count <= 9 ? '8-9' :
+                                     customPricing.applicant_count >= 10 && customPricing.applicant_count <= 15 ? '10-15' : '16+')
+                                  : '1';
+                                const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
+                                const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                                setCustomPricing((prev: any) => ({
+                                  ...prev,
+                                  pricing_tiers: pricingTiers,
+                                  currency: '₪',
+                                  total_amount: total,
+                                  final_amount: total - (prev.discount_amount || 0)
+                                }));
+                              }
+                            }}
+                          >
+                            NIS
+                          </button>
+                        </div>
+                        
+                        {/* Sub-currency selector for USD type */}
+                        {currencyType === 'USD' && (
+                          <div>
+                            <label className="font-medium text-gray-700 text-sm mb-2 block">Select Currency:</label>
+                            <select
+                              className="select select-bordered select-sm w-full"
+                              value={subCurrency}
+                              onChange={(e) => {
+                                const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
+                                setSubCurrency(newSubCurrency);
+                                const currencySymbol = newSubCurrency === 'EUR' ? '€' : newSubCurrency === 'GBP' ? '£' : '$';
+                                setCustomPricing((prev: any) => ({
+                                  ...prev,
+                                  currency: currencySymbol
+                                }));
+                              }}
+                            >
+                              <option value="USD">USD ($)</option>
+                              <option value="GBP">GBP (£)</option>
+                              <option value="EUR">EUR (€)</option>
+                            </select>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    {customPricing ? (
+                      <>
+                        {/* Applicant Count */}
+                        <div className="flex items-center justify-between">
+                          <label className="font-medium text-gray-700">Number of Applicants:</label>
+                          <div className="flex items-center gap-3">
+                            <button
+                              className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
+                              style={{ width: 40, height: 40 }}
+                              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
+                              onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
+                              aria-label="Decrease number of applicants"
+                              type="button"
+                              disabled={status === 'signed'}
+                            >
+                              <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                            </button>
+                            <input
+                              type="number"
+                              min={1}
+                              max={50}
+                              className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
+                              style={{ height: 48, borderColor: '#391BC8' }}
+                              value={customPricing.applicant_count || 1}
+                              onChange={e => handleApplicantCountChange(Number(e.target.value))}
+                              onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                              onBlur={(e) => e.target.style.borderColor = '#391BC8'}
+                              inputMode="numeric"
+                              pattern="[0-9]*"
+                              disabled={status === 'signed'}
+                            />
+                            <button
+                              className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
+                              style={{ width: 40, height: 40 }}
+                              onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                              onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
+                              onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
+                              aria-label="Increase number of applicants"
+                              type="button"
+                              disabled={status === 'signed'}
+                            >
+                              <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Pricing Tiers */}
+                        <div>
+                          <label className="block font-medium text-gray-700 mb-3">Pricing Tiers (Price per applicant):</label>
+                          <div className="space-y-2">
+                            {customPricing.pricing_tiers ? (() => {
+                              const tierStructure = [
+                                { key: '1', label: 'For one applicant' },
+                                { key: '2', label: 'For 2 applicants' },
+                                { key: '3', label: 'For 3 applicants' },
+                                { key: '4-7', label: 'For 4-7 applicants' },
+                                { key: '8-9', label: 'For 8-9 applicants' },
+                                { key: '10-15', label: 'For 10-15 applicants' },
+                                { key: '16+', label: 'For 16 applicants or more' }
+                              ];
+
+                              const getCurrentTierKey = (count: number) => {
+                                if (count === 1) return '1';
+                                if (count === 2) return '2';
+                                if (count === 3) return '3';
+                                if (count >= 4 && count <= 7) return '4-7';
+                                if (count >= 8 && count <= 9) return '8-9';
+                                if (count >= 10 && count <= 15) return '10-15';
+                                return '16+';
+                              };
+
+                              const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
+
+                              return tierStructure.map(tier => {
+                                const price = customPricing.pricing_tiers[tier.key] || 0;
+                                const isActive = tier.key === currentTierKey;
+                                return (
+                                  <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${isActive
+                                      ? 'bg-white border-2'
+                                      : 'bg-white border border-gray-200'
+                                    }`}
+                                    style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
+                                  >
+                                    <span className="text-base font-semibold text-gray-700">
+                                      {tier.label}:
+                                    </span>
+                                    <div className="flex items-center gap-3">
+                                      <button
+                                        className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
+                                        style={{ width: 40, height: 40 }}
+                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
+                                        onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
+                                        aria-label={`Decrease price for ${tier.label}`}
+                                        type="button"
+                                        disabled={status === 'signed'}
+                                      >
+                                        <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                      </button>
+                                      <input
+                                        type="number"
+                                        min={0}
+                                        className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
+                                        style={{ height: 48, borderColor: '#391BC8' }}
+                                        value={price}
+                                        onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
+                                        onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                        onBlur={(e) => e.target.style.borderColor = '#391BC8'}
+                                        disabled={status === 'signed'}
+                                      />
+                                      <button
+                                        className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
+                                        style={{ width: 40, height: 40 }}
+                                        onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
+                                        onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
+                                        onClick={() => handleTierPriceChange(tier.key, price + 100)}
+                                        aria-label={`Increase price for ${tier.label}`}
+                                        type="button"
+                                        disabled={status === 'signed'}
+                                      >
+                                        <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                      </button>
+                                      <span className="text-base font-semibold text-gray-600">{customPricing.currency}</span>
+                                    </div>
+                                  </div>
+                                );
+                              });
+                            })() : (
+                              <div className="text-gray-500 text-sm p-4 text-center">
+                                Loading pricing tiers...
+                              </div>
+                            )}
+                          </div>
+                        </div>
+
+                        {/* Discount */}
+                        <div className="flex items-center justify-between">
+                          <label className="font-medium text-gray-700">Discount:</label>
+                          <select
+                            className="select select-bordered select-md w-24 text-right bg-white"
+                            value={customPricing.discount_percentage}
+                            onChange={e => {
+                              const discount = Number(e.target.value);
+                              const getCurrentTierKey = (count: number) => {
+                                if (count === 1) return '1';
+                                if (count === 2) return '2';
+                                if (count === 3) return '3';
+                                if (count >= 4 && count <= 7) return '4-7';
+                                if (count >= 8 && count <= 9) return '8-9';
+                                if (count >= 10 && count <= 15) return '10-15';
+                                return '16+';
+                              };
+                              const currentTierKey = getCurrentTierKey(customPricing.applicant_count);
+                              const currentTierPrice = customPricing.pricing_tiers?.[currentTierKey] || 0;
+                              const total = currentTierPrice * (customPricing.applicant_count || 1);
+                              const discountAmount = Math.round(total * (discount / 100));
+                              const finalAmount = total - discountAmount;
+
+                              // Calculate final amount with VAT for payment plan calculations
+                              const archivalFee = customPricing?.archival_research_fee || 0;
+                              const baseTotal = total + archivalFee;
+                              const isIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+
+                              // Calculate VAT on the discounted amount (baseTotal - discountAmount)
+                              const discountedBaseTotal = baseTotal - discountAmount;
+                              const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
+                              const finalAmountWithVat = discountedBaseTotal + vatAmount;
+
+                              // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
+                              let paymentPlan = customPricing.payment_plan || [];
+                              if (paymentPlan.length > 0) {
+                                const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                paymentPlan = paymentPlan.map((row: any) => {
+                                  // Calculate the base value for this percentage (based on discounted amount)
+                                  const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                  // Calculate the VAT for this percentage
+                                  const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+                                  // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+                                  return {
+                                    ...row,
+                                    value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                  };
+                                });
+                              }
+
+                              updateCustomPricing({
+                                discount_percentage: discount,
+                                discount_amount: discountAmount,
+                                final_amount: finalAmount,
+                                payment_plan: paymentPlan,
+                              });
+                            }}
+                            disabled={status === 'signed'}
+                          >
+                            {discountOptions.map(opt => (
+                              <option key={opt} value={opt}>{opt}%</option>
+                            ))}
+                          </select>
+                        </div>
+
+                        {/* Totals */}
+                        <div className="space-y-2 pt-3 border-t border-gray-200">
+                          <div className="flex items-center justify-between">
+                            <span className="text-gray-600">Total:</span>
+                            <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
+                          </div>
+                          {customPricing?.archival_research_fee && (
+                            <div className="flex items-center justify-between">
+                              <span className="text-gray-600">Archival Research:</span>
+                              <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                            </div>
+                          )}
+                          {(() => {
+                            const mobileIsIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+                            const mobileArchivalFee = customPricing?.archival_research_fee || 0;
+                            const mobileBaseTotal = (customPricing?.total_amount || 0) + mobileArchivalFee;
+                            const mobileDiscountAmount = customPricing?.discount_amount || 0;
+                            const mobileVatAmount = mobileIsIsraeli ? Math.round(mobileBaseTotal * 0.18 * 100) / 100 : 0;
+                            const mobileFinalAmountWithVat = mobileBaseTotal + mobileVatAmount - mobileDiscountAmount;
+                            
+                            return (
+                              <>
+                                {mobileIsIsraeli && (
+                                  <div className="flex items-center justify-between">
+                                    <span className="text-gray-600">VAT (18%):</span>
+                                    <span className="font-semibold text-gray-900">{customPricing.currency} {mobileVatAmount.toLocaleString()}</span>
+                                  </div>
+                                )}
+                                <div className="flex items-center justify-between">
+                                  <span className="text-gray-600">Discount:</span>
+                                  <span className="font-semibold text-gray-900">{customPricing.currency} {mobileDiscountAmount.toLocaleString()}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="font-bold text-gray-900">Final Amount:</span>
+                                  <span className="font-bold text-lg" style={{ color: '#391BC8' }}>{customPricing.currency} {mobileFinalAmountWithVat.toLocaleString()}</span>
+                                </div>
+                              </>
+                            );
+                          })()}
+                        </div>
+
+                        {/* Payment Plan Editor */}
+                        <div>
+                          <h4 className="font-semibold text-gray-900 mb-3">Payment Plan</h4>
+                          {(() => {
+                            const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
+                            if (totalPercent < 100) {
+                              return (
+                                <div className="flex items-center gap-3 p-4 mb-3 rounded-xl shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
+                                  </svg>
+                                  <span className="font-medium">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
+                                </div>
+                              );
+                            }
+                            return null;
+                          })()}
+                          <div className="space-y-3">
+                            {(customPricing.payment_plan || []).map((row: any, idx: number) => (
+                              <div key={idx} className="flex items-center gap-3 bg-white p-4 rounded-lg border border-gray-200">
+                                <input
+                                  type="number"
+                                  min={0}
+                                  max={100}
+                                  className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 no-arrows"
+                                  style={{ borderColor: '#391BC8' }}
+                                  value={row.percent === 0 ? '' : row.percent}
+                                  onChange={e => {
+                                    const value = e.target.value;
+                                    // If the field is empty or 0, treat it as 0
+                                    const numValue = value === '' ? 0 : Number(value);
+                                    handlePaymentPlanChange(idx, 'percent', numValue);
+                                  }}
+                                  onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                  onBlur={(e) => e.target.style.borderColor = '#391BC8'}
+                                  placeholder="%"
+                                  disabled={status === 'signed'}
+                                />
+                                <span className="text-lg font-semibold text-gray-700">%</span>
+                                <span className="text-lg font-semibold text-gray-700">=</span>
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2"
+                                  style={{ borderColor: '#391BC8' }}
+                                  value={row.value}
+                                  onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
+                                  onFocus={(e) => e.target.style.borderColor = '#391BC8'}
+                                  onBlur={(e) => e.target.style.borderColor = '#391BC8'}
+                                  placeholder="Value + VAT"
+                                  disabled={status === 'signed'}
+                                />
+                                <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
+                                <button
+                                  className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10"
+                                  onClick={() => handleDeletePaymentRow(idx)}
+                                  disabled={status === 'signed'}
+                                >
+                                  ×
+                                </button>
+                              </div>
+                            ))}
+                            <button className="btn btn-outline btn-sm w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
+                              + Add Payment
+                            </button>
+                          </div>
+                        </div>
+                        {/* Save Button */}
+                        {status !== 'signed' && (
+                          <button
+                            className="btn btn-primary btn-block mt-4"
+                            onClick={handleSaveCustomPricing}
+                            disabled={isSaving}
+                          >
+                            {isSaving ? 'Saving...' : 'Save'}
+                          </button>
+                        )}
+                        {/* Delete Contract Button (show for all users if signed) */}
+                        {status === 'signed' && (
+                          <button
+                            className="btn btn-error btn-block mt-4"
+                            onClick={handleDeleteContract}
+                          >
+                            Delete Contract
+                          </button>
+                        )}
+                      </>
+                    ) : (
+                      <div className="text-gray-500">Loading pricing data...</div>
+                    )}
+                  </div>
                 </div>
               </div>
-
-            </div>
+            )}
           </div>
         </div>
       </div>
@@ -3755,6 +4808,118 @@ const ContractPage: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Print-specific CSS */}
+      <style>{`
+        /* PDF generation mode - convert all colors to supported formats */
+        .pdf-generation-mode,
+        .pdf-generation-mode * {
+          background-image: none !important;
+        }
+        .pdf-generation-mode [class*="gradient"] {
+          background: #ffffff !important;
+          background-color: #ffffff !important;
+          background-image: none !important;
+        }
+        
+        @media print {
+          @page {
+            size: A4;
+            margin: 2cm;
+          }
+          
+          /* Reset body styles */
+          body,
+          html {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            height: auto !important;
+          }
+          
+          /* Hide non-content elements */
+          .print-hide,
+          header,
+          button,
+          [class*="sidebar"],
+          [class*="Sidebar"],
+          nav {
+            display: none !important;
+            visibility: hidden !important;
+          }
+          
+          /* Hide everything except the contract print area */
+          body > * {
+            visibility: hidden !important;
+          }
+          
+          /* Show only the contract content wrapper and its contents */
+          .print-content-wrapper,
+          .print-content-wrapper *,
+          #contract-print-area,
+          #contract-print-area * {
+            visibility: visible !important;
+          }
+          
+          /* Position contract content at top of page for print */
+          .print-content-wrapper {
+            position: absolute !important;
+            left: 0 !important;
+            top: 0 !important;
+            width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+          }
+          
+          /* Format contract content for multi-page printing */
+          #contract-print-area {
+            position: relative !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            page-break-inside: auto !important;
+            overflow: visible !important;
+            height: auto !important;
+          }
+          
+          #contract-print-area * {
+            background-image: none !important;
+          }
+          
+          #contract-print-area [class*="gradient"] {
+            background: #ffffff !important;
+            background-color: #ffffff !important;
+            background-image: none !important;
+          }
+          
+          /* Page break handling for better multi-page layout */
+          #contract-print-area p {
+            orphans: 3;
+            widows: 3;
+            page-break-inside: avoid;
+          }
+          
+          #contract-print-area h1,
+          #contract-print-area h2,
+          #contract-print-area h3,
+          #contract-print-area h4,
+          #contract-print-area h5,
+          #contract-print-area h6 {
+            page-break-after: avoid;
+            page-break-inside: avoid;
+          }
+          
+          #contract-print-area img {
+            page-break-inside: avoid;
+            max-width: 100% !important;
+          }
+        }
+      `}</style>
     </div>
   );
 };

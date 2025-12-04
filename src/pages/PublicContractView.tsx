@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo, useCallback } from 'react';
+import React, { useEffect, useState, useMemo, useCallback, useRef } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import SignaturePad from 'react-signature-canvas';
@@ -11,6 +11,9 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
+// @ts-ignore - html2pdf.js doesn't have TypeScript definitions
+import html2pdf from 'html2pdf.js';
+import { PrinterIcon, ArrowDownTrayIcon, ShareIcon } from '@heroicons/react/24/outline';
 
 // Editor extensions for HTML to TipTap JSON conversion
 const editorExtensionsForConversion = [
@@ -201,6 +204,12 @@ const PublicContractView: React.FC = () => {
   const [applicantFieldIds, setApplicantFieldIds] = useState<string[]>([]);
   const [activeApplicantFields, setActiveApplicantFields] = useState<string[]>([]); // Fields that are currently visible (can be added/removed)
   const [dynamicApplicantFieldCounter, setDynamicApplicantFieldCounter] = useState(0); // Counter for generating new field IDs
+  
+  // Ref for contract content area (for PDF generation)
+  const contractContentRef = useRef<HTMLDivElement>(null);
+  
+  // PDF loading state
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   // Helper to recursively fill placeholders in TipTap JSON
   function fillClientFieldsInContent(content: any): any {
@@ -218,9 +227,37 @@ const PublicContractView: React.FC = () => {
         text = text.replace(/\{\{signature:([^}]+)\}\}/g, (match: string, id: string) => {
           return clientSignature || '[Signed]';
         });
-        // Don't replace {{date:ID}} fields here - let renderTiptapContent handle them as date pickers
-        // They will only be replaced with formatted text after the contract is signed
-        // For now, leave them as placeholders so they can be rendered as interactive date pickers
+        // Replace {{date:ID}} fields with formatted date values when signing
+        text = text.replace(/\{\{date:([^}]+)\}\}/g, (match: string, id: string) => {
+          const dateValue = clientFields[id] || '';
+          if (!dateValue) return '';
+          
+          // Format date for display
+          try {
+            if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+              const date = new Date(dateValue + 'T00:00:00');
+              if (!isNaN(date.getTime())) {
+                return date.toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                });
+              }
+            } else {
+              const date = new Date(dateValue);
+              if (!isNaN(date.getTime())) {
+                return date.toLocaleDateString('en-US', { 
+                  year: 'numeric', 
+                  month: 'long', 
+                  day: 'numeric' 
+                });
+              }
+            }
+          } catch (e) {
+            // If formatting fails, return the raw value
+          }
+          return dateValue;
+        });
         return { ...content, text };
       }
       // Recursively fill in children
@@ -234,8 +271,16 @@ const PublicContractView: React.FC = () => {
 
   // Handler for text field changes
   const handleClientFieldChange = (key: string, value: string) => {
+    console.log('📝 handleClientFieldChange called:', { key, value, valueType: typeof value, valueLength: value?.length });
     setClientFields(prev => {
       const newFields = { ...prev, [key]: value };
+      console.log('📝 Setting clientFields:', { 
+        key, 
+        oldValue: prev[key], 
+        newValue: value, 
+        allFields: Object.keys(newFields).length,
+        fieldValue: newFields[key]
+      });
       return newFields;
     });
   };
@@ -339,6 +384,7 @@ const PublicContractView: React.FC = () => {
       setLoading(false);
     })();
   }, [contractId, token]);
+
 
   // Track incomplete fields
   useEffect(() => {
@@ -646,6 +692,8 @@ const PublicContractView: React.FC = () => {
   const handleSubmitContract = async () => {
     if (!contract) return;
     setIsSubmitting(true);
+    // Scroll to top of page
+    window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
       // Fill in client fields in the contract content
       const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
@@ -671,6 +719,164 @@ const PublicContractView: React.FC = () => {
       alert('Failed to submit contract. Please try again.');
     } finally {
       setIsSubmitting(false);
+    }
+  };
+
+  // Print contract handler
+  const handlePrint = () => {
+    window.print();
+  };
+
+  // Share contract handler (mobile only - uses Web Share API)
+  const handleShareContract = async () => {
+    if (!contract) return;
+    
+    const contractUrl = window.location.href;
+    const contractTitle = `Contract for ${contract?.contact_name || client?.name || 'Client'}`;
+    
+    // Check if Web Share API is available (mobile devices)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: contractTitle,
+          text: `Please review this contract: ${contractTitle}`,
+          url: contractUrl,
+        });
+      } catch (error: any) {
+        // User cancelled or error occurred
+        if (error.name !== 'AbortError') {
+          console.error('Error sharing contract:', error);
+        }
+      }
+    } else {
+      // Fallback: copy to clipboard
+      try {
+        await navigator.clipboard.writeText(contractUrl);
+        alert('Contract link copied to clipboard!');
+      } catch (err) {
+        console.error('Failed to copy link:', err);
+        alert('Failed to share contract link.');
+      }
+    }
+  };
+
+  // Check if Web Share API is available (for conditional rendering)
+  const canShare = typeof navigator !== 'undefined' && 'share' in navigator;
+
+  // Download PDF handler
+  const handleDownloadPDF = async () => {
+    if (!contractContentRef.current) return;
+    setPdfLoading(true);
+    const clientName = (contract && contract.contact_name) ? contract.contact_name : (client?.name || 'Client');
+    const filename = `contract-${clientName.replace(/[^a-z0-9]/gi, '-').toLowerCase()}-${contract.id}.pdf`;
+    
+    try {
+      // Clone and pre-process the element to convert all colors to RGB
+      const elementToPrint = contractContentRef.current.cloneNode(true) as HTMLElement;
+      elementToPrint.id = 'contract-print-area-pdf';
+      
+      // Add to DOM temporarily for processing
+      elementToPrint.style.position = 'absolute';
+      elementToPrint.style.left = '-9999px';
+      elementToPrint.style.top = '0';
+      elementToPrint.style.visibility = 'hidden';
+      document.body.appendChild(elementToPrint);
+      
+      // Convert all computed styles to inline RGB styles
+      const convertColorsToRGB = (el: HTMLElement) => {
+        try {
+          const computed = window.getComputedStyle(el);
+          
+          // Convert background colors
+          const bgColor = computed.backgroundColor;
+          if (bgColor && bgColor !== 'rgba(0, 0, 0, 0)' && bgColor !== 'transparent') {
+            el.style.setProperty('background-color', bgColor, 'important');
+          }
+          
+          // Remove gradient backgrounds
+          if (computed.backgroundImage && computed.backgroundImage !== 'none') {
+            el.style.setProperty('background-image', 'none', 'important');
+            if (!bgColor || bgColor === 'rgba(0, 0, 0, 0)' || bgColor === 'transparent') {
+              el.style.setProperty('background-color', '#ffffff', 'important');
+            }
+          }
+          
+          // Convert text colors
+          const textColor = computed.color;
+          if (textColor) {
+            el.style.setProperty('color', textColor, 'important');
+          }
+          
+          // Process children
+          Array.from(el.children).forEach(child => {
+            convertColorsToRGB(child as HTMLElement);
+          });
+        } catch (e) {
+          // Ignore errors for individual elements
+        }
+      };
+      
+      // Wait for clone to be in DOM, then process
+      setTimeout(() => {
+        convertColorsToRGB(elementToPrint);
+        
+        // Add CSS to override any remaining problematic styles
+        const styleOverride = document.createElement('style');
+        styleOverride.id = 'pdf-style-override';
+        styleOverride.textContent = `
+          #contract-print-area-pdf * {
+            background-image: none !important;
+          }
+          #contract-print-area-pdf [class*="gradient"] {
+            background: #ffffff !important;
+            background-color: #ffffff !important;
+            background-image: none !important;
+          }
+        `;
+        document.head.appendChild(styleOverride);
+        
+        // Wait a bit more for styles to apply
+        setTimeout(() => {
+          html2pdf(elementToPrint, {
+            margin: [10, 10, 10, 10],
+            filename: filename,
+            image: { type: 'jpeg', quality: 0.98 },
+            html2canvas: { 
+              scale: 2, 
+              useCORS: true, 
+              logging: false
+            },
+            jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+          }).then(() => {
+            cleanup();
+            setPdfLoading(false);
+          }).catch((error: any) => {
+            cleanup();
+            throw error;
+          });
+        }, 200);
+      }, 100);
+      
+      const cleanup = () => {
+        if (elementToPrint.parentNode) {
+          document.body.removeChild(elementToPrint);
+        }
+        const styleEl = document.getElementById('pdf-style-override');
+        if (styleEl) {
+          document.head.removeChild(styleEl);
+        }
+      };
+      
+    } catch (error: any) {
+      console.error('Error generating PDF:', error);
+      setPdfLoading(false);
+      
+      // Suggest using print instead
+      if (confirm('PDF generation failed due to unsupported color formats. Would you like to use the Print dialog instead? (You can save as PDF from there)')) {
+        handlePrint();
+      } else {
+        alert('Failed to generate PDF. Please try using the Print button and save as PDF from the print dialog.');
+      }
     }
   };
 
@@ -765,13 +971,13 @@ const PublicContractView: React.FC = () => {
     signaturePads?: { [key: string]: any },
     applicantPriceIndex?: { current: number },
     paymentPlanIndex?: { current: number },
-    placeholderIndex?: { text: number; signature: number }
+    placeholderIndex?: { text: number; signature: number; date: number }
   ): React.ReactNode {
     if (!content) return null;
     if (Array.isArray(content)) {
       if (!applicantPriceIndex) applicantPriceIndex = { current: 0 };
       if (!paymentPlanIndex) paymentPlanIndex = { current: 0 };
-      if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0 };
+      if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
       return content.map((n, i) => renderTiptapContent(n, keyPrefix + '-' + i, signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex));
     }
           if (content.type === 'text') {
@@ -843,11 +1049,10 @@ const PublicContractView: React.FC = () => {
         // Render {{text}}, {{date}}, and {{signature}} fields (before preprocessing) or {{text:ID}}, {{date:ID}}, and {{signature:ID}} fields (after preprocessing)
         if (text && /\{\{(text|date|signature)(:[^}]+)?\}\}/.test(text)) {
           // Ensure placeholderIndex is defined
-          if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0 };
+          if (!placeholderIndex) placeholderIndex = { text: 0, signature: 0, date: 0 };
         const parts = [];
         let lastIndex = 0;
         // IMPORTANT: Match date fields FIRST, then signature, then text to prevent confusion
-        // The order in the regex matters - we want date to be matched before text
         const regex = /({{date(:[^}]+)?}}|{{signature(:[^}]+)?}}|{{text(:[^}]+)?}}|\n)/g;
         let match;
         // Counter for applicant field instances - ensures each gets a unique ID
@@ -860,128 +1065,155 @@ const PublicContractView: React.FC = () => {
           }
           const placeholder = match[1];
           
-          // Check the text before this placeholder to see if it ends with "Date:"
-          const textBeforePlaceholder = text.slice(Math.max(0, match.index - 30), match.index);
-          // Check date FIRST before text to ensure date fields are never confused with text fields
-          // Use more specific regex patterns to ensure correct matching
+          // Use specific regex patterns to ensure correct matching
           const dateMatch = placeholder.match(/^{{date(:[^}]+)?}}$/);
           const sigMatch = placeholder.match(/^{{signature(:[^}]+)?}}$/);
           const textMatch = placeholder.match(/^{{text(:[^}]+)?}}$/);
           
-          // Debug logging
-          if (placeholder.includes('date')) {
-          }
-          
           // Process date fields FIRST to prevent them from being treated as text fields
           if (dateMatch) {
-            const id = dateMatch[1] ? dateMatch[1].substring(1) : `date-${Date.now()}`;
-            const isEmpty = !clientFields[id];
+            // Extract ID from the match - dateMatch[1] will be ":date-1" or similar, so substring(1) removes the colon
+            // Use stable ID from placeholder or generate based on placeholderIndex
+            const extractedId = dateMatch[1] ? dateMatch[1].substring(1) : null;
+            const id = extractedId || `date-${placeholderIndex.date++}`;
+            const dateValue = clientFields[id];
+            const isEmpty = !dateValue;
             const isHighlighted = highlightedFieldId === id;
-            const needsAttention = incompleteFields.has(id);
             
             // Date fields are NEVER applicant fields - explicitly exclude
             if (applicantFieldIds.includes(id)) {
               setApplicantFieldIds(prev => prev.filter(aid => aid !== id));
             }
-            parts.push(
-              <span 
-                key={id} 
-                className="inline-block relative field-wrapper" 
-                style={{ verticalAlign: 'middle' }}
-                data-field-id={id}
-                data-field-type="date"
-              >
-                <input
-                  type="date"
-                  className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
-                    isEmpty 
-                      ? isHighlighted 
-                        ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                        : 'border-orange-400 shadow-md'
-                      : 'border-green-400 focus:border-blue-500'
-                  } focus:border-blue-500 focus:shadow-lg`}
-                  value={clientFields[id] ? (() => {
-                    // Ensure the value is in YYYY-MM-DD format for date inputs
-                    const dateValue = clientFields[id];
-                    if (dateValue) {
-                      // If it's already in YYYY-MM-DD format, use it directly
-                      if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-                        return dateValue;
-                      }
-                      // Otherwise, try to parse it and convert to YYYY-MM-DD
-                      try {
-                        const date = new Date(dateValue);
-                        if (!isNaN(date.getTime())) {
-                          const year = date.getFullYear();
-                          const month = String(date.getMonth() + 1).padStart(2, '0');
-                          const day = String(date.getDate()).padStart(2, '0');
-                          return `${year}-${month}-${day}`;
-                        }
-                      } catch (e) {
-                      }
-                    }
-                    return '';
-                  })() : ''}
-                  onChange={e => {
-                    const selectedDate = e.target.value;
-                    // Date inputs return values in YYYY-MM-DD format, save it directly
-                    handleClientFieldChange(id, selectedDate);
-                    if (selectedDate) {
-                      setIncompleteFields(prev => {
-                        const next = new Set(prev);
-                        next.delete(id);
-                        return next;
-                      });
-                    }
-                  }}
-                  onFocus={() => setHighlightedFieldId(id)}
-                  onBlur={() => {
-                    // Validate date format on blur
-                    const dateValue = clientFields[id];
-                    if (dateValue && !/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-                    }
-                  }}
-                  disabled={contract?.status === 'signed'}
-                  required
-                  aria-label="Select date (required)"
-                  // CRITICAL: Ensure NO placeholder - date inputs don't use placeholders
-                  placeholder=""
-                  readOnly={false}
-                  autoComplete="off"
-                  data-input-type="date"
-                  style={{ 
-                    minWidth: 180, 
-                    display: 'inline-block', 
+            
+            // Format date value for input (YYYY-MM-DD format required)
+            let formattedDate = '';
+            let displayDate = '';
+            if (dateValue) {
+              if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                formattedDate = dateValue;
+                // Format for display (e.g., "January 15, 2024")
+                try {
+                  const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
+                  if (!isNaN(date.getTime())) {
+                    displayDate = date.toLocaleDateString('en-US', { 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    });
+                  }
+                } catch (e) {
+                  displayDate = dateValue;
+                }
+              } else {
+                try {
+                  const date = new Date(dateValue);
+                  if (!isNaN(date.getTime())) {
+                    const year = date.getFullYear();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    formattedDate = `${year}-${month}-${day}`;
+                    displayDate = date.toLocaleDateString('en-US', { 
+                      year: 'numeric', 
+                      month: 'long', 
+                      day: 'numeric' 
+                    });
+                  }
+                } catch (e) {
+                  // Invalid date, leave empty
+                }
+              }
+            }
+            
+            // For signed contracts, show date as formatted text instead of input
+            if (contract?.status === 'signed') {
+              parts.push(
+                <span
+                  key={id}
+                  className="filled-date"
+                  style={{
+                    display: 'inline-block',
                     verticalAlign: 'middle',
-                    color: '#111827',
-                    WebkitTextFillColor: '#111827',
-                    cursor: contract?.status === 'signed' ? 'not-allowed' : 'pointer',
-                    // Ensure date picker shows correctly - remove any text input styling
-                    appearance: 'auto',
-                    WebkitAppearance: 'menulist',
-                    MozAppearance: 'menulist'
+                    border: '2px solid #10b981',
+                    borderRadius: '6px',
+                    padding: '4px 8px',
+                    margin: '0 4px',
+                    minWidth: '150px',
+                    backgroundColor: '#f0fdf4',
+                    color: '#065f46',
+                    fontWeight: 'bold'
                   }}
-                />
-                {/* Date fields are always required - show badge if empty */}
-                {isEmpty && !contract?.status && (
-                  <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 ${
-                    isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                  }`}>
-                    <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                    <span className="relative">Required</span>
-                  </div>
-                )}
-                {/* Date field popup - always show if empty */}
-                {isEmpty && (
-                  <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                    isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                  }`}>
-                    Please select a date (required)
-                    <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                  </div>
-                )}
-              </span>
-            );
+                >
+                  {displayDate || dateValue || '_____________'}
+                </span>
+              );
+            } else {
+              parts.push(
+                <span 
+                  key={id} 
+                  className="inline-block relative" 
+                  style={{ verticalAlign: 'middle' }}
+                  data-field-id={id}
+                  data-field-type="date"
+                >
+                  <input
+                    type="date"
+                    className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
+                      isEmpty 
+                        ? isHighlighted 
+                          ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
+                          : 'border-orange-400 shadow-md'
+                        : 'border-green-400 focus:border-blue-500'
+                    } focus:border-blue-500 focus:shadow-lg`}
+                    value={formattedDate}
+                    onChange={e => {
+                      const selectedDate = e.target.value;
+                      handleClientFieldChange(id, selectedDate);
+                      if (selectedDate) {
+                        setIncompleteFields(prev => {
+                          const next = new Set(prev);
+                          next.delete(id);
+                          return next;
+                        });
+                      }
+                    }}
+                    onFocus={() => {
+                      setHighlightedFieldId(id);
+                    }}
+                    onBlur={() => {
+                      setHighlightedFieldId(null);
+                    }}
+                    required
+                    aria-label="Select date (required)"
+                    data-input-type="date"
+                    style={{ 
+                      minWidth: 180, 
+                      display: 'inline-block', 
+                      verticalAlign: 'middle',
+                      color: '#111827',
+                      cursor: 'text'
+                    }}
+                  />
+                  {/* Date fields are always required - show badge if empty */}
+                  {isEmpty && (
+                    <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 pointer-events-none ${
+                      isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
+                    }`}>
+                      <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
+                      <span className="relative">Required</span>
+                    </div>
+                  )}
+                  {/* Date field popup - always show if empty */}
+                  {isEmpty && (
+                    <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap ${
+                      isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
+                    }`}>
+                      Please select a date (required)
+                      <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
+                    </div>
+                  )}
+                </span>
+              );
+            }
           } else if (textMatch) {
             // Extract the base ID from the placeholder
             const baseId = textMatch[1] ? textMatch[1].substring(1) : `text-${++placeholderIndex.text}`;
@@ -1016,7 +1248,6 @@ const PublicContractView: React.FC = () => {
             if (isActuallyDateField) {
               const isEmpty = !clientFields[id];
               const isHighlighted = highlightedFieldId === id;
-              const needsAttention = incompleteFields.has(id);
               
               // Remove from applicant fields if it's there (using base ID)
               if (applicantFieldIds.includes(baseId)) {
@@ -1026,89 +1257,134 @@ const PublicContractView: React.FC = () => {
                 setActiveApplicantFields(prev => prev.filter(aid => aid !== baseId));
               }
               
-              parts.push(
-                <span 
-                  key={id} 
-                  className="inline-block relative field-wrapper" 
-                  style={{ verticalAlign: 'middle' }}
-                  data-field-id={id}
-                  data-field-type="date"
-                >
-                  <input
-                    type="date"
-                    className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
-                      isEmpty 
-                        ? isHighlighted 
-                          ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                          : 'border-orange-400 shadow-md'
-                        : 'border-green-400 focus:border-blue-500'
-                    } focus:border-blue-500 focus:shadow-lg`}
-                    value={clientFields[id] ? (() => {
-                      const dateValue = clientFields[id];
-                      if (dateValue && /^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
-                        return dateValue;
-                      }
-                      try {
-                        const date = new Date(dateValue);
-                        if (!isNaN(date.getTime())) {
-                          const year = date.getFullYear();
-                          const month = String(date.getMonth() + 1).padStart(2, '0');
-                          const day = String(date.getDate()).padStart(2, '0');
-                          return `${year}-${month}-${day}`;
-                        }
-                      } catch (e) {
-                      }
-                      return '';
-                    })() : ''}
-                    onChange={e => {
-                      const selectedDate = e.target.value;
-                      handleClientFieldChange(id, selectedDate);
-                      if (selectedDate) {
-                        setIncompleteFields(prev => {
-                          const next = new Set(prev);
-                          next.delete(id);
-                          return next;
-                        });
-                      }
-                    }}
-                    onFocus={() => setHighlightedFieldId(id)}
-                    disabled={contract?.status === 'signed'}
-                    required
-                    aria-label="Select date (required)"
-                    placeholder=""
-                    readOnly={false}
-                    autoComplete="off"
-                    data-input-type="date"
-                    style={{ 
-                      minWidth: 180, 
-                      display: 'inline-block', 
+              // Format date value for input (YYYY-MM-DD format required)
+              const dateValue = clientFields[id];
+              let formattedDate = '';
+              let displayDate = '';
+              if (dateValue) {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dateValue)) {
+                  formattedDate = dateValue;
+                  // Format for display (e.g., "January 15, 2024")
+                  try {
+                    const date = new Date(dateValue + 'T00:00:00'); // Add time to avoid timezone issues
+                    if (!isNaN(date.getTime())) {
+                      displayDate = date.toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric' 
+                      });
+                    }
+                  } catch (e) {
+                    displayDate = dateValue;
+                  }
+                } else {
+                  try {
+                    const date = new Date(dateValue);
+                    if (!isNaN(date.getTime())) {
+                      const year = date.getFullYear();
+                      const month = String(date.getMonth() + 1).padStart(2, '0');
+                      const day = String(date.getDate()).padStart(2, '0');
+                      formattedDate = `${year}-${month}-${day}`;
+                      displayDate = date.toLocaleDateString('en-US', { 
+                        year: 'numeric', 
+                        month: 'long', 
+                        day: 'numeric' 
+                      });
+                    }
+                  } catch (e) {
+                    // Invalid date, leave empty
+                  }
+                }
+              }
+              
+              // For signed contracts, show date as formatted text instead of input
+              if (contract?.status === 'signed') {
+                parts.push(
+                  <span
+                    key={id}
+                    className="filled-date"
+                    style={{
+                      display: 'inline-block',
                       verticalAlign: 'middle',
-                      color: '#111827',
-                      WebkitTextFillColor: '#111827',
-                      cursor: contract?.status === 'signed' ? 'not-allowed' : 'pointer',
-                      appearance: 'auto',
-                      WebkitAppearance: 'menulist',
-                      MozAppearance: 'menulist'
+                      border: '2px solid #10b981',
+                      borderRadius: '6px',
+                      padding: '4px 8px',
+                      margin: '0 4px',
+                      minWidth: '150px',
+                      backgroundColor: '#f0fdf4',
+                      color: '#065f46',
+                      fontWeight: 'bold'
                     }}
-                  />
-                  {isEmpty && !contract?.status && (
-                    <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 ${
-                      isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                    }`}>
-                      <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                      <span className="relative">Required</span>
-                    </div>
-                  )}
-                  {isEmpty && (
-                    <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                      isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                    }`}>
-                      Please select a date (required)
-                      <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                    </div>
-                  )}
-                </span>
-              );
+                  >
+                    {displayDate || dateValue || '_____________'}
+                  </span>
+                );
+              } else {
+                parts.push(
+                  <span 
+                    key={id} 
+                    className="inline-block relative" 
+                    style={{ verticalAlign: 'middle' }}
+                    data-field-id={id}
+                    data-field-type="date"
+                  >
+                    <input
+                      type="date"
+                      className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
+                        isEmpty 
+                          ? isHighlighted 
+                            ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
+                            : 'border-orange-400 shadow-md'
+                          : 'border-green-400 focus:border-blue-500'
+                      } focus:border-blue-500 focus:shadow-lg`}
+                      value={formattedDate}
+                      onChange={e => {
+                        const selectedDate = e.target.value;
+                        handleClientFieldChange(id, selectedDate);
+                        if (selectedDate) {
+                          setIncompleteFields(prev => {
+                            const next = new Set(prev);
+                            next.delete(id);
+                            return next;
+                          });
+                        }
+                      }}
+                      onFocus={() => {
+                        setHighlightedFieldId(id);
+                      }}
+                      onBlur={() => {
+                        setHighlightedFieldId(null);
+                      }}
+                      required
+                      aria-label="Select date (required)"
+                      data-input-type="date"
+                      style={{ 
+                        minWidth: 180, 
+                        display: 'inline-block', 
+                        verticalAlign: 'middle',
+                        color: '#111827',
+                        cursor: 'text'
+                      }}
+                    />
+                    {isEmpty && (
+                      <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 pointer-events-none ${
+                        isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
+                      }`}>
+                        <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
+                        <span className="relative">Required</span>
+                      </div>
+                    )}
+                    {isEmpty && (
+                      <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap ${
+                        isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
+                      }`}>
+                        Please select a date (required)
+                        <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
+                      </div>
+                    )}
+                  </span>
+                );
+              }
               lastIndex = match.index + match[1].length;
               continue; // Skip the rest of the text field processing
             }
@@ -1442,7 +1718,7 @@ const PublicContractView: React.FC = () => {
                   }`} style={{ 
                     maxWidth: 'calc(100vw - 40px)'
                   }}>
-                    Please sign in the box above
+                    Please sign in the box below
                     <div className="absolute -top-1 left-4 md:top-full md:left-1/2 md:transform md:-translate-x-1/2 md:-mt-1 border-4 border-transparent border-b-gray-900 md:border-t-gray-900 md:border-b-transparent"></div>
                   </div>
                 )}
@@ -1644,22 +1920,56 @@ const PublicContractView: React.FC = () => {
           </div>
         )}
         
+        {/* Print and Share buttons for signed contracts */}
+        {contract.status === 'signed' && (
+          <div className="flex justify-center gap-2 mb-4 print-hide">
+            <button
+              className="btn btn-outline btn-xs sm:btn-sm gap-1 sm:gap-2"
+              onClick={handlePrint}
+              title="Print contract"
+            >
+              <PrinterIcon className="w-4 h-4" />
+              <span className="hidden sm:inline">Print</span>
+            </button>
+            {/* PDF button commented out */}
+            {/* <button
+              className="btn btn-outline btn-sm gap-2"
+              onClick={handleDownloadPDF}
+              disabled={pdfLoading}
+              title="Download as PDF"
+            >
+              <ArrowDownTrayIcon className="w-5 h-5" />
+              {pdfLoading ? 'Generating...' : 'Download PDF'}
+            </button> */}
+            {/* Share button - mobile only */}
+            {canShare && (
+              <button
+                className="btn btn-outline btn-sm gap-2 md:hidden"
+                onClick={handleShareContract}
+                title="Share contract"
+              >
+                <ShareIcon className="w-5 h-5" />
+                Share
+              </button>
+            )}
+          </div>
+        )}
         
         <h1 className="text-xl md:text-2xl font-bold mb-4 md:mb-6 text-center">
           Contract for {contract?.contact_name || client?.name || 'Client'}
         </h1>
         
-        <div className="prose prose-sm md:prose-base max-w-none">
+        <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none">
                   {thankYou ? (
           <>
             <div className="alert alert-success text-sm md:text-lg font-semibold mb-4 md:mb-6">Thank you! Your contract was signed and submitted. You will be notified soon.</div>
             {(() => {
-              return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0 });
+              return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
             })()}
           </>
         ) : (
           (() => {
-            return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0 });
+            return renderTiptapContent(contract.custom_content || template.content, '', signaturePads, undefined, undefined, { text: 0, signature: 0, date: 0 });
           })()
         )}
         </div>
@@ -1667,7 +1977,7 @@ const PublicContractView: React.FC = () => {
         {/* Submit Contract Button (only if not signed) */}
         {contract.status !== 'signed' && !thankYou && (
           <button
-            className="btn btn-success btn-lg w-full mt-8"
+            className="btn btn-success btn-lg w-full mt-8 print-hide"
             onClick={handleSubmitContract}
             disabled={isSubmitting}
           >
@@ -1675,6 +1985,118 @@ const PublicContractView: React.FC = () => {
           </button>
         )}
       </div>
+      
+      {/* Print-specific CSS */}
+      <style>{`
+        @media print {
+          @page {
+            size: A4;
+            margin: 2cm;
+          }
+          
+          /* Reset body styles */
+          body,
+          html {
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            height: auto !important;
+          }
+          
+          /* Hide non-content elements */
+          .print-hide,
+          button,
+          .alert,
+          nav,
+          header {
+            display: none !important;
+            visibility: hidden !important;
+          }
+          
+          /* Hide everything except the contract print area */
+          body > * {
+            visibility: hidden !important;
+          }
+          
+          /* Show only the contract content wrapper and its contents */
+          body > div,
+          body > div > div,
+          #contract-print-area,
+          #contract-print-area * {
+            visibility: visible !important;
+          }
+          
+          /* Reset wrapper positioning for natural flow */
+          body > div {
+            position: static !important;
+            display: block !important;
+            min-height: auto !important;
+            padding: 0 !important;
+            margin: 0 !important;
+            flex: none !important;
+            align-items: normal !important;
+            justify-content: normal !important;
+          }
+          
+          body > div > div {
+            position: static !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+          }
+          
+          /* Format contract content for multi-page printing */
+          #contract-print-area {
+            position: relative !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: white !important;
+            box-shadow: none !important;
+            border: none !important;
+            border-radius: 0 !important;
+            page-break-inside: auto !important;
+            overflow: visible !important;
+            height: auto !important;
+          }
+          
+          #contract-print-area * {
+            background-image: none !important;
+          }
+          
+          #contract-print-area [class*="gradient"] {
+            background: #ffffff !important;
+            background-color: #ffffff !important;
+            background-image: none !important;
+          }
+          
+          /* Page break handling for better multi-page layout */
+          #contract-print-area p {
+            orphans: 3;
+            widows: 3;
+            page-break-inside: avoid;
+          }
+          
+          #contract-print-area h1,
+          #contract-print-area h2,
+          #contract-print-area h3,
+          #contract-print-area h4,
+          #contract-print-area h5,
+          #contract-print-area h6 {
+            page-break-after: avoid;
+            page-break-inside: avoid;
+          }
+          
+          #contract-print-area img {
+            page-break-inside: avoid;
+            max-width: 100% !important;
+          }
+        }
+      `}</style>
       
       {/* CSS for animations */}
       <style>{`
@@ -1712,6 +2134,21 @@ const PublicContractView: React.FC = () => {
         
         .field-wrapper:hover {
           transform: scale(1.02);
+        }
+        
+        /* Ensure date inputs are fully clickable and functional */
+        input[type="date"] {
+          position: relative;
+          z-index: 10;
+        }
+        
+        input[type="date"]:not(:disabled) {
+          cursor: text;
+        }
+        
+        input[type="date"]::-webkit-calendar-picker-indicator {
+          cursor: pointer;
+          opacity: 1;
         }
       `}</style>
     </div>
