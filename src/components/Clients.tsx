@@ -52,6 +52,7 @@ import {
   CheckIcon,
   PlayIcon,
   EyeIcon,
+  ClockIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -300,6 +301,8 @@ const Clients: React.FC<ClientsProps> = ({
   // Removed excessive console.log statements for performance
   // State to store all employees for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
+  // State to store employee availability data (unavailable_times and unavailable_ranges)
+  const [employeeAvailabilityData, setEmployeeAvailabilityData] = useState<{[key: string]: any[]}>({});
   // State to store all categories for name lookup
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string | null }>>([]);
@@ -346,6 +349,29 @@ const Clients: React.FC<ClientsProps> = ({
     // Find employee in the loaded employees array
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
     return employee ? employee.display_name : employeeId; // Fallback to ID if not found
+  };
+
+  // Helper function to check if an employee is unavailable at a specific date and time
+  const isEmployeeUnavailable = (employeeName: string, date: string, time: string): boolean => {
+    if (!date || !time || !employeeName) return false;
+    
+    const unavailableForDate = employeeAvailabilityData[date] || [];
+    return unavailableForDate.some(unavailable => {
+      if (unavailable.employeeName === employeeName) {
+        // If it's a range (all-day unavailable), always return true
+        if (unavailable.isRange || unavailable.startTime === 'All Day') {
+          return true;
+        }
+        
+        // For specific time slots, check time overlap
+        const unavailableStart = unavailable.startTime;
+        const unavailableEnd = unavailable.endTime;
+        const isTimeConflict = time >= unavailableStart && time <= unavailableEnd;
+        
+        return isTimeConflict;
+      }
+      return false;
+    });
   };
 
   // Function to find duplicate contacts
@@ -637,22 +663,21 @@ const Clients: React.FC<ClientsProps> = ({
       return manualId;
     }
     
-    // If master_id is null/empty, it's a master lead - add /1
+    // If master_id is null/empty AND manual_id is null/empty, it's a master lead with no subleads
+    // Return just the ID without any suffix
+    if ((!masterId || String(masterId).trim() === '') && (!manualId || manualId === '')) {
+      return leadId;
+    }
+    
+    // If master_id is null/empty but manual_id exists, it might be a master lead
+    // Use manual_id if available, otherwise use ID
     if (!masterId || String(masterId).trim() === '') {
-      if (manualId) {
-        return `${manualId}/1`;
-      }
-      // If no manual_id, use id with /1
-      return `${leadId}/1`;
+      return manualId || leadId;
     }
     
     // If master_id exists, it's a sub-lead
     // For sub-leads, if manual_id doesn't have a suffix, we'll use manual_id as-is
-    // (assuming it should be corrected in the database, or we'll need to query)
-    // For now, if manual_id exists, use it; otherwise, we'd need to query which is expensive
     if (manualId) {
-      // If manual_id doesn't have a suffix for a sub-lead, this might be a data issue
-      // But we'll return it as-is to avoid expensive queries on every render
       return manualId;
     }
     
@@ -831,6 +856,12 @@ const Clients: React.FC<ClientsProps> = ({
   const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
   const [showTimeDropdown, setShowTimeDropdown] = useState(false);
   const timeDropdownRef = useRef<HTMLDivElement>(null);
+  const [showManagerDropdown, setShowManagerDropdown] = useState(false);
+  const managerDropdownRef = useRef<HTMLDivElement>(null);
+  const [managerSearchTerm, setManagerSearchTerm] = useState('');
+  const [showHelperDropdown, setShowHelperDropdown] = useState(false);
+  const helperDropdownRef = useRef<HTMLDivElement>(null);
+  const [helperSearchTerm, setHelperSearchTerm] = useState('');
   const navigate = useNavigate();
   const [showUpdateDrawer, setShowUpdateDrawer] = useState(false);
   const [meetingNotes, setMeetingNotes] = useState('');
@@ -906,7 +937,7 @@ const Clients: React.FC<ClientsProps> = ({
       try {
         const { data, error } = await supabase
           .from('tenants_employee')
-          .select('id, display_name, official_name')
+          .select('id, display_name, official_name, unavailable_times, unavailable_ranges')
           .order('display_name', { ascending: true });
 
         if (error) throw error;
@@ -928,11 +959,61 @@ const Clients: React.FC<ClientsProps> = ({
               return {
               id: emp.id,
               display_name: displayName,
+              unavailable_times: emp.unavailable_times || [],
+              unavailable_ranges: emp.unavailable_ranges || [],
             };
           });
 
         console.log('Clients: Loaded employees for handler dropdown:', mapped.length);
-            setAllEmployees(mapped);
+        setAllEmployees(mapped);
+
+        // Build availability map by date for quick lookup
+        const availabilityMap: {[key: string]: any[]} = {};
+        mapped.forEach(emp => {
+          const unavailableTimes = emp.unavailable_times || [];
+          const unavailableRanges = emp.unavailable_ranges || [];
+
+          // Process unavailable times
+          unavailableTimes.forEach((time: any) => {
+            const date = time.date;
+            if (!availabilityMap[date]) {
+              availabilityMap[date] = [];
+            }
+            availabilityMap[date].push({
+              employeeId: emp.id,
+              employeeName: emp.display_name,
+              ...time
+            });
+          });
+
+          // Process unavailable ranges
+          unavailableRanges.forEach((range: any) => {
+            const startDate = new Date(range.startDate);
+            const endDate = new Date(range.endDate);
+            const currentDate = new Date(startDate);
+            
+            while (currentDate <= endDate) {
+              const dateString = currentDate.toISOString().split('T')[0];
+              if (!availabilityMap[dateString]) {
+                availabilityMap[dateString] = [];
+              }
+              availabilityMap[dateString].push({
+                employeeId: emp.id,
+                employeeName: emp.display_name,
+                date: dateString,
+                startTime: 'All Day',
+                endTime: 'All Day',
+                reason: range.reason,
+                isRange: true,
+                rangeId: range.id
+              });
+              
+              currentDate.setDate(currentDate.getDate() + 1);
+            }
+          });
+        });
+
+        setEmployeeAvailabilityData(availabilityMap);
       } catch (error) {
         console.error('Clients: Error fetching employees:', error);
         setAllEmployees([]);
@@ -2758,16 +2839,22 @@ useEffect(() => {
       if (timeDropdownRef.current && !timeDropdownRef.current.contains(event.target as Node)) {
         setShowTimeDropdown(false);
       }
+      if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
+        setShowManagerDropdown(false);
+      }
+      if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
+        setShowHelperDropdown(false);
+      }
     };
 
-    if (showTimeDropdown) {
+    if (showTimeDropdown || showManagerDropdown || showHelperDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showTimeDropdown]);
+  }, [showTimeDropdown, showManagerDropdown, showHelperDropdown]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -3328,6 +3415,14 @@ useEffect(() => {
           ref={getListRef(overlayAnchor)}
           className="max-h-80 overflow-y-auto px-3 py-5 space-y-4"
         >
+          {previousStages.length > 0 && (
+            <div className="space-y-2">
+              <span className="text-[11px] uppercase tracking-[0.32em] text-gray-400 dark:text-gray-500 block text-center">
+                Previous
+              </span>
+              {previousStages.map(stageOption => renderStageOption(stageOption, 'previous'))}
+            </div>
+          )}
           {renderCurrentStage()}
           {nextStages.length > 0 && (
             <div className="space-y-2">
@@ -3335,17 +3430,6 @@ useEffect(() => {
                 Upcoming
               </span>
               {nextStages.map(stageOption => renderStageOption(stageOption, 'next'))}
-            </div>
-          )}
-          {previousStages.length > 0 && (
-            <div className="space-y-2">
-              <span className="text-[11px] uppercase tracking-[0.32em] text-gray-400 dark:text-gray-500 block text-center">
-                Previous
-              </span>
-              {previousStages
-                .slice()
-                .reverse()
-                .map(stageOption => renderStageOption(stageOption, 'previous'))}
             </div>
           )}
         </div>
@@ -6652,35 +6736,160 @@ useEffect(() => {
       return [];
     }
 
+    // Don't fetch subleads if current client is a sublead (has master_id)
+    if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
+      setSubLeads([]);
+      setIsMasterLead(false);
+      return [];
+    }
+
+    // Check if the BASE LEAD (the one we're checking for subleads) has master_id and manual_id NULL
+    // If both are NULL, it means there are no subleads connected to it - don't fetch
     const normalizedBase = baseLeadNumber.trim();
+    const normalizedId = normalizedBase.replace(/^C/, ''); // Remove 'C' prefix if present
+    
+    let baseLeadMasterId: string | null | undefined = undefined;
+    let baseLeadManualId: string | null | undefined = undefined;
+    let foundBaseLead = false;
+    
+    // Determine if this is a legacy lead based on selectedClient
+    // If selectedClient is a legacy lead, the base lead is also a legacy lead
+    const isLegacyLead = selectedClient?.id && selectedClient.id.toString().startsWith('legacy_');
+    
+    if (isLegacyLead) {
+      // For legacy leads, ONLY query leads_lead table
+      try {
+        const numericId = parseInt(normalizedBase, 10);
+        if (!isNaN(numericId)) {
+          const { data: legacyBaseLead, error: legacyError } = await supabase
+            .from('leads_lead')
+            .select('master_id, manual_id')
+            .eq('id', numericId)
+            .maybeSingle();
+          
+          if (!legacyError && legacyBaseLead) {
+            baseLeadMasterId = legacyBaseLead.master_id;
+            baseLeadManualId = legacyBaseLead.manual_id;
+            foundBaseLead = true;
+          }
+        }
+      } catch (error) {
+        console.error('Error checking legacy lead master_id/manual_id:', error);
+      }
+    } else {
+      // For new leads, ONLY query leads table by lead_number
+      try {
+        const { data: newBaseLead, error: newLeadError } = await supabase
+          .from('leads')
+          .select('master_id, manual_id')
+          .eq('lead_number', normalizedBase)
+          .maybeSingle();
+        
+        if (!newLeadError && newBaseLead) {
+          baseLeadMasterId = newBaseLead.master_id;
+          baseLeadManualId = newBaseLead.manual_id;
+          foundBaseLead = true;
+        }
+      } catch (error) {
+        console.error('Error checking new lead master_id/manual_id:', error);
+      }
+    }
+    
+    // If we found the base lead and both master_id and manual_id are NULL, it has no subleads - don't fetch
+    if (foundBaseLead) {
+      // Check if both master_id and manual_id are NULL or empty
+      const masterIdIsEmpty = baseLeadMasterId === null || baseLeadMasterId === undefined || String(baseLeadMasterId).trim() === '';
+      const manualIdIsEmpty = baseLeadManualId === null || baseLeadManualId === undefined || String(baseLeadManualId).trim() === '';
+      
+      console.log('🔍 Checking base lead for subleads:', {
+        baseLeadNumber: normalizedBase,
+        foundBaseLead,
+        baseLeadMasterId,
+        baseLeadManualId,
+        masterIdIsEmpty,
+        manualIdIsEmpty
+      });
+      
+      // If BOTH master_id and manual_id are NULL/empty, this lead has no subleads
+      if (masterIdIsEmpty && manualIdIsEmpty) {
+        console.log('🔍 Base lead has master_id and manual_id NULL - no subleads, skipping fetch');
+        setSubLeads([]);
+        setIsMasterLead(false);
+        return [];
+      }
+    } else {
+      console.log('🔍 Base lead not found in database, continuing to fetch subleads');
+    }
+
+    const allSubLeads: any[] = [];
 
     try {
-      const { data, error } = await supabase
+      // Fetch new leads (from 'leads' table) with pattern matching
+      const { data: newLeads, error: newLeadsError } = await supabase
         .from('leads')
-        .select('lead_number, name, stage, manual_id')
+        .select('lead_number, name, stage, manual_id, master_id')
         .like('lead_number', `${normalizedBase}/%`)
         .order('lead_number', { ascending: true });
 
-      if (error) {
-        console.error('Error fetching sub-leads:', error);
-        return [];
+      if (newLeadsError) {
+        console.error('Error fetching new sub-leads:', newLeadsError);
+      } else if (newLeads && newLeads.length > 0) {
+        // Filter to only include leads that have valid master_id or manual_id
+        // And ensure their master_id matches the base lead (if they have master_id)
+        const validNewSubLeads = newLeads.filter(lead => {
+          const leadNumberValue = lead.lead_number || '';
+          const hasValidLeadNumber = !!leadNumberValue && leadNumberValue.includes('/');
+          
+          // Must have either master_id or manual_id
+          const hasMasterId = lead.master_id && String(lead.master_id).trim() !== '';
+          const hasManualId = lead.manual_id && String(lead.manual_id).trim() !== '';
+          
+          if (!hasMasterId && !hasManualId) {
+            return false; // No master_id or manual_id saved
+          }
+          
+          // If master_id exists, it should match the base lead (or base without prefix)
+          if (hasMasterId) {
+            const masterIdStr = String(lead.master_id).trim();
+            const baseWithoutPrefix = normalizedBase.replace(/^C/, '');
+            const masterMatchesBase = masterIdStr === normalizedBase || masterIdStr === baseWithoutPrefix;
+            if (!masterMatchesBase) {
+              return false; // master_id doesn't point to this base lead
+            }
+          }
+          
+          return hasValidLeadNumber;
+        });
+        allSubLeads.push(...validNewSubLeads);
       }
 
-      if (data && data.length > 0) {
-        const filtered = data.filter(lead => {
-          const leadNumberValue = lead.lead_number || '';
-          return !!leadNumberValue && leadNumberValue.includes('/');
-        });
+      // Also check for legacy leads with master_id pointing to this base lead
+      const normalizedId = normalizedBase.replace(/^C/, ''); // Remove 'C' prefix if present
+      
+      const { data: legacyLeads, error: legacyLeadsError } = await supabase
+        .from('leads_lead')
+        .select('id, name, stage, manual_id, master_id')
+        .or(`master_id.eq.${normalizedBase},master_id.eq.${normalizedId}`)
+        .not('master_id', 'is', null)
+        .order('id', { ascending: true });
 
-        if (filtered.length > 0) {
-          setSubLeads(filtered);
-          setIsMasterLead(!(selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''));
-          return filtered;
-        } else {
-          setSubLeads([]);
-          setIsMasterLead(false);
-          return [];
-        }
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy sub-leads:', legacyLeadsError);
+      } else if (legacyLeads && legacyLeads.length > 0) {
+        // Filter to only include legacy leads that have valid master_id or manual_id
+        const validLegacySubLeads = legacyLeads.filter(lead => {
+          const hasMasterId = lead.master_id && String(lead.master_id).trim() !== '';
+          const hasManualId = lead.manual_id && String(lead.manual_id).trim() !== '';
+          return hasMasterId || hasManualId;
+        });
+        allSubLeads.push(...validLegacySubLeads);
+      }
+
+      // Only set as master lead if we found valid subleads with master_id or manual_id
+      if (allSubLeads.length > 0) {
+        setSubLeads(allSubLeads);
+        setIsMasterLead(true);
+        return allSubLeads;
       } else {
         setSubLeads([]);
         setIsMasterLead(false);
@@ -6688,6 +6897,8 @@ useEffect(() => {
       }
     } catch (error) {
       console.error('Error fetching sub-leads:', error);
+      setSubLeads([]);
+      setIsMasterLead(false);
       return [];
     }
   }, [selectedClient?.master_id]);
@@ -6774,18 +6985,43 @@ useEffect(() => {
 
   // Fetch sub-leads when client changes
   useEffect(() => {
-    const subLeadBase =
-      selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== ''
-        ? (() => {
-            const trimmed = String(selectedClient.lead_number).trim();
-            return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-          })()
-        : selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''
-          ? (() => {
-              const trimmed = String(selectedClient.master_id).trim();
-              return trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
-            })()
-          : '';
+    // Don't fetch subleads if current client is a sublead (has master_id)
+    if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
+      setSubLeads([]);
+      setIsMasterLead(false);
+      return;
+    }
+
+    // Determine base lead number for fetching subleads
+    // IMPORTANT: Use the route parameter (fullLeadNumber) as the source of truth for legacy leads
+    // The route parameter is always correct, while selectedClient.lead_number might be wrong
+    let subLeadBase = '';
+    
+    const isLegacyLead = selectedClient?.id && selectedClient.id.toString().startsWith('legacy_');
+    
+    if (isLegacyLead) {
+      // For legacy leads, use the route parameter directly (source of truth)
+      // If route has a numeric ID like "123284", use it directly
+      // Otherwise, fall back to the ID from selectedClient
+      const routeLeadNumber = fullLeadNumber.trim();
+      const isNumericRoute = /^\d+$/.test(routeLeadNumber);
+      
+      if (isNumericRoute) {
+        // Route parameter is a numeric ID - use it directly
+        subLeadBase = routeLeadNumber;
+      } else {
+        // Route parameter might be a sublead or something else - use ID from selectedClient
+        subLeadBase = selectedClient.id.toString().replace('legacy_', '');
+      }
+    } else {
+      // For new leads, use lead_number or id
+      if (selectedClient?.lead_number && String(selectedClient.lead_number).trim() !== '') {
+        const trimmed = String(selectedClient.lead_number).trim();
+        subLeadBase = trimmed.includes('/') ? trimmed.split('/')[0] : trimmed;
+      } else if (selectedClient?.id) {
+        subLeadBase = selectedClient.id.toString();
+      }
+    }
 
     if (subLeadBase) {
       fetchSubLeads(subLeadBase);
@@ -6793,7 +7029,7 @@ useEffect(() => {
       setSubLeads([]);
       setIsMasterLead(false);
     }
-  }, [selectedClient?.lead_number, selectedClient?.master_id, fetchSubLeads]);
+  }, [fullLeadNumber, selectedClient?.lead_number, selectedClient?.master_id, selectedClient?.id, fetchSubLeads]);
 
   // Fetch next due payment when client changes
   useEffect(() => {
@@ -8458,7 +8694,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           )}
           
           {/* Master lead notice for mobile */}
-          {isMasterLead && subLeads.length > 0 && (
+          {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
             <div className="text-sm text-gray-500 mb-2">
               This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
               <a 
@@ -8930,7 +9166,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
           )}
           {/* Master lead notice */}
-          {isMasterLead && subLeads.length > 0 && (
+          {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
             <div className="text-sm text-gray-500 mb-2">
               This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
               <a 
@@ -9760,43 +9996,137 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
 
               {/* Manager (Optional) */}
-              <div>
+              <div className="relative" ref={managerDropdownRef}>
                 <label className="block font-semibold mb-1">Manager (Optional)</label>
                 <input
                   type="text"
                   className="input input-bordered w-full"
                   placeholder="Select a manager..."
-                  list="meeting-manager-options"
                   value={meetingFormData.manager}
-                  onChange={(e) =>
-                    setMeetingFormData(prev => ({ ...prev, manager: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setMeetingFormData(prev => ({ ...prev, manager: value }));
+                    setManagerSearchTerm(value);
+                    setShowManagerDropdown(true);
+                  }}
+                  onFocus={() => {
+                    setManagerSearchTerm(meetingFormData.manager || '');
+                    setShowManagerDropdown(true);
+                  }}
+                  autoComplete="off"
                 />
-                <datalist id="meeting-manager-options">
-                  {allEmployees.map(emp => (
-                    <option key={emp.id} value={emp.display_name} />
-                  ))}
-                </datalist>
+                {showManagerDropdown && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    {(() => {
+                      const searchTerm = (managerSearchTerm || meetingFormData.manager || '').toLowerCase();
+                      const filteredEmployees = allEmployees.filter(emp => {
+                        return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                      });
+                      
+                      return filteredEmployees.length > 0 ? (
+                        filteredEmployees.map(emp => {
+                          const isUnavailable = meetingFormData.date && meetingFormData.time
+                            ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                            : false;
+                          return (
+                            <div
+                              key={emp.id}
+                              className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                isUnavailable
+                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                  : 'hover:bg-gray-100'
+                              }`}
+                              onClick={() => {
+                                setMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
+                                setManagerSearchTerm('');
+                                setShowManagerDropdown(false);
+                              }}
+                            >
+                              <span>{emp.display_name}</span>
+                              {isUnavailable && (
+                                <div className="flex items-center gap-1">
+                                  <ClockIcon className="w-4 h-4" />
+                                  <span className="text-xs">Unavailable</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="px-4 py-2 text-gray-500 text-center">
+                          No employees found
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
 
               {/* Helper (Optional) */}
-              <div>
+              <div className="relative" ref={helperDropdownRef}>
                 <label className="block font-semibold mb-1">Helper (Optional)</label>
                 <input
                   type="text"
                   className="input input-bordered w-full"
                   placeholder="Select a helper..."
-                  list="meeting-helper-options"
                   value={meetingFormData.helper}
-                  onChange={(e) =>
-                    setMeetingFormData(prev => ({ ...prev, helper: e.target.value }))
-                  }
+                  onChange={(e) => {
+                    const value = e.target.value;
+                    setMeetingFormData(prev => ({ ...prev, helper: value }));
+                    setHelperSearchTerm(value);
+                    setShowHelperDropdown(true);
+                  }}
+                  onFocus={() => {
+                    setHelperSearchTerm(meetingFormData.helper || '');
+                    setShowHelperDropdown(true);
+                  }}
+                  autoComplete="off"
                 />
-                <datalist id="meeting-helper-options">
-                  {allEmployees.map(emp => (
-                    <option key={emp.id} value={emp.display_name} />
-                  ))}
-                </datalist>
+                {showHelperDropdown && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    {(() => {
+                      const searchTerm = (helperSearchTerm || meetingFormData.helper || '').toLowerCase();
+                      const filteredEmployees = allEmployees.filter(emp => {
+                        return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                      });
+                      
+                      return filteredEmployees.length > 0 ? (
+                        filteredEmployees.map(emp => {
+                          const isUnavailable = meetingFormData.date && meetingFormData.time
+                            ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                            : false;
+                          return (
+                            <div
+                              key={emp.id}
+                              className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                isUnavailable
+                                  ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                  : 'hover:bg-gray-100'
+                              }`}
+                              onClick={() => {
+                                setMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
+                                setHelperSearchTerm('');
+                                setShowHelperDropdown(false);
+                              }}
+                            >
+                              <span>{emp.display_name}</span>
+                              {isUnavailable && (
+                                <div className="flex items-center gap-1">
+                                  <ClockIcon className="w-4 h-4" />
+                                  <span className="text-xs">Unavailable</span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="px-4 py-2 text-gray-500 text-center">
+                          No employees found
+                        </div>
+                      );
+                    })()}
+                  </div>
+                )}
               </div>
 
               {/* Extra fields only for Paid meeting - COMMENTED OUT */}

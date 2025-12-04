@@ -55,6 +55,14 @@ const Dashboard: React.FC = () => {
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
   const [unavailableEmployeesData, setUnavailableEmployeesData] = useState<any[]>([]);
   const [unavailableEmployeesLoading, setUnavailableEmployeesLoading] = useState(false);
+  // Date filter for team availability (default to today)
+  const [teamAvailabilityDate, setTeamAvailabilityDate] = useState<string>(() => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  });
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<Record<string, string>>({});
 
@@ -128,6 +136,29 @@ const Dashboard: React.FC = () => {
 
   // Fetch detailed unavailable employees data for table
   // Helper function to map role codes to display names
+  // Helper function to get today's date string in YYYY-MM-DD format
+  const getTodayDateString = (): string => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Helper function to format the date description for display
+  const getDateDescription = (dateString: string): string => {
+    if (dateString === getTodayDateString()) {
+      return 'today';
+    }
+    const date = new Date(dateString + 'T00:00:00');
+    return date.toLocaleDateString('en-US', { 
+      weekday: 'long', 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+  };
+
   const getRoleDisplayName = (roleCode: string | null | undefined): string => {
     if (!roleCode) return 'N/A';
     
@@ -164,14 +195,23 @@ const Dashboard: React.FC = () => {
     return roleMap[roleCode] || roleCode || 'N/A';
   };
 
-  const fetchUnavailableEmployeesData = async () => {
+  const fetchUnavailableEmployeesData = async (selectedDate?: string) => {
     setUnavailableEmployeesLoading(true);
     try {
+      // Use provided date or default to today
+      const dateToUse = selectedDate || teamAvailabilityDate;
+      const selectedDateObj = new Date(dateToUse);
+      const year = selectedDateObj.getFullYear();
+      const month = String(selectedDateObj.getMonth() + 1).padStart(2, '0');
+      const day = String(selectedDateObj.getDate()).padStart(2, '0');
+      const selectedDateString = `${year}-${month}-${day}`;
+      
+      // Also get today's date for "currently active" comparison
       const today = new Date();
-      const year = today.getFullYear();
-      const month = String(today.getMonth() + 1).padStart(2, '0');
-      const day = String(today.getDate()).padStart(2, '0');
-      const todayString = `${year}-${month}-${day}`;
+      const todayYear = today.getFullYear();
+      const todayMonth = String(today.getMonth() + 1).padStart(2, '0');
+      const todayDay = String(today.getDate()).padStart(2, '0');
+      const todayString = `${todayYear}-${todayMonth}-${todayDay}`;
 
       const { data: employees, error } = await supabase
         .from('tenants_employee')
@@ -211,22 +251,23 @@ const Dashboard: React.FC = () => {
         const unavailableTimes = employee.unavailable_times || [];
         const unavailableRanges = employee.unavailable_ranges || [];
         
-        // Check for specific time slots today
-        const todayTimes = unavailableTimes.filter((time: any) => time.date === todayString);
+        // Check for specific time slots on selected date
+        const selectedDateTimes = unavailableTimes.filter((time: any) => time.date === selectedDateString);
         
-        // Check for date ranges that include today
-        const todayRanges = unavailableRanges.filter((range: any) => 
-          todayString >= range.startDate && todayString <= range.endDate
+        // Check for date ranges that include selected date
+        const selectedDateRanges = unavailableRanges.filter((range: any) => 
+          selectedDateString >= range.startDate && selectedDateString <= range.endDate
         );
 
-        if (todayTimes.length > 0 || todayRanges.length > 0) {
+        if (selectedDateTimes.length > 0 || selectedDateRanges.length > 0) {
           totalUnavailable++;
 
           // Process time slots
-          todayTimes.forEach((time: any) => {
+          selectedDateTimes.forEach((time: any) => {
             const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
             const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
-            const isCurrentlyActive = currentTime >= startTime && currentTime <= endTime;
+            // Only mark as "currently active" if it's today and the current time is within the range
+            const isCurrentlyActive = selectedDateString === todayString && currentTime >= startTime && currentTime <= endTime;
             
             if (isCurrentlyActive) {
               currentlyUnavailable++;
@@ -236,7 +277,8 @@ const Dashboard: React.FC = () => {
 
             const formattedDate = new Date(time.date).toLocaleDateString('en-GB', {
               day: '2-digit',
-              month: '2-digit'
+              month: '2-digit',
+              year: 'numeric'
             });
 
             const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
@@ -253,7 +295,7 @@ const Dashboard: React.FC = () => {
           });
 
           // Process date ranges
-          todayRanges.forEach((range: any) => {
+          selectedDateRanges.forEach((range: any) => {
             scheduledTimeOff++;
 
             const startDateFormatted = new Date(range.startDate).toLocaleDateString('en-GB', {
@@ -4568,16 +4610,16 @@ const Dashboard: React.FC = () => {
     fetchInvoicedData();
   }, [selectedMonth, selectedYear]);
 
-  // Fetch unavailable employees data on component mount
+  // Fetch unavailable employees data on component mount and when date changes
   useEffect(() => {
-    fetchUnavailableEmployeesData();
-  }, []);
+    fetchUnavailableEmployeesData(teamAvailabilityDate);
+  }, [teamAvailabilityDate]);
 
 
   // Refresh data when unavailable employees modal closes
   useEffect(() => {
     if (!isUnavailableEmployeesModalOpen) {
-      fetchUnavailableEmployeesData();
+      fetchUnavailableEmployeesData(teamAvailabilityDate);
     }
   }, [isUnavailableEmployeesModalOpen]);
 
@@ -7262,8 +7304,50 @@ const Dashboard: React.FC = () => {
               </div>
               <div>
                 <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
-                <p className="text-sm text-gray-500">Employees unavailable today</p>
+                <p className="text-sm text-gray-500">
+                  Employees unavailable on {getDateDescription(teamAvailabilityDate)}
+                </p>
               </div>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                  currentDate.setDate(currentDate.getDate() - 1);
+                  const year = currentDate.getFullYear();
+                  const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                  const day = String(currentDate.getDate()).padStart(2, '0');
+                  setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                }}
+                className="btn btn-sm btn-ghost btn-circle"
+                title="Previous day"
+              >
+                <ChevronLeftIcon className="w-5 h-5" />
+              </button>
+              <CalendarIcon className="w-5 h-5 text-gray-500" />
+              <input
+                type="date"
+                className="input input-bordered input-sm"
+                value={teamAvailabilityDate}
+                onChange={(e) => setTeamAvailabilityDate(e.target.value)}
+                title="Select date to check availability"
+              />
+              <button
+                type="button"
+                onClick={() => {
+                  const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                  currentDate.setDate(currentDate.getDate() + 1);
+                  const year = currentDate.getFullYear();
+                  const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                  const day = String(currentDate.getDate()).padStart(2, '0');
+                  setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                }}
+                className="btn btn-sm btn-ghost btn-circle"
+                title="Next day"
+              >
+                <ChevronRightIcon className="w-5 h-5" />
+              </button>
             </div>
           </div>
           
@@ -7307,7 +7391,9 @@ const Dashboard: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
-                  <p className="text-gray-600">No employees are unavailable today. Great job team!</p>
+                  <p className="text-gray-600">
+                    No employees are unavailable on {getDateDescription(teamAvailabilityDate)}. Great job team!
+                  </p>
                 </div>
               </div>
             </div>
