@@ -8,6 +8,7 @@ const LoginPage: React.FC = () => {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
+  const [magicLinkLoading, setMagicLinkLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [showSuccessAnim, setShowSuccessAnim] = useState(false);
@@ -97,7 +98,7 @@ const LoginPage: React.FC = () => {
   };
 
   const handleMagicLink = async () => {
-    setLoading(true);
+    setMagicLinkLoading(true);
     setError(null);
     setSuccess(null);
     
@@ -121,7 +122,7 @@ const LoginPage: React.FC = () => {
     } catch (err) {
       setError('Failed to send magic link. Please try again.');
     } finally {
-      setLoading(false);
+      setMagicLinkLoading(false);
     }
   };
 
@@ -131,14 +132,14 @@ const LoginPage: React.FC = () => {
       {!showSuccessAnim && (
         <>
           {/* Full width login box */}
-          <div className="w-full flex flex-col justify-center items-center min-h-screen relative z-10 bg-white">
+          <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 bg-white pt-48">
       {/* Header bar - Mobile */}
-      <div className="md:hidden absolute top-0 left-0 right-0 z-30 bg-white">
+      <div className="md:hidden absolute top-0 left-0 right-0 z-30" style={{ backgroundColor: '#3B18BC' }}>
         <div className="flex items-center justify-between py-4 px-6">
           {/* Hamburger Menu Button */}
           <button
             onClick={() => setIsMenuOpen(!isMenuOpen)}
-            className="text-gray-800 hover:text-primary transition-colors duration-200"
+            className="text-white hover:text-gray-200 transition-colors duration-200"
           >
             {isMenuOpen ? (
               <XMarkIcon className="w-6 h-6" />
@@ -149,8 +150,8 @@ const LoginPage: React.FC = () => {
           
           {/* Centered Text */}
           <div className="flex items-center gap-3">
-            <span className="text-lg font-bold text-primary tracking-tight" style={{ letterSpacing: '-0.02em' }}>
-              Rainmaker Queen 2.0
+            <span className="text-lg font-bold text-white tracking-tight" style={{ letterSpacing: '-0.02em' }}>
+              RMQ 2.0
             </span>
           </div>
           
@@ -158,14 +159,14 @@ const LoginPage: React.FC = () => {
         
         {/* Mobile Menu Overlay */}
         {isMenuOpen && (
-          <div className="absolute top-full left-0 right-0 bg-white shadow-lg z-40">
+          <div className="absolute top-full left-0 right-0 shadow-lg z-40" style={{ backgroundColor: '#3B18BC' }}>
             <div className="py-2">
               <button
                 onClick={() => {
                   navigate('/about');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-gray-700 hover:bg-purple-50 hover:text-purple-700 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
               >
                 About Us
               </button>
@@ -174,7 +175,7 @@ const LoginPage: React.FC = () => {
                   navigate('/contact');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-gray-700 hover:bg-purple-50 hover:text-purple-700 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
               >
                 Contact
               </button>
@@ -183,7 +184,7 @@ const LoginPage: React.FC = () => {
                   navigate('/how-it-works');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-gray-700 hover:bg-purple-50 hover:text-purple-700 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
               >
                 How It Works
               </button>
@@ -193,12 +194,12 @@ const LoginPage: React.FC = () => {
       </div>
       
       {/* Desktop Header */}
-      <div className="hidden md:block absolute top-0 left-0 right-0 z-30 bg-white">
+      <div className="hidden md:block absolute top-0 left-0 right-0 z-30" style={{ backgroundColor: '#3B18BC' }}>
         <div className="flex items-center justify-between py-4 px-8">
           {/* Brand */}
           <div className="flex items-center gap-3">
-            <span className="text-xl font-extrabold text-primary tracking-tight" style={{ letterSpacing: '-0.03em' }}>
-              Rainmaker Queen 2.0
+            <span className="text-xl font-extrabold text-white tracking-tight" style={{ letterSpacing: '-0.03em' }}>
+              RMQ 2.0
             </span>
           </div>
           
@@ -206,19 +207,19 @@ const LoginPage: React.FC = () => {
           <div className="flex items-center gap-8">
             <button
               onClick={() => navigate('/about')}
-              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
+              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
             >
               About Us
             </button>
             <button
               onClick={() => navigate('/contact')}
-              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
+              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
             >
               Contact
             </button>
             <button
               onClick={() => navigate('/how-it-works')}
-              className="text-gray-700 hover:text-primary transition-colors duration-200 font-medium"
+              className="text-white hover:text-gray-200 transition-colors duration-200 font-medium"
             >
               How It Works
             </button>
@@ -226,15 +227,14 @@ const LoginPage: React.FC = () => {
         </div>
       </div>
             {/* Logo above login form */}
-            <div className="mb-2 flex flex-col items-center">
-              <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-56 h-56 md:w-64 md:h-64 object-contain" />
-              <p className="text-gray-600 mt-2 text-center">Please sign in.</p>
+            <div className="mb-0 md:mb-1 flex flex-col items-center">
+              <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-64 h-64 md:w-72 md:h-72 object-contain" />
             </div>
             
             {/* Login box */}
-            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] py-12 px-6 md:px-0">
+            <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] pt-0 pb-12 px-6 md:pt-2 md:px-0">
             <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
-              <div className="w-full mt-2">
+              <div className="w-full mt-0 md:mt-2">
                   <label className="block font-semibold mb-1 text-gray-800 text-left">Email</label>
                 <div className="relative">
                   <input
@@ -273,9 +273,9 @@ const LoginPage: React.FC = () => {
                   type="button"
                     className="btn btn-outline border-primary text-primary hover:bg-primary/10 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={handleMagicLink}
-                    disabled={loading || !email}
+                    disabled={magicLinkLoading || !email}
                 >
-                  {loading ? (
+                  {magicLinkLoading ? (
                     <>
                       <span className="loading loading-spinner loading-sm mr-2"></span>
                       Sending Magic Link...

@@ -28,7 +28,7 @@ const WhatsAppModal: React.FC<WhatsAppModalProps> = ({ isOpen, onClose, selected
       </div>
       
       {/* WhatsApp Page */}
-      <WhatsAppPage selectedContact={selectedContact} />
+      <WhatsAppPage selectedContact={selectedContact} onClose={onClose} />
     </div>
   );
 };

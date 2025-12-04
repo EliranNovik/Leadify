@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
-import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, MagnifyingGlassIcon, PaperAirplaneIcon, PaperClipIcon, ChevronDownIcon, PlusIcon, DocumentTextIcon, UserIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { appendEmailSignature } from '../lib/emailSignature';
 import sanitizeHtml from 'sanitize-html';
@@ -277,6 +278,7 @@ interface EmailThreadModalProps {
 }
 
 const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, selectedContact: propSelectedContact }) => {
+  const navigate = useNavigate();
   const [contacts, setContacts] = useState<Contact[]>([]);
   const [filteredContacts, setFilteredContacts] = useState<Contact[]>([]);
   const [selectedContact, setSelectedContact] = useState<Contact | null>(null);
@@ -2493,8 +2495,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         {/* Header */}
         <div className={`flex-none flex flex-col border-b border-gray-200`}>
           <div className="flex items-center justify-between p-4 md:p-6">
-            <div className="flex items-center gap-2 md:gap-4">
-              <h2 className="text-lg md:text-2xl font-bold text-gray-900">Email Thread</h2>
+            <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
+              <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">Email Thread</h2>
               {selectedContact && !isMobile && (
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
@@ -2504,12 +2506,63 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               )}
             </div>
-            <button
-              onClick={onClose}
-              className="btn btn-ghost btn-circle"
-            >
-              <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-            </button>
+            <div className="flex items-center gap-2 flex-shrink-0">
+              {selectedContact && (
+                <button
+                  onClick={() => {
+                    // Get the correct lead identifier based on lead type
+                    const isLegacy = selectedContact.lead_type === 'legacy' || selectedContact.id?.toString().startsWith('legacy_');
+                    
+                    let leadIdentifier: string | null = null;
+                    
+                    if (isLegacy) {
+                      // For legacy leads, extract the numeric ID
+                      const contactId = selectedContact.id?.toString();
+                      if (contactId) {
+                        if (contactId.startsWith('legacy_')) {
+                          // Extract numeric ID from "legacy_<id>"
+                          leadIdentifier = contactId.replace('legacy_', '');
+                        } else if (/^\d+$/.test(contactId)) {
+                          // Already numeric
+                          leadIdentifier = contactId;
+                        }
+                      }
+                    } else {
+                      // For new leads, use lead_number
+                      leadIdentifier = selectedContact.lead_number || selectedContact.client_uuid || null;
+                    }
+                    
+                    if (!leadIdentifier) {
+                      console.error('Cannot navigate: No valid lead identifier found', selectedContact);
+                      return;
+                    }
+                    
+                    // Encode the identifier to handle sub-leads with '/' characters
+                    const encodedIdentifier = encodeURIComponent(leadIdentifier);
+                    console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
+                    
+                    // Close email modal first, then navigate
+                    onClose();
+                    
+                    // Small delay to ensure modal closes before navigation
+                    setTimeout(() => {
+                      navigate(`/clients/${encodedIdentifier}`, { replace: true });
+                    }, 100);
+                  }}
+                  className="btn btn-primary btn-sm gap-2"
+                  title="View Client Page"
+                >
+                  <UserIcon className="w-4 h-4" />
+                  <span className="hidden md:inline">View Client</span>
+                </button>
+              )}
+              <button
+                onClick={onClose}
+                className="btn btn-ghost btn-circle flex-shrink-0"
+              >
+                <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+              </button>
+            </div>
           </div>
           
         </div>

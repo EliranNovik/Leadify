@@ -96,6 +96,8 @@ interface WhatsAppMessage {
   template_id?: number; // Database template ID for proper matching
   profile_picture_url?: string | null; // WhatsApp profile picture URL
   voice_note?: boolean; // True if this is a voice note (not regular audio)
+  contact_id?: number; // Contact ID for messages associated with a specific contact
+  legacy_id?: number; // Legacy lead ID for legacy leads
 }
 
 interface WhatsAppPageProps {
@@ -104,9 +106,10 @@ interface WhatsAppPageProps {
     leadId: string | number;
     leadType: 'legacy' | 'new';
   } | null;
+  onClose?: () => void;
 }
 
-const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelectedContact }) => {
+const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelectedContact, onClose }) => {
   const navigate = useNavigate();
   const [clients, setClients] = useState<Client[]>([]);
   const [selectedClient, setSelectedClient] = useState<any>(null);
@@ -704,10 +707,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       try {
         setLoading(true);
         
-        // Fetch all WhatsApp messages to get both lead_ids and contact_ids
+        // Fetch all WhatsApp messages to get both lead_ids, contact_ids, and legacy_ids
         const { data: whatsappMessages, error: whatsappError } = await supabase
           .from('whatsapp_messages')
-          .select('lead_id, contact_id');
+          .select('lead_id, contact_id, legacy_id');
 
         if (whatsappError) {
           console.error('Error fetching WhatsApp messages:', whatsappError);
@@ -717,6 +720,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         const uniqueLeadIds = new Set<string>();
         // Get unique contact IDs from WhatsApp messages (where contact_id is not null)
         const uniqueContactIds = new Set<number>();
+        // Map contact_id to legacy_id from whatsapp_messages
+        const contactToLegacyIdMap = new Map<number, number>();
         
         (whatsappMessages || []).forEach((msg: any) => {
           if (msg.lead_id) {
@@ -724,6 +729,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           }
           if (msg.contact_id) {
             uniqueContactIds.add(Number(msg.contact_id));
+            // If this message has a legacy_id, map it to the contact_id
+            if (msg.legacy_id) {
+              contactToLegacyIdMap.set(Number(msg.contact_id), Number(msg.legacy_id));
+            }
           }
         });
 
@@ -939,12 +948,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 }
 
                 // Fetch legacy leads for contacts (with role filter if enabled)
+                // Include both legacy_ids from relationships AND from whatsapp_messages
+                const allLegacyIdsForContacts = new Set<number>();
+                legacyLeadIdsForContacts.forEach(id => allLegacyIdsForContacts.add(id));
+                // Add legacy_ids from whatsapp_messages
+                contactToLegacyIdMap.forEach(legacyId => allLegacyIdsForContacts.add(legacyId));
+                
                 let legacyLeadsForContacts: any[] = [];
-                if (legacyLeadIdsForContacts.size > 0) {
+                if (allLegacyIdsForContacts.size > 0) {
                   let contactsLegacyLeadsQuery = supabase
                     .from('leads_lead')
                     .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, total, potential_applicants')
-                    .in('id', Array.from(legacyLeadIdsForContacts));
+                    .in('id', Array.from(allLegacyIdsForContacts));
                   
                   // Apply role filter if "My Contacts" is enabled AND we have user info
                   if (showMyContactsOnly && currentUserEmployeeId) {
@@ -972,35 +987,55 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   .filter((contact: any) => {
                     const newLeadId = contactToNewLeadMap.get(contact.id);
                     const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                    // Also check if we have a legacy_id directly from whatsapp_messages
+                    const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
+                    const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
                     
                     // If "My Contacts" is enabled, only include contacts whose associated lead is in the filtered results
                     if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
                       if (newLeadId) {
                         // Check if the new lead is in the filtered results
                         return newLeadsForContacts.some(lead => lead.id === newLeadId);
-                      } else if (legacyLeadId) {
+                      } else if (finalLegacyLeadId) {
                         // Check if the legacy lead is in the filtered results
-                        return legacyLeadsForContacts.some(lead => lead.id === legacyLeadId);
+                        return legacyLeadsForContacts.some(lead => lead.id === finalLegacyLeadId);
                       }
                       return false;
                     }
                     
                     // If "All Contacts" is enabled, include all contacts that have an associated lead
-                    return !!(newLeadId || legacyLeadId);
+                    return !!(newLeadId || finalLegacyLeadId);
                   })
                   .map((contact: any) => {
                     const newLeadId = contactToNewLeadMap.get(contact.id);
                     const legacyLeadId = contactToLegacyLeadMap.get(contact.id);
+                    // Get legacy_id directly from whatsapp_messages if available (more accurate)
+                    const legacyIdFromMessages = contactToLegacyIdMap.get(contact.id);
+                    const finalLegacyLeadId = legacyIdFromMessages || legacyLeadId;
+                    
                     const associatedNewLead = newLeadId ? newLeadsForContacts.find(lead => lead.id === newLeadId) : null;
-                    const associatedLegacyLead = legacyLeadId ? legacyLeadsForContacts.find(lead => lead.id === legacyLeadId) : null;
+                    // Use finalLegacyLeadId (from messages first, then relationship) to find the associated lead
+                    const associatedLegacyLead = finalLegacyLeadId ? legacyLeadsForContacts.find(lead => lead.id === finalLegacyLeadId) : null;
                     const associatedLead = associatedNewLead || associatedLegacyLead;
-                    const isLegacy = !!associatedLegacyLead;
+                    const isLegacy = !!associatedLegacyLead || !!finalLegacyLeadId;
+                    
+                    // Get lead_number: use associatedLead's lead_number, or for legacy use the legacy_id itself
+                    let leadNumber: string;
+                    if (associatedLead?.lead_number) {
+                      leadNumber = associatedLead.lead_number;
+                    } else if (finalLegacyLeadId) {
+                      // For legacy leads, the lead_number is the legacy_id itself
+                      leadNumber = String(finalLegacyLeadId);
+                    } else {
+                      // Fallback: use contact id (shouldn't happen in normal cases)
+                      leadNumber = `Contact ${contact.id}`;
+                    }
                     
                     return {
                       id: `contact_${contact.id}`,
-                      lead_id: newLeadId || legacyLeadId || null,
+                      lead_id: newLeadId || (finalLegacyLeadId ? String(finalLegacyLeadId) : null),
                       contact_id: contact.id,
-                      lead_number: associatedLead?.lead_number || `Contact ${contact.id}`,
+                      lead_number: leadNumber,
                       name: contact.name || '',
                       email: contact.email || '',
                       phone: contact.phone || '',
@@ -1036,21 +1071,41 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         // Filter out contacts that share the same lead_number and phone as a lead client
         // This prevents showing duplicate entries with the same messages
         const filteredContactClients = contactClientsData.filter(contact => {
+          // Normalize contact phone numbers
+          const contactPhone = (contact.phone || contact.mobile || '').trim();
+          const contactPhoneNormalized = contactPhone.replace(/\D/g, '');
+          
           // Check if this contact matches any lead client by lead_number and phone
           const hasMatchingLead = [...newLeadsData, ...legacyLeadsData].some(lead => {
-            // Match by lead_number
-            const leadNumberMatch = lead.lead_number === contact.lead_number;
+            // Match by lead_number (normalize both to strings for comparison)
+            const leadNumberMatch = String(lead.lead_number || '').trim() === String(contact.lead_number || '').trim();
             
             // Match by phone (check both phone and mobile fields)
-            const contactPhone = contact.phone || contact.mobile || '';
-            const leadPhone = lead.phone || lead.mobile || '';
-            const phoneMatch = contactPhone && leadPhone && (
-              contactPhone === leadPhone ||
-              contactPhone.replace(/\D/g, '') === leadPhone.replace(/\D/g, '') // Compare normalized (digits only)
-            );
+            const leadPhone = (lead.phone || lead.mobile || '').trim();
+            const leadPhoneNormalized = leadPhone.replace(/\D/g, '');
             
-            // Only filter out if both lead_number AND phone match
-            return leadNumberMatch && phoneMatch;
+            // Phone match: exact match or normalized match (if both have phone numbers)
+            const phoneMatch = contactPhoneNormalized && leadPhoneNormalized
+              ? contactPhoneNormalized === leadPhoneNormalized
+              : (contactPhone && leadPhone && contactPhone === leadPhone);
+            
+            // Also check by name as additional safeguard (if lead_number matches but phone doesn't, still might be duplicate)
+            const nameMatch = contact.name && lead.name && 
+              contact.name.trim().toLowerCase() === lead.name.trim().toLowerCase();
+            
+            // Filter out if:
+            // 1. lead_number matches AND (phone matches OR name matches), OR
+            // 2. lead_number matches AND both phones are empty (likely same entity)
+            if (leadNumberMatch) {
+              if (phoneMatch || nameMatch) {
+                return true; // Definitely a duplicate
+              }
+              // If lead_number matches but no phone/name match, still filter out to avoid duplicates
+              // (this handles cases where contact might have different phone but same lead)
+              return true;
+            }
+            
+            return false;
           });
           
           // Keep contact only if no matching lead found
@@ -1080,7 +1135,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       setLeadContacts([propSelectedContact.contact]);
       // Create a Client object from the contact
       const clientObj: Client = {
-        id: propSelectedContact.leadId,
+        id: String(propSelectedContact.leadId),
+        lead_number: String(propSelectedContact.leadId),
         name: propSelectedContact.contact.name,
         phone: propSelectedContact.contact.phone || propSelectedContact.contact.mobile || '',
         lead_type: propSelectedContact.leadType,
@@ -2892,7 +2948,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   
                   let leadIdentifier: string | null = null;
                   
-                  if (isLegacy) {
+                  // For contacts, use lead_id if available (it contains the actual lead ID)
+                  if (selectedClient.isContact && selectedClient.lead_id) {
+                    leadIdentifier = String(selectedClient.lead_id);
+                  } else if (isLegacy) {
                     // For legacy leads, extract the numeric ID
                     const clientId = selectedClient.id?.toString();
                     if (clientId) {
@@ -2903,6 +2962,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         // Already numeric
                         leadIdentifier = clientId;
                       }
+                    }
+                    // Fallback: use lead_number if it's a numeric string (for legacy contacts)
+                    if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
+                      leadIdentifier = selectedClient.lead_number;
                     }
                   } else {
                     // For new leads, use lead_number
@@ -2918,8 +2981,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   const encodedIdentifier = encodeURIComponent(leadIdentifier);
                   console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
                   
-                  // Navigate to client page
-                  navigate(`/clients/${encodedIdentifier}`);
+                  // Close WhatsApp modal first, then navigate
+                  if (onClose) {
+                    onClose();
+                  }
+                  
+                  // Small delay to ensure modal closes before navigation
+                  setTimeout(() => {
+                    navigate(`/clients/${encodedIdentifier}`, { replace: true });
+                  }, 100);
                 }}
                 className="btn btn-primary btn-sm gap-2"
                 title="View Client Page"
@@ -3137,11 +3207,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                                 <h3 className="font-semibold text-gray-900 truncate text-base md:text-base">
                                   {client.name}
                                 </h3>
-                                {client.isContact && (
-                                  <span className="text-xs bg-blue-100 text-blue-700 px-2 py-0.5 rounded-full flex-shrink-0">
-                                    Contact
-                                  </span>
-                                )}
                               </div>
                               <div className="flex items-center gap-1 md:gap-2 flex-shrink-0">
                                 {lastMessage && (

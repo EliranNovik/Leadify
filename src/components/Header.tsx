@@ -2330,16 +2330,21 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 
   // Stage badge function for search results
   const getStageBadge = (stage: string | number | null | undefined) => {
-    if (!stage || (typeof stage === 'string' && !stage.trim())) {
+    const stageStr = stage ? String(stage).trim() : '';
+    const stageName = stageStr ? getStageName(stageStr) : 'Contact';
+    const isContact = !stageStr;
+    
+    // Use gradient for Contact badge (same as new messages box), solid color for stages
+    if (isContact) {
       return (
-        <span className="badge badge-sm bg-gray-100 text-gray-600">
-          No Stage
+        <span 
+          className="badge badge-sm text-xs px-2 py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
+        >
+          {stageName}
         </span>
       );
     }
     
-    const stageStr = String(stage);
-    const stageName = getStageName(stageStr);
     // Force all search result stage badges to use #391BC8
     const backgroundColor = '#391BC8';
     const textColor = getContrastingTextColor(backgroundColor);
@@ -2794,19 +2799,24 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                     <button
                       key={uniqueKey}
                       onClick={() => handleSearchResultClick(result)}
-                      className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200"
+                      className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200 relative"
                     >
-                      <div className="flex items-start gap-3">
-                        <div className="w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 flex items-center justify-center flex-shrink-0">
+                      <div className="absolute top-2 right-2 z-10">
+                        {getStageBadge(result.stage)}
+                      </div>
+                      <div className="flex items-start gap-3 pr-24 md:pr-16">
+                        <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
                           <span className="font-semibold text-white">
                             {displayName.charAt(0).toUpperCase()}
                           </span>
                         </div>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center gap-2 mb-1">
-                            <p className="font-semibold text-gray-900 truncate">
+                        <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
+                          <div className="mb-1">
+                            <p className="text-[10px] md:text-base font-semibold text-gray-900 break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                               {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                             </p>
+                          </div>
+                          <div className="mb-1">
                             <span className="text-xs text-gray-500 font-mono">{result.lead_number}</span>
                           </div>
                           {result.category && (
@@ -2820,11 +2830,6 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                             </p>
                           )}
                         </div>
-                        {result.stage && result.stage.trim() !== '' && (
-                          <div className="flex-shrink-0">
-                            {getStageBadge(result.stage)}
-                          </div>
-                        )}
                       </div>
                     </button>
                   );
