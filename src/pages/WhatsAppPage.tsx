@@ -10,6 +10,7 @@ import { getTemplateParamDefinitions, generateParamsFromDefinitions } from '../l
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
+import { generateSearchVariants } from '../lib/transliteration';
 import EmojiPicker from 'emoji-picker-react';
 import {
   MagnifyingGlassIcon,
@@ -131,6 +132,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [newMessageSearchResults, setNewMessageSearchResults] = useState<CombinedLead[]>([]);
   const [isNewMessageSearching, setIsNewMessageSearching] = useState(false);
   const newMessageSearchTimeoutRef = useRef<NodeJS.Timeout>();
+  const masterSearchResultsRef = useRef<CombinedLead[]>([]);
+  const previousSearchQueryRef = useRef<string>('');
+  const previousRawSearchValueRef = useRef<string>('');
 
   // Debug selectedFile state changes
   useEffect(() => {
@@ -541,6 +545,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         setIsNewMessageModalOpen(false);
         setNewMessageSearchTerm('');
         setNewMessageSearchResults([]);
+        masterSearchResultsRef.current = [];
+        previousSearchQueryRef.current = '';
+        previousRawSearchValueRef.current = '';
       }
     };
 
@@ -1728,23 +1735,101 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Handle search input changes - now only filters fetched clients (no API calls)
   // Removed the searchLeads API call - search now only filters through existing clients
 
+  // Client-side filtering function for incremental search
+  const filterResultsClientSide = (results: CombinedLead[], query: string): CombinedLead[] => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return results;
+
+    const searchVariants = generateSearchVariants(trimmed);
+    const digits = trimmed.replace(/\D/g, '');
+
+    return results.filter((lead) => {
+      const name = (lead.contactName || lead.name || '').toLowerCase();
+      const email = (lead.email || '').toLowerCase();
+      const phone = (lead.phone || '').replace(/\D/g, '');
+      const mobile = (lead.mobile || '').replace(/\D/g, '');
+      const leadNumber = (lead.lead_number || '').toLowerCase();
+
+      // Check if any search variant matches
+      return searchVariants.some(variant => {
+        const variantLower = variant.toLowerCase();
+        return (
+          name.includes(variantLower) ||
+          email.includes(variantLower) ||
+          leadNumber.includes(variantLower) ||
+          (digits.length >= 3 && (phone.includes(digits) || mobile.includes(digits)))
+        );
+      });
+    });
+  };
+
   // Handle search in New Message Modal
   useEffect(() => {
     if (newMessageSearchTimeoutRef.current) {
       clearTimeout(newMessageSearchTimeoutRef.current);
     }
 
-    if (!newMessageSearchTerm.trim()) {
+    const trimmedQuery = newMessageSearchTerm.trim();
+    const previousQuery = previousSearchQueryRef.current.trim();
+
+    if (!trimmedQuery) {
       setNewMessageSearchResults([]);
       setIsNewMessageSearching(false);
+      masterSearchResultsRef.current = [];
+      previousSearchQueryRef.current = '';
+      previousRawSearchValueRef.current = '';
       return;
     }
 
+    // Check if this is an extension of the previous query (user is continuing to type)
+    // An extension means: the new query is longer AND starts with the previous query
+    // BUT: Don't use incremental filtering for:
+    // - Numeric queries (lead numbers) - need precise database searches
+    // - Phone numbers - need precise database searches
+    // - Very short queries (< 3 chars) - might not have enough results to filter
+    const isNumeric = /^\d+$/.test(trimmedQuery);
+    const digits = trimmedQuery.replace(/\D/g, '');
+    const isPhoneNumber = /^[\d\s\-\(\)\+]+$/.test(trimmedQuery) && digits.length >= 3;
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
+    const isVeryShortQuery = trimmedQuery.length < 3;
+    
+    const isQueryExtension = previousQuery && 
+      trimmedQuery.length > previousQuery.length && 
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
+      masterSearchResultsRef.current.length > 0 &&
+      !isNumeric && // Don't use incremental filtering for pure numeric queries
+      !isPhoneNumber && // Don't use incremental filtering for phone numbers
+      !isLeadNumber && // Don't use incremental filtering for lead numbers
+      !isVeryShortQuery && // Don't use incremental filtering for very short queries
+      previousQuery.length >= 3; // Previous query must also be at least 3 chars
+    
+    if (isQueryExtension) {
+      // Filter existing results client-side for faster response
+      // This prevents unnecessary API calls when user is just continuing to type
+      // Only works for text queries (names, emails) with sufficient length
+      const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
+      
+      // If filtering results in empty results, perform a new search instead
+      // This handles cases where the extended query doesn't match any existing results
+      if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
+        // Don't return early - let it perform a new search
+        // This ensures we don't show "no results" when there might be matches
+      } else {
+        setNewMessageSearchResults(filtered);
+        setIsNewMessageSearching(false);
+        previousSearchQueryRef.current = trimmedQuery;
+        previousRawSearchValueRef.current = newMessageSearchTerm;
+        return;
+      }
+    }
+
+    // Otherwise, perform new search (query got shorter or changed significantly)
     setIsNewMessageSearching(true);
 
     newMessageSearchTimeoutRef.current = setTimeout(async () => {
       try {
-        const results = await searchLeads(newMessageSearchTerm.trim());
+        const results = await searchLeads(trimmedQuery);
         console.log('[WhatsAppPage] Search results received:', results.length);
         console.log('[WhatsAppPage] Sample results:', results.slice(0, 5).map(r => ({
           name: r.name,
@@ -1763,10 +1848,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           lead_number: r.lead_number,
           lead_type: r.lead_type
         })));
+        masterSearchResultsRef.current = results;
         setNewMessageSearchResults(results);
+        previousSearchQueryRef.current = trimmedQuery;
+        previousRawSearchValueRef.current = newMessageSearchTerm;
       } catch (error) {
         console.error('Error searching leads:', error);
         setNewMessageSearchResults([]);
+        masterSearchResultsRef.current = [];
       } finally {
         setIsNewMessageSearching(false);
       }
@@ -1921,6 +2010,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     setIsNewMessageModalOpen(false);
     setNewMessageSearchTerm('');
     setNewMessageSearchResults([]);
+    masterSearchResultsRef.current = [];
+    previousSearchQueryRef.current = '';
+    previousRawSearchValueRef.current = '';
     
     // Open chat on mobile
     if (isMobile) {
@@ -4418,6 +4510,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   setIsNewMessageModalOpen(false);
                   setNewMessageSearchTerm('');
                   setNewMessageSearchResults([]);
+                  masterSearchResultsRef.current = [];
+                  previousSearchQueryRef.current = '';
+                  previousRawSearchValueRef.current = '';
                 }}
                 className="btn btn-ghost btn-sm btn-circle"
               >

@@ -140,6 +140,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const isMouseOverSearchRef = useRef(false);
+  const masterSearchResultsRef = useRef<CombinedLead[]>([]);
+  const previousSearchQueryRef = useRef<string>('');
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -553,6 +555,34 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, []);
 
+  // Client-side filtering function - filters existing results based on query
+  const filterResultsClientSide = (results: CombinedLead[], query: string): CombinedLead[] => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return results;
+
+    const searchVariants = generateSearchVariants(trimmed);
+    const digits = trimmed.replace(/\D/g, '');
+
+    return results.filter((lead) => {
+      const name = (lead.contactName || lead.name || '').toLowerCase();
+      const email = (lead.email || '').toLowerCase();
+      const phone = (lead.phone || '').replace(/\D/g, '');
+      const mobile = (lead.mobile || '').replace(/\D/g, '');
+      const leadNumber = (lead.lead_number || '').toLowerCase();
+
+      // Check if any search variant matches
+      return searchVariants.some(variant => {
+        const variantLower = variant.toLowerCase();
+        return (
+          name.includes(variantLower) ||
+          email.includes(variantLower) ||
+          leadNumber.includes(variantLower) ||
+          (digits.length >= 3 && (phone.includes(digits) || mobile.includes(digits)))
+        );
+      });
+    });
+  };
+
   // Fuzzy search function for when no direct matches found
   const performFuzzySearch = async (query: string): Promise<CombinedLead[]> => {
     const trimmed = query.trim();
@@ -561,7 +591,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const lower = trimmed.toLowerCase();
     const digits = trimmed.replace(/\D/g, '');
     const isEmail = trimmed.includes('@');
-    const isNumeric = /^\d+$/.test(trimmed);
+    const isPureNumeric = /^\d+$/.test(trimmed);
+    const hasPrefix = /^[LC]/i.test(trimmed);
+    const noPrefix = trimmed.replace(/^[LC]/i, '');
+    const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
+    
+    // Phone detection logic (same as in legacyLeadsApi.ts):
+    // - 4+ digits starting with 0: phone (e.g., "0507")
+    // - 7+ digits: always phone (lead numbers are max 6 digits)
+    // - 3-6 digits that are NOT pure numeric (has formatting/spaces): phone
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    // Lead number: has prefix OR pure numeric query with 1-6 digits (but NOT if starts with 0 and 4+ digits)
+    const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
+    // Phone: starts with 0 OR 7+ digits OR has formatting (not pure numeric) OR 3-6 digits that aren't lead numbers
+    const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
 
     try {
       // Build conditions for fuzzy matching - search all relevant fields with multilingual support
@@ -589,21 +632,45 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         });
       }
 
-      // Lead number fuzzy search
-      if (isNumeric || digits.length > 0) {
-        newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
-        legacyLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
-        if (isNumeric) {
-          legacyLeadConditions.push(`id.eq.${trimmed}`);
-        }
-      }
-
-      // Phone number fuzzy search (if has digits)
-      if (digits.length >= 3) {
+      // Phone number search - prioritize phone search if detected as phone
+      if (isPhone && digits.length >= 3) {
+        // Phone numbers: search phone/mobile fields only
         newLeadConditions.push(`phone.ilike.%${digits}%`);
         newLeadConditions.push(`mobile.ilike.%${digits}%`);
         legacyLeadConditions.push(`phone.ilike.%${digits}%`);
         legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
+        // Don't search lead_number or ID for phone numbers
+      } else if (isLeadNumber) {
+        // Lead number search - search lead_number fields and ID (for legacy)
+        newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
+        newLeadConditions.push(`lead_number.ilike.L%${trimmed}%`);
+        newLeadConditions.push(`lead_number.ilike.C%${trimmed}%`);
+        // For legacy leads, only search by ID if it's a valid small number (1-6 digits, no leading zero)
+        // Note: lead_number in leads_lead is bigint, so we can't use ilike on it
+        if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
+          const numId = parseInt(noPrefix, 10);
+          if (!isNaN(numId) && numId > 0) {
+            legacyLeadConditions.push(`id.eq.${numId}`);
+          }
+        }
+        // Don't search legacy lead_number with ilike (it's bigint) - only search by ID above
+      } else if (digits.length > 0) {
+        // Mixed query with digits - search both lead numbers and phones
+        if (digits.length >= 3) {
+          newLeadConditions.push(`phone.ilike.%${digits}%`);
+          newLeadConditions.push(`mobile.ilike.%${digits}%`);
+          legacyLeadConditions.push(`phone.ilike.%${digits}%`);
+          legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
+        }
+        if (digits.length <= 6 && !startsWithZero) {
+          // Only search lead_number for new leads (text field)
+          newLeadConditions.push(`lead_number.ilike.%${digits}%`);
+          // For legacy leads, only search by ID if it's a valid number (lead_number is bigint, can't use ilike)
+          const numId = parseInt(digits, 10);
+          if (!isNaN(numId) && numId > 0) {
+            legacyLeadConditions.push(`id.eq.${numId}`);
+          }
+        }
       }
 
       const results: CombinedLead[] = [];
@@ -775,39 +842,91 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  // Handle search - with fuzzy search fallback
+  // Handle search - with fuzzy search fallback and incremental filtering
   useEffect(() => {
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
     }
 
-    if (!searchValue.trim()) {
+    const trimmedQuery = searchValue.trim();
+    const previousQuery = previousSearchQueryRef.current.trim();
+
+    if (!trimmedQuery) {
       setSearchResults([]);
+      masterSearchResultsRef.current = [];
+      previousSearchQueryRef.current = '';
       setIsSearching(false);
       return;
     }
 
+    // Check if this is an extension of the previous query (user is continuing to type)
+    // An extension means: the new query is longer AND starts with the previous query
+    // BUT: Don't use incremental filtering for:
+    // - Numeric queries (lead numbers) - need precise database searches
+    // - Phone numbers - need precise database searches
+    // - Very short queries (< 3 chars) - might not have enough results to filter
+    const isNumeric = /^\d+$/.test(trimmedQuery);
+    const digits = trimmedQuery.replace(/\D/g, '');
+    const isPhoneNumber = /^[\d\s\-\(\)\+]+$/.test(trimmedQuery) && digits.length >= 3;
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
+    const isVeryShortQuery = trimmedQuery.length < 3;
+    
+    const isQueryExtension = previousQuery && 
+      trimmedQuery.length > previousQuery.length && 
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
+      masterSearchResultsRef.current.length > 0 &&
+      !isNumeric && // Don't use incremental filtering for pure numeric queries
+      !isPhoneNumber && // Don't use incremental filtering for phone numbers
+      !isLeadNumber && // Don't use incremental filtering for lead numbers
+      !isVeryShortQuery && // Don't use incremental filtering for very short queries
+      previousQuery.length >= 3; // Previous query must also be at least 3 chars
+    
+    if (isQueryExtension) {
+      // Filter existing results client-side for faster response
+      // This prevents unnecessary API calls when user is just continuing to type
+      // Only works for text queries (names, emails) with sufficient length
+      const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
+      
+      // If filtering results in empty results, perform a new search instead
+      // This handles cases where the extended query doesn't match any existing results
+      if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
+        // Don't return early - let it perform a new search
+        // This ensures we don't show "no results" when there might be matches
+      } else {
+        setSearchResults(filtered);
+        setIsSearching(false);
+        previousSearchQueryRef.current = trimmedQuery;
+        return;
+      }
+    }
+
+    // Otherwise, perform new search (query got shorter or changed significantly)
     setIsSearching(true);
 
     searchTimeoutRef.current = setTimeout(async () => {
       try {
         // First try direct search
-        const directResults = await searchLeads(searchValue.trim());
+        const directResults = await searchLeads(trimmedQuery);
         
         // Check if we have direct matches (non-fuzzy)
         const directMatches = directResults.filter(r => !r.isFuzzyMatch);
         
         if (directMatches.length > 0) {
           // Show only direct matches
+          masterSearchResultsRef.current = directMatches;
           setSearchResults(directMatches);
         } else {
           // No direct matches, perform fuzzy search
-          const fuzzyResults = await performFuzzySearch(searchValue.trim());
+          const fuzzyResults = await performFuzzySearch(trimmedQuery);
+          masterSearchResultsRef.current = fuzzyResults;
           setSearchResults(fuzzyResults);
         }
+        previousSearchQueryRef.current = trimmedQuery;
       } catch (error) {
         console.error('Error searching leads:', error);
         setSearchResults([]);
+        masterSearchResultsRef.current = [];
       } finally {
         setIsSearching(false);
       }
@@ -1777,6 +1896,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleClearSearch = () => {
     setSearchValue('');
     setSearchResults([]);
+    masterSearchResultsRef.current = [];
+    previousSearchQueryRef.current = '';
     setIsSearchActive(false);
     setHasAppliedFilters(false);
     setIsSearching(false);
@@ -1786,6 +1907,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const closeSearchBar = () => {
     setIsSearchActive(false);
     setSearchResults([]);
+    masterSearchResultsRef.current = [];
+    previousSearchQueryRef.current = '';
     setSearchValue('');
     setHasAppliedFilters(false);
     setShowFilterDropdown(false);
@@ -3726,4 +3849,4 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
   );
 };
 
-export default Header; 
+export default Header;

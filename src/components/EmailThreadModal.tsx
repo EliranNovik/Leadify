@@ -17,6 +17,7 @@ import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
 import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
+import { generateSearchVariants } from '../lib/transliteration';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -321,6 +322,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [newEmailSearchResults, setNewEmailSearchResults] = useState<CombinedLead[]>([]);
   const [isNewEmailSearching, setIsNewEmailSearching] = useState(false);
   const newEmailSearchTimeoutRef = useRef<NodeJS.Timeout>();
+  const masterSearchResultsRef = useRef<CombinedLead[]>([]);
+  const previousSearchQueryRef = useRef<string>('');
+  const previousRawSearchValueRef = useRef<string>('');
   const filteredTemplates = useMemo(() => {
     const query = templateSearch.trim().toLowerCase();
     if (!query) return templates;
@@ -1098,27 +1102,109 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     }
   }, [searchQuery, contacts]);
 
+  // Client-side filtering function for incremental search
+  const filterResultsClientSide = (results: CombinedLead[], query: string): CombinedLead[] => {
+    const trimmed = query.trim().toLowerCase();
+    if (!trimmed) return results;
+
+    const searchVariants = generateSearchVariants(trimmed);
+    const digits = trimmed.replace(/\D/g, '');
+
+    return results.filter((lead) => {
+      const name = (lead.contactName || lead.name || '').toLowerCase();
+      const email = (lead.email || '').toLowerCase();
+      const phone = (lead.phone || '').replace(/\D/g, '');
+      const mobile = (lead.mobile || '').replace(/\D/g, '');
+      const leadNumber = (lead.lead_number || '').toLowerCase();
+
+      // Check if any search variant matches
+      return searchVariants.some(variant => {
+        const variantLower = variant.toLowerCase();
+        return (
+          name.includes(variantLower) ||
+          email.includes(variantLower) ||
+          leadNumber.includes(variantLower) ||
+          (digits.length >= 3 && (phone.includes(digits) || mobile.includes(digits)))
+        );
+      });
+    });
+  };
+
   // Handle search in New Email Modal
   useEffect(() => {
     if (newEmailSearchTimeoutRef.current) {
       clearTimeout(newEmailSearchTimeoutRef.current);
     }
 
-    if (!newEmailSearchTerm.trim()) {
+    const trimmedQuery = newEmailSearchTerm.trim();
+    const previousQuery = previousSearchQueryRef.current.trim();
+
+    if (!trimmedQuery) {
       setNewEmailSearchResults([]);
       setIsNewEmailSearching(false);
+      masterSearchResultsRef.current = [];
+      previousSearchQueryRef.current = '';
+      previousRawSearchValueRef.current = '';
       return;
     }
 
+    // Check if this is an extension of the previous query (user is continuing to type)
+    // An extension means: the new query is longer AND starts with the previous query
+    // BUT: Don't use incremental filtering for:
+    // - Numeric queries (lead numbers) - need precise database searches
+    // - Phone numbers - need precise database searches
+    // - Very short queries (< 3 chars) - might not have enough results to filter
+    const isNumeric = /^\d+$/.test(trimmedQuery);
+    const digits = trimmedQuery.replace(/\D/g, '');
+    const isPhoneNumber = /^[\d\s\-\(\)\+]+$/.test(trimmedQuery) && digits.length >= 3;
+    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
+    const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
+    const isVeryShortQuery = trimmedQuery.length < 3;
+    
+    const isQueryExtension = previousQuery && 
+      trimmedQuery.length > previousQuery.length && 
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
+      masterSearchResultsRef.current.length > 0 &&
+      !isNumeric && // Don't use incremental filtering for pure numeric queries
+      !isPhoneNumber && // Don't use incremental filtering for phone numbers
+      !isLeadNumber && // Don't use incremental filtering for lead numbers
+      !isVeryShortQuery && // Don't use incremental filtering for very short queries
+      previousQuery.length >= 3; // Previous query must also be at least 3 chars
+    
+    if (isQueryExtension) {
+      // Filter existing results client-side for faster response
+      // This prevents unnecessary API calls when user is just continuing to type
+      // Only works for text queries (names, emails) with sufficient length
+      const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
+      
+      // If filtering results in empty results, perform a new search instead
+      // This handles cases where the extended query doesn't match any existing results
+      if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
+        // Don't return early - let it perform a new search
+        // This ensures we don't show "no results" when there might be matches
+      } else {
+        setNewEmailSearchResults(filtered);
+        setIsNewEmailSearching(false);
+        previousSearchQueryRef.current = trimmedQuery;
+        previousRawSearchValueRef.current = newEmailSearchTerm;
+        return;
+      }
+    }
+
+    // Otherwise, perform new search (query got shorter or changed significantly)
     setIsNewEmailSearching(true);
 
     newEmailSearchTimeoutRef.current = setTimeout(async () => {
       try {
-        const results = await searchLeads(newEmailSearchTerm.trim());
+        const results = await searchLeads(trimmedQuery);
+        masterSearchResultsRef.current = results;
         setNewEmailSearchResults(results);
+        previousSearchQueryRef.current = trimmedQuery;
+        previousRawSearchValueRef.current = newEmailSearchTerm;
       } catch (error) {
         console.error('Error searching leads:', error);
         setNewEmailSearchResults([]);
+        masterSearchResultsRef.current = [];
       } finally {
         setIsNewEmailSearching(false);
       }
@@ -1279,6 +1365,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setIsNewEmailModalOpen(false);
     setNewEmailSearchTerm('');
     setNewEmailSearchResults([]);
+    masterSearchResultsRef.current = [];
+    previousSearchQueryRef.current = '';
+    previousRawSearchValueRef.current = '';
     
     // Open chat on mobile
     if (isMobile) {
