@@ -7,7 +7,11 @@ import {
   PhotoIcon,
   DocumentTextIcon,
   ArchiveBoxIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  DocumentArrowUpIcon,
+  PaperClipIcon,
+  CheckCircleIcon,
+  XCircleIcon
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { createPortal } from 'react-dom';
@@ -30,12 +34,21 @@ interface DocumentModalProps {
   onDocumentCountChange?: (count: number) => void;
 }
 
+interface UploadedFile {
+  name: string;
+  status: 'uploading' | 'success' | 'error';
+  progress?: number;
+  error?: string;
+}
+
 const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumber, clientName, onDocumentCountChange }) => {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [previewDocument, setPreviewDocument] = useState<Document | null>(null);
   const [downloading, setDownloading] = useState<string[]>([]);
+  const [uploadedFiles, setUploadedFiles] = useState<UploadedFile[]>([]);
+  const [isUploading, setIsUploading] = useState(false);
 
   // Fetch documents when modal opens
   useEffect(() => {
@@ -175,6 +188,147 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
     });
   };
 
+  // Helper function to get current user's full name
+  const getCurrentUserName = async (): Promise<string> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user?.id) return 'Unknown';
+      
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('full_name')
+        .eq('auth_id', user.id)
+        .single();
+      
+      if (error || !userData?.full_name) {
+        return user?.email || 'Unknown';
+      }
+      
+      return userData.full_name;
+    } catch (error) {
+      console.error('Error getting user name:', error);
+      return 'Unknown';
+    }
+  };
+
+  // Handle file drop
+  const handleFileDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const files = e.dataTransfer.files;
+    if (files.length > 0) {
+      await uploadFiles(Array.from(files));
+    }
+  };
+
+  // Handle file input change
+  const handleFileInput = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (files) {
+      await uploadFiles(Array.from(files));
+    }
+  };
+
+  // The main upload function
+  const uploadFiles = async (files: File[]) => {
+    setIsUploading(true);
+    const newUploads = files.map(file => ({ name: file.name, status: 'uploading' as const, progress: 5 }));
+    setUploadedFiles(prev => [...prev, ...newUploads]);
+
+    const progressIntervals: Map<string, NodeJS.Timeout> = new Map();
+
+    const startProgressSimulation = (fileName: string, fileSize: number) => {
+      const initialProgress = 5;
+      let currentProgress = initialProgress;
+      const targetProgress = 90;
+      const progressRange = targetProgress - initialProgress;
+      const startTime = Date.now();
+      const estimatedDuration = Math.max(2000, Math.min(10000, fileSize / 1024));
+      const updateInterval = 100;
+      
+      const interval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        const progressRatio = Math.min(elapsed / estimatedDuration, 0.95);
+        const easedProgress = 1 - Math.pow(1 - progressRatio, 3);
+        currentProgress = Math.min(
+          Math.floor(initialProgress + (easedProgress * progressRange)), 
+          targetProgress
+        );
+        
+        if (currentProgress >= targetProgress) {
+          clearInterval(interval);
+          progressIntervals.delete(fileName);
+        }
+        
+        setUploadedFiles(prev => prev.map(f => 
+          f.name === fileName && f.status === 'uploading'
+            ? { ...f, progress: currentProgress }
+            : f
+        ));
+      }, updateInterval);
+      
+      progressIntervals.set(fileName, interval);
+      return interval;
+    };
+
+    const stopProgressSimulation = (fileName: string) => {
+      const interval = progressIntervals.get(fileName);
+      if (interval) {
+        clearInterval(interval);
+        progressIntervals.delete(fileName);
+      }
+    };
+
+    for (const file of files) {
+      startProgressSimulation(file.name, file.size);
+      
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('leadNumber', leadNumber);
+
+        const { data, error } = await supabase.functions.invoke('upload-to-onedrive', {
+          body: formData,
+        });
+
+        stopProgressSimulation(file.name);
+
+        if (error) throw new Error(error.message);
+        if (!data || !data.success) {
+          throw new Error(data.error || 'Upload function returned an error.');
+        }
+
+        setUploadedFiles(prev => prev.map(f => 
+          f.name === file.name 
+            ? { ...f, status: 'success' as const, progress: 100 } 
+            : f
+        ));
+        
+        // Refresh documents list after successful upload
+        await fetchDocuments();
+        
+      } catch (err) {
+        stopProgressSimulation(file.name);
+        const errorMessage = err instanceof Error ? err.message : 'An unknown error occurred';
+        setUploadedFiles(prev => prev.map(f => 
+          f.name === file.name 
+            ? { ...f, status: 'error' as const, error: errorMessage, progress: 0 } 
+            : f
+        ));
+        console.error(`Error uploading ${file.name}:`, err);
+      }
+    }
+    
+    progressIntervals.forEach((interval) => clearInterval(interval));
+    progressIntervals.clear();
+    setIsUploading(false);
+    
+    // Clear uploaded files after a delay
+    setTimeout(() => {
+      setUploadedFiles([]);
+    }, 3000);
+  };
+
   if (typeof window === 'undefined') return null;
 
   return createPortal(
@@ -199,6 +353,77 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
         </div>
         {/* Modal Content */}
         <div className="p-6 overflow-y-auto max-h-[calc(90vh-120px)]">
+          {/* Drag and Drop Upload Area */}
+          <div 
+            className={`border-2 border-dashed rounded-lg p-8 text-center transition-colors duration-200 mb-6 ${
+              isUploading 
+                ? 'bg-gray-50 border-primary' 
+                : 'bg-gray-50 border-gray-300 hover:border-primary hover:bg-purple-50'
+            }`}
+            onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            onDragEnter={(e) => { e.preventDefault(); e.stopPropagation(); }}
+            onDrop={handleFileDrop}
+          >
+            <DocumentArrowUpIcon className="w-12 h-12 mx-auto text-gray-400 mb-4" />
+            <div className="text-base text-gray-600 mb-4">
+              {isUploading ? 'Processing files...' : 'Drag and drop files here, or click to select files'}
+            </div>
+            <input
+              type="file"
+              className="hidden"
+              id="file-upload-modal"
+              multiple
+              onChange={handleFileInput}
+              disabled={isUploading}
+            />
+            <label
+              htmlFor="file-upload-modal"
+              className={`btn btn-outline btn-primary ${isUploading ? 'btn-disabled' : ''}`}
+            >
+              <PaperClipIcon className="w-5 h-5" />
+              Choose Files
+            </label>
+          </div>
+
+          {/* Uploaded Files List */}
+          {uploadedFiles.length > 0 && (
+            <div className="space-y-2 mb-6">
+              {uploadedFiles.map((file, index) => (
+                <div key={index} className="flex items-center justify-between p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="flex items-center gap-3">
+                    <PaperClipIcon className="w-5 h-5 text-primary" />
+                    <span className="text-base font-medium text-gray-900">{file.name}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    {file.status === 'uploading' && (
+                      <div className="flex items-center gap-2">
+                        <div className="radial-progress text-xs" style={{ "--value": file.progress || 0, "--size": "2.5rem", color: '#3b28c7' } as any}>
+                          <span className="text-xs font-semibold">{Math.round(file.progress || 0)}%</span>
+                        </div>
+                        <div className="text-xs text-gray-500 font-medium">Uploading...</div>
+                      </div>
+                    )}
+                    {file.status === 'success' && (
+                      <div className="flex items-center gap-2">
+                        <CheckCircleIcon className="w-6 h-6 text-green-500" />
+                        <span className="text-xs text-green-600 font-medium">Complete</span>
+                      </div>
+                    )}
+                    {file.status === 'error' && (
+                      <div className="tooltip tooltip-error" data-tip={file.error}>
+                        <div className="flex items-center gap-2">
+                          <XCircleIcon className="w-6 h-6 text-red-500" />
+                          <span className="text-xs text-red-600 font-medium">Failed</span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {/* Documents List */}
           {loading ? (
             <div className="flex items-center justify-center py-12">
               <div className="loading loading-spinner loading-lg"></div>
@@ -223,7 +448,7 @@ const DocumentModal: React.FC<DocumentModalProps> = ({ isOpen, onClose, leadNumb
                 return (
                   <div
                     key={doc.id}
-                    className="flex items-center justify-between p-4 bg-base-200 rounded-lg hover:bg-base-300 transition-colors"
+                    className="flex items-center justify-between p-4 bg-white rounded-lg border border-gray-200 hover:bg-gray-50 transition-colors"
                   >
                     <div className="flex items-center gap-3 flex-1 min-w-0">
                       <FileIcon className="w-8 h-8 text-primary flex-shrink-0" />

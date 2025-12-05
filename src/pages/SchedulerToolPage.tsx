@@ -4,9 +4,10 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
-import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon, EllipsisVerticalIcon, FolderIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import DocumentModal from '../components/DocumentModal';
 
 export interface SchedulerLead {
   id: string;
@@ -102,6 +103,11 @@ const SchedulerToolPage: React.FC = () => {
   
   // Contact dropdown state
   const [openContactDropdown, setOpenContactDropdown] = useState<string | null>(null);
+  
+  // Selected row state (for action menu)
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   
   // View mode state (box view is default on mobile)
   const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
@@ -1150,8 +1156,11 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
-  // Toggle row expansion
-  const toggleRowExpansion = (leadId: string) => {
+  // Toggle row expansion (only via arrow button)
+  const toggleRowExpansion = (leadId: string, e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+    }
     setExpandedRows(prev => {
       const newSet = new Set(prev);
       if (newSet.has(leadId)) {
@@ -1161,6 +1170,12 @@ const SchedulerToolPage: React.FC = () => {
       }
       return newSet;
     });
+  };
+
+  // Handle row selection (for action menu)
+  const handleRowSelect = (leadId: string) => {
+    setSelectedRowId(leadId);
+    setShowActionMenu(false); // Close menu when selecting new row
   };
 
   // Toggle contact dropdown
@@ -1940,6 +1955,7 @@ const SchedulerToolPage: React.FC = () => {
       if (!target.closest('.contact-dropdown')) {
         setOpenContactDropdown(null);
       }
+      // Don't close action menu here - it's handled by the overlay div
     };
 
     document.addEventListener('mousedown', handleClickOutside);
@@ -1947,6 +1963,11 @@ const SchedulerToolPage: React.FC = () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, []);
+
+  // Close action menu when selectedRowId changes
+  useEffect(() => {
+    setShowActionMenu(false);
+  }, [selectedRowId]);
 
   if (loading) {
     return (
@@ -2318,8 +2339,19 @@ const SchedulerToolPage: React.FC = () => {
           {filteredLeads.map((lead) => (
             <div key={lead.id} className={`bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[400px] relative pb-16 md:text-lg md:leading-relaxed p-5 ${openContactDropdown === lead.id ? 'z-[60] md:z-auto' : ''}`}>
               {/* Header */}
-              <div onClick={() => toggleRowExpansion(lead.id)} className="flex-1 cursor-pointer flex flex-col">
+              <div onClick={() => handleRowSelect(lead.id)} className={`flex-1 cursor-pointer flex flex-col transition-all duration-200 ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
                 <div className="mb-3 flex items-center gap-2">
+                  <button
+                    onClick={(e) => toggleRowExpansion(lead.id, e)}
+                    className="flex-shrink-0 p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
+                    title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
+                  >
+                    {expandedRows.has(lead.id) ? (
+                      <ChevronDownIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
+                    ) : (
+                      <ChevronRightIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
+                    )}
+                  </button>
                   <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest whitespace-nowrap">
                     #{lead.lead_number}
                   </span>
@@ -2411,7 +2443,7 @@ const SchedulerToolPage: React.FC = () => {
 
               {/* Action Buttons */}
               <div className="mt-4 flex flex-row gap-2 justify-between items-center">
-                {/* Left side - Eligible Toggle and Contact */}
+                {/* Left side - Eligible Toggle */}
                 <div className="flex items-center gap-2">
                   {/* Eligible Toggle */}
                   <input
@@ -2422,110 +2454,9 @@ const SchedulerToolPage: React.FC = () => {
                       e.stopPropagation();
                       handleToggleEligible(lead);
                     }}
+                    onClick={(e) => e.stopPropagation()}
                     title="Eligible"
                   />
-                  
-                  {/* Contact Dropdown */}
-                  <div className="relative contact-dropdown z-[60] md:z-auto">
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleContactDropdown(lead.id);
-                      }}
-                      className="btn btn-outline btn-primary btn-sm"
-                      title="Contact"
-                    >
-                      <ChatBubbleLeftRightIcon className="w-4 h-4" />
-                    </button>
-                    {openContactDropdown === lead.id && (
-                      <div className="absolute z-[70] md:z-[10] mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-32 md:min-w-32">
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleCall(lead);
-                            setOpenContactDropdown(null);
-                          }}
-                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
-                          title="Call"
-                        >
-                          <PhoneIcon className="w-4 h-4 md:w-3 md:h-3 text-blue-600" />
-                          Call
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleEmail(lead);
-                            setOpenContactDropdown(null);
-                          }}
-                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
-                          title="Email"
-                        >
-                          <EnvelopeIcon className="w-4 h-4 md:w-3 md:h-3 text-gray-600" />
-                          Email
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleWhatsApp(lead);
-                            setOpenContactDropdown(null);
-                          }}
-                          className="w-full px-3 md:px-2 py-2 md:py-1 text-left hover:bg-gray-100 text-sm md:text-xs flex items-center gap-2 md:gap-1"
-                          title="WhatsApp"
-                        >
-                          <FaWhatsapp className="w-4 h-4 md:w-3 md:h-3 text-green-600" />
-                          WhatsApp
-                        </button>
-                      </div>
-                    )}
-                  </div>
-                </div>
-                
-                {/* Right side - Other action buttons */}
-                <div className="flex gap-2">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleTimeline(lead);
-                    }}
-                    className="btn btn-outline btn-primary btn-sm"
-                    title="Timeline"
-                  >
-                    <ClockIcon className="w-4 h-4" />
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedLead(lead);
-                      openEditLeadDrawer(lead);
-                    }}
-                    className="btn btn-outline btn-primary btn-sm"
-                    title="Edit Lead"
-                  >
-                    <PencilSquareIcon className="w-4 h-4" />
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleViewClient(lead);
-                    }}
-                    className="btn btn-outline btn-primary btn-sm"
-                    title="View Client"
-                  >
-                    <EyeIcon className="w-4 h-4" />
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      toggleRowExpansion(lead.id);
-                    }}
-                    className="btn btn-outline btn-primary btn-sm"
-                  >
-                    {expandedRows.has(lead.id) ? 'Show Less' : 'Show More'}
-                    <ChevronDownIcon className={`w-4 h-4 ml-1 transition-transform ${expandedRows.has(lead.id) ? 'rotate-180' : ''}`} />
-                  </button>
                 </div>
               </div>
 
@@ -2677,10 +2608,9 @@ const SchedulerToolPage: React.FC = () => {
           ))}
         </div>
       ) : (
-        <div className="bg-white rounded-lg shadow-sm border border-gray-200 overflow-hidden">
-          <div className="overflow-x-auto">
-            <table className="table w-full text-xs sm:text-sm">
-              <thead className="bg-gray-50">
+        <div className="overflow-x-auto">
+          <table className="table w-full text-xs sm:text-sm">
+            <thead className="bg-white">
                 <tr>
                   <th className="font-semibold text-gray-900 pr-1 text-xs sm:text-sm">Lead</th>
                   <th 
@@ -2719,25 +2649,28 @@ const SchedulerToolPage: React.FC = () => {
                     </div>
                   </th>
                   <th className="font-semibold text-gray-900 text-xs sm:text-sm">Eligible</th>
-                  <th className="font-semibold text-gray-900 text-xs sm:text-sm">Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredLeads.map((lead) => (
                   <React.Fragment key={lead.id}>
                     <tr 
-                      className="hover:bg-gray-50 cursor-pointer"
-                      onClick={() => toggleRowExpansion(lead.id)}
+                      className={`hover:bg-gray-50 cursor-pointer transition-all duration-200 ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                      onClick={() => handleRowSelect(lead.id)}
                     >
                       <td className="pr-1">
-                        <div className="flex items-center gap-1">
-                          <div className="flex-shrink-0">
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={(e) => toggleRowExpansion(lead.id, e)}
+                            className="flex-shrink-0 p-1.5 hover:bg-gray-200 rounded-lg transition-colors"
+                            title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
+                          >
                             {expandedRows.has(lead.id) ? (
-                              <ChevronDownIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-400" />
+                              <ChevronDownIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
                             ) : (
-                              <ChevronRightIcon className="w-3 h-3 sm:w-4 sm:h-4 text-gray-400" />
+                              <ChevronRightIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
                             )}
-                          </div>
+                          </button>
                           <div className="flex flex-col">
                             <span className="font-mono text-xs sm:text-sm text-gray-600">
                               #{lead.lead_number}
@@ -2804,95 +2737,6 @@ const SchedulerToolPage: React.FC = () => {
                         <span className="text-xs sm:text-sm font-medium text-gray-700">
                           {lead.eligible ? 'Yes' : 'No'}
                         </span>
-                      </div>
-                    </td>
-                    <td>
-                      <div className="flex gap-1 sm:gap-2">
-                        {/* Contact Dropdown */}
-                        <div className="relative contact-dropdown z-[60] md:z-auto">
-                          <button
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleContactDropdown(lead.id);
-                            }}
-                            className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
-                            title="Contact"
-                          >
-                            <ChatBubbleLeftRightIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                          </button>
-                          {openContactDropdown === lead.id && (
-                            <div className="absolute z-[70] md:z-[10] mt-1 right-0 bg-white border border-gray-300 rounded-md shadow-lg min-w-36 sm:min-w-40">
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleCall(lead);
-                                  setOpenContactDropdown(null);
-                                }}
-                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
-                                title="Call"
-                              >
-                                <PhoneIcon className="w-5 h-5 sm:w-4 sm:h-4 text-blue-600" />
-                                Call
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleEmail(lead);
-                                  setOpenContactDropdown(null);
-                                }}
-                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
-                                title="Email"
-                              >
-                                <EnvelopeIcon className="w-5 h-5 sm:w-4 sm:h-4 text-gray-600" />
-                                Email
-                              </button>
-                              <button
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleWhatsApp(lead);
-                                  setOpenContactDropdown(null);
-                                }}
-                                className="w-full px-4 sm:px-3 py-3 sm:py-2 text-left hover:bg-gray-100 text-sm flex items-center gap-2 sm:gap-2"
-                                title="WhatsApp"
-                              >
-                                <FaWhatsapp className="w-5 h-5 sm:w-4 sm:h-4 text-green-600" />
-                                WhatsApp
-                              </button>
-                            </div>
-                          )}
-                        </div>
-                        
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleTimeline(lead);
-                          }}
-                          className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
-                          title="Timeline"
-                        >
-                          <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            setSelectedLead(lead);
-                            openEditLeadDrawer(lead);
-                          }}
-                          className="btn btn-xs sm:btn-sm btn-outline btn-primary hover:btn-primary hover:text-white transition-colors"
-                          title="Edit Lead"
-                        >
-                          <PencilSquareIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                        </button>
-                        <button
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            handleViewClient(lead);
-                          }}
-                          className="btn btn-xs sm:btn-sm btn-outline btn-secondary hover:btn-secondary hover:text-white transition-colors"
-                          title="View Client"
-                        >
-                          <EyeIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                        </button>
                       </div>
                     </td>
                   </tr>
@@ -3048,7 +2892,162 @@ const SchedulerToolPage: React.FC = () => {
               </tbody>
             </table>
           </div>
-        </div>
+      )}
+
+      {/* Floating Action Buttons - Fixed position on right side */}
+      {selectedRowId && (() => {
+        const selectedLead = filteredLeads.find(l => l.id === selectedRowId);
+        if (!selectedLead) return null;
+        
+        return (
+          <>
+            {/* Overlay to close buttons */}
+            <div
+              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+              onClick={() => {
+                setShowActionMenu(false);
+                setSelectedRowId(null);
+              }}
+            />
+            
+            {/* Floating Action Buttons - Centered vertically on right side */}
+            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
+              {/* Call Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCall(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Call"
+                >
+                  <PhoneIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Email Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEmail(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Email"
+                >
+                  <EnvelopeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* WhatsApp Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleWhatsApp(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="WhatsApp"
+                >
+                  <FaWhatsapp className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Timeline Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTimeline(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Timeline"
+                >
+                  <ClockIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Edit Lead Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedLead(selectedLead);
+                    openEditLeadDrawer(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Edit Lead"
+                >
+                  <PencilSquareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* View Client Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="View Client"
+                >
+                  <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Documents Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedLead(selectedLead);
+                    setIsDocumentModalOpen(true);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Documents"
+                >
+                  <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Document Modal */}
+      {selectedLead && (
+        <DocumentModal
+          isOpen={isDocumentModalOpen}
+          onClose={() => {
+            setIsDocumentModalOpen(false);
+            setSelectedLead(null);
+          }}
+          leadNumber={selectedLead.lead_number}
+          clientName={selectedLead.name}
+        />
       )}
 
       {/* Modals */}

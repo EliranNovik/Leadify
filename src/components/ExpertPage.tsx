@@ -1,7 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
-import { Link } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon } from '@heroicons/react/24/outline';
+import { Link, useNavigate } from 'react-router-dom';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { FaWhatsapp } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
 import { BarChart3, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
@@ -99,6 +100,12 @@ const ExpertPage: React.FC = () => {
   const [highlightedLeads, setHighlightedLeads] = useState<LeadForExpert[]>([]);
   const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
+  
+  // State for row selection and action menu
+  const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  
+  const navigate = useNavigate();
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [topExpertName, setTopExpertName] = useState<string>('N/A');
   const [showMyStatsModal, setShowMyStatsModal] = useState(false);
@@ -903,9 +910,38 @@ const ExpertPage: React.FC = () => {
     return filteredLeads;
   }, [sortedLeads, meetingSort, today, sortColumn, sortDirection]);
 
+  const handleRowSelect = (leadId: string | number) => {
+    setSelectedRowId(leadId);
+    setShowActionMenu(true);
+  };
+
   const handleRowClick = (lead: LeadForExpert) => {
     setSelectedLead(lead);
     setDrawerOpen(true);
+  };
+
+  // Action handlers
+  const handleCall = (lead: LeadForExpert) => {
+    // ExpertPage doesn't have phone/mobile fields, so we'll navigate to client page
+    navigate(`/clients/${lead.lead_number}`);
+  };
+
+  const handleEmail = (lead: LeadForExpert) => {
+    // Navigate to client page with email tab
+    navigate(`/clients/${lead.lead_number}?tab=email`);
+  };
+
+  const handleWhatsApp = (lead: LeadForExpert) => {
+    // Navigate to client page with WhatsApp tab
+    navigate(`/clients/${lead.lead_number}?tab=whatsapp`);
+  };
+
+  const handleTimeline = (lead: LeadForExpert) => {
+    navigate(`/clients/${lead.lead_number}?tab=interactions`);
+  };
+
+  const handleViewClient = (lead: LeadForExpert) => {
+    navigate(`/clients/${lead.lead_number}`);
   };
   const closeDrawer = () => {
     setDrawerOpen(false);
@@ -1375,15 +1411,15 @@ const ExpertPage: React.FC = () => {
       ) : (
         // List view rendering
         <div className="overflow-x-auto w-full">
-          <table className="table w-full text-lg">
+          <table className="table w-full text-xs sm:text-sm">
             <thead>
               <tr>
-                <th>Lead #</th>
-                <th>Name</th>
-                <th>Stage</th>
-                <th>Category</th>
+                <th className="text-xs sm:text-sm">Lead #</th>
+                <th className="text-xs sm:text-sm">Name</th>
+                <th className="text-xs sm:text-sm">Stage</th>
+                <th className="text-xs sm:text-sm">Category</th>
                 <th 
-                  className="cursor-pointer hover:bg-base-200 transition-colors"
+                  className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
                   onClick={() => handleSort('created_at')}
                 >
                   Date Created
@@ -1392,7 +1428,7 @@ const ExpertPage: React.FC = () => {
                   )}
                 </th>
                 <th 
-                  className="cursor-pointer hover:bg-base-200 transition-colors"
+                  className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
                   onClick={() => handleSort('probability')}
                 >
                   Probability
@@ -1401,7 +1437,7 @@ const ExpertPage: React.FC = () => {
                   )}
                 </th>
                 <th 
-                  className="cursor-pointer hover:bg-base-200 transition-colors"
+                  className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
                   onClick={() => handleSort('applicants')}
                 >
                   Applicants
@@ -1410,7 +1446,7 @@ const ExpertPage: React.FC = () => {
                   )}
                 </th>
                 <th 
-                  className="cursor-pointer hover:bg-base-200 transition-colors"
+                  className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
                   onClick={() => handleSort('meeting_date')}
                 >
                   Meeting Date
@@ -1418,21 +1454,25 @@ const ExpertPage: React.FC = () => {
                     <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>
                   )}
                 </th>
-                <th>Value</th>
-                <th>Label</th>
+                <th className="text-xs sm:text-sm">Value</th>
+                <th className="text-xs sm:text-sm">Label</th>
               </tr>
             </thead>
             <tbody>
               {meetingSortedLeads.map((lead) => (
-                <tr key={lead.id} className="hover:bg-blue-50 cursor-pointer" onClick={() => handleRowClick(lead)}>
-                  <td>{lead.lead_number}</td>
-                  <td className="font-bold">{lead.name}</td>
-                  <td>{lead.stage ? getStageName(lead.stage) : 'N/A'}</td>
-                  <td>{(lead as any).category || lead.topic || 'N/A'}</td>
-                  <td>{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
-                  <td>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</td>
-                  <td>{lead.number_of_applicants_meeting ?? 'N/A'}</td>
-                  <td>{lead.meetings && lead.meetings.length > 0 ? (() => {
+                <tr 
+                  key={lead.id} 
+                  className={`hover:bg-blue-50 cursor-pointer ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                  onClick={() => handleRowSelect(lead.id)}
+                >
+                  <td className="text-xs sm:text-sm">{lead.lead_number}</td>
+                  <td className="text-xs sm:text-sm font-bold">{lead.name}</td>
+                  <td className="text-xs sm:text-sm">{lead.stage ? getStageName(lead.stage) : 'N/A'}</td>
+                  <td className="text-xs sm:text-sm">{(lead as any).category || lead.topic || 'N/A'}</td>
+                  <td className="text-xs sm:text-sm">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
+                  <td className="text-xs sm:text-sm">{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</td>
+                  <td className="text-xs sm:text-sm">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
+                  <td className="text-xs sm:text-sm">{lead.meetings && lead.meetings.length > 0 ? (() => {
                     const meetingDateStr = [...lead.meetings].sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())[0].meeting_date;
                     // Convert YYYY-MM-DD to dd/mm/yyyy format
                     const dateOnly = meetingDateStr.split(' ')[0];
@@ -1440,14 +1480,160 @@ const ExpertPage: React.FC = () => {
                     const formattedDate = `${day}/${month}/${year}`;
                     return formattedDate;
                   })() : 'N/A'}</td>
-                  <td>{getDisplayValue(lead)}</td>
-                  <td>{lead.label ? <span className="badge badge-outline badge-primary font-semibold">{lead.label}</span> : ''}</td>
+                  <td className="text-xs sm:text-sm">{getDisplayValue(lead)}</td>
+                  <td className="text-xs sm:text-sm">{lead.label ? <span className="badge badge-outline badge-primary font-semibold text-xs">{lead.label}</span> : ''}</td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
       )}
+
+      {/* Floating Action Buttons - Fixed position on right side */}
+      {selectedRowId && (() => {
+        const selectedLead = meetingSortedLeads.find(l => l.id === selectedRowId);
+        if (!selectedLead) return null;
+        
+        return (
+          <>
+            {/* Overlay to close buttons */}
+            <div
+              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+              onClick={() => {
+                setShowActionMenu(false);
+                setSelectedRowId(null);
+              }}
+            />
+            
+            {/* Floating Action Buttons - Fixed position on right side */}
+            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
+              {/* Call Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCall(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Call"
+                >
+                  <PhoneIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Email Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEmail(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Email"
+                >
+                  <EnvelopeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* WhatsApp Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleWhatsApp(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="WhatsApp"
+                >
+                  <FaWhatsapp className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Timeline Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTimeline(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Timeline"
+                >
+                  <ClockIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* View Client Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="View Client"
+                >
+                  <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Documents Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedLead(selectedLead);
+                    setIsDocumentModalOpen(true);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Documents"
+                >
+                  <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Highlight Button */}
+              {!highlightedLeads.find(l => l.id === selectedLead.id) && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleHighlight(selectedLead);
+                      setShowActionMenu(false);
+                      setSelectedRowId(null);
+                    }}
+                    className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                    title="Highlight"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
 
       {/* Drawer for lead summary */}
       {drawerOpen && selectedLead && !isDocumentModalOpen && (

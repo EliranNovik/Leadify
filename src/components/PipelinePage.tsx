@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
@@ -136,6 +136,10 @@ const PipelinePage: React.FC = () => {
   
   // State for contact dropdown
   const [openContactDropdown, setOpenContactDropdown] = useState<string | number | null>(null);
+  
+  // State for row selection and action menu
+  const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
   
   // State for WhatsApp and Email modals (from contact dropdown)
   const [isContactWhatsAppModalOpen, setIsContactWhatsAppModalOpen] = useState(false);
@@ -1527,6 +1531,11 @@ const PipelinePage: React.FC = () => {
       topWorkerCount
     };
   }, [filteredLeads, pipelineMode, realSummaryStats]);
+
+  const handleRowSelect = (leadId: string | number) => {
+    setSelectedRowId(leadId);
+    setShowActionMenu(true);
+  };
 
   const handleRowClick = (lead: LeadForPipeline) => {
     setSelectedLead(lead);
@@ -4319,9 +4328,9 @@ const PipelinePage: React.FC = () => {
           )}
         </div>
       ) : (
-        <div className="overflow-x-auto w-full mt-6 bg-base-100 rounded-2xl shadow-lg border border-base-200 p-0" style={{ overflowY: 'visible' }}>
+        <div className="overflow-x-auto w-full mt-6" style={{ overflowY: 'visible' }}>
           <table className="table-auto divide-y divide-base-200 text-base w-full" style={{ position: 'relative' }}>
-            <thead className="sticky top-0 z-10 bg-base-200 font-semibold text-base-content shadow-sm">
+            <thead className="sticky top-0 z-10 bg-white font-semibold text-base-content shadow-sm">
               <tr>
                 <th className="py-3 px-2 text-left rounded-l-xl">Lead</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('stage')}>
@@ -4345,19 +4354,18 @@ const PipelinePage: React.FC = () => {
                   Follow Up {sortColumn === 'follow_up' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
                 <th className="py-3 px-2 text-center">Country</th>
-                <th className="py-3 px-2 text-center">Language</th>
-                <th className="py-3 px-2 text-center rounded-r-xl">Actions</th>
+                <th className="py-3 px-2 text-center rounded-r-xl">Language</th>
               </tr>
             </thead>
             <tbody>
               {sortedLeads.length === 0 ? (
-                <tr><td colSpan={12} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={11} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => (
                   <tr
                     key={lead.id}
-                    className="transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative"
-                    onClick={() => handleRowClick(lead)}
+                    className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                    onClick={() => handleRowSelect(lead.id)}
                     style={{ overflow: 'visible' }}
                   >
                     {/* Lead column: lead number + name (left-aligned) */}
@@ -4416,7 +4424,7 @@ const PipelinePage: React.FC = () => {
                       </div>
                     </td>
                     {/* Language */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">
+                    <td className="px-2 py-3 md:py-4 text-center truncate rounded-r-xl">
                       <span className="text-xs sm:text-sm text-gray-700">
                         {(() => {
                           const langName = getLanguageName(lead.language_id, lead.language);
@@ -4434,68 +4442,6 @@ const PipelinePage: React.FC = () => {
                         })()}
                       </span>
                     </td>
-                    {/* Actions */}
-                    <td className="px-2 py-3 md:py-4 flex gap-1 items-center justify-center rounded-r-xl relative" onClick={e => e.stopPropagation()}>
-                      {/* Contact Dropdown */}
-                      <div className="relative contact-dropdown">
-                        <button
-                          ref={el => { contactButtonRefs.current[lead.id] = el; }}
-                          onClick={(e) => {
-                            e.stopPropagation();
-                            toggleContactDropdown(lead.id);
-                          }}
-                          className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                          title="Contact"
-                        >
-                          <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                        </button>
-                      </div>
-                      
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleTimeline(lead);
-                        }}
-                        className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                        title="Timeline"
-                      >
-                        <ClockIcon className="w-5 h-5" />
-                      </button>
-                      
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleEditLead(lead);
-                        }}
-                        className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                        title="Edit Lead"
-                      >
-                        <PencilSquareIcon className="w-5 h-5" />
-                      </button>
-                      
-                      <button
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleViewClient(lead);
-                        }}
-                        className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                        title="View Client"
-                      >
-                        <EyeIcon className="w-5 h-5" />
-                      </button>
-                      
-                      <button
-                        className="btn btn-outline btn-sm btn-info flex items-center justify-center rounded-full hover:scale-105 transition-transform group"
-                        title={highlightedLeads.find(l => l.id === lead.id) ? 'Highlighted' : 'Highlight'}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleHighlight(lead);
-                        }}
-                        disabled={!!highlightedLeads.find(l => l.id === lead.id)}
-                      >
-                        <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-blue-500 group-hover:text-white transition-colors"><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" /></svg>
-                      </button>
-                    </td>
                   </tr>
                 ))
               )}
@@ -4503,6 +4449,169 @@ const PipelinePage: React.FC = () => {
           </table>
         </div>
       )}
+
+      {/* Floating Action Buttons - Fixed position on right side */}
+      {selectedRowId && (() => {
+        const selectedLead = sortedLeads.find(l => l.id === selectedRowId);
+        if (!selectedLead) return null;
+        
+        return (
+          <>
+            {/* Overlay to close buttons */}
+            <div
+              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+              onClick={() => {
+                setShowActionMenu(false);
+                setSelectedRowId(null);
+              }}
+            />
+            
+            {/* Floating Action Buttons - Centered vertically on right side */}
+            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
+              {/* Call Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCall(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Call"
+                >
+                  <PhoneIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Email Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEmail(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Email"
+                >
+                  <EnvelopeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* WhatsApp Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleWhatsApp(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="WhatsApp"
+                >
+                  <FaWhatsapp className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Timeline Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTimeline(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Timeline"
+                >
+                  <ClockIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Edit Lead Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditLead(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Edit Lead"
+                >
+                  <PencilSquareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* View Client Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="View Client"
+                >
+                  <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Documents Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedLead(selectedLead);
+                    setIsDocumentModalOpen(true);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Documents"
+                >
+                  <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Highlight Button */}
+              {!highlightedLeads.find(l => l.id === selectedLead.id) && (
+                <div className="flex items-center gap-3">
+                  <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      handleHighlight(selectedLead);
+                      setShowActionMenu(false);
+                      setSelectedRowId(null);
+                    }}
+                    className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                    title="Highlight"
+                  >
+                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+            </div>
+          </>
+        );
+      })()}
       
       {/* Contact Dropdown Portal - renders outside table to avoid overflow issues */}
       {openContactDropdown && dropdownPosition && (

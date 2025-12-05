@@ -1,11 +1,14 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useMemo } from 'react';
 import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
-import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
+import DocumentModal from '../components/DocumentModal';
+import FinanceTab from '../components/case-manager/FinanceTab';
 
 interface Case {
   id: string;
@@ -56,6 +59,13 @@ const MyCasesPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedStage, setSelectedStage] = useState<string>('');
   const [selectedCategory, setSelectedCategory] = useState<string>('');
+  
+  // State for row selection and action menu
+  const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [selectedCase, setSelectedCase] = useState<Case | null>(null);
+  const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [isFinanceModalOpen, setIsFinanceModalOpen] = useState(false);
 
   useEffect(() => {
     if (user?.id) {
@@ -481,6 +491,53 @@ const MyCasesPage: React.FC = () => {
     navigate(`/clients/${navigationId}`);
   };
 
+  const handleRowSelect = (caseId: string) => {
+    const allCases = [...newCases, ...activeCases, ...closedCases];
+    const caseItem = allCases.find(c => c.id === caseId);
+    if (caseItem) {
+      setSelectedCase(caseItem);
+      setSelectedRowId(caseId);
+      setShowActionMenu(true);
+    }
+  };
+
+  const handleCall = (caseItem: Case) => {
+    // For now, navigate to client page with phone tab
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}?tab=phone`);
+  };
+
+  const handleEmail = (caseItem: Case) => {
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}?tab=email`);
+  };
+
+  const handleWhatsApp = (caseItem: Case) => {
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}?tab=whatsapp`);
+  };
+
+  const handleTimeline = (caseItem: Case) => {
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}?tab=interactions`);
+  };
+
+  const handleEditLead = (caseItem: Case) => {
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}?drawer=edit`);
+  };
+
+  const handleViewClient = (caseItem: Case) => {
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}`);
+  };
+
+  const handleHighlight = (caseItem: Case) => {
+    // Navigate to client page - highlight functionality would be handled there
+    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    navigate(`/clients/${navigationId}`);
+  };
+
   const handleStartCase = async (caseItem: Case, e: React.MouseEvent) => {
     e.stopPropagation(); // Prevent row click navigation
     
@@ -661,6 +718,22 @@ const MyCasesPage: React.FC = () => {
   const filteredActiveCases = filterCases(activeCases);
   const filteredClosedCases = filterCases(closedCases);
 
+  // Memoize handlerLead for FinanceTab to prevent infinite re-renders
+  const handlerLeadForFinance = useMemo(() => {
+    if (!selectedCase) return null;
+    return {
+      id: selectedCase.isNewLead ? selectedCase.id : `legacy_${selectedCase.id}`,
+      lead_number: selectedCase.lead_number,
+      name: selectedCase.client_name,
+      category: selectedCase.category,
+      stage: selectedCase.stage,
+      created_at: selectedCase.assigned_date,
+      balance: selectedCase.value || undefined,
+      balance_currency: selectedCase.currency || undefined,
+      lead_type: selectedCase.isNewLead ? 'new' : 'legacy'
+    } as any;
+  }, [selectedCase?.id, selectedCase?.lead_number, selectedCase?.client_name, selectedCase?.category, selectedCase?.stage, selectedCase?.assigned_date, selectedCase?.value, selectedCase?.currency, selectedCase?.isNewLead]);
+
   // Get unique stages and categories from all cases
   const allCases = [...newCases, ...activeCases, ...closedCases];
   const uniqueStages = Array.from(new Set(allCases.map(c => c.stage))).sort();
@@ -718,8 +791,10 @@ const MyCasesPage: React.FC = () => {
               {cases.map((caseItem) => (
                 <tr 
                   key={caseItem.id} 
-                  className="hover:bg-gray-50 cursor-pointer"
-                  onClick={() => handleCaseClick(caseItem)}
+                  className={`hover:bg-gray-50 cursor-pointer transition-colors ${
+                    selectedRowId === caseItem.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''
+                  }`}
+                  onClick={() => handleRowSelect(caseItem.id)}
                 >
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
                     <div className="flex items-center gap-2">
@@ -991,6 +1066,225 @@ const MyCasesPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Floating Action Buttons */}
+      {selectedCase && selectedRowId && (() => {
+        return (
+          <>
+            {/* Overlay to close buttons */}
+            <div
+              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+              onClick={() => {
+                setShowActionMenu(false);
+                setSelectedRowId(null);
+                setSelectedCase(null);
+              }}
+            />
+            
+            {/* Floating Action Buttons - Centered vertically on right side */}
+            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
+              {/* Call Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCall(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Call"
+                >
+                  <PhoneIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Email Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEmail(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Email"
+                >
+                  <EnvelopeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* WhatsApp Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleWhatsApp(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="WhatsApp"
+                >
+                  <FaWhatsapp className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Timeline Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTimeline(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Timeline"
+                >
+                  <ClockIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Edit Lead Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditLead(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Edit Lead"
+                >
+                  <PencilSquareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* View Client Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="View Client"
+                >
+                  <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Documents Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCase(selectedCase);
+                    setIsDocumentModalOpen(true);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Documents"
+                >
+                  <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Finance Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Finance</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setSelectedCase(selectedCase);
+                    setIsFinanceModalOpen(true);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Finance"
+                >
+                  <CurrencyDollarIcon className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
+      {/* Document Modal */}
+      {selectedCase && (
+        <DocumentModal
+          isOpen={isDocumentModalOpen}
+          onClose={() => {
+            setIsDocumentModalOpen(false);
+            setSelectedCase(null);
+          }}
+          leadNumber={selectedCase.lead_number}
+          clientName={selectedCase.client_name}
+        />
+      )}
+
+      {/* Finance Modal */}
+      {selectedCase && isFinanceModalOpen && handlerLeadForFinance && (
+        <div className="fixed inset-0 z-[1000] flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-7xl max-h-[90vh] overflow-hidden flex flex-col m-4">
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200">
+              <div>
+                <h2 className="text-2xl font-bold text-gray-900">Finance Plan</h2>
+                <p className="text-sm text-gray-600 mt-1">
+                  {selectedCase.client_name} ({selectedCase.lead_number})
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost btn-circle"
+                onClick={() => {
+                  setIsFinanceModalOpen(false);
+                  setSelectedCase(null);
+                }}
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <FinanceTab
+                leads={[handlerLeadForFinance]}
+                uploadFiles={async () => {}}
+                uploadingLeadId={null}
+                uploadedFiles={{}}
+                isUploading={false}
+                handleFileInput={async () => {}}
+                refreshLeads={async () => {}}
+                refreshDashboardData={async () => {
+                  await fetchMyCases();
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

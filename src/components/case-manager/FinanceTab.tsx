@@ -32,6 +32,7 @@ interface HandlerLead {
   closer?: string;
   scheduler?: string;
   manager?: string;
+  lead_type?: 'new' | 'legacy';
 }
 
 interface HandlerTabProps {
@@ -50,7 +51,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
   const [contracts, setContracts] = useState<any[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('boxes');
+  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
@@ -217,10 +218,10 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
 
   // Auto-load finance data when component mounts or current case changes
   useEffect(() => {
-    if (currentCase) {
+    if (currentCase?.id) {
       fetchFinanceData(currentCase.id);
     }
-  }, [currentCase]);
+  }, [currentCase?.id]);
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
@@ -301,21 +302,28 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
       const currentUserName = await getCurrentUserName();
       const paidAtDate = new Date(paidDate).toISOString();
       
-      // Log history
-      const { error: historyError } = await supabase
-        .from('finance_changes_history')
-        .insert({
-          lead_id: currentCase?.id,
-          change_type: 'payment_marked_paid',
-          table_name: isLegacyLead ? 'finances_paymentplanrow' : 'payment_plans',
-          record_id: id,
-          old_values: { paid: false },
-          new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
-          changed_by: currentUserName,
-          notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
-        });
-      
-      if (historyError) console.error('Error logging payment marked as paid:', historyError);
+      // Log history (non-blocking - don't fail the operation if history logging fails)
+      try {
+        const { error: historyError } = await supabase
+          .from('finance_changes_history')
+          .insert({
+            lead_id: currentCase?.id,
+            change_type: 'payment_marked_paid',
+            table_name: isLegacyLead ? 'finances_paymentplanrow' : 'payment_plans',
+            record_id: id,
+            old_values: { paid: false },
+            new_values: { paid: true, paid_at: paidAtDate, paid_by: currentUserName },
+            changed_by: currentUserName,
+            notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
+          });
+        
+        if (historyError && Object.keys(historyError).length > 0) {
+          console.error('Error logging payment marked as paid:', historyError);
+        }
+      } catch (historyErr) {
+        // Silently fail history logging - don't block the main operation
+        console.warn('Failed to log payment history (non-critical):', historyErr);
+      }
       
       // Update database
       let error;
@@ -943,7 +951,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                       <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                     </td>
                                     <td className="align-middle text-center px-2 sm:px-4 py-2 sm:py-3 whitespace-nowrap">
-                                      <div className="flex items-center justify-center gap-2">
+                                      <div className="flex flex-col items-center justify-center gap-2">
                                         {p.paid ? (
                                           <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-green-500 to-green-600 text-white border-none shadow-sm">
                                             Paid
@@ -952,6 +960,11 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                           <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none shadow-sm">
                                             Pending
                                           </span>
+                                        )}
+                                        {p.ready_to_pay && p.ready_to_pay_text && (
+                                          <div className="bg-black text-white text-xs px-2 py-1 rounded mt-1 max-w-xs text-center">
+                                            {p.ready_to_pay_text}
+                                          </div>
                                         )}
                                       </div>
                                     </td>
