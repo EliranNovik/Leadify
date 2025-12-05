@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -283,12 +283,18 @@ const CalendarPage: React.FC = () => {
       loading: boolean;
       expert_notes?: any;
       handler_notes?: any;
+      facts?: string;
     }
   }>({});
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
   const [leadsWithPastStages, setLeadsWithPastStages] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
+
+  // Row selection and action menu state
+  const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
+  const [showActionMenu, setShowActionMenu] = useState(false);
+  const [selectedLeadForActions, setSelectedLeadForActions] = useState<any>(null);
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -1444,15 +1450,25 @@ const CalendarPage: React.FC = () => {
           leadId = meeting.client_id;
         }
         
+        // Fetch expert_notes, handler_notes, and facts/description
+        const fieldsToSelect = meeting.lead.lead_type === 'legacy' 
+          ? 'expert_notes,handler_notes,description' 
+          : 'expert_notes,handler_notes,facts';
+        
         const { data, error } = await supabase
           .from(tableName)
-          .select('expert_notes,handler_notes')
+          .select(fieldsToSelect)
           .eq('id', leadId)
           .single();
         if (error) throw error;
         setExpandedMeetingData(prev => ({
           ...prev,
-          [meeting.id]: { loading: false, ...data }
+          [meeting.id]: { 
+            loading: false, 
+            expert_notes: data.expert_notes,
+            handler_notes: data.handler_notes,
+            facts: meeting.lead.lead_type === 'legacy' ? (data as any).description : (data as any).facts
+          }
         }));
       } catch (error) {
         setExpandedMeetingData(prev => ({
@@ -1644,7 +1660,7 @@ const CalendarPage: React.FC = () => {
     if (!hasStage) {
       return (
         <span
-          className="inline-flex items-center px-3 py-1 rounded-lg text-xs md:text-sm font-semibold border"
+          className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 md:px-3 md:py-1 rounded-md sm:rounded-lg text-[10px] sm:text-xs md:text-sm font-semibold border"
           style={{ backgroundColor: NEUTRAL_STAGE_BG, color: NEUTRAL_STAGE_TEXT, borderColor: '#e5e7eb' }}
         >
           No Stage
@@ -1657,7 +1673,7 @@ const CalendarPage: React.FC = () => {
 
     return (
       <span
-        className="inline-flex items-center px-3 py-1 rounded-lg text-xs md:text-sm font-semibold shadow-sm"
+        className="inline-flex items-center px-1.5 py-0.5 sm:px-2 sm:py-0.5 md:px-3 md:py-1 rounded-md sm:rounded-lg text-[10px] sm:text-xs md:text-sm font-semibold shadow-sm"
         style={{ backgroundColor: stageColour, color: textColour, border: `1px solid ${stageColour}` }}
       >
         {label}
@@ -1681,6 +1697,51 @@ const CalendarPage: React.FC = () => {
       if (typeof link === 'string' && link.startsWith('http')) return link;
     }
     return '';
+  };
+
+  // Handle row selection (for action menu)
+  const handleRowSelect = (meetingId: string | number) => {
+    setSelectedRowId(meetingId);
+    setShowActionMenu(true);
+    const meeting = meetings.find(m => m.id === meetingId) || filteredMeetings.find(m => m.id === meetingId);
+    if (meeting && meeting.lead) {
+      setSelectedLeadForActions(meeting.lead);
+    }
+  };
+
+  // Action handlers
+  const handleCall = (lead: any) => {
+    const phoneNumber = lead.phone || lead.mobile;
+    if (phoneNumber) {
+      window.open(`tel:${phoneNumber}`, '_self');
+    } else {
+      toast.error('No phone number available for this lead');
+    }
+  };
+
+  const handleViewClient = (lead: any) => {
+    navigate(`/clients/${lead.lead_number}`);
+  };
+
+  const handleEmail = (lead: any, meeting: any) => {
+    handleEmailClick(lead, meeting);
+  };
+
+  const handleWhatsApp = (lead: any, meeting: any) => {
+    handleWhatsAppClick(lead, meeting);
+  };
+
+  const handleTimeline = (lead: any) => {
+    navigate(`/clients/${lead.lead_number}?tab=interactions`);
+  };
+
+  const handleEditLead = (lead: any) => {
+    navigate(`/clients/${lead.lead_number}?tab=info`);
+  };
+
+  const handleDocuments = (lead: any, meeting: any) => {
+    setSelectedMeeting(meeting);
+    setIsDocumentModalOpen(true);
   };
 
   // Helper function to handle Email button click
@@ -2649,8 +2710,18 @@ const CalendarPage: React.FC = () => {
     const hasPassedStage = leadIdentifier && leadsWithPastStages ? leadsWithPastStages.has(String(leadIdentifier)) : false;
 
     return (
-      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed ${hasPassedStage ? 'bg-green-50' : 'bg-white'}`}>
-        <div onClick={() => setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id)} className="flex-1 cursor-pointer flex flex-col">
+      <div key={meeting.id} className={`rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 md:text-lg md:leading-relaxed ${hasPassedStage ? 'bg-green-50' : 'bg-white'} ${selectedRowId === meeting.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}>
+        <div 
+          onClick={(e) => {
+            if (meeting.calendar_type !== 'staff' && meeting.lead) {
+              e.stopPropagation();
+              handleRowSelect(meeting.id);
+            } else {
+              setExpandedMeetingId(expandedMeetingId === meeting.id ? null : meeting.id);
+            }
+          }} 
+          className="flex-1 cursor-pointer flex flex-col"
+        >
           {/* Lead Number and Name */}
           <div className="mb-3 flex items-center gap-2">
             <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
@@ -2905,31 +2976,6 @@ const CalendarPage: React.FC = () => {
                 <PencilIcon className="w-4 h-4" />
               </button>
             )}
-            {/* Only show WhatsApp and Email buttons for non-staff meetings */}
-            {meeting.calendar_type !== 'staff' && lead.phone && (
-              <button
-                className="btn btn-outline btn-success btn-sm"
-                title="WhatsApp"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleWhatsAppClick(lead, meeting);
-                }}
-              >
-                <FaWhatsapp className="w-4 h-4" />
-              </button>
-            )}
-            {meeting.calendar_type !== 'staff' && (lead.lead_number || meeting.lead_number) && (
-              <button
-                className="btn btn-outline btn-info btn-sm"
-                title="Email"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  handleEmailClick(lead, meeting);
-                }}
-              >
-                <EnvelopeIcon className="w-4 h-4" />
-              </button>
-            )}
         </div>
 
         {/* Expanded Details */}
@@ -2981,31 +3027,15 @@ const CalendarPage: React.FC = () => {
                     )}
                   </div>
                 </div>
-                <div className="flex justify-center">
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setSelectedMeeting(meeting);
-                      setIsDocumentModalOpen(true);
-                    }}
-                    className={`btn btn-outline bg-white shadow-sm ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
-                    style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                    onMouseEnter={(e) => {
-                      if (!e.currentTarget.disabled) {
-                        e.currentTarget.style.backgroundColor = '#f3f0ff';
-                      }
-                    }}
-                    onMouseLeave={(e) => {
-                      if (!e.currentTarget.disabled) {
-                        e.currentTarget.style.backgroundColor = 'white';
-                      }
-                    }}
-                    disabled={!meeting.lead.onedrive_folder_link}
-                  >
-                    <FolderIcon className="w-4 h-4" />
-                    Documents
-                    <span className="badge text-white ml-1" style={{ backgroundColor: '#3b28c7' }}>3</span>
-                  </button>
+                <div className="bg-white p-3 rounded-lg">
+                  <h6 className="font-semibold text-gray-800 mb-2">Facts of Case</h6>
+                  <div className="space-y-2 max-h-32 overflow-y-auto">
+                    {expandedData.facts ? (
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{expandedData.facts}</p>
+                    ) : (
+                      <p className="text-sm text-gray-500">No facts of case available.</p>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
@@ -3042,7 +3072,15 @@ const CalendarPage: React.FC = () => {
     
     return (
       <React.Fragment key={meeting.id}>
-        <tr className={`hover:bg-base-200/50 ${hasPassedStage ? 'bg-green-50' : ''}`}>
+        <tr 
+          className={`hover:bg-base-200/50 ${hasPassedStage ? 'bg-green-50' : ''} ${selectedRowId === meeting.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+          onClick={() => {
+            if (meeting.calendar_type !== 'staff' && meeting.lead) {
+              handleRowSelect(meeting.id);
+            }
+          }}
+          style={{ cursor: meeting.calendar_type !== 'staff' && meeting.lead ? 'pointer' : 'default' }}
+        >
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
@@ -3224,31 +3262,13 @@ const CalendarPage: React.FC = () => {
                 <button
                   className="btn btn-warning btn-xs sm:btn-sm"
                   title="Edit Staff Meeting"
-                  onClick={() => {
+                  onClick={(e) => {
+                    e.stopPropagation();
                     setSelectedStaffMeeting(meeting);
                     setIsStaffMeetingEditModalOpen(true);
                   }}
                 >
                   <PencilIcon className="w-4 h-4" />
-                </button>
-              )}
-              {/* Only show WhatsApp and Email buttons for non-staff meetings */}
-              {meeting.calendar_type !== 'staff' && lead.phone && (
-                <button
-                  className="btn btn-success btn-sm"
-                  title="WhatsApp"
-                  onClick={() => handleWhatsAppClick(lead, meeting)}
-                >
-                  <FaWhatsapp className="w-4 h-4" />
-                </button>
-              )}
-              {meeting.calendar_type !== 'staff' && (lead.lead_number || meeting.lead_number) && (
-                <button
-                  className="btn btn-info btn-sm"
-                  title="Email"
-                  onClick={() => handleEmailClick(lead, meeting)}
-                >
-                  <EnvelopeIcon className="w-4 h-4" />
                 </button>
               )}
             </div>
@@ -3265,7 +3285,7 @@ const CalendarPage: React.FC = () => {
                     <span className="loading loading-spinner loading-md"></span>
                   </div>
                 ) : (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="bg-base-200/50 p-4 rounded-lg">
                       <h5 className="font-semibold text-base-content/90 mb-2">Expert Notes</h5>
                       <div className="space-y-3 max-h-60 overflow-y-auto">
@@ -3306,30 +3326,15 @@ const CalendarPage: React.FC = () => {
                         )}
                       </div>
                     </div>
-                    <div className="md:col-span-2 flex justify-center">
-                      <button
-                        onClick={() => {
-                          setSelectedMeeting(meeting);
-                          setIsDocumentModalOpen(true);
-                        }}
-                        className={`btn btn-outline bg-white shadow-sm flex items-center gap-2 px-4 py-2 text-base font-semibold rounded-lg transition-colors ${!meeting.lead.onedrive_folder_link ? 'btn-disabled' : ''}`}
-                        style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-                        onMouseEnter={(e) => {
-                          if (!e.currentTarget.disabled) {
-                            e.currentTarget.style.backgroundColor = '#f3f0ff';
-                          }
-                        }}
-                        onMouseLeave={(e) => {
-                          if (!e.currentTarget.disabled) {
-                            e.currentTarget.style.backgroundColor = 'white';
-                          }
-                        }}
-                        disabled={!meeting.lead.onedrive_folder_link}
-                      >
-                        <FolderIcon className="w-5 h-5" />
-                        Documents
-                        <span className="badge text-white ml-2" style={{ backgroundColor: '#3b28c7' }}>3</span>
-                      </button>
+                    <div className="bg-base-200/50 p-4 rounded-lg">
+                      <h5 className="font-semibold text-base-content/90 mb-2">Facts of Case</h5>
+                      <div className="space-y-3 max-h-60 overflow-y-auto">
+                        {expandedData.facts ? (
+                          <p className="text-sm text-base-content/90 whitespace-pre-wrap">{expandedData.facts}</p>
+                        ) : (
+                          <p className="text-sm text-base-content/70">No facts of case available.</p>
+                        )}
+                      </div>
                     </div>
                   </div>
                 )}
@@ -4171,10 +4176,163 @@ const CalendarPage: React.FC = () => {
         document.body
       )}
 
+      {/* Floating Action Buttons - Fixed position on right side */}
+      {selectedRowId && (() => {
+        const selectedMeetingForActions = meetings.find(m => m.id === selectedRowId) || filteredMeetings.find(m => m.id === selectedRowId);
+        if (!selectedMeetingForActions || !selectedMeetingForActions.lead || selectedMeetingForActions.calendar_type === 'staff') return null;
+        const lead = selectedMeetingForActions.lead;
+        
+        return (
+          <>
+            {/* Overlay to close buttons */}
+            <div
+              className="fixed inset-0 z-40 bg-black/20 backdrop-blur-sm"
+              onClick={() => {
+                setShowActionMenu(false);
+                setSelectedRowId(null);
+                setSelectedLeadForActions(null);
+              }}
+            />
+            
+            {/* Floating Action Buttons - Centered vertically on right side */}
+            <div className="fixed right-6 top-1/2 -translate-y-1/2 z-50 flex flex-col items-end gap-3">
+              {/* Call Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Call</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleCall(lead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Call"
+                >
+                  <PhoneIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Email Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Email</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEmail(lead, selectedMeetingForActions);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Email"
+                >
+                  <EnvelopeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* WhatsApp Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">WhatsApp</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleWhatsApp(lead, selectedMeetingForActions);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="WhatsApp"
+                >
+                  <FaWhatsapp className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Timeline Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Timeline</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleTimeline(lead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Timeline"
+                >
+                  <ClockIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Edit Lead Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleEditLead(lead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Edit Lead"
+                >
+                  <PencilSquareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* View Client Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleViewClient(lead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="View Client"
+                >
+                  <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Documents Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Documents</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleDocuments(lead, selectedMeetingForActions);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedLeadForActions(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Documents"
+                >
+                  <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+            </div>
+          </>
+        );
+      })()}
+
       {/* Document Modal */}
       <DocumentModal
         isOpen={isDocumentModalOpen}
-        onClose={() => setIsDocumentModalOpen(false)}
+        onClose={() => {
+          setIsDocumentModalOpen(false);
+          setSelectedMeeting(null);
+        }}
         leadNumber={selectedMeeting?.lead?.lead_number || selectedMeeting?.lead_number || ''}
         clientName={selectedMeeting?.lead?.name || selectedMeeting?.name || ''}
         onDocumentCountChange={() => {}}
