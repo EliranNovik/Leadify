@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
@@ -46,6 +46,8 @@ interface LeadForPipeline {
   phone?: string | null;
   comments?: { text: string; timestamp: string; user: string }[];
   label?: string | null;
+  facts?: string | null;
+  special_notes?: string | null;
   highlighted_by?: string[];
   // Legacy lead support
   lead_type?: 'legacy' | 'new';
@@ -63,7 +65,7 @@ interface LeadForPipeline {
   country_id?: number | null;
   source?: string | null;
   eligible?: boolean | null;
-  tags?: string | null;
+  tags?: string[] | null; // Array of tag names
 }
 
 const getCurrencySymbol = (currencyCode?: string | null) => {
@@ -96,13 +98,7 @@ const getCurrencySymbol = (currencyCode?: string | null) => {
   return '$';
 };
 
-const LABEL_OPTIONS = [
-  'High Value',
-  'Low Value',
-  'Potential Clients',
-  'High Risk',
-  'Low Risk',
-];
+// Removed LABEL_OPTIONS - now fetched from misc_leadtag table
 
 const PipelinePage: React.FC = () => {
   const [leads, setLeads] = useState<LeadForPipeline[]>([]);
@@ -166,6 +162,7 @@ const PipelinePage: React.FC = () => {
   const [mainCategories, setMainCategories] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [tagsList, setTagsList] = useState<string[]>([]);
+  const [labelTags, setLabelTags] = useState<string[]>([]); // Tags from misc_leadtag for label dropdown
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
   
   const navigate = useNavigate();
@@ -421,7 +418,14 @@ const PipelinePage: React.FC = () => {
   const [highlightedLeads, setHighlightedLeads] = useState<LeadForPipeline[]>([]);
   const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
-  const [viewMode, setViewMode] = useState<'cards' | 'list'>('cards');
+  const [expandedRows, setExpandedRows] = useState<Set<string | number>>(new Set());
+  const [viewMode, setViewMode] = useState<'cards' | 'list'>(() => {
+    // Default to list view on desktop, cards on mobile
+    if (typeof window !== 'undefined') {
+      return window.innerWidth >= 768 ? 'list' : 'cards';
+    }
+    return 'list';
+  });
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
   const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
@@ -610,6 +614,100 @@ const PipelinePage: React.FC = () => {
     }
   };
 
+  // Helper function to fetch tags for all leads
+  const fetchTagsForLeads = async (leads: LeadForPipeline[]) => {
+      try {
+        // Separate legacy and new leads
+        const legacyLeadIds: number[] = [];
+        const newLeadIds: string[] = [];
+        
+        leads.forEach(lead => {
+          if (lead.lead_type === 'legacy') {
+            const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+            if (!isNaN(legacyId)) {
+              legacyLeadIds.push(legacyId);
+            }
+          } else {
+            if (typeof lead.id === 'string' && !lead.id.startsWith('legacy_')) {
+              newLeadIds.push(lead.id);
+            }
+          }
+        });
+
+        // Fetch tags for legacy leads
+        let legacyTagsMap = new Map<number, string[]>();
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyTagsData } = await supabase
+            .from('leads_lead_tags')
+            .select(`
+              lead_id,
+              misc_leadtag (
+                name
+              )
+            `)
+            .in('lead_id', legacyLeadIds);
+          
+          if (legacyTagsData) {
+            legacyTagsData.forEach(item => {
+              if (item.misc_leadtag && item.lead_id) {
+                const leadId = item.lead_id;
+                const tagName = (item.misc_leadtag as any).name;
+                
+                if (!legacyTagsMap.has(leadId)) {
+                  legacyTagsMap.set(leadId, []);
+                }
+                legacyTagsMap.get(leadId)!.push(tagName);
+              }
+            });
+          }
+        }
+
+        // Fetch tags for new leads
+        let newTagsMap = new Map<string, string[]>();
+        if (newLeadIds.length > 0) {
+          const { data: newTagsData } = await supabase
+            .from('leads_lead_tags')
+            .select(`
+              newlead_id,
+              misc_leadtag (
+                name
+              )
+            `)
+            .in('newlead_id', newLeadIds);
+          
+          if (newTagsData) {
+            newTagsData.forEach(item => {
+              if (item.misc_leadtag && item.newlead_id) {
+                const leadId = item.newlead_id;
+                const tagName = (item.misc_leadtag as any).name;
+                
+                if (!newTagsMap.has(leadId)) {
+                  newTagsMap.set(leadId, []);
+                }
+                newTagsMap.get(leadId)!.push(tagName);
+              }
+            });
+          }
+        }
+
+        // Attach tags to leads
+        leads.forEach(lead => {
+          if (lead.lead_type === 'legacy') {
+            const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+            if (!isNaN(legacyId)) {
+              lead.tags = legacyTagsMap.get(legacyId) || [];
+            }
+          } else {
+            if (typeof lead.id === 'string' && !lead.id.startsWith('legacy_')) {
+              lead.tags = newTagsMap.get(lead.id) || [];
+            }
+          }
+        });
+      } catch (error) {
+        console.error('Error fetching tags for leads:', error);
+      }
+  };
+
   // Define fetchLeads function outside useEffect so it can be reused
   const fetchLeads = async () => {
     setIsLoading(true);
@@ -673,6 +771,10 @@ const PipelinePage: React.FC = () => {
                   country_id,
                   language,
                   source,
+                  facts,
+                  special_notes,
+                  expert_notes,
+                  handler_notes,
                   meetings (
                     meeting_date
                   )
@@ -774,6 +876,10 @@ const PipelinePage: React.FC = () => {
                   country_id,
                   language,
                   source,
+                  facts,
+                  special_notes,
+                  expert_notes,
+                  handler_notes,
                   meetings (
                     meeting_date
                   )
@@ -943,7 +1049,11 @@ const PipelinePage: React.FC = () => {
               category_id,
               topic,
               eligibile,
-              language_id
+              language_id,
+              description,
+              special_notes,
+              expert_notes,
+              handler_notes
             `)
             .limit(1000)
             .eq('status', 0); // Only fetch leads where status is 0
@@ -1111,8 +1221,8 @@ const PipelinePage: React.FC = () => {
               expert: lead.closer_id, // Use closer_id as expert for legacy leads
               topic: null, // Legacy leads don't have topic field
               category: getCategoryName(lead.category_id), // Use proper category handling
-              handler_notes: [],
-              expert_notes: [],
+              handler_notes: (lead as any).handler_notes || [],
+              expert_notes: (lead as any).expert_notes || [],
               meetings: [], // Legacy leads don't have meetings relationship
               onedrive_folder_link: null,
               stage: lead.stage?.toString() || '',
@@ -1129,6 +1239,8 @@ const PipelinePage: React.FC = () => {
               phone: lead.phone,
               comments: lead.comments || [],
               label: lead.label || null,
+              facts: (lead as any).description || null, // Legacy leads use description instead of facts
+              special_notes: (lead as any).special_notes || null,
               highlighted_by: [],
               latest_interaction: lead.latest_interaction,
               lead_type: 'legacy' as const,
@@ -1151,6 +1263,8 @@ const PipelinePage: React.FC = () => {
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
           );
 
+          // Fetch tags for all leads
+          await fetchTagsForLeads(allLeads);
 
           setLeads(allLeads as LeadForPipeline[]);
         })(),
@@ -1224,6 +1338,8 @@ const PipelinePage: React.FC = () => {
           console.error('Error fetching tags:', tagsError);
         } else if (tagsData) {
           setTagsList(tagsData.map(t => t.name));
+          // Also set label tags (same source for label dropdown)
+          setLabelTags(tagsData.map(t => t.name));
         }
 
         // Extract main categories from allCategories
@@ -1426,14 +1542,10 @@ const PipelinePage: React.FC = () => {
   }, [leads, allLanguages]);
 
   const availableLabels = useMemo(() => {
-    const labelSet = new Set<string>();
-    leads.forEach(lead => {
-      if (lead.label && lead.label.trim() !== '') {
-        labelSet.add(lead.label);
-      }
-    });
-    return Array.from(labelSet).sort();
-  }, [leads]);
+    // Use labelTags from misc_leadtag table instead of extracting from leads
+    // This ensures the dropdown shows all available tags, not just ones currently used
+    return labelTags.length > 0 ? labelTags : [];
+  }, [labelTags]);
 
   const handleSort = (column: 'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up') => {
     if (sortColumn === column) {
@@ -3653,6 +3765,9 @@ const PipelinePage: React.FC = () => {
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
 
+      // Fetch tags for all assignment leads
+      await fetchTagsForLeads(allAssignmentLeads);
+
       setAssignmentLeads(allAssignmentLeads as LeadForPipeline[]);
     } catch (error) {
       console.error('Error fetching assignment leads:', error);
@@ -3834,6 +3949,19 @@ const PipelinePage: React.FC = () => {
             My Stats
           </button>
           
+          {/* View Toggle Button (Icon Only) */}
+          <button
+            className="btn btn-outline btn-primary btn-sm"
+            onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
+            title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
+          >
+            {viewMode === 'cards' ? (
+              <Bars3Icon className="w-5 h-5" />
+            ) : (
+              <Squares2X2Icon className="w-5 h-5" />
+            )}
+          </button>
+          
           {/* Assignment Button */}
           <button
             onClick={() => {
@@ -3890,9 +4018,9 @@ const PipelinePage: React.FC = () => {
               ))}
             </select>
           </div>
-          {/* Filter by Label */}
+          {/* Filter by Tag */}
           <div className="flex flex-col items-start gap-1 min-w-[180px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">Label</label>
+            <label className="text-xs font-semibold text-base-content/70 mb-1">Tag</label>
             <select
               className="select select-bordered w-full"
               value={labelFilter}
@@ -3946,60 +4074,6 @@ const PipelinePage: React.FC = () => {
         </div>
       </div>
       
-      {/* Status Filter Buttons */}
-      <div className="mb-6 flex flex-wrap gap-3">
-        <button
-          onClick={() => setShowUnassignedOnly(!showUnassignedOnly)}
-          className={`btn btn-sm font-medium transition-all duration-200 ${
-            showUnassignedOnly 
-              ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg border border-red-400' 
-              : 'btn-outline border-red-300 text-red-600 hover:bg-red-50'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${showUnassignedOnly ? 'bg-white animate-pulse' : 'bg-red-500'}`}></div>
-            No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'} Assigned
-            {showUnassignedOnly && (
-              <span className="badge badge-sm bg-white/20 text-white border-white/30">
-                {filteredLeads.filter(lead => isUnassignedLead(lead)).length}
-              </span>
-            )}
-          </div>
-        </button>
-        
-        <button
-          onClick={() => setShowLostInteractionsOnly(!showLostInteractionsOnly)}
-          className={`btn btn-sm font-medium transition-all duration-200 ${
-            showLostInteractionsOnly 
-              ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg border border-amber-400' 
-              : 'btn-outline border-amber-300 text-amber-600 hover:bg-amber-50'
-          }`}
-        >
-          <div className="flex items-center gap-2">
-            <div className={`w-2 h-2 rounded-full ${showLostInteractionsOnly ? 'bg-white animate-pulse' : 'bg-amber-500'}`}></div>
-            Lost Interactions
-            {showLostInteractionsOnly && (
-              <span className="badge badge-sm bg-white/20 text-white border-white/30">
-                {filteredLeads.filter(lead => hasLostInteractions(lead)).length}
-              </span>
-            )}
-          </div>
-        </button>
-        
-        {/* Clear All Filters Button */}
-        {(showUnassignedOnly || showLostInteractionsOnly || assignmentStageFilter) && (
-          <button
-            onClick={() => {
-              setShowUnassignedOnly(false);
-              setShowLostInteractionsOnly(false);
-              setAssignmentStageFilter('');
-            }}
-            className="btn btn-sm btn-ghost text-gray-500 hover:text-gray-700"
-          >
-            Clear Filters
-          </button>
-        )}
-      </div>
       
       {/* Summary Statistics Cards */}
       <div className="mb-8 grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -4061,21 +4135,6 @@ const PipelinePage: React.FC = () => {
         </div>
       </div>
 
-      {/* Leads Cards/List Grid Toggle */}
-      <div className="flex justify-end mb-2">
-        <button
-          className="btn btn-outline btn-primary btn-sm flex items-center gap-2"
-          onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
-          title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
-        >
-          {viewMode === 'cards' ? (
-            <Bars3Icon className="w-5 h-5" />
-          ) : (
-            <Squares2X2Icon className="w-5 h-5" />
-          )}
-          <span className="hidden md:inline">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
-        </button>
-      </div>
       {/* Leads Cards Grid or List */}
       {viewMode === 'cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
@@ -4092,29 +4151,6 @@ const PipelinePage: React.FC = () => {
                 className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16"
               >
                 <div onClick={() => handleRowClick(lead)} className="flex-1 cursor-pointer flex flex-col">
-                  {/* Status Badges - Above Lead Number */}
-                  <div className="mb-2 flex flex-wrap gap-1">
-                    {/* No Scheduler/Closer Assigned Badge */}
-                    {isUnassignedLead(lead) && (
-                      <div className="bg-gradient-to-r from-red-500 to-red-600 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg border border-red-400 transform hover:scale-105 transition-all duration-200">
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                          No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}
-                        </div>
-                      </div>
-                    )}
-                    
-                    {/* Lost Interactions Badge */}
-                    {hasLostInteractions(lead) && (
-                      <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-3 py-1 rounded-full text-xs font-bold shadow-lg border border-amber-400 transform hover:scale-105 transition-all duration-200">
-                        <div className="flex items-center gap-1">
-                          <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-                          Lost Interactions
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  
                   {/* Lead Number and Name */}
                   <div className="mb-3 flex items-center gap-2 pr-20">
                     <span className="text-sm font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
@@ -4332,7 +4368,8 @@ const PipelinePage: React.FC = () => {
           <table className="table-auto divide-y divide-base-200 text-base w-full" style={{ position: 'relative' }}>
             <thead className="sticky top-0 z-10 bg-white font-semibold text-base-content shadow-sm">
               <tr>
-                <th className="py-3 px-2 text-left rounded-l-xl">Lead</th>
+                <th className="py-3 px-2 text-center w-10"></th>
+                <th className="py-3 px-2 text-left">Lead</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('stage')}>
                   Stage {sortColumn === 'stage' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
@@ -4343,7 +4380,7 @@ const PipelinePage: React.FC = () => {
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('probability')}>
                   Probability {sortColumn === 'probability' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
-                <th className="py-3 px-2 text-center">Label</th>
+                <th className="py-3 px-2 text-center">Tags</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('total_applicants')}>
                   Total Applicants {sortColumn === 'total_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
@@ -4359,17 +4396,43 @@ const PipelinePage: React.FC = () => {
             </thead>
             <tbody>
               {sortedLeads.length === 0 ? (
-                <tr><td colSpan={11} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={12} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
-                sortedLeads.map((lead, idx) => (
-                  <tr
-                    key={lead.id}
-                    className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
-                    onClick={() => handleRowSelect(lead.id)}
-                    style={{ overflow: 'visible' }}
-                  >
-                    {/* Lead column: lead number + name (left-aligned) */}
-                    <td className="px-2 py-3 md:py-4 rounded-l-xl truncate max-w-[180px] text-left">
+                sortedLeads.map((lead, idx) => {
+                  const isExpanded = expandedRows.has(lead.id);
+                  return (
+                    <React.Fragment key={lead.id}>
+                      <tr
+                        className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                        onClick={() => handleRowSelect(lead.id)}
+                        style={{ overflow: 'visible' }}
+                      >
+                        {/* Expand/Collapse Arrow */}
+                        <td className="px-2 py-3 md:py-4 text-center w-10">
+                          <button
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setExpandedRows(prev => {
+                                const newSet = new Set(prev);
+                                if (newSet.has(lead.id)) {
+                                  newSet.delete(lead.id);
+                                } else {
+                                  newSet.add(lead.id);
+                                }
+                                return newSet;
+                              });
+                            }}
+                            className="p-1 hover:bg-base-200 rounded transition-colors"
+                          >
+                            {isExpanded ? (
+                              <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                            ) : (
+                              <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                            )}
+                          </button>
+                        </td>
+                        {/* Lead column: lead number + name (left-aligned) */}
+                        <td className="px-2 py-3 md:py-4 truncate max-w-[180px] text-left">
                       <div className="flex flex-col">
                         <span className="font-mono font-bold text-xs text-gray-500 truncate">{lead.lead_number}</span>
                         <span className="font-semibold text-base-content truncate">{lead.name}</span>
@@ -4395,9 +4458,24 @@ const PipelinePage: React.FC = () => {
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className={`font-bold ${(lead.probability ?? 0) >= 80 ? 'text-green-600' : (lead.probability ?? 0) >= 60 ? 'text-yellow-600' : (lead.probability ?? 0) >= 40 ? 'text-orange-600' : 'text-red-600'}`}>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</span>
                     </td>
-                    {/* Label */}
+                    {/* Tags */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
-                      {lead.label ? <span className="badge badge-outline badge-primary font-semibold">{lead.label}</span> : ''}
+                      {lead.tags && lead.tags.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 justify-center">
+                          {lead.tags.slice(0, 2).map((tag, idx) => (
+                            <span key={idx} className="badge badge-outline badge-primary text-xs font-semibold">
+                              {tag}
+                            </span>
+                          ))}
+                          {lead.tags.length > 2 && (
+                            <span className="badge badge-outline badge-ghost text-xs font-semibold">
+                              +{lead.tags.length - 2}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-base-content/40 text-xs">—</span>
+                      )}
                     </td>
                     {/* Total Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
@@ -4443,7 +4521,92 @@ const PipelinePage: React.FC = () => {
                       </span>
                     </td>
                   </tr>
-                ))
+                  {/* Collapsible Content Row */}
+                  {isExpanded && (
+                    <tr>
+                      <td colSpan={12} className="px-4 py-4 bg-base-50 border-b-2 border-base-300">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                          {/* Comments */}
+                          <div className="space-y-2">
+                            <h4 className="font-bold text-sm text-gray-700">Comments</h4>
+                            {lead.comments && lead.comments.length > 0 ? (
+                              <div className="space-y-2 max-h-48 overflow-y-auto">
+                                {lead.comments.slice().reverse().map((comment, commentIdx) => (
+                                  <div key={commentIdx} className="bg-white rounded-lg p-3 border border-gray-200">
+                                    <div className="text-sm text-gray-900">{comment.text}</div>
+                                    <div className="text-xs text-gray-500 mt-1">
+                                      {comment.user} · {format(new Date(comment.timestamp), 'dd/MM/yyyy HH:mm')}
+                                    </div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-400 italic">No comments</p>
+                            )}
+                          </div>
+                          
+                          {/* Facts */}
+                          <div className="space-y-2">
+                            <h4 className="font-bold text-sm text-gray-700">Facts of Case</h4>
+                            {lead.facts ? (
+                              <div className="bg-white rounded-lg p-3 border border-gray-200 text-sm text-gray-900 whitespace-pre-wrap">
+                                {lead.facts}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-400 italic">No facts available</p>
+                            )}
+                          </div>
+                          
+                          {/* Special Notes */}
+                          <div className="space-y-2">
+                            <h4 className="font-bold text-sm text-gray-700">Special Notes</h4>
+                            {lead.special_notes ? (
+                              <div className="bg-white rounded-lg p-3 border border-gray-200 text-sm text-gray-900 whitespace-pre-wrap">
+                                {lead.special_notes}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-400 italic">No special notes</p>
+                            )}
+                          </div>
+                          
+                          {/* Expert Notes */}
+                          <div className="space-y-2">
+                            <h4 className="font-bold text-sm text-gray-700">Expert Notes</h4>
+                            {lead.expert_notes && Array.isArray(lead.expert_notes) && lead.expert_notes.length > 0 ? (
+                              <div className="space-y-2 max-h-48 overflow-y-auto">
+                                {lead.expert_notes.map((note: any, noteIdx: number) => (
+                                  <div key={noteIdx} className="bg-white rounded-lg p-3 border border-gray-200">
+                                    <div className="text-sm text-gray-900">{note.content || note}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-400 italic">No expert notes</p>
+                            )}
+                          </div>
+                          
+                          {/* Handler Notes */}
+                          <div className="space-y-2">
+                            <h4 className="font-bold text-sm text-gray-700">Handler Notes</h4>
+                            {lead.handler_notes && Array.isArray(lead.handler_notes) && lead.handler_notes.length > 0 ? (
+                              <div className="space-y-2 max-h-48 overflow-y-auto">
+                                {lead.handler_notes.map((note: any, noteIdx: number) => (
+                                  <div key={noteIdx} className="bg-white rounded-lg p-3 border border-gray-200">
+                                    <div className="text-sm text-gray-900">{note.content || note}</div>
+                                  </div>
+                                ))}
+                              </div>
+                            ) : (
+                              <p className="text-sm text-gray-400 italic">No handler notes</p>
+                            )}
+                          </div>
+                        </div>
+                      </td>
+                    </tr>
+                  )}
+                    </React.Fragment>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -5634,59 +5797,6 @@ const PipelinePage: React.FC = () => {
                   </div>
                 </div>
                 
-                {/* Status Filter Buttons */}
-                <div className="flex flex-wrap gap-3">
-                  <button
-                    onClick={() => setShowUnassignedOnly(!showUnassignedOnly)}
-                    className={`btn btn-sm font-medium transition-all duration-200 ${
-                      showUnassignedOnly 
-                        ? 'bg-gradient-to-r from-red-500 to-red-600 text-white shadow-lg border border-red-400' 
-                        : 'btn-outline border-red-300 text-red-600 hover:bg-red-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${showUnassignedOnly ? 'bg-white animate-pulse' : 'bg-red-500'}`}></div>
-                      No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'} Assigned
-                      {showUnassignedOnly && (
-                        <span className="badge badge-sm bg-white/20 text-white border-white/30">
-                          {sortedAssignmentLeads.filter(lead => isUnassignedLead(lead)).length}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                  
-                  <button
-                    onClick={() => setShowLostInteractionsOnly(!showLostInteractionsOnly)}
-                    className={`btn btn-sm font-medium transition-all duration-200 ${
-                      showLostInteractionsOnly 
-                        ? 'bg-gradient-to-r from-amber-500 to-orange-500 text-white shadow-lg border border-amber-400' 
-                        : 'btn-outline border-amber-300 text-amber-600 hover:bg-amber-50'
-                    }`}
-                  >
-                    <div className="flex items-center gap-2">
-                      <div className={`w-2 h-2 rounded-full ${showLostInteractionsOnly ? 'bg-white animate-pulse' : 'bg-amber-500'}`}></div>
-                      Lost Interactions
-                      {showLostInteractionsOnly && (
-                        <span className="badge badge-sm bg-white/20 text-white border-white/30">
-                          {sortedAssignmentLeads.filter(lead => hasLostInteractions(lead)).length}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                  
-                  {/* Clear All Filters Button */}
-                  {(showUnassignedOnly || showLostInteractionsOnly) && (
-                    <button
-                      onClick={() => {
-                        setShowUnassignedOnly(false);
-                        setShowLostInteractionsOnly(false);
-                      }}
-                      className="btn btn-sm btn-ghost text-gray-500 hover:text-gray-700"
-                    >
-                      Clear Filters
-                    </button>
-                  )}
-                </div>
               </div>
             </div>
 
@@ -5718,28 +5828,6 @@ const PipelinePage: React.FC = () => {
                       className="bg-white rounded-xl p-4 pt-12 shadow-md border border-gray-100 hover:shadow-lg transition-all duration-200 cursor-pointer relative min-h-[280px]"
                       onClick={() => window.open(`/clients/${lead.lead_number}`, '_blank')}
                     >
-                      {/* Status Badges - Top Right */}
-                      <div className="absolute top-3 right-3 flex flex-row gap-1 z-10">
-                        {/* No Scheduler/Closer Assigned Badge */}
-                        {isUnassignedLead(lead) && (
-                          <div className="bg-gradient-to-r from-red-500 to-red-600 text-white px-2 py-1 rounded-full text-xs font-bold shadow-lg border border-red-400 transform hover:scale-105 transition-all duration-200">
-                            <div className="flex items-center gap-1">
-                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
-                              No {pipelineMode === 'closer' ? 'Closer' : 'Scheduler'}
-                            </div>
-                          </div>
-                        )}
-                        
-                        {/* Lost Interactions Badge */}
-                        {hasLostInteractions(lead) && (
-                          <div className="bg-gradient-to-r from-amber-500 to-orange-500 text-white px-2 py-1 rounded-full text-xs font-bold shadow-lg border border-amber-400 transform hover:scale-105 transition-all duration-200">
-                            <div className="flex items-center gap-1">
-                              <div className="w-1.5 h-1.5 bg-white rounded-full animate-pulse"></div>
-                              Lost Interactions
-                            </div>
-                          </div>
-                        )}
-                      </div>
                       {/* Lead Header */}
                       <div className="flex items-center justify-between mb-3 pr-32">
                         <div className="flex items-center gap-2 flex-1 min-w-0">
