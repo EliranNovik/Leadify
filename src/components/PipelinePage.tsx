@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
@@ -96,6 +96,34 @@ const getCurrencySymbol = (currencyCode?: string | null) => {
   }
   
   return '$';
+};
+
+// Helper function to get follow up date color based on date (same logic as meeting date)
+const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
+  if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
+  
+  const followUpDate = new Date(followUpDateStr);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Set follow up date to start of day for comparison
+  const followUpDateStart = new Date(followUpDate);
+  followUpDateStart.setHours(0, 0, 0, 0);
+  
+  // Calculate difference in days
+  const diffTime = followUpDateStart.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  if (diffDays < 0) {
+    // Past follow up date - red
+    return 'bg-red-500 text-white';
+  } else if (diffDays === 0) {
+    // Today - green
+    return 'bg-green-500 text-white';
+  } else {
+    // Tomorrow or more than 1 day away - yellow
+    return 'bg-yellow-500 text-white';
+  }
 };
 
 // Removed LABEL_OPTIONS - now fetched from misc_leadtag table
@@ -431,6 +459,12 @@ const PipelinePage: React.FC = () => {
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   
+  // State for editing fields in collapsible section
+  const [editingFields, setEditingFields] = useState<Record<string | number, { facts?: boolean; special_notes?: boolean }>>({});
+  const [editValues, setEditValues] = useState<Record<string | number, { facts?: string; special_notes?: string }>>({});
+  const [editingComments, setEditingComments] = useState<Set<string | number>>(new Set());
+  const [newCommentValues, setNewCommentValues] = useState<Record<string | number, string>>({});
+  
   // Real summary statistics from database
   const [realSummaryStats, setRealSummaryStats] = useState<{
     contractsSigned: number;
@@ -705,7 +739,7 @@ const PipelinePage: React.FC = () => {
         });
       } catch (error) {
         console.error('Error fetching tags for leads:', error);
-      }
+    }
   };
 
   // Define fetchLeads function outside useEffect so it can be reused
@@ -2626,6 +2660,230 @@ const PipelinePage: React.FC = () => {
     return 'Unknown';
   }
 
+  // Helper function to clean up text formatting
+  const formatNoteText = (text: string): string => {
+    if (!text) return '';
+    return text
+      .replace(/\\r\\n/g, '\n')
+      .replace(/\\r/g, '\n')
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .trim();
+  };
+
+  // EditButtons component
+  const EditButtons = ({ isEditing, onEdit, onSave, onCancel, editButtonClassName, editIconClassName }: { 
+    isEditing: boolean; 
+    onEdit: () => void; 
+    onSave: () => void; 
+    onCancel: () => void;
+    editButtonClassName?: string;
+    editIconClassName?: string;
+  }) => (
+    <div className="flex gap-2">
+      {isEditing ? (
+        <>
+          <button 
+            className="btn btn-circle btn-ghost btn-sm"
+            onClick={onSave}
+          >
+            <CheckIcon className="w-4 h-4 text-success" />
+          </button>
+          <button 
+            className="btn btn-circle btn-ghost btn-sm"
+            onClick={onCancel}
+          >
+            <XMarkIcon className="w-4 h-4 text-error" />
+          </button>
+        </>
+      ) : (
+        <>
+          <button 
+            className={`${editButtonClassName || 'btn btn-ghost btn-sm'}`}
+            onClick={onEdit}
+          >
+            <PencilSquareIcon className={`w-4 h-4 ${editIconClassName || ''}`} />
+          </button>
+        </>
+      )}
+    </div>
+  );
+
+  // Handler to save facts
+  const handleSaveFacts = async (leadId: string | number, facts: string) => {
+    try {
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      const userName = await fetchCurrentUserName();
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const dbField = lead.lead_type === 'legacy' ? 'description' : 'facts';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const updateData: any = {
+        [dbField]: formatNoteText(facts),
+      };
+
+      // Add tracking columns if they exist
+      if (lead.lead_type === 'legacy') {
+        updateData.description_last_edited_by = userName;
+        updateData.description_last_edited_at = new Date().toISOString();
+      } else {
+        updateData.facts_last_edited_by = userName;
+        updateData.facts_last_edited_at = new Date().toISOString();
+      }
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === leadId 
+          ? { ...l, facts: formatNoteText(facts) }
+          : l
+      ));
+
+      // Clear editing state
+      setEditingFields(prev => {
+        const newState = { ...prev };
+        if (newState[leadId]) {
+          delete newState[leadId].facts;
+          if (Object.keys(newState[leadId]).length === 0) {
+            delete newState[leadId];
+          }
+        }
+        return newState;
+      });
+      setEditValues(prev => {
+        const newState = { ...prev };
+        if (newState[leadId]) {
+          delete newState[leadId].facts;
+          if (Object.keys(newState[leadId]).length === 0) {
+            delete newState[leadId];
+          }
+        }
+        return newState;
+      });
+    } catch (error) {
+      console.error('Error saving facts:', error);
+      alert('Failed to save facts');
+    }
+  };
+
+  // Handler to save special notes
+  const handleSaveSpecialNotes = async (leadId: string | number, specialNotes: string) => {
+    try {
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      const userName = await fetchCurrentUserName();
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const updateData: any = {
+        special_notes: formatNoteText(specialNotes),
+        special_notes_last_edited_by: userName,
+        special_notes_last_edited_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === leadId 
+          ? { ...l, special_notes: formatNoteText(specialNotes) }
+          : l
+      ));
+
+      // Clear editing state
+      setEditingFields(prev => {
+        const newState = { ...prev };
+        if (newState[leadId]) {
+          delete newState[leadId].special_notes;
+          if (Object.keys(newState[leadId]).length === 0) {
+            delete newState[leadId];
+          }
+        }
+        return newState;
+      });
+      setEditValues(prev => {
+        const newState = { ...prev };
+        if (newState[leadId]) {
+          delete newState[leadId].special_notes;
+          if (Object.keys(newState[leadId]).length === 0) {
+            delete newState[leadId];
+          }
+        }
+        return newState;
+      });
+    } catch (error) {
+      console.error('Error saving special notes:', error);
+      alert('Failed to save special notes');
+    }
+  };
+
+  // Handler to add comment in collapsible section
+  const handleAddCommentInCollapsible = async (leadId: string | number, commentText: string) => {
+    if (!commentText.trim()) return;
+
+    try {
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      const now = new Date().toISOString();
+      const userName = await fetchCurrentUserName();
+      const newCommentObj = { text: commentText.trim(), timestamp: now, user: userName };
+      const updatedComments = [...(lead.comments || []), newCommentObj];
+
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const { error } = await supabase
+        .from(tableName)
+        .update({ comments: updatedComments })
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === leadId 
+          ? { ...l, comments: updatedComments }
+          : l
+      ));
+
+      // Clear comment editing state
+      setEditingComments(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(leadId);
+        return newSet;
+      });
+      setNewCommentValues(prev => {
+        const newState = { ...prev };
+        delete newState[leadId];
+        return newState;
+      });
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      alert('Failed to add comment');
+    }
+  };
+
   // Add comment to lead
   const handleAddComment = async () => {
     if (!selectedLead || !newComment.trim()) return;
@@ -3915,26 +4173,35 @@ const PipelinePage: React.FC = () => {
           </h1>
           
           {/* Pipeline Mode Switch */}
-          <div className="flex items-center gap-2 bg-base-200 rounded-lg p-1">
+          <div className="relative inline-flex items-center rounded-xl border border-gray-200 shadow-sm bg-white/50 backdrop-blur-sm">
             <button
-              className={`px-4 py-2 rounded-md font-medium transition-all ${
+              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out ${
                 pipelineMode === 'closer' 
-                  ? 'bg-primary text-primary-content shadow-md' 
-                  : 'text-base-content/70 hover:text-base-content'
-              }`}
-              onClick={() => setPipelineMode('closer')}
+                  ? 'text-white' 
+                  : 'text-gray-600 hover:text-gray-900'
+              } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              onClick={() => !isLoading && setPipelineMode('closer')}
+              disabled={isLoading}
             >
-              Closer
+              <span className="relative z-10 tracking-wide">Closer</span>
+              {pipelineMode === 'closer' && (
+                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-xl shadow-lg transform scale-105 transition-all duration-300"></span>
+              )}
             </button>
+            <div className="w-px h-5 bg-gray-200"></div>
             <button
-              className={`px-4 py-2 rounded-md font-medium transition-all ${
+              className={`relative px-6 py-2.5 font-semibold text-sm transition-all duration-300 ease-out ${
                 pipelineMode === 'scheduler' 
-                  ? 'bg-primary text-primary-content shadow-md' 
-                  : 'text-base-content/70 hover:text-base-content'
-              }`}
-              onClick={() => setPipelineMode('scheduler')}
+                  ? 'text-white' 
+                  : 'text-gray-600 hover:text-gray-900'
+              } ${isLoading ? 'cursor-not-allowed' : 'cursor-pointer'}`}
+              onClick={() => !isLoading && setPipelineMode('scheduler')}
+              disabled={isLoading}
             >
-              Scheduler
+              <span className="relative z-10 tracking-wide">Scheduler</span>
+              {pipelineMode === 'scheduler' && (
+                <span className="absolute inset-0 bg-gradient-to-r from-primary via-primary to-primary/95 rounded-xl shadow-lg transform scale-105 transition-all duration-300"></span>
+              )}
             </button>
           </div>
         </div>
@@ -4121,7 +4388,7 @@ const PipelinePage: React.FC = () => {
         </div>
 
         {/* Total Leads */}
-        <div className="bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+        <div className="bg-gradient-to-b from-teal-600 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-white/90 text-sm font-medium">Total Leads</p>
@@ -4139,9 +4406,13 @@ const PipelinePage: React.FC = () => {
       {viewMode === 'cards' ? (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-3 gap-6">
           {isLoading ? (
-            <div className="col-span-full text-center p-8">
-              <div className="loading loading-spinner loading-lg"></div>
-              <p className="mt-4 text-base-content/60">Loading leads...</p>
+            <div className="col-span-full text-center p-12">
+              <div className="flex flex-col items-center justify-center gap-4">
+                <div className="loading loading-spinner loading-lg text-primary"></div>
+                <p className="text-base font-medium text-base-content/70">
+                  Loading {pipelineMode === 'closer' ? 'closer' : 'scheduler'} pipeline...
+                </p>
+              </div>
             </div>
           ) : sortedLeads.length > 0 ? (
             sortedLeads.map((lead) => (
@@ -4224,12 +4495,9 @@ const PipelinePage: React.FC = () => {
                       <span className="text-sm font-semibold text-gray-500">Follow Up Date</span>
                       {lead.next_followup ? (() => {
                         const followupDate = parseISO(lead.next_followup);
-                        const today = new Date();
-                        today.setHours(0,0,0,0);
-                        const isPast = followupDate < today;
-                        const badgeClass = isPast ? 'bg-purple-600 text-white' : 'bg-green-500 text-white';
+                        const colorClass = getFollowUpColor(lead.next_followup);
                         return (
-                          <span className={`text-xs font-bold ml-2 px-2 py-1 rounded ${badgeClass}`}>
+                          <span className={`text-xs font-bold ml-2 px-2 py-1 rounded ${colorClass}`}>
                             {format(followupDate, 'dd/MM/yyyy')}
                           </span>
                         );
@@ -4395,7 +4663,18 @@ const PipelinePage: React.FC = () => {
               </tr>
             </thead>
             <tbody>
-              {sortedLeads.length === 0 ? (
+              {isLoading ? (
+                <tr>
+                  <td colSpan={12} className="text-center py-12">
+                    <div className="flex flex-col items-center justify-center gap-4">
+                      <div className="loading loading-spinner loading-lg text-primary"></div>
+                      <p className="text-base font-medium text-base-content/70">
+                        Loading {pipelineMode === 'closer' ? 'closer' : 'scheduler'} pipeline...
+                      </p>
+                    </div>
+                  </td>
+                </tr>
+              ) : sortedLeads.length === 0 ? (
                 <tr><td colSpan={12} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
@@ -4403,10 +4682,10 @@ const PipelinePage: React.FC = () => {
                   return (
                     <React.Fragment key={lead.id}>
                       <tr
-                        className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
-                        onClick={() => handleRowSelect(lead.id)}
-                        style={{ overflow: 'visible' }}
-                      >
+                    className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
+                    onClick={() => handleRowSelect(lead.id)}
+                    style={{ overflow: 'visible' }}
+                  >
                         {/* Expand/Collapse Arrow */}
                         <td className="px-2 py-3 md:py-4 text-center w-10">
                           <button
@@ -4431,7 +4710,7 @@ const PipelinePage: React.FC = () => {
                             )}
                           </button>
                         </td>
-                        {/* Lead column: lead number + name (left-aligned) */}
+                    {/* Lead column: lead number + name (left-aligned) */}
                         <td className="px-2 py-3 md:py-4 truncate max-w-[180px] text-left">
                       <div className="flex flex-col">
                         <span className="font-mono font-bold text-xs text-gray-500 truncate">{lead.lead_number}</span>
@@ -4483,7 +4762,11 @@ const PipelinePage: React.FC = () => {
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? 'N/A'}</td>
                     {/* Follow Up */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
-                      {lead.next_followup ? format(parseISO(lead.next_followup), 'dd/MM/yyyy') : 'N/A'}
+                      {lead.next_followup ? (
+                        <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
+                          {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
+                        </span>
+                      ) : 'N/A'}
                     </td>
                     {/* Country */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
@@ -4524,81 +4807,313 @@ const PipelinePage: React.FC = () => {
                   {/* Collapsible Content Row */}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={12} className="px-4 py-4 bg-base-50 border-b-2 border-base-300">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      <td colSpan={12} className="px-4 py-4 bg-white border-b-2 border-gray-200">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           {/* Comments */}
-                          <div className="space-y-2">
-                            <h4 className="font-bold text-sm text-gray-700">Comments</h4>
-                            {lead.comments && lead.comments.length > 0 ? (
-                              <div className="space-y-2 max-h-48 overflow-y-auto">
-                                {lead.comments.slice().reverse().map((comment, commentIdx) => (
-                                  <div key={commentIdx} className="bg-white rounded-lg p-3 border border-gray-200">
-                                    <div className="text-sm text-gray-900">{comment.text}</div>
-                                    <div className="text-xs text-gray-500 mt-1">
-                                      {comment.user} · {format(new Date(comment.timestamp), 'dd/MM/yyyy HH:mm')}
-                                    </div>
+                          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                            <div className="pl-6 pt-2 pb-2 border-b border-gray-200 flex items-center justify-between">
+                              <h4 className="text-lg font-semibold text-black">Comments</h4>
+                              {!editingComments.has(lead.id) && (
+                                <button
+                                  className="btn btn-ghost btn-sm"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setEditingComments(prev => new Set(prev).add(lead.id));
+                                    setNewCommentValues(prev => ({ ...prev, [lead.id]: '' }));
+                                  }}
+                                >
+                                  <PencilSquareIcon className="w-4 h-4" />
+                                </button>
+                              )}
+                            </div>
+                            <div className="p-6">
+                              {editingComments.has(lead.id) ? (
+                                <div className="space-y-3">
+                                  <textarea
+                                    className="textarea textarea-bordered w-full h-32"
+                                    value={newCommentValues[lead.id] || ''}
+                                    onChange={(e) => setNewCommentValues(prev => ({ ...prev, [lead.id]: e.target.value }))}
+                                    placeholder="Add a comment..."
+                                  />
+                                  <div className="flex gap-2 justify-end">
+                                    <button
+                                      className="btn btn-ghost btn-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setEditingComments(prev => {
+                                          const newSet = new Set(prev);
+                                          newSet.delete(lead.id);
+                                          return newSet;
+                                        });
+                                        setNewCommentValues(prev => {
+                                          const newState = { ...prev };
+                                          delete newState[lead.id];
+                                          return newState;
+                                        });
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                    <button
+                                      className="btn btn-primary btn-sm"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleAddCommentInCollapsible(lead.id, newCommentValues[lead.id] || '');
+                                      }}
+                                    >
+                                      Save
+                                    </button>
                                   </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-gray-400 italic">No comments</p>
-                            )}
+                                </div>
+                              ) : (
+                                <>
+                                  {lead.comments && lead.comments.length > 0 ? (
+                                    <div className="space-y-3 max-h-64 overflow-y-auto">
+                                      {lead.comments.slice().reverse().map((comment, commentIdx) => (
+                                        <div key={commentIdx} className="border border-gray-200 rounded-lg p-3">
+                                          <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{comment.text}</div>
+                                          <div className="flex items-center gap-2 text-xs text-gray-400">
+                                            <UserIcon className="w-3 h-3" />
+                                            <span>{comment.user}</span>
+                                            <span>·</span>
+                                            <ClockIcon className="w-3 h-3" />
+                                            <span>{format(new Date(comment.timestamp), 'dd/MM/yyyy HH:mm')}</span>
+                                          </div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <p className="text-gray-500">No comments yet</p>
+                                  )}
+                                </>
+                              )}
+                            </div>
                           </div>
                           
                           {/* Facts */}
-                          <div className="space-y-2">
-                            <h4 className="font-bold text-sm text-gray-700">Facts of Case</h4>
-                            {lead.facts ? (
-                              <div className="bg-white rounded-lg p-3 border border-gray-200 text-sm text-gray-900 whitespace-pre-wrap">
-                                {lead.facts}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-gray-400 italic">No facts available</p>
-                            )}
+                          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                            <div className="pl-6 pt-2 pb-2 border-b border-gray-200 flex items-center justify-between">
+                              <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
+                              <EditButtons
+                                isEditing={!!editingFields[lead.id]?.facts}
+                                onEdit={() => {
+                                  setEditingFields(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], facts: true }
+                                  }));
+                                  setEditValues(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], facts: lead.facts || '' }
+                                  }));
+                                }}
+                                onSave={() => {
+                                  const value = editValues[lead.id]?.facts || '';
+                                  handleSaveFacts(lead.id, value);
+                                }}
+                                onCancel={() => {
+                                  setEditingFields(prev => {
+                                    const newState = { ...prev };
+                                    if (newState[lead.id]) {
+                                      delete newState[lead.id].facts;
+                                      if (Object.keys(newState[lead.id]).length === 0) {
+                                        delete newState[lead.id];
+                                      }
+                                    }
+                                    return newState;
+                                  });
+                                  setEditValues(prev => {
+                                    const newState = { ...prev };
+                                    if (newState[lead.id]) {
+                                      delete newState[lead.id].facts;
+                                      if (Object.keys(newState[lead.id]).length === 0) {
+                                        delete newState[lead.id];
+                                      }
+                                    }
+                                    return newState;
+                                  });
+                                }}
+                                editButtonClassName="btn btn-ghost btn-sm"
+                                editIconClassName=""
+                              />
+                            </div>
+                            <div className="p-6">
+                              {editingFields[lead.id]?.facts ? (
+                                <textarea
+                                  className="textarea textarea-bordered w-full h-32"
+                                  value={editValues[lead.id]?.facts || ''}
+                                  onChange={(e) => setEditValues(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], facts: e.target.value }
+                                  }))}
+                                  placeholder="Add facts of case..."
+                                />
+                              ) : (
+                                lead.facts ? (
+                                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{lead.facts}</div>
+                                ) : (
+                                  <p className="text-gray-500">No facts available</p>
+                                )
+                              )}
+                            </div>
                           </div>
                           
                           {/* Special Notes */}
-                          <div className="space-y-2">
-                            <h4 className="font-bold text-sm text-gray-700">Special Notes</h4>
-                            {lead.special_notes ? (
-                              <div className="bg-white rounded-lg p-3 border border-gray-200 text-sm text-gray-900 whitespace-pre-wrap">
-                                {lead.special_notes}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-gray-400 italic">No special notes</p>
-                            )}
+                          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                            <div className="pl-6 pt-2 pb-2 border-b border-gray-200 flex items-center justify-between">
+                              <h4 className="text-lg font-semibold text-black">Special Notes</h4>
+                              <EditButtons
+                                isEditing={!!editingFields[lead.id]?.special_notes}
+                                onEdit={() => {
+                                  setEditingFields(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], special_notes: true }
+                                  }));
+                                  setEditValues(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], special_notes: lead.special_notes || '' }
+                                  }));
+                                }}
+                                onSave={() => {
+                                  const value = editValues[lead.id]?.special_notes || '';
+                                  handleSaveSpecialNotes(lead.id, value);
+                                }}
+                                onCancel={() => {
+                                  setEditingFields(prev => {
+                                    const newState = { ...prev };
+                                    if (newState[lead.id]) {
+                                      delete newState[lead.id].special_notes;
+                                      if (Object.keys(newState[lead.id]).length === 0) {
+                                        delete newState[lead.id];
+                                      }
+                                    }
+                                    return newState;
+                                  });
+                                  setEditValues(prev => {
+                                    const newState = { ...prev };
+                                    if (newState[lead.id]) {
+                                      delete newState[lead.id].special_notes;
+                                      if (Object.keys(newState[lead.id]).length === 0) {
+                                        delete newState[lead.id];
+                                      }
+                                    }
+                                    return newState;
+                                  });
+                                }}
+                                editButtonClassName="btn btn-ghost btn-sm"
+                                editIconClassName=""
+                              />
+                            </div>
+                            <div className="p-6">
+                              {editingFields[lead.id]?.special_notes ? (
+                                <textarea
+                                  className="textarea textarea-bordered w-full h-32"
+                                  value={editValues[lead.id]?.special_notes || ''}
+                                  onChange={(e) => setEditValues(prev => ({
+                                    ...prev,
+                                    [lead.id]: { ...prev[lead.id], special_notes: e.target.value }
+                                  }))}
+                                  placeholder="Add special notes..."
+                                />
+                              ) : (
+                                lead.special_notes ? (
+                                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{lead.special_notes}</div>
+                                ) : (
+                                  <p className="text-gray-500">No special notes</p>
+                                )
+                              )}
+                            </div>
                           </div>
                           
                           {/* Expert Notes */}
-                          <div className="space-y-2">
-                            <h4 className="font-bold text-sm text-gray-700">Expert Notes</h4>
-                            {lead.expert_notes && Array.isArray(lead.expert_notes) && lead.expert_notes.length > 0 ? (
-                              <div className="space-y-2 max-h-48 overflow-y-auto">
-                                {lead.expert_notes.map((note: any, noteIdx: number) => (
-                                  <div key={noteIdx} className="bg-white rounded-lg p-3 border border-gray-200">
-                                    <div className="text-sm text-gray-900">{note.content || note}</div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-gray-400 italic">No expert notes</p>
-                            )}
+                          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                            <div className="pl-6 pt-2 pb-2 border-b border-gray-200">
+                              <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
+                            </div>
+                            <div className="p-6">
+                              {lead.expert_notes && Array.isArray(lead.expert_notes) && lead.expert_notes.length > 0 ? (
+                                <div className="space-y-3 max-h-64 overflow-y-auto">
+                                  {lead.expert_notes.map((note: any, noteIdx: number) => {
+                                    const noteContent = typeof note === 'string' ? note : (note.content || JSON.stringify(note));
+                                    const noteTimestamp = note.timestamp || note.created_at || note.edited_at;
+                                    const noteUser = note.user || note.edited_by || note.created_by || note.created_by_name || 'Unknown';
+                                    const displayDate = noteTimestamp ? (() => {
+                                      try {
+                                        return format(new Date(noteTimestamp), 'dd/MM/yyyy HH:mm');
+                                      } catch {
+                                        return noteTimestamp;
+                                      }
+                                    })() : null;
+                                    
+                                    return (
+                                      <div key={noteIdx} className="border border-gray-200 rounded-lg p-3">
+                                        <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{noteContent}</div>
+                                        {(noteUser !== 'Unknown' || displayDate) && (
+                                          <div className="flex items-center gap-2 text-xs text-gray-400">
+                                            <UserIcon className="w-3 h-3" />
+                                            <span>{noteUser}</span>
+                                            {displayDate && (
+                                              <>
+                                                <span>·</span>
+                                                <ClockIcon className="w-3 h-3" />
+                                                <span>{displayDate}</span>
+                                              </>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="text-gray-500">No expert notes</p>
+                              )}
+                            </div>
                           </div>
                           
                           {/* Handler Notes */}
-                          <div className="space-y-2">
-                            <h4 className="font-bold text-sm text-gray-700">Handler Notes</h4>
-                            {lead.handler_notes && Array.isArray(lead.handler_notes) && lead.handler_notes.length > 0 ? (
-                              <div className="space-y-2 max-h-48 overflow-y-auto">
-                                {lead.handler_notes.map((note: any, noteIdx: number) => (
-                                  <div key={noteIdx} className="bg-white rounded-lg p-3 border border-gray-200">
-                                    <div className="text-sm text-gray-900">{note.content || note}</div>
-                                  </div>
-                                ))}
-                              </div>
-                            ) : (
-                              <p className="text-sm text-gray-400 italic">No handler notes</p>
-                            )}
+                          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                            <div className="pl-6 pt-2 pb-2 border-b border-gray-200">
+                              <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
+                            </div>
+                            <div className="p-6">
+                              {lead.handler_notes && Array.isArray(lead.handler_notes) && lead.handler_notes.length > 0 ? (
+                                <div className="space-y-3 max-h-64 overflow-y-auto">
+                                  {lead.handler_notes.map((note: any, noteIdx: number) => {
+                                    const noteContent = typeof note === 'string' ? note : (note.content || JSON.stringify(note));
+                                    const noteTimestamp = note.timestamp || note.created_at || note.edited_at;
+                                    const noteUser = note.user || note.edited_by || note.created_by || note.created_by_name || 'Unknown';
+                                    const displayDate = noteTimestamp ? (() => {
+                                      try {
+                                        return format(new Date(noteTimestamp), 'dd/MM/yyyy HH:mm');
+                                      } catch {
+                                        return noteTimestamp;
+                                      }
+                                    })() : null;
+                                    
+                                    return (
+                                      <div key={noteIdx} className="border border-gray-200 rounded-lg p-3">
+                                        <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{noteContent}</div>
+                                        {(noteUser !== 'Unknown' || displayDate) && (
+                                          <div className="flex items-center gap-2 text-xs text-gray-400">
+                                            <UserIcon className="w-3 h-3" />
+                                            <span>{noteUser}</span>
+                                            {displayDate && (
+                                              <>
+                                                <span>·</span>
+                                                <ClockIcon className="w-3 h-3" />
+                                                <span>{displayDate}</span>
+                                              </>
+                                            )}
+                                          </div>
+                                        )}
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              ) : (
+                                <p className="text-gray-500">No handler notes</p>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </td>
@@ -5797,7 +6312,7 @@ const PipelinePage: React.FC = () => {
                   </div>
                 </div>
                 
-              </div>
+                    </div>
             </div>
 
             {/* Content */}

@@ -6,8 +6,9 @@ import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
 import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon, EllipsisVerticalIcon, FolderIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
-import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import DocumentModal from '../components/DocumentModal';
+import { format, parseISO } from 'date-fns';
 
 export interface SchedulerLead {
   id: string;
@@ -47,6 +48,25 @@ const SCHEDULER_STAGE_TARGETS = [
   'Success',
 ];
 const FALLBACK_SCHEDULER_STAGE_IDS = [0, 10, 11, 15];
+
+// Helper function to calculate contrasting text color based on background
+const getContrastingTextColor = (hexColor?: string | null) => {
+  if (!hexColor) return '#111827';
+  let sanitized = hexColor.trim();
+  if (sanitized.startsWith('#')) sanitized = sanitized.slice(1);
+  if (sanitized.length === 3) {
+    sanitized = sanitized.split('').map(char => char + char).join('');
+  }
+  if (!/^[0-9a-fA-F]{6}$/.test(sanitized)) {
+    return '#111827';
+  }
+  const r = parseInt(sanitized.slice(0, 2), 16) / 255;
+  const g = parseInt(sanitized.slice(2, 4), 16) / 255;
+  const b = parseInt(sanitized.slice(4, 6), 16) / 255;
+
+  const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+  return luminance > 0.6 ? '#111827' : '#ffffff';
+};
 
 const SchedulerToolPage: React.FC = () => {
   const navigate = useNavigate();
@@ -1071,6 +1091,38 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
+  const getStageBadge = (stage: string | number | null | undefined) => {
+    if (!stage && stage !== 0) return <span className="badge badge-outline">No Stage</span>;
+    
+    // Convert stage to string for getStageName/getStageColour (handles both numeric IDs and stage names)
+    const stageStr = String(stage);
+    
+    // Get stage name and color from stageUtils
+    const stageName = getStageName(stageStr);
+    const stageColour = getStageColour(stageStr);
+    const badgeTextColour = getContrastingTextColor(stageColour);
+    
+    // Use dynamic color if available, otherwise fallback to default purple
+    const backgroundColor = stageColour || '#3f28cd';
+    const textColor = stageColour ? badgeTextColour : '#ffffff';
+    
+    return <span 
+      className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+      style={{
+        backgroundColor: backgroundColor,
+        borderColor: backgroundColor,
+        color: textColor,
+        whiteSpace: 'nowrap',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        display: 'inline-block'
+      }}
+      title={stageName}
+    >
+      {stageName}
+    </span>;
+  };
+
   const handleCall = (lead: SchedulerLead) => {
     const phoneNumber = lead.phone || lead.mobile;
     if (phoneNumber) {
@@ -1883,34 +1935,31 @@ const SchedulerToolPage: React.FC = () => {
       : <ChevronDownIcon className="w-4 h-4 text-gray-600" />;
   };
 
-  // Badge logic for follow up date
-  const getFollowUpBadgeStyle = (followUpDate: string) => {
-    if (!followUpDate) {
-      return {
-        className: "badge badge-neutral text-white text-xs",
-        text: "No follow up"
-      };
-    }
-
-    const followUp = new Date(followUpDate);
-    const now = new Date();
-    const diffInDays = Math.floor((followUp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
-
-    if (diffInDays < 0) { // Overdue
-      return {
-        className: "badge badge-error text-white text-xs",
-        text: formatDate(followUpDate)
-      };
-    } else if (diffInDays <= 7) { // Due within 1 week
-      return {
-        className: "badge badge-info text-white text-xs",
-        text: formatDate(followUpDate)
-      };
+  // Helper function to get follow up date color based on date (same logic as PipelinePage)
+  const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
+    if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
+    
+    const followUpDate = new Date(followUpDateStr);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Set follow up date to start of day for comparison
+    const followUpDateStart = new Date(followUpDate);
+    followUpDateStart.setHours(0, 0, 0, 0);
+    
+    // Calculate difference in days
+    const diffTime = followUpDateStart.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays < 0) {
+      // Past follow up date - red
+      return 'bg-red-500 text-white';
+    } else if (diffDays === 0) {
+      // Today - green
+      return 'bg-green-500 text-white';
     } else {
-      return {
-        className: "badge badge-success text-white text-xs",
-        text: formatDate(followUpDate)
-      };
+      // Tomorrow or more than 1 day away - yellow
+      return 'bg-yellow-500 text-white';
     }
   };
 
@@ -2012,7 +2061,7 @@ const SchedulerToolPage: React.FC = () => {
           
           {/* View Toggle */}
           <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 hidden sm:inline">View:</span>
+            <span className="text-sm text-gray-600 hidden sm:inline"></span>
             <div className="btn-group">
               <button
                 onClick={() => setViewMode('box')}
@@ -2288,39 +2337,46 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Date Filters and Clear Button */}
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">From:</label>
+          {/* Date From Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date From</label>
+            <div className="relative">
               <input
                 type="date"
                 value={dateFrom}
                 onChange={(e) => setDateFrom(e.target.value)}
-                className="input input-bordered input-sm"
+                className="input input-bordered w-full"
               />
             </div>
-            <div className="flex items-center gap-2">
-              <label className="text-sm font-medium text-gray-700 whitespace-nowrap">To:</label>
+          </div>
+
+          {/* Date To Filter */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Date To</label>
+            <div className="relative">
               <input
                 type="date"
                 value={dateTo}
                 onChange={(e) => setDateTo(e.target.value)}
-                className="input input-bordered input-sm"
+                className="input input-bordered w-full"
               />
             </div>
-            <button 
-              className="btn btn-outline btn-sm"
-              onClick={() => {
-                clearFilters();
-                setDateFrom('');
-                setDateTo('');
-              }}
-              disabled={Object.values(filters).every(f => f === '') && !searchTerm && !dateFrom && !dateTo}
-            >
-              Clear Filters
-            </button>
           </div>
-
+        </div>
+        
+        {/* Clear Filters Button */}
+        <div className="mt-4 flex justify-end">
+          <button 
+            className="btn btn-outline btn-sm"
+            onClick={() => {
+              clearFilters();
+              setDateFrom('');
+              setDateTo('');
+            }}
+            disabled={Object.values(filters).every(f => f === '') && !searchTerm && !dateFrom && !dateTo}
+          >
+            Clear Filters
+          </button>
         </div>
       </div>
 
@@ -2335,114 +2391,100 @@ const SchedulerToolPage: React.FC = () => {
         </div>
       ) : viewMode === 'box' ? (
         // Box View
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-          {filteredLeads.map((lead) => (
-            <div key={lead.id} className={`bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[400px] relative pb-16 md:text-lg md:leading-relaxed p-5 ${openContactDropdown === lead.id ? 'z-[60] md:z-auto' : ''}`}>
-              {/* Header */}
-              <div onClick={() => handleRowSelect(lead.id)} className={`flex-1 cursor-pointer flex flex-col transition-all duration-200 ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
-                <div className="mb-3 flex items-center gap-2">
-                  <button
-                    onClick={(e) => toggleRowExpansion(lead.id, e)}
-                    className="flex-shrink-0 p-1.5 hover:bg-gray-100 rounded-lg transition-colors"
-                    title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
-                  >
-                    {expandedRows.has(lead.id) ? (
-                      <ChevronDownIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
-                    ) : (
-                      <ChevronRightIcon className="w-5 h-5 sm:w-6 sm:h-6 text-gray-600" />
-                    )}
-                  </button>
-                  <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest whitespace-nowrap">
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+          {filteredLeads.map((lead) => {
+            const cardClasses = [
+              'card',
+              'shadow-lg',
+              'hover:shadow-2xl',
+              'transition-all',
+              'duration-300',
+              'ease-in-out',
+              'transform',
+              'hover:-translate-y-1',
+              'cursor-pointer',
+              'group',
+              'border',
+              'bg-base-100',
+              'border-base-200',
+              openContactDropdown === lead.id ? 'z-[60] md:z-auto' : '',
+            ].join(' ');
+
+            return (
+            <div key={lead.id} className={cardClasses}>
+              <div className="card-body p-5 relative">
+                {/* Expand/Collapse Button */}
+                <button
+                  onClick={(e) => toggleRowExpansion(lead.id, e)}
+                  className="absolute top-2 left-2 flex-shrink-0 p-1 hover:bg-gray-100 rounded-md transition-colors z-10"
+                  title={expandedRows.has(lead.id) ? "Collapse" : "Expand"}
+                >
+                  {expandedRows.has(lead.id) ? (
+                    <ChevronDownIcon className="w-4 h-4 text-gray-600" />
+                  ) : (
+                    <ChevronRightIcon className="w-4 h-4 text-gray-600" />
+                  )}
+                </button>
+
+                {/* Header */}
+                <div onClick={() => handleRowSelect(lead.id)} className={`cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
+                  <div className="flex justify-between items-start mb-2">
+                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                      <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate flex-1">
+                        {lead.name || 'No Name'}
+                      </h2>
+                    </div>
+                    {getStageBadge(lead.stage)}
+                  </div>
+                  
+                  <p className="text-sm text-base-content/60 font-mono mb-4">
                     #{lead.lead_number}
-                  </span>
-                  <span className="w-1 h-1 bg-gray-300 rounded-full flex-shrink-0"></span>
-                  <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1 min-w-0">
-                    {lead.name || 'No Name'}
-                  </h3>
-                  <span className={`badge badge-sm ${getFollowUpBadgeStyle(lead.next_followup || '').className} whitespace-nowrap flex-shrink-0`}>
-                    {getFollowUpBadgeStyle(lead.next_followup || '').text}
-                  </span>
-                </div>
+                  </p>
 
-                {/* Stage */}
-                <div className="flex justify-between items-center py-1">
-                  <span className="text-xs md:text-base font-semibold text-gray-500">Stage</span>
-                  <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">
-                    {lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'Unknown'}
-                  </span>
-                </div>
+                  {lead.next_followup && (
+                    <div className="mb-4">
+                      <span className={`text-xs font-bold px-2 py-1 rounded ${getFollowUpColor(lead.next_followup)} whitespace-nowrap`}>
+                        Follow-up: {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
+                      </span>
+                    </div>
+                  )}
 
-                <div className="space-y-2 divide-y divide-gray-100">
-                  {/* Created Date */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Created</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{formatDate(lead.created_at)}</span>
-                  </div>
+                  <div className="divider my-0"></div>
 
-                  {/* Language */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Language</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{lead.language || 'N/A'}</span>
-                  </div>
-
-                  {/* Source */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Source</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
-                      <span className="truncate block">{lead.source || 'N/A'}</span>
-                    </span>
-                  </div>
-
-                  {/* Category */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
-                      <span className="truncate block">{lead.category || 'N/A'}</span>
-                    </span>
-                  </div>
-
-                  {/* Topic */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Topic</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
-                      <span className="truncate block">{lead.topic || 'N/A'}</span>
-                    </span>
-                  </div>
-
-                  {/* Country */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Country</span>
-                    <div className="flex items-center gap-1 ml-2 text-right">
-                      <span className="text-sm md:text-lg font-bold text-gray-800">{lead.country || 'N/A'}</span>
-                      {lead.country && (() => {
-                        const timezone = getCountryTimezone(lead.country, allCountries);
-                        const businessInfo = getBusinessHoursInfo(timezone);
-                        return timezone ? (
-                          <div className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
-                               title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
-                        ) : null;
-                      })()}
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+                    <div className="flex items-center gap-2" title="Date Created">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
+                      <span className="font-medium">{formatDate(lead.created_at)}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Category">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+                      <span className="truncate">{lead.category || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Source">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+                      <span className="truncate">{lead.source || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Language">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
+                      <span className="truncate">{lead.language || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Topic">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 8h10M7 12h4m1 8l-4-4H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-3l-4 4z" /></svg>
+                      <span className="truncate">{lead.topic || 'N/A'}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Country">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <span className="truncate">{lead.country || 'N/A'}</span>
                     </div>
                   </div>
 
-                  {/* Total */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Value</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 whitespace-nowrap">{formatCurrency(lead.total, lead.balance_currency)}</span>
-                  </div>
-
-                  {/* Tags */}
-                  <div className="flex justify-between items-center py-1">
-                    <span className="text-xs md:text-base font-semibold text-gray-500">Tags</span>
-                    <span className="text-sm md:text-lg font-bold text-gray-800 ml-2 text-right flex-1 min-w-0">
-                      <span className="truncate block">{lead.tags || 'N/A'}</span>
-                    </span>
+                  <div className="mt-4 pt-4 border-t border-base-200/50">
+                    <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
                   </div>
                 </div>
-              </div>
 
-              {/* Action Buttons */}
-              <div className="mt-4 flex flex-row gap-2 justify-between items-center">
+                {/* Action Buttons */}
+                <div className="mt-4 flex flex-row gap-2 justify-between items-center">
                 {/* Left side - Eligible Toggle */}
                 <div className="flex items-center gap-2">
                   {/* Eligible Toggle */}
@@ -2462,48 +2504,48 @@ const SchedulerToolPage: React.FC = () => {
 
               {/* Expanded Notes Section */}
               {expandedRows.has(lead.id) && (
-                <div className="mt-4 p-4 border-t border-gray-100">
-                  <div className="space-y-4">
+                <div className="mt-1 p-1 border-t border-gray-100">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
                     {/* Facts of Case */}
-                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
-                      <h6 className="font-semibold text-gray-800 mb-2">Facts of Case</h6>
-                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
+                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">Facts of Case</h6>
+                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
                         {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
                           <div className="space-y-2">
                             <textarea
                               value={editValues[`${lead.id}_facts`] || ''}
                               onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-sm"
-                              rows={4}
+                              className="textarea textarea-bordered w-full text-[10px] p-1"
+                              rows={2}
                               placeholder="Enter facts of case..."
                               dir="auto"
                             />
-                            <div className="flex gap-2">
+                            <div className="flex gap-1">
                               <button
                                 onClick={() => saveEdit(lead.id, 'facts')}
-                                className="btn btn-xs btn-primary"
+                                className="btn btn-xs btn-primary text-[9px] px-1 py-0.5 h-5"
                               >
                                 Save
                               </button>
                               <button
                                 onClick={cancelEditing}
-                                className="btn btn-xs btn-outline"
+                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
                               >
                                 Cancel
                               </button>
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-start justify-between">
-                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
-                              {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
+                              {lead.facts || <span className="text-gray-400 italic text-[9px]">No facts provided</span>}
                             </p>
                             <button
                               onClick={() => startEditing(lead.id, 'facts', lead.facts || '')}
-                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
                               title="Edit facts"
                             >
-                              <PencilSquareIcon className="w-3 h-3" />
+                              <PencilSquareIcon className="w-2.5 h-2.5" />
                             </button>
                           </div>
                         )}
@@ -2511,45 +2553,45 @@ const SchedulerToolPage: React.FC = () => {
                     </div>
 
                     {/* Special Notes */}
-                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
-                      <h6 className="font-semibold text-gray-800 mb-2">Special Notes</h6>
-                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
+                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">Special Notes</h6>
+                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
                         {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
                           <div className="space-y-2">
                             <textarea
                               value={editValues[`${lead.id}_special_notes`] || ''}
                               onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-sm"
-                              rows={4}
+                              className="textarea textarea-bordered w-full text-[10px] p-1"
+                              rows={2}
                               placeholder="Enter special notes..."
                               dir="auto"
                             />
-                            <div className="flex gap-2">
+                            <div className="flex gap-1">
                               <button
                                 onClick={() => saveEdit(lead.id, 'special_notes')}
-                                className="btn btn-xs btn-warning"
+                                className="btn btn-xs btn-warning text-[9px] px-1 py-0.5 h-5"
                               >
                                 Save
                               </button>
                               <button
                                 onClick={cancelEditing}
-                                className="btn btn-xs btn-outline"
+                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
                               >
                                 Cancel
                               </button>
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-start justify-between">
-                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
-                              {lead.special_notes || <span className="text-gray-400 italic">No special notes</span>}
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
+                              {lead.special_notes || <span className="text-gray-400 italic text-[9px]">No special notes</span>}
                             </p>
                             <button
                               onClick={() => startEditing(lead.id, 'special_notes', lead.special_notes || '')}
-                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
                               title="Edit special notes"
                             >
-                              <PencilSquareIcon className="w-3 h-3" />
+                              <PencilSquareIcon className="w-2.5 h-2.5" />
                             </button>
                           </div>
                         )}
@@ -2557,45 +2599,45 @@ const SchedulerToolPage: React.FC = () => {
                     </div>
 
                     {/* General Notes */}
-                    <div className="bg-white p-4 rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] border border-gray-200">
-                      <h6 className="font-semibold text-gray-800 mb-2">General Notes</h6>
-                      <div className="space-y-2 max-h-32 overflow-y-auto">
+                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
+                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">General Notes</h6>
+                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
                         {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
                           <div className="space-y-2">
                             <textarea
                               value={editValues[`${lead.id}_general_notes`] || ''}
                               onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-sm"
-                              rows={4}
+                              className="textarea textarea-bordered w-full text-[10px] p-1"
+                              rows={2}
                               placeholder="Enter general notes..."
                               dir="auto"
                             />
-                            <div className="flex gap-2">
+                            <div className="flex gap-1">
                               <button
                                 onClick={() => saveEdit(lead.id, 'general_notes')}
-                                className="btn btn-xs btn-success"
+                                className="btn btn-xs btn-success text-[9px] px-1 py-0.5 h-5"
                               >
                                 Save
                               </button>
                               <button
                                 onClick={cancelEditing}
-                                className="btn btn-xs btn-outline"
+                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
                               >
                                 Cancel
                               </button>
                             </div>
                           </div>
                         ) : (
-                          <div className="flex items-start justify-between">
-                            <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed flex-1" dir="auto">
-                              {lead.general_notes || <span className="text-gray-400 italic">No general notes</span>}
+                          <div className="flex items-start justify-between gap-2">
+                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
+                              {lead.general_notes || <span className="text-gray-400 italic text-[9px]">No general notes</span>}
                             </p>
                             <button
                               onClick={() => startEditing(lead.id, 'general_notes', lead.general_notes || '')}
-                              className="btn btn-xs btn-outline btn-primary ml-2"
+                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
                               title="Edit general notes"
                             >
-                              <PencilSquareIcon className="w-3 h-3" />
+                              <PencilSquareIcon className="w-2.5 h-2.5" />
                             </button>
                           </div>
                         )}
@@ -2604,8 +2646,10 @@ const SchedulerToolPage: React.FC = () => {
                   </div>
                 </div>
               )}
+              </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       ) : (
         <div className="overflow-x-auto">
@@ -2719,9 +2763,11 @@ const SchedulerToolPage: React.FC = () => {
                       {lead.tags || 'N/A'}
                     </td>
                     <td>
-                      <span className={`${getFollowUpBadgeStyle(lead.next_followup || '').className} text-xs`}>
-                        {getFollowUpBadgeStyle(lead.next_followup || '').text}
-                      </span>
+                      {lead.next_followup ? (
+                        <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
+                          {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
+                        </span>
+                      ) : 'N/A'}
                     </td>
                     <td>
                       <div className="flex items-center gap-1">
@@ -2755,10 +2801,10 @@ const SchedulerToolPage: React.FC = () => {
                                 className="btn btn-xs btn-outline btn-primary"
                                 title="Edit facts"
                               >
-                                <PencilSquareIcon className="w-3 h-3" />
+                                <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
-                            <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200">
+                            <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200 overflow-hidden">
                               {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
                                 <div className="space-y-2">
                                   <textarea
@@ -2785,7 +2831,7 @@ const SchedulerToolPage: React.FC = () => {
                                   </div>
                                 </div>
                               ) : (
-                                <p className="text-sm text-gray-700 whitespace-pre-wrap leading-relaxed" dir="auto">
+                                <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed" dir="auto">
                                   {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
                                 </p>
                               )}
@@ -2801,7 +2847,7 @@ const SchedulerToolPage: React.FC = () => {
                                 className="btn btn-xs btn-outline btn-primary"
                                 title="Edit special notes"
                               >
-                                <PencilSquareIcon className="w-3 h-3" />
+                                <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
                             <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200">
@@ -2847,7 +2893,7 @@ const SchedulerToolPage: React.FC = () => {
                                 className="btn btn-xs btn-outline btn-primary"
                                 title="Edit general notes"
                               >
-                                <PencilSquareIcon className="w-3 h-3" />
+                                <PencilSquareIcon className="w-2.5 h-2.5" />
                               </button>
                             </div>
                             <div className="bg-white p-4 rounded-lg shadow-lg border border-gray-200 hover:shadow-xl transition-shadow duration-200">

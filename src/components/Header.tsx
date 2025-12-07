@@ -1495,27 +1495,260 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   // Fetch WhatsApp clients unread count (messages from existing clients, lead_id is not null)
-  const fetchWhatsappClientsUnreadCount = async () => {
+  const fetchWhatsappClientsUnreadCount = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('whatsapp_messages')
-        .select('id')
-        .not('lead_id', 'is', null)
-        .eq('direction', 'in')
-        .or('is_read.is.null,is_read.eq.false');
+      // If user is superuser, count all unread messages
+      if (isSuperUser) {
+        const { data, error } = await supabase
+          .from('whatsapp_messages')
+          .select('id')
+          .eq('direction', 'in')
+          .or('is_read.is.null,is_read.eq.false');
 
-      if (error) {
-        console.error('Error fetching WhatsApp clients unread count:', error);
+        if (error) {
+          console.error('Error fetching WhatsApp clients unread count:', error);
+          setWhatsappClientsUnreadCount(0);
+          return;
+        }
+
+        setWhatsappClientsUnreadCount(data?.length || 0);
+        return;
+      }
+
+      // For non-superusers, filter by "My Contacts" logic (role matching)
+      // If we don't have user data, don't count any (should not happen, but safety check)
+      if (!currentUserEmployee?.id && !currentUser?.employee_id && !userFullName) {
         setWhatsappClientsUnreadCount(0);
         return;
       }
 
-      setWhatsappClientsUnreadCount(data?.length || 0);
+      // Fetch all unread WhatsApp messages with lead_id, contact_id, and legacy_id
+      const { data: whatsappMessages, error: whatsappError } = await supabase
+        .from('whatsapp_messages')
+        .select('id, lead_id, contact_id, legacy_id')
+        .eq('direction', 'in')
+        .or('is_read.is.null,is_read.eq.false');
+
+      if (whatsappError) {
+        console.error('Error fetching WhatsApp clients unread count:', whatsappError);
+        setWhatsappClientsUnreadCount(0);
+        return;
+      }
+
+      if (!whatsappMessages || whatsappMessages.length === 0) {
+        setWhatsappClientsUnreadCount(0);
+        return;
+      }
+
+      // Get unique lead IDs and contact IDs
+      const uniqueLeadIds = new Set<string>();
+      const uniqueContactIds = new Set<number>();
+      const uniqueLegacyIds = new Set<number>();
+      
+      whatsappMessages.forEach((msg: any) => {
+        if (msg.lead_id) {
+          uniqueLeadIds.add(String(msg.lead_id));
+        }
+        if (msg.contact_id) {
+          uniqueContactIds.add(Number(msg.contact_id));
+        }
+        if (msg.legacy_id) {
+          uniqueLegacyIds.add(Number(msg.legacy_id));
+        }
+      });
+
+      // Also fetch legacy interactions (for legacy leads with WhatsApp messages)
+      const { data: legacyInteractions, error: legacyError } = await supabase
+        .from('leads_leadinteractions')
+        .select('lead_id')
+        .eq('kind', 'w')
+        .not('lead_id', 'is', null);
+
+      if (!legacyError && legacyInteractions) {
+        legacyInteractions.forEach((interaction: any) => {
+          if (interaction.lead_id) {
+            uniqueLegacyIds.add(Number(interaction.lead_id));
+          }
+        });
+      }
+
+      const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
+      const fullName = userFullName?.trim().toLowerCase();
+      
+      let matchingLeadIds = new Set<string>();
+      let matchingLegacyIds = new Set<number>();
+      let matchingContactIds = new Set<number>();
+
+      // Fetch new leads and filter by role
+      if (uniqueLeadIds.size > 0) {
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select('id, closer, scheduler, handler, manager, helper, expert, case_handler_id')
+          .in('id', Array.from(uniqueLeadIds));
+
+        if (!newLeadsError && newLeads) {
+          newLeads.forEach((lead: any) => {
+            // Check text fields (scheduler, closer, handler are saved as display names)
+            if (fullName) {
+              const textFields = [lead.closer, lead.scheduler, lead.handler];
+              if (textFields.some(field => field && typeof field === 'string' && field.trim().toLowerCase() === fullName)) {
+                matchingLeadIds.add(String(lead.id));
+                return;
+              }
+            }
+            
+            // Check numeric fields (manager, helper, expert, case_handler_id are saved as employee IDs)
+            if (employeeId) {
+              const numericFields = [lead.manager, lead.helper, lead.expert, lead.case_handler_id];
+              if (numericFields.some(field => field !== null && field !== undefined && String(field) === String(employeeId))) {
+                matchingLeadIds.add(String(lead.id));
+              }
+            }
+          });
+        }
+      }
+
+      // Fetch legacy leads and filter by role
+      if (uniqueLegacyIds.size > 0) {
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select('id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+          .in('id', Array.from(uniqueLegacyIds));
+
+        if (!legacyLeadsError && legacyLeads && employeeId) {
+          legacyLeads.forEach((lead: any) => {
+            const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+            if (numericFields.some(field => field !== null && field !== undefined && String(field) === String(employeeId))) {
+              matchingLegacyIds.add(Number(lead.id));
+            }
+          });
+        }
+      }
+
+      // Fetch contacts and check their associated leads
+      if (uniqueContactIds.size > 0) {
+        // Fetch contact-to-lead relationships
+        const { data: relationships, error: relationshipsError } = await supabase
+          .from('lead_leadcontact')
+          .select('contact_id, newlead_id, lead_id')
+          .in('contact_id', Array.from(uniqueContactIds));
+
+        if (!relationshipsError && relationships && relationships.length > 0) {
+          const contactToNewLeadMap = new Map<number, string>();
+          const contactToLegacyLeadMap = new Map<number, number>();
+          
+          relationships.forEach((rel: any) => {
+            if (rel.contact_id) {
+              if (rel.newlead_id) {
+                contactToNewLeadMap.set(Number(rel.contact_id), String(rel.newlead_id));
+              }
+              if (rel.lead_id) {
+                contactToLegacyLeadMap.set(Number(rel.contact_id), Number(rel.lead_id));
+              }
+            }
+          });
+
+          // Get all unique leads associated with contacts
+          const newLeadIdsForContacts = Array.from(new Set(Array.from(contactToNewLeadMap.values())));
+          const legacyLeadIdsForContacts = Array.from(new Set(Array.from(contactToLegacyLeadMap.values())));
+
+          // Fetch and filter new leads for contacts
+          if (newLeadIdsForContacts.length > 0) {
+            const { data: newLeadsForContacts, error: newLeadsError } = await supabase
+              .from('leads')
+              .select('id, closer, scheduler, handler, manager, helper, expert, case_handler_id')
+              .in('id', newLeadIdsForContacts);
+
+            if (!newLeadsError && newLeadsForContacts) {
+              const matchingNewLeadIds = new Set<string>();
+              newLeadsForContacts.forEach((lead: any) => {
+                // Check text fields
+                if (fullName) {
+                  const textFields = [lead.closer, lead.scheduler, lead.handler];
+                  if (textFields.some(field => field && typeof field === 'string' && field.trim().toLowerCase() === fullName)) {
+                    matchingNewLeadIds.add(String(lead.id));
+                    return;
+                  }
+                }
+                
+                // Check numeric fields
+                if (employeeId) {
+                  const numericFields = [lead.manager, lead.helper, lead.expert, lead.case_handler_id];
+                  if (numericFields.some(field => field !== null && field !== undefined && String(field) === String(employeeId))) {
+                    matchingNewLeadIds.add(String(lead.id));
+                  }
+                }
+              });
+
+              // Map matching leads back to contacts
+              contactToNewLeadMap.forEach((leadId, contactId) => {
+                if (matchingNewLeadIds.has(leadId)) {
+                  matchingContactIds.add(contactId);
+                }
+              });
+            }
+          }
+
+          // Fetch and filter legacy leads for contacts
+          if (legacyLeadIdsForContacts.length > 0) {
+            const { data: legacyLeadsForContacts, error: legacyLeadsError } = await supabase
+              .from('leads_lead')
+              .select('id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id')
+              .in('id', legacyLeadIdsForContacts);
+
+            if (!legacyLeadsError && legacyLeadsForContacts && employeeId) {
+              const matchingLegacyLeadIds = new Set<number>();
+              legacyLeadsForContacts.forEach((lead: any) => {
+                const numericFields = [lead.closer_id, lead.meeting_scheduler_id, lead.meeting_manager_id, lead.meeting_lawyer_id, lead.expert_id, lead.case_handler_id];
+                if (numericFields.some(field => field !== null && field !== undefined && String(field) === String(employeeId))) {
+                  matchingLegacyLeadIds.add(Number(lead.id));
+                }
+              });
+
+              // Map matching leads back to contacts
+              contactToLegacyLeadMap.forEach((leadId, contactId) => {
+                if (matchingLegacyLeadIds.has(leadId)) {
+                  matchingContactIds.add(contactId);
+                }
+              });
+            }
+          }
+
+          // Also check legacy_id directly from messages (more accurate)
+          whatsappMessages.forEach((msg: any) => {
+            if (msg.contact_id && msg.legacy_id && matchingLegacyIds.has(Number(msg.legacy_id))) {
+              matchingContactIds.add(Number(msg.contact_id));
+            }
+          });
+        }
+      }
+
+      // Count messages that match user's roles
+      const count = whatsappMessages.filter((msg: any) => {
+        // Check if message is from a matching lead (new)
+        if (msg.lead_id && matchingLeadIds.has(String(msg.lead_id))) {
+          return true;
+        }
+        
+        // Check if message is from a matching legacy lead
+        if (msg.legacy_id && matchingLegacyIds.has(Number(msg.legacy_id))) {
+          return true;
+        }
+        
+        // Check if message is from a matching contact
+        if (msg.contact_id && matchingContactIds.has(Number(msg.contact_id))) {
+          return true;
+        }
+        
+        return false;
+      }).length;
+
+      setWhatsappClientsUnreadCount(count);
     } catch (error) {
       console.error('Error in fetchWhatsappClientsUnreadCount:', error);
       setWhatsappClientsUnreadCount(0);
     }
-  };
+  }, [isSuperUser, currentUserEmployee, currentUser, userFullName]);
 
   const fetchEmailUnreadCount = useCallback(async () => {
     try {
@@ -1805,7 +2038,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }, 60000);
       return () => clearInterval(interval);
     }
-  }, [currentUser, isSuperUser, fetchEmailUnreadCount, fetchEmailLeadMessages]);
+  }, [currentUser, isSuperUser, fetchEmailUnreadCount, fetchEmailLeadMessages, fetchWhatsappClientsUnreadCount]);
 
   // Send push notifications when new messages arrive
   // Only trigger on count changes, not on message array reference changes

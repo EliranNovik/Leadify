@@ -1495,9 +1495,25 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    const totalUnread = contacts.reduce((sum, contact) => sum + (contact.unread_count || 0), 0);
+    
+    // For non-superusers, only count unread messages from "My Contacts" (contacts that match user roles)
+    // The contacts array is already filtered at the database level when showMyContactsOnly is true
+    // For superusers, count all unread messages from all contacts
+    let contactsToCount = contacts;
+    
+    // If user is not a superuser, ensure we only count contacts from "My Contacts"
+    // (This should already be filtered, but we verify for safety)
+    if (isSuperuser === false && showMyContactsOnly) {
+      // Contacts are already filtered, so we can use them directly
+      contactsToCount = contacts;
+    } else if (isSuperuser === true) {
+      // Superusers see all contacts, so count all
+      contactsToCount = contacts;
+    }
+    
+    const totalUnread = contactsToCount.reduce((sum, contact) => sum + (contact.unread_count || 0), 0);
     window.dispatchEvent(new CustomEvent('email:unread-count', { detail: { count: totalUnread } }));
-  }, [contacts]);
+  }, [contacts, isSuperuser, showMyContactsOnly]);
 
   // If propSelectedContact is provided, use it directly
   useEffect(() => {

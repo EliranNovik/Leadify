@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
@@ -25,6 +25,48 @@ const getDisplayValue = (lead: LeadForExpert): string => {
     return formatAmount(lead.proposal_total, lead.proposal_currency);
   }
   return 'N/A';
+};
+
+// Helper function to get meeting color based on date
+const getMeetingColor = (meetingDateStr: string): string => {
+  if (!meetingDateStr) return 'bg-gray-100 text-gray-600';
+  
+  // Extract date part
+  const dateOnly = meetingDateStr.split(' ')[0];
+  const meetingDate = new Date(dateOnly);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  
+  // Set meeting date to start of day for comparison
+  const meetingDateStart = new Date(meetingDate);
+  meetingDateStart.setHours(0, 0, 0, 0);
+  
+  // Calculate difference in days
+  const diffTime = meetingDateStart.getTime() - today.getTime();
+  const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+  
+  if (diffDays < 0) {
+    // Past meeting - red
+    return 'bg-red-500 text-white';
+  } else if (diffDays === 0) {
+    // Today - green
+    return 'bg-green-500 text-white';
+  } else {
+    // Tomorrow or more than 1 day away - yellow
+    return 'bg-yellow-500 text-white';
+  }
+};
+
+// Helper function to calculate days since expert was assigned (using created_at as proxy)
+const getDaysSinceAssigned = (createdAt: string): number => {
+  if (!createdAt) return 0;
+  const createdDate = new Date(createdAt);
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  createdDate.setHours(0, 0, 0, 0);
+  const diffTime = today.getTime() - createdDate.getTime();
+  const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+  return diffDays;
 };
 
 const LABEL_OPTIONS = [
@@ -74,8 +116,10 @@ interface LeadForExpert {
   proposal_currency?: string | null;
   expert_comments?: { text: string; timestamp: string; user: string }[];
   label?: string | null;
+  tags?: string[] | null;
   lead_type?: 'new' | 'legacy';
   highlighted_by?: string[];
+  facts?: string | null;
 }
 
 const ExpertPage: React.FC = () => {
@@ -84,19 +128,24 @@ const ExpertPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filterMeetingDateFrom, setFilterMeetingDateFrom] = useState('');
   const [filterMeetingDateTo, setFilterMeetingDateTo] = useState('');
-  const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'probability' | 'applicants' | null>(null);
+  const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'probability' | 'applicants' | 'value' | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [selectedLead, setSelectedLead] = useState<LeadForExpert | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [overdueOpen, setOverdueOpen] = useState(false);
   const [meetingSort, setMeetingSort] = useState<'upcoming' | 'past'>('upcoming');
-  const [viewMode, setViewMode] = useState<'box' | 'list'>('box');
+  const [viewMode, setViewMode] = useState<'box' | 'list'>('list');
   const [newComment, setNewComment] = useState('');
+  const [expandedRows, setExpandedRows] = useState<Set<string | number>>(new Set());
   const [commentSubmitting, setCommentSubmitting] = useState(false);
-  const [labelFilter, setLabelFilter] = useState('');
+  const [editingComments, setEditingComments] = useState<Set<string | number>>(new Set());
+  const [newCommentValues, setNewCommentValues] = useState<Record<string | number, string>>({});
+  const [editingExpertNote, setEditingExpertNote] = useState<Record<string | number, { noteIdx: number; content: string }>>({});
+  const [tagFilter, setTagFilter] = useState('');
   const [labelDropdownOpen, setLabelDropdownOpen] = useState<number | string | null>(null);
   const [labelSubmitting, setLabelSubmitting] = useState(false);
+  const [availableTags, setAvailableTags] = useState<string[]>([]);
   const [highlightedLeads, setHighlightedLeads] = useState<LeadForExpert[]>([]);
   const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
@@ -150,6 +199,123 @@ const ExpertPage: React.FC = () => {
     
     fetchCategories();
   }, []);
+
+  // Fetch tags for dropdown from misc_leadtag table
+  useEffect(() => {
+    const fetchTags = async () => {
+      try {
+        const { data: tagsData, error: tagsError } = await supabase
+          .from('misc_leadtag')
+          .select('name')
+          .eq('active', true)
+          .order('name', { ascending: true });
+        
+        if (tagsError) {
+          console.error('Error fetching tags:', tagsError);
+        } else if (tagsData) {
+          setAvailableTags(tagsData.map(t => t.name));
+        }
+      } catch (error) {
+        console.error('Error fetching tags:', error);
+      }
+    };
+    
+    fetchTags();
+  }, []);
+
+  // Helper function to fetch tags for all leads
+  const fetchTagsForLeads = async (leads: LeadForExpert[]) => {
+    try {
+      // Separate legacy and new leads
+      const legacyLeadIds: number[] = [];
+      const newLeadIds: string[] = [];
+      
+      leads.forEach(lead => {
+        if (lead.lead_type === 'legacy') {
+          const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+          if (!isNaN(legacyId)) {
+            legacyLeadIds.push(legacyId);
+          }
+        } else {
+          if (typeof lead.id === 'string' && !lead.id.startsWith('legacy_')) {
+            newLeadIds.push(lead.id);
+          }
+        }
+      });
+
+      // Fetch tags for legacy leads
+      let legacyTagsMap = new Map<number, string[]>();
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyTagsData } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            lead_id,
+            misc_leadtag (
+              name
+            )
+          `)
+          .in('lead_id', legacyLeadIds);
+        
+        if (legacyTagsData) {
+          legacyTagsData.forEach(item => {
+            if (item.misc_leadtag && item.lead_id) {
+              const leadId = item.lead_id;
+              const tagName = (item.misc_leadtag as any).name;
+              
+              if (!legacyTagsMap.has(leadId)) {
+                legacyTagsMap.set(leadId, []);
+              }
+              legacyTagsMap.get(leadId)!.push(tagName);
+            }
+          });
+        }
+      }
+
+      // Fetch tags for new leads
+      let newTagsMap = new Map<string, string[]>();
+      if (newLeadIds.length > 0) {
+        const { data: newTagsData } = await supabase
+          .from('leads_lead_tags')
+          .select(`
+            newlead_id,
+            misc_leadtag (
+              name
+            )
+          `)
+          .in('newlead_id', newLeadIds);
+        
+        if (newTagsData) {
+          newTagsData.forEach(item => {
+            if (item.misc_leadtag && item.newlead_id) {
+              const leadId = item.newlead_id;
+              const tagName = (item.misc_leadtag as any).name;
+              
+              if (!newTagsMap.has(leadId)) {
+                newTagsMap.set(leadId, []);
+              }
+              newTagsMap.get(leadId)!.push(tagName);
+            }
+          });
+        }
+      }
+
+      // Attach tags to leads
+      leads.forEach(lead => {
+        if (lead.lead_type === 'legacy') {
+          const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+          if (!isNaN(legacyId)) {
+            lead.tags = legacyTagsMap.get(legacyId) || [];
+          }
+        } else {
+          if (typeof lead.id === 'string' && !lead.id.startsWith('legacy_')) {
+            lead.tags = newTagsMap.get(lead.id) || [];
+          }
+        }
+      });
+    } catch (error) {
+      console.error('Error fetching tags for leads:', error);
+    }
+  };
 
   // Fetch real summary statistics from database (last 30 days)
   const fetchRealSummaryStats = async () => {
@@ -475,6 +641,7 @@ const ExpertPage: React.FC = () => {
             ),
             onedrive_folder_link,
             expert_notes,
+            facts,
             stage,
             probability,
             number_of_applicants_meeting,
@@ -527,6 +694,7 @@ const ExpertPage: React.FC = () => {
             category,
             handler_notes,
             expert_notes,
+            description,
             stage,
             probability,
             no_of_applicants,
@@ -718,6 +886,7 @@ const ExpertPage: React.FC = () => {
             meetings: legacyMeetings, // Use the constructed meetings array
             onedrive_folder_link: null,
             expert_notes: lead.expert_notes || [],
+            facts: lead.description || null,
             stage: lead.stage?.toString() || '',
             probability: typeof lead.probability === 'string' ? parseFloat(lead.probability) : lead.probability,
             number_of_applicants_meeting: lead.no_of_applicants,
@@ -745,6 +914,9 @@ const ExpertPage: React.FC = () => {
           currentUserEmployeeId,
           employeeNameMap
         });
+
+        // Fetch tags for all leads
+        await fetchTagsForLeads(allLeads as LeadForExpert[]);
 
         setLeads(allLeads as LeadForExpert[]);
       } catch (error) {
@@ -783,15 +955,15 @@ const ExpertPage: React.FC = () => {
         }
       }
 
-      // Label filter
-      const matchesLabel = labelFilter ? lead.label === labelFilter : true;
+      // Tag filter
+      const matchesTag = tagFilter ? (lead.tags && lead.tags.includes(tagFilter)) : true;
 
-      return matchesSearch && matchesMeetingRange && matchesLabel;
+      return matchesSearch && matchesMeetingRange && matchesTag;
     });
-  }, [leads, searchQuery, filterMeetingDateFrom, filterMeetingDateTo, labelFilter]);
+  }, [leads, searchQuery, filterMeetingDateFrom, filterMeetingDateTo, tagFilter]);
 
   // Sorting handler
-  const handleSort = (column: 'created_at' | 'meeting_date' | 'probability' | 'applicants') => {
+  const handleSort = (column: 'created_at' | 'meeting_date' | 'probability' | 'applicants' | 'value') => {
     if (sortColumn === column) {
       setSortDirection(prev => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
@@ -817,6 +989,10 @@ const ExpertPage: React.FC = () => {
         } else if (sortColumn === 'applicants') {
           aValue = a.number_of_applicants_meeting || 0;
           bValue = b.number_of_applicants_meeting || 0;
+        } else if (sortColumn === 'value') {
+          // For value sorting, use balance if available, otherwise proposal_total
+          aValue = (a.balance !== null && a.balance !== undefined) ? a.balance : (a.proposal_total !== null && a.proposal_total !== undefined ? a.proposal_total : 0);
+          bValue = (b.balance !== null && b.balance !== undefined) ? b.balance : (b.proposal_total !== null && b.proposal_total !== undefined ? b.proposal_total : 0);
         }
         if (!aValue && !bValue) return 0;
         if (!aValue) return sortDirection === 'asc' ? -1 : 1;
@@ -870,6 +1046,10 @@ const ExpertPage: React.FC = () => {
         } else if (sortColumn === 'applicants') {
           aValue = a.number_of_applicants_meeting || 0;
           bValue = b.number_of_applicants_meeting || 0;
+        } else if (sortColumn === 'value') {
+          // For value sorting, use balance if available, otherwise proposal_total
+          aValue = (a.balance !== null && a.balance !== undefined) ? a.balance : (a.proposal_total !== null && a.proposal_total !== undefined ? a.proposal_total : 0);
+          bValue = (b.balance !== null && b.balance !== undefined) ? b.balance : (b.proposal_total !== null && b.proposal_total !== undefined ? b.proposal_total : 0);
         }
         if (!aValue && !bValue) return 0;
         if (!aValue) return sortDirection === 'asc' ? -1 : 1;
@@ -964,6 +1144,114 @@ const ExpertPage: React.FC = () => {
     }
     return 'Unknown';
   }
+
+  // Handler to add comment in collapsible section
+  const handleAddCommentInCollapsible = async (leadId: string | number, commentText: string) => {
+    if (!commentText.trim()) return;
+
+    try {
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      const now = new Date().toISOString();
+      const userName = await fetchCurrentUserName();
+      const newCommentObj = { text: commentText.trim(), timestamp: now, user: userName };
+      const updatedComments = [...(lead.expert_comments || []), newCommentObj];
+
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const { error } = await supabase
+        .from(tableName)
+        .update({ expert_page_comments: updatedComments })
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === leadId 
+          ? { ...l, expert_comments: updatedComments }
+          : l
+      ));
+
+      // Clear comment editing state
+      setEditingComments(prev => {
+        const newSet = new Set(prev);
+        newSet.delete(leadId);
+        return newSet;
+      });
+      setNewCommentValues(prev => {
+        const newState = { ...prev };
+        delete newState[leadId];
+        return newState;
+      });
+    } catch (error) {
+      console.error('Error adding comment:', error);
+      alert('Failed to add comment');
+    }
+  };
+
+  // Handler to save expert note in collapsible section
+  const handleSaveExpertNoteInCollapsible = async (leadId: string | number, noteIdx: number, content: string) => {
+    try {
+      const lead = leads.find(l => l.id === leadId);
+      if (!lead) return;
+
+      const userName = await fetchCurrentUserName();
+      const now = new Date().toISOString();
+      const updatedNotes = [...(lead.expert_notes || [])];
+      
+      if (noteIdx >= 0 && noteIdx < updatedNotes.length) {
+        // Edit existing note
+        const existingNote = updatedNotes[noteIdx];
+        updatedNotes[noteIdx] = {
+          ...(typeof existingNote === 'object' ? existingNote : { content: existingNote }),
+          content: content.trim(),
+          edited_by: userName,
+          edited_at: now
+        } as any;
+      } else {
+        // Add new note
+        updatedNotes.push({
+          content: content.trim(),
+          user: userName,
+          timestamp: now
+        } as any);
+      }
+
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const { error } = await supabase
+        .from(tableName)
+        .update({ expert_notes: updatedNotes })
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setLeads(prev => prev.map(l => 
+        l.id === leadId 
+          ? { ...l, expert_notes: updatedNotes }
+          : l
+      ));
+
+      // Clear editing state
+      setEditingExpertNote(prev => {
+        const newState = { ...prev };
+        delete newState[leadId];
+        return newState;
+      });
+    } catch (error) {
+      console.error('Error saving expert note:', error);
+      alert('Failed to save expert note');
+    }
+  };
 
   // Add comment to lead
   const handleAddComment = async () => {
@@ -1163,17 +1451,17 @@ const ExpertPage: React.FC = () => {
               <option value="past">Past Meetings</option>
             </select>
           </div>
-          {/* Filter by Label */}
+          {/* Filter by Tag */}
           <div className="flex flex-col min-w-[180px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">Label</label>
+            <label className="text-xs font-semibold text-base-content/70 mb-1">Tag</label>
             <select
               className="select select-bordered w-full"
-              value={labelFilter}
-              onChange={e => setLabelFilter(e.target.value)}
+              value={tagFilter}
+              onChange={e => setTagFilter(e.target.value)}
             >
               <option value="">All</option>
-              {LABEL_OPTIONS.map(option => (
-                <option key={option} value={option}>{option}</option>
+              {availableTags.map(tag => (
+                <option key={tag} value={tag}>{tag}</option>
               ))}
             </select>
           </div>
@@ -1186,6 +1474,21 @@ const ExpertPage: React.FC = () => {
             >
               <ChartBarIcon className="w-4 h-4 mr-2" />
               My Stats
+            </button>
+          </div>
+          {/* View Toggle Button (Icon Only) */}
+          <div className="flex flex-col min-w-[40px]">
+            <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
+            <button
+              className="btn btn-outline btn-primary w-full"
+              onClick={() => setViewMode(viewMode === 'box' ? 'list' : 'box')}
+              title={viewMode === 'box' ? 'Switch to List View' : 'Switch to Box View'}
+            >
+              {viewMode === 'box' ? (
+                <Bars3Icon className="w-5 h-5" />
+              ) : (
+                <Squares2X2Icon className="w-5 h-5" />
+              )}
             </button>
           </div>
         </div>
@@ -1220,7 +1523,7 @@ const ExpertPage: React.FC = () => {
           </div>
         </div>
         {/* Total Leads */}
-        <div className="bg-gradient-to-tr from-teal-400 via-green-400 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
+        <div className="bg-gradient-to-b from-teal-600 via-green-500 to-green-600 rounded-2xl p-6 text-white shadow-xl hover:shadow-2xl transition-all duration-300 transform hover:scale-105">
           <div className="flex items-center justify-between">
             <div>
               <p className="text-white/90 text-sm font-medium">Total Leads</p>
@@ -1232,22 +1535,6 @@ const ExpertPage: React.FC = () => {
             </div>
           </div>
         </div>
-      </div>
-
-      {/* View toggle button */}
-      <div className="flex justify-end mb-4">
-        <button
-          className={`btn btn-sm mr-2 ${viewMode === 'box' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setViewMode('box')}
-        >
-          Box View
-        </button>
-        <button
-          className={`btn btn-sm ${viewMode === 'list' ? 'btn-primary' : 'btn-outline'}`}
-          onClick={() => setViewMode('list')}
-        >
-          List View
-        </button>
       </div>
 
       {/* Lead grid/list rendering */}
@@ -1328,25 +1615,33 @@ const ExpertPage: React.FC = () => {
                     {lead.number_of_applicants_meeting ?? 'N/A'}
                   </span>
                 </div>
-                {/* Meeting Date */}
+                {/* Meeting */}
                 <div className="flex justify-between items-center py-1">
-                    <span className="text-sm font-semibold text-gray-500">Meeting Date</span>
-                    <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${meetingSort === 'past' ? 'bg-purple-600 text-white' : 'bg-[#22c55e] text-white'}`}> 
+                    <span className="text-sm font-semibold text-gray-500">Meeting</span>
                     {lead.meetings && lead.meetings.length > 0 ? (() => {
                       // Get the latest meeting date by sorting and taking the first one
                       const sortedMeetings = [...lead.meetings].filter(m => m.meeting_date).sort((a, b) => {
                         return new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime();
                       });
-                      if (sortedMeetings.length === 0) return 'N/A';
+                      if (sortedMeetings.length === 0) return <span className="text-sm font-bold ml-2">N/A</span>;
                       const meetingDateStr = sortedMeetings[0].meeting_date;
-                      // Since meeting_date is stored as text, extract the date part and format it
-                      const dateOnly = meetingDateStr.split(' ')[0];
+                      // Extract date and time parts
+                      const parts = meetingDateStr.split(' ');
+                      const dateOnly = parts[0];
+                      const timeOnly = parts.length > 1 ? parts[1] : '';
                       // Convert YYYY-MM-DD to dd/mm/yyyy format
                       const [year, month, day] = dateOnly.split('-');
                       const formattedDate = `${day}/${month}/${year}`;
-                      return formattedDate;
-                    })() : 'N/A'}
+                      // Format time (HH:mm:ss to HH:mm)
+                      const formattedTime = timeOnly ? timeOnly.substring(0, 5) : '';
+                      const displayText = formattedTime ? `${formattedDate} - ${formattedTime}` : formattedDate;
+                      const colorClass = getMeetingColor(meetingDateStr);
+                      return (
+                        <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${colorClass}`}>
+                          {displayText}
                   </span>
+                      );
+                    })() : <span className="text-sm font-bold ml-2">N/A</span>}
                 </div>
                 {/* Value */}
                 <div className="flex justify-between items-center py-1">
@@ -1414,8 +1709,18 @@ const ExpertPage: React.FC = () => {
           <table className="table w-full text-xs sm:text-sm">
             <thead>
               <tr>
-                <th className="text-xs sm:text-sm">Lead #</th>
-                <th className="text-xs sm:text-sm">Name</th>
+                <th className="text-xs sm:text-sm w-10"></th>
+                <th className="text-xs sm:text-sm">Lead</th>
+                <th className="text-xs sm:text-sm">Assigned Since</th>
+                <th 
+                  className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
+                  onClick={() => handleSort('meeting_date')}
+                >
+                  Meeting
+                  {sortColumn === 'meeting_date' && (
+                    <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>
+                  )}
+                </th>
                 <th className="text-xs sm:text-sm">Stage</th>
                 <th className="text-xs sm:text-sm">Category</th>
                 <th 
@@ -1447,43 +1752,371 @@ const ExpertPage: React.FC = () => {
                 </th>
                 <th 
                   className="text-xs sm:text-sm cursor-pointer hover:bg-base-200 transition-colors"
-                  onClick={() => handleSort('meeting_date')}
+                  onClick={() => handleSort('value')}
                 >
-                  Meeting Date
-                  {sortColumn === 'meeting_date' && (
+                  Value
+                  {sortColumn === 'value' && (
                     <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>
                   )}
                 </th>
-                <th className="text-xs sm:text-sm">Value</th>
-                <th className="text-xs sm:text-sm">Label</th>
+                <th className="text-xs sm:text-sm">Tags</th>
               </tr>
             </thead>
             <tbody>
-              {meetingSortedLeads.map((lead) => (
+              {meetingSortedLeads.map((lead) => {
+                const isExpanded = expandedRows.has(lead.id);
+                return (
+                  <React.Fragment key={lead.id}>
                 <tr 
-                  key={lead.id} 
                   className={`hover:bg-blue-50 cursor-pointer ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
                   onClick={() => handleRowSelect(lead.id)}
                 >
-                  <td className="text-xs sm:text-sm">{lead.lead_number}</td>
-                  <td className="text-xs sm:text-sm font-bold">{lead.name}</td>
+                      {/* Expand/Collapse Arrow */}
+                      <td className="px-2 py-3 md:py-4 text-center w-10">
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setExpandedRows(prev => {
+                              const newSet = new Set(prev);
+                              if (newSet.has(lead.id)) {
+                                newSet.delete(lead.id);
+                              } else {
+                                newSet.add(lead.id);
+                              }
+                              return newSet;
+                            });
+                          }}
+                          className="p-1 hover:bg-base-200 rounded transition-colors"
+                        >
+                          {isExpanded ? (
+                            <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                          ) : (
+                            <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                          )}
+                        </button>
+                      </td>
+                      <td className="text-xs sm:text-sm">
+                    <div className="flex flex-col">
+                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
+                      <span className="font-bold">{lead.name}</span>
+                    </div>
+                  </td>
+                  <td className="text-xs sm:text-sm">
+                    {(() => {
+                      const daysSince = getDaysSinceAssigned(lead.created_at);
+                      return daysSince === 0 ? 'Today' : `${daysSince} day${daysSince === 1 ? '' : 's'}`;
+                    })()}
+                  </td>
+                  <td className="text-xs sm:text-sm">
+                    {lead.meetings && lead.meetings.length > 0 ? (() => {
+                      const meetingDateStr = [...lead.meetings].sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())[0].meeting_date;
+                      // Extract date and time parts
+                      const parts = meetingDateStr.split(' ');
+                      const dateOnly = parts[0];
+                      const timeOnly = parts.length > 1 ? parts[1] : '';
+                      // Convert YYYY-MM-DD to dd/mm/yyyy format
+                      const [year, month, day] = dateOnly.split('-');
+                      const formattedDate = `${day}/${month}/${year}`;
+                      // Format time (HH:mm:ss to HH:mm)
+                      const formattedTime = timeOnly ? timeOnly.substring(0, 5) : '';
+                      const displayText = formattedTime ? `${formattedDate} - ${formattedTime}` : formattedDate;
+                      const colorClass = getMeetingColor(meetingDateStr);
+                      return (
+                        <span className={`px-2 py-1 rounded font-semibold ${colorClass}`}>
+                          {displayText}
+                        </span>
+                      );
+                    })() : 'N/A'}
+                  </td>
                   <td className="text-xs sm:text-sm">{lead.stage ? getStageName(lead.stage) : 'N/A'}</td>
                   <td className="text-xs sm:text-sm">{(lead as any).category || lead.topic || 'N/A'}</td>
                   <td className="text-xs sm:text-sm">{format(parseISO(lead.created_at), 'dd/MM/yyyy')}</td>
                   <td className="text-xs sm:text-sm">{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</td>
                   <td className="text-xs sm:text-sm">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
-                  <td className="text-xs sm:text-sm">{lead.meetings && lead.meetings.length > 0 ? (() => {
-                    const meetingDateStr = [...lead.meetings].sort((a, b) => new Date(b.meeting_date).getTime() - new Date(a.meeting_date).getTime())[0].meeting_date;
-                    // Convert YYYY-MM-DD to dd/mm/yyyy format
-                    const dateOnly = meetingDateStr.split(' ')[0];
-                    const [year, month, day] = dateOnly.split('-');
-                    const formattedDate = `${day}/${month}/${year}`;
-                    return formattedDate;
-                  })() : 'N/A'}</td>
                   <td className="text-xs sm:text-sm">{getDisplayValue(lead)}</td>
-                  <td className="text-xs sm:text-sm">{lead.label ? <span className="badge badge-outline badge-primary font-semibold text-xs">{lead.label}</span> : ''}</td>
+                  <td className="text-xs sm:text-sm">
+                    {lead.tags && lead.tags.length > 0 ? (
+                      <div className="flex flex-wrap gap-1 justify-center">
+                        {lead.tags.map((tag, idx) => (
+                          <span key={idx} className="badge badge-outline badge-primary font-semibold text-xs">{tag}</span>
+                        ))}
+                      </div>
+                    ) : (
+                      ''
+                    )}
+                  </td>
                 </tr>
-              ))}
+                    {/* Collapsible Content Row */}
+                    {isExpanded && (
+                      <tr>
+                        <td colSpan={10} className="px-4 py-4 bg-white border-b-2 border-gray-200">
+                          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            {/* Comments */}
+                            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                              <div className="pl-6 pt-2 pb-2 border-b border-gray-200 flex items-center justify-between">
+                                <h4 className="text-lg font-semibold text-black">Comments</h4>
+                                {!editingComments.has(lead.id) && (
+                                  <button
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingComments(prev => new Set(prev).add(lead.id));
+                                      setNewCommentValues(prev => ({ ...prev, [lead.id]: '' }));
+                                    }}
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="p-6">
+                                {editingComments.has(lead.id) ? (
+                                  <div className="space-y-3">
+                                    <textarea
+                                      className="textarea textarea-bordered w-full h-32"
+                                      value={newCommentValues[lead.id] || ''}
+                                      onChange={(e) => setNewCommentValues(prev => ({ ...prev, [lead.id]: e.target.value }))}
+                                      placeholder="Add a comment..."
+                                    />
+                                    <div className="flex gap-2 justify-end">
+                                      <button
+                                        className="btn btn-ghost btn-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingComments(prev => {
+                                            const newSet = new Set(prev);
+                                            newSet.delete(lead.id);
+                                            return newSet;
+                                          });
+                                          setNewCommentValues(prev => {
+                                            const newState = { ...prev };
+                                            delete newState[lead.id];
+                                            return newState;
+                                          });
+                                        }}
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        className="btn btn-primary btn-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          handleAddCommentInCollapsible(lead.id, newCommentValues[lead.id] || '');
+                                        }}
+                                      >
+                                        Save
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {lead.expert_comments && lead.expert_comments.length > 0 ? (
+                                      <div className="space-y-3 max-h-64 overflow-y-auto">
+                                        {lead.expert_comments.slice().reverse().map((comment, commentIdx) => (
+                                          <div key={commentIdx} className="border border-gray-200 rounded-lg p-3">
+                                            <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{comment.text}</div>
+                                            <div className="flex items-center gap-2 text-xs text-gray-400">
+                                              <UserIcon className="w-3 h-3" />
+                                              <span>{comment.user}</span>
+                                              <span>·</span>
+                                              <ClockIcon className="w-3 h-3" />
+                                              <span>{format(new Date(comment.timestamp), 'dd/MM/yyyy HH:mm')}</span>
+                                            </div>
+                                          </div>
+                                        ))}
+                                      </div>
+                                    ) : (
+                                      <p className="text-gray-500">No comments yet</p>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Facts of Case */}
+                            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                              <div className="pl-6 pt-2 pb-2 border-b border-gray-200">
+                                <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
+                              </div>
+                              <div className="p-6">
+                                {lead.facts ? (
+                                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{lead.facts}</div>
+                                ) : (
+                                  <p className="text-gray-500">No facts available</p>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Expert Notes */}
+                            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                              <div className="pl-6 pt-2 pb-2 border-b border-gray-200 flex items-center justify-between">
+                                <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
+                                {!editingExpertNote[lead.id] && (
+                                  <button
+                                    className="btn btn-ghost btn-sm"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setEditingExpertNote(prev => ({
+                                        ...prev,
+                                        [lead.id]: { noteIdx: -1, content: '' }
+                                      }));
+                                    }}
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" />
+                                  </button>
+                                )}
+                              </div>
+                              <div className="p-6">
+                                {editingExpertNote[lead.id] ? (
+                                  <div className="space-y-3">
+                                    <textarea
+                                      className="textarea textarea-bordered w-full h-32"
+                                      value={editingExpertNote[lead.id]?.content || ''}
+                                      onChange={(e) => setEditingExpertNote(prev => ({
+                                        ...prev,
+                                        [lead.id]: { ...prev[lead.id], content: e.target.value }
+                                      }))}
+                                      placeholder={editingExpertNote[lead.id]?.noteIdx === -1 ? "Add a new expert note..." : "Edit expert note..."}
+                                    />
+                                    <div className="flex gap-2 justify-end">
+                                      <button
+                                        className="btn btn-ghost btn-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setEditingExpertNote(prev => {
+                                            const newState = { ...prev };
+                                            delete newState[lead.id];
+                                            return newState;
+                                          });
+                                        }}
+                                      >
+                                        Cancel
+                                      </button>
+                                      <button
+                                        className="btn btn-primary btn-sm"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          const editState = editingExpertNote[lead.id];
+                                          if (editState) {
+                                            handleSaveExpertNoteInCollapsible(lead.id, editState.noteIdx, editState.content);
+                                          }
+                                        }}
+                                      >
+                                        Save
+                                      </button>
+                                    </div>
+                                  </div>
+                                ) : (
+                                  <>
+                                    {lead.expert_notes && Array.isArray(lead.expert_notes) && lead.expert_notes.length > 0 ? (
+                                      <div className="space-y-3 max-h-64 overflow-y-auto">
+                                        {lead.expert_notes.map((note: any, noteIdx: number) => {
+                                          const noteContent = typeof note === 'string' ? note : (note.content || JSON.stringify(note));
+                                          const noteTimestamp = note.timestamp || note.created_at || note.edited_at;
+                                          const noteUser = note.user || note.edited_by || note.created_by || note.created_by_name || 'Unknown';
+                                          const displayDate = noteTimestamp ? (() => {
+                                            try {
+                                              return format(new Date(noteTimestamp), 'dd/MM/yyyy HH:mm');
+                                            } catch {
+                                              return noteTimestamp;
+                                            }
+                                          })() : null;
+                                          
+                                          return (
+                                            <div key={noteIdx} className="border border-gray-200 rounded-lg p-3">
+                                              <div className="flex items-start justify-between gap-2">
+                                                <div className="flex-1">
+                                                  <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{noteContent}</div>
+                                                  {(noteUser !== 'Unknown' || displayDate) && (
+                                                    <div className="flex items-center gap-2 text-xs text-gray-400">
+                                                      <UserIcon className="w-3 h-3" />
+                                                      <span>{noteUser}</span>
+                                                      {displayDate && (
+                                                        <>
+                                                          <span>·</span>
+                                                          <ClockIcon className="w-3 h-3" />
+                                                          <span>{displayDate}</span>
+                                                        </>
+                                                      )}
+                                                    </div>
+                                                  )}
+                                                </div>
+                                                <button
+                                                  className="btn btn-ghost btn-xs"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setEditingExpertNote(prev => ({
+                                                      ...prev,
+                                                      [lead.id]: { noteIdx, content: noteContent }
+                                                    }));
+                                                  }}
+                                                >
+                                                  <PencilSquareIcon className="w-3 h-3" />
+                                                </button>
+                                              </div>
+                                            </div>
+                                          );
+                                        })}
+                                      </div>
+                                    ) : (
+                                      <p className="text-gray-500">No expert notes</p>
+                                    )}
+                                  </>
+                                )}
+                              </div>
+                            </div>
+                            
+                            {/* Handler Notes */}
+                            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
+                              <div className="pl-6 pt-2 pb-2 border-b border-gray-200">
+                                <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
+                              </div>
+                              <div className="p-6">
+                                {lead.handler_notes && Array.isArray(lead.handler_notes) && lead.handler_notes.length > 0 ? (
+                                  <div className="space-y-3 max-h-64 overflow-y-auto">
+                                    {lead.handler_notes.map((note: any, noteIdx: number) => {
+                                      const noteContent = typeof note === 'string' ? note : (note.content || JSON.stringify(note));
+                                      const noteTimestamp = note.timestamp || note.created_at || note.edited_at;
+                                      const noteUser = note.user || note.edited_by || note.created_by || note.created_by_name || 'Unknown';
+                                      const displayDate = noteTimestamp ? (() => {
+                                        try {
+                                          return format(new Date(noteTimestamp), 'dd/MM/yyyy HH:mm');
+                                        } catch {
+                                          return noteTimestamp;
+                                        }
+                                      })() : null;
+                                      
+                                      return (
+                                        <div key={noteIdx} className="border border-gray-200 rounded-lg p-3">
+                                          <div className="text-sm text-gray-900 whitespace-pre-wrap mb-2">{noteContent}</div>
+                                          {(noteUser !== 'Unknown' || displayDate) && (
+                                            <div className="flex items-center gap-2 text-xs text-gray-400">
+                                              <UserIcon className="w-3 h-3" />
+                                              <span>{noteUser}</span>
+                                              {displayDate && (
+                                                <>
+                                                  <span>·</span>
+                                                  <ClockIcon className="w-3 h-3" />
+                                                  <span>{displayDate}</span>
+                                                </>
+                                              )}
+                                            </div>
+                                          )}
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                ) : (
+                                  <p className="text-gray-500">No handler notes</p>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                      </tr>
+                    )}
+                  </React.Fragment>
+                );
+              })}
             </tbody>
           </table>
         </div>
