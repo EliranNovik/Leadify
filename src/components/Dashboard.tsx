@@ -6067,12 +6067,15 @@ const Dashboard: React.FC = () => {
                       {(() => {
                         // meeting.link already prefers explicit Teams URL and falls back to location default_link
                         const hasLink = !!getValidTeamsLink(meeting.link);
-                        const isTeamsMeeting = !!meeting.teams_meeting_url;
+                        const isTeamsMeeting = !!meeting.teams_meeting_url || !!(meeting.link && getValidTeamsLink(meeting.link));
                         const hasDefaultForLocation = !!meetingLocationLinks[meeting.location];
-                        // Show join button only for:
-                        // - real Teams meetings (teams_meeting_url present), or
+                        const isOnline = isOnlineLocation(meeting.location || '');
+                        const isStaffMeeting = meeting.isStaffMeeting === true;
+                        // Show join button for:
+                        // - meetings with valid Teams/online links
                         // - locations that have a default_link configured
-                        return hasLink && (isTeamsMeeting || hasDefaultForLocation);
+                        // - staff meetings with links
+                        return hasLink && (isTeamsMeeting || isOnline || hasDefaultForLocation || isStaffMeeting);
                       })() && (
                         <div className="absolute bottom-4 left-4 right-4">
                           {/* Join Meeting (Teams) */}
@@ -6090,7 +6093,7 @@ const Dashboard: React.FC = () => {
                                 alert('No meeting URL available');
                               }
                             }}
-                            title="Teams Meeting"
+                            title={meeting.isStaffMeeting ? "Join Meeting" : "Teams Meeting"}
                           >
                             <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                           </button>

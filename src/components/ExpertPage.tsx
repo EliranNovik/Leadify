@@ -5,6 +5,9 @@ import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, Chev
 import { FaWhatsapp } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
+import EditLeadDrawer from './EditLeadDrawer';
+import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
+import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
 import { BarChart3, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getStageName, initializeStageNames, getStageColour } from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
@@ -133,6 +136,9 @@ const ExpertPage: React.FC = () => {
   const [selectedLead, setSelectedLead] = useState<LeadForExpert | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  const [isEditDrawerOpen, setIsEditDrawerOpen] = useState(false);
+  const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [overdueOpen, setOverdueOpen] = useState(false);
   const [meetingSort, setMeetingSort] = useState<'upcoming' | 'past'>('upcoming');
   const [viewMode, setViewMode] = useState<'box' | 'list'>('list');
@@ -1090,6 +1096,31 @@ const ExpertPage: React.FC = () => {
     return filteredLeads;
   }, [sortedLeads, meetingSort, today, sortColumn, sortDirection]);
 
+  // Create client object for WhatsApp modal
+  const clientForWhatsApp = useMemo(() => {
+    if (!selectedLead) return undefined;
+    const leadId = selectedLead.lead_type === 'legacy' ? `legacy_${selectedLead.id}` : String(selectedLead.id);
+    return {
+      id: leadId,
+      name: selectedLead.name || '',
+      lead_number: selectedLead.lead_number,
+      lead_type: selectedLead.lead_type
+    };
+  }, [selectedLead]);
+
+  // Create client object for Email modal
+  const clientForEmail = useMemo(() => {
+    if (!selectedLead) return undefined;
+    const leadId = selectedLead.lead_type === 'legacy' ? `legacy_${selectedLead.id}` : String(selectedLead.id);
+    return {
+      id: leadId,
+      name: selectedLead.name || '',
+      lead_number: selectedLead.lead_number,
+      lead_type: selectedLead.lead_type,
+      topic: (selectedLead as any).category || selectedLead.topic || ''
+    };
+  }, [selectedLead]);
+
   const handleRowSelect = (leadId: string | number) => {
     setSelectedRowId(leadId);
     setShowActionMenu(true);
@@ -1107,13 +1138,17 @@ const ExpertPage: React.FC = () => {
   };
 
   const handleEmail = (lead: LeadForExpert) => {
-    // Navigate to client page with email tab
-    navigate(`/clients/${lead.lead_number}?tab=email`);
+    setSelectedLead(lead);
+    setIsEmailModalOpen(true);
+    setShowActionMenu(false);
+    setSelectedRowId(null);
   };
 
   const handleWhatsApp = (lead: LeadForExpert) => {
-    // Navigate to client page with WhatsApp tab
-    navigate(`/clients/${lead.lead_number}?tab=whatsapp`);
+    setSelectedLead(lead);
+    setIsWhatsAppModalOpen(true);
+    setShowActionMenu(false);
+    setSelectedRowId(null);
   };
 
   const handleTimeline = (lead: LeadForExpert) => {
@@ -2208,6 +2243,22 @@ const ExpertPage: React.FC = () => {
                 </button>
               </div>
               
+              {/* Edit Lead Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Edit Lead</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setIsEditDrawerOpen(true);
+                    setShowActionMenu(false);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Edit Lead"
+                >
+                  <PencilSquareIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
               {/* View Client Button */}
               <div className="flex items-center gap-3">
                 <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">View Client</span>
@@ -2615,6 +2666,48 @@ const ExpertPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* Edit Lead Drawer */}
+      {selectedRowId && (
+        <EditLeadDrawer
+          isOpen={isEditDrawerOpen}
+          onClose={() => {
+            setIsEditDrawerOpen(false);
+            setSelectedRowId(null);
+          }}
+          lead={leads.find(l => l.id === selectedRowId) as any || null}
+          onSave={async () => {
+            // Refetch leads after save - trigger useEffect by updating a dependency
+            // For now, we'll just close and let the user manually refresh if needed
+          }}
+        />
+      )}
+
+      {/* WhatsApp Modal */}
+      {selectedLead && clientForWhatsApp && (
+        <SchedulerWhatsAppModal
+          isOpen={isWhatsAppModalOpen}
+          onClose={() => {
+            setIsWhatsAppModalOpen(false);
+            setSelectedLead(null);
+            setSelectedRowId(null);
+          }}
+          client={clientForWhatsApp}
+        />
+      )}
+
+      {/* Email Modal */}
+      {selectedLead && clientForEmail && (
+        <SchedulerEmailThreadModal
+          isOpen={isEmailModalOpen}
+          onClose={() => {
+            setIsEmailModalOpen(false);
+            setSelectedLead(null);
+            setSelectedRowId(null);
+          }}
+          client={clientForEmail}
+        />
       )}
     </div>
   );

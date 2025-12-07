@@ -100,9 +100,13 @@ interface MessagingModalProps {
   isOpen: boolean;
   onClose: () => void;
   initialConversationId?: number;
+  initialUserId?: string;
+  initialMessage?: string;
+  initialLeadNumber?: string;
+  initialLeadName?: string;
 }
 
-const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId }) => {
+const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initialConversationId, initialUserId, initialMessage, initialLeadNumber, initialLeadName }) => {
   // State management
   const [currentUser, setCurrentUser] = useState<User | null>(null);
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -2468,6 +2472,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
     }
   }, [isOpen, initialConversationId, conversations, fetchMessages]);
+
+  // Handle initialUserId - start direct conversation when modal opens
+  useEffect(() => {
+    if (isOpen && initialUserId && currentUser && !selectedConversation && conversations.length > 0) {
+      // Start direct conversation with the initial user
+      const startConv = async () => {
+        await startDirectConversation(initialUserId);
+      };
+      startConv();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isOpen, initialUserId, currentUser?.id, selectedConversation?.id, conversations.length]);
+
+  // Set initial message when conversation is selected and initialMessage/lead info is provided
+  useEffect(() => {
+    if (selectedConversation && (initialMessage || (initialLeadNumber && initialLeadName)) && newMessage === '') {
+      // Small delay to ensure conversation is fully loaded
+      setTimeout(() => {
+        let messageToSet = '';
+        
+        // Use initialMessage if provided, otherwise construct from lead info
+        if (initialMessage) {
+          messageToSet = initialMessage;
+        } else if (initialLeadNumber && initialLeadName) {
+          messageToSet = 'The finance plan is not ready for this lead. Please create the payment plan.';
+        }
+        
+        // Add lead link if we have lead information
+        if (initialLeadNumber && initialLeadName) {
+          const deployedDomain = 'https://leadify-crm.onrender.com';
+          const leadLink = `[Lead #${initialLeadNumber} - ${initialLeadName}](${deployedDomain}/clients/${initialLeadNumber})`;
+          messageToSet = messageToSet ? `${messageToSet}\n\n${leadLink}` : leadLink;
+        }
+        
+        if (messageToSet) {
+          setNewMessage(messageToSet);
+          resetInputHeights();
+        }
+      }, 200);
+    }
+  }, [selectedConversation?.id, initialMessage, initialLeadNumber, initialLeadName, newMessage]);
 
   // Initial loading - reduce timeout for faster perceived loading
   useEffect(() => {

@@ -9,6 +9,10 @@ import toast from 'react-hot-toast';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
 import DocumentModal from '../components/DocumentModal';
 import FinanceTab from '../components/case-manager/FinanceTab';
+import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
+import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
+import EditLeadDrawer from '../components/EditLeadDrawer';
+import RMQMessagesPage from './RMQMessagesPage';
 
 interface Case {
   id: string;
@@ -66,12 +70,18 @@ const MyCasesPage: React.FC = () => {
   const [selectedCase, setSelectedCase] = useState<Case | null>(null);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
   const [isFinanceModalOpen, setIsFinanceModalOpen] = useState(false);
+  const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
+  const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
+  const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
+  const [isRMQModalOpen, setIsRMQModalOpen] = useState(false);
+  const [rmqCloserUserId, setRmqCloserUserId] = useState<string | null>(null);
 
   useEffect(() => {
     if (user?.id) {
       fetchMyCases();
     }
   }, [user?.id]);
+
 
   const fetchMyCases = async () => {
     try {
@@ -507,14 +517,18 @@ const MyCasesPage: React.FC = () => {
     navigate(`/clients/${navigationId}?tab=phone`);
   };
 
-  const handleEmail = (caseItem: Case) => {
-    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    navigate(`/clients/${navigationId}?tab=email`);
+  const handleEmail = async (caseItem: Case) => {
+    setSelectedCase(caseItem);
+    setIsEmailModalOpen(true);
+    setShowActionMenu(false);
+    setSelectedRowId(null);
   };
 
-  const handleWhatsApp = (caseItem: Case) => {
-    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    navigate(`/clients/${navigationId}?tab=whatsapp`);
+  const handleWhatsApp = async (caseItem: Case) => {
+    setSelectedCase(caseItem);
+    setIsWhatsAppModalOpen(true);
+    setShowActionMenu(false);
+    setSelectedRowId(null);
   };
 
   const handleTimeline = (caseItem: Case) => {
@@ -522,9 +536,11 @@ const MyCasesPage: React.FC = () => {
     navigate(`/clients/${navigationId}?tab=interactions`);
   };
 
-  const handleEditLead = (caseItem: Case) => {
-    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    navigate(`/clients/${navigationId}?drawer=edit`);
+  const handleEditLead = async (caseItem: Case) => {
+    setSelectedCase(caseItem);
+    setShowEditLeadDrawer(true);
+    setShowActionMenu(false);
+    setSelectedRowId(null);
   };
 
   const handleViewClient = (caseItem: Case) => {
@@ -536,6 +552,143 @@ const MyCasesPage: React.FC = () => {
     // Navigate to client page - highlight functionality would be handled there
     const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
     navigate(`/clients/${navigationId}`);
+  };
+
+  const handleOpenRMQForCloser = async (caseItem: Case) => {
+    try {
+      let targetEmployeeId: number | null = null;
+      let targetDisplayName: string | null = null;
+      let roleType: 'closer' | 'manager' = 'closer';
+
+      if (caseItem.isNewLead) {
+        // For new leads, closer is stored as a string (display name)
+        const { data: leadData, error: leadError } = await supabase
+          .from('leads')
+          .select('closer, manager')
+          .eq('id', caseItem.id)
+          .single();
+
+        if (leadError) {
+          console.error('Error fetching lead data:', leadError);
+          toast.error('Failed to fetch lead information');
+          return;
+        }
+
+        // First try closer
+        const closerDisplayName = leadData?.closer || null;
+        if (closerDisplayName && closerDisplayName.trim() !== '') {
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .eq('display_name', closerDisplayName.trim())
+            .single();
+
+          if (!employeeError && employeeData) {
+            targetEmployeeId = employeeData.id;
+            targetDisplayName = employeeData.display_name;
+            roleType = 'closer';
+          }
+        }
+
+        // If no closer found, try manager
+        if (!targetEmployeeId) {
+          const managerDisplayName = leadData?.manager || null;
+          if (managerDisplayName && managerDisplayName.trim() !== '') {
+            const { data: employeeData, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .eq('display_name', managerDisplayName.trim())
+              .single();
+
+            if (!employeeError && employeeData) {
+              targetEmployeeId = employeeData.id;
+              targetDisplayName = employeeData.display_name;
+              roleType = 'manager';
+            }
+          }
+        }
+      } else {
+        // For legacy leads, closer is stored as closer_id (numeric), manager as meeting_manager_id
+        const legacyId = caseItem.id;
+        const { data: leadData, error: leadError } = await supabase
+          .from('leads_lead')
+          .select('closer_id, meeting_manager_id')
+          .eq('id', legacyId)
+          .single();
+
+        if (leadError) {
+          console.error('Error fetching legacy lead data:', leadError);
+          toast.error('Failed to fetch lead information');
+          return;
+        }
+
+        // First try closer
+        const closerId = leadData?.closer_id || null;
+        if (closerId) {
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .eq('id', closerId)
+            .single();
+
+          if (!employeeError && employeeData) {
+            targetEmployeeId = employeeData.id;
+            targetDisplayName = employeeData.display_name;
+            roleType = 'closer';
+          }
+        }
+
+        // If no closer found, try manager
+        if (!targetEmployeeId) {
+          const managerId = leadData?.meeting_manager_id || null;
+          if (managerId) {
+            const { data: employeeData, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .eq('id', managerId)
+              .single();
+
+            if (!employeeError && employeeData) {
+              targetEmployeeId = employeeData.id;
+              targetDisplayName = employeeData.display_name;
+              roleType = 'manager';
+            }
+          }
+        }
+      }
+
+      // Check if we found either closer or manager
+      if (!targetEmployeeId) {
+        toast.error('No closer or manager assigned to this lead');
+        return;
+      }
+
+      // Now find the user ID from the employee ID
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('employee_id', targetEmployeeId)
+        .maybeSingle();
+
+      if (userError) {
+        console.error('Error fetching user by employee_id:', userError);
+        toast.error(`Failed to find ${roleType === 'closer' ? 'closer' : 'manager'} user account`);
+        return;
+      }
+
+      if (!userData) {
+        toast.error(`No user account found for ${roleType === 'closer' ? 'closer' : 'manager'} (${targetDisplayName}). They may not have access to the system.`);
+        return;
+      }
+
+      // Set selected case and open RMQ modal with the target user's ID
+      setSelectedCase(caseItem);
+      setRmqCloserUserId(userData.id);
+      setIsRMQModalOpen(true);
+    } catch (error) {
+      console.error('Error opening RMQ for closer/manager:', error);
+      toast.error('Failed to open message window');
+    }
   };
 
   const handleStartCase = async (caseItem: Case, e: React.MouseEvent) => {
@@ -676,6 +829,191 @@ const MyCasesPage: React.FC = () => {
     }
   };
 
+  // Bulk handler functions for all visible leads
+  const handleBulkStartCase = async () => {
+    // Get all eligible cases from filtered new cases
+    const eligibleCases = filteredNewCases.filter(
+      caseItem => caseItem.isFirstPaymentPaid && caseItem.stageId === 105
+    );
+
+    if (eligibleCases.length === 0) {
+      toast.error('No eligible cases to start. Cases must have first payment paid and be at "Handler Set" stage.');
+      return;
+    }
+
+    try {
+      const actor = await fetchStageActorInfo();
+      const timestamp = new Date().toISOString();
+      const handlerStartedStageId = 110;
+      
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const caseItem of eligibleCases) {
+        try {
+          const lead: any = {
+            id: caseItem.isNewLead ? caseItem.id : `legacy_${caseItem.id}`,
+            lead_type: caseItem.isNewLead ? 'new' : 'legacy',
+          };
+
+          if (caseItem.isNewLead) {
+            const { error } = await supabase
+              .from('leads')
+              .update({
+                stage: handlerStartedStageId,
+                stage_changed_by: actor.fullName,
+                stage_changed_at: timestamp,
+              })
+              .eq('id', caseItem.id);
+            
+            if (error) throw error;
+          } else {
+            const legacyId = caseItem.id;
+            const { error } = await supabase
+              .from('leads_lead')
+              .update({
+                stage: handlerStartedStageId,
+                stage_changed_by: actor.fullName,
+                stage_changed_at: timestamp,
+              })
+              .eq('id', legacyId);
+            
+            if (error) throw error;
+          }
+
+          // Record stage change history
+          await updateLeadStageWithHistory({
+            lead,
+            stage: handlerStartedStageId,
+            actor,
+            timestamp,
+          });
+
+          successCount++;
+        } catch (error) {
+          console.error(`Error starting case ${caseItem.lead_number}:`, error);
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        toast.success(`Successfully started ${successCount} case${successCount > 1 ? 's' : ''}!`);
+      }
+      if (errorCount > 0) {
+        toast.error(`Failed to start ${errorCount} case${errorCount > 1 ? 's' : ''}.`);
+      }
+
+      // Refresh the cases list
+      await fetchMyCases();
+    } catch (error: any) {
+      console.error('Error in bulk start case:', error);
+      toast.error('Failed to start cases. Please try again.');
+    }
+  };
+
+  const handleBulkMarkAsReadyToPay = async () => {
+    // Get all eligible cases from filtered new and active cases
+    const eligibleNewCases = filteredNewCases.filter(
+      caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
+    );
+    
+    const eligibleActiveCases = filteredActiveCases.filter(
+      caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
+    );
+
+    const eligibleCases = [...eligibleNewCases, ...eligibleActiveCases];
+
+    if (eligibleCases.length === 0) {
+      toast.error('No eligible cases to mark as ready to pay.');
+      return;
+    }
+
+    try {
+      const currentDate = new Date().toISOString().split('T')[0];
+      let successCount = 0;
+      let errorCount = 0;
+
+      for (const caseItem of eligibleCases) {
+        try {
+          if (caseItem.isNewLead) {
+            const { data: payments, error: fetchError } = await supabase
+              .from('payment_plans')
+              .select('id, paid, cancel_date')
+              .eq('lead_id', caseItem.id)
+              .eq('paid', false)
+              .is('cancel_date', null)
+              .order('due_date', { ascending: true })
+              .limit(1);
+            
+            if (fetchError) throw fetchError;
+            
+            if (!payments || payments.length === 0) {
+              continue;
+            }
+            
+            const firstUnpaidPayment = payments[0];
+            
+            const { error } = await supabase
+              .from('payment_plans')
+              .update({ 
+                ready_to_pay: true,
+                due_date: currentDate
+              })
+              .eq('id', firstUnpaidPayment.id);
+            
+            if (error) throw error;
+          } else {
+            const { data: payments, error: fetchError } = await supabase
+              .from('finances_paymentplanrow')
+              .select('id, actual_date, cancel_date')
+              .eq('lead_id', caseItem.id)
+              .is('actual_date', null)
+              .is('cancel_date', null)
+              .order('date', { ascending: true })
+              .limit(1);
+            
+            if (fetchError) throw fetchError;
+            
+            if (!payments || payments.length === 0) {
+              continue;
+            }
+            
+            const firstUnpaidPayment = payments[0];
+            
+            const { error } = await supabase
+              .from('finances_paymentplanrow')
+              .update({ 
+                ready_to_pay: true,
+                date: currentDate,
+                due_date: currentDate
+              })
+              .eq('id', firstUnpaidPayment.id);
+            
+            if (error) throw error;
+          }
+
+          successCount++;
+        } catch (error) {
+          console.error(`Error marking case ${caseItem.lead_number} as ready to pay:`, error);
+          errorCount++;
+        }
+      }
+
+      if (successCount > 0) {
+        toast.success(`Successfully marked ${successCount} case${successCount > 1 ? 's' : ''} as ready to pay!`);
+      }
+      if (errorCount > 0) {
+        toast.error(`Failed to mark ${errorCount} case${errorCount > 1 ? 's' : ''} as ready to pay.`);
+      }
+
+      // Refresh the cases list
+      await fetchMyCases();
+    } catch (error: any) {
+      console.error('Error in bulk mark as ready to pay:', error);
+      toast.error('Failed to mark cases as ready to pay.');
+    }
+  };
+
   // Fuzzy search function
   const fuzzySearch = (text: string, query: string): boolean => {
     if (!query) return true;
@@ -718,6 +1056,25 @@ const MyCasesPage: React.FC = () => {
   const filteredActiveCases = filterCases(activeCases);
   const filteredClosedCases = filterCases(closedCases);
 
+  // Calculate eligible cases for bulk actions
+  const eligibleStartCaseCount = useMemo(() => {
+    return filteredNewCases.filter(
+      caseItem => caseItem.isFirstPaymentPaid && caseItem.stageId === 105
+    ).length;
+  }, [filteredNewCases]);
+
+  const eligibleReadyToPayCount = useMemo(() => {
+    const eligibleNew = filteredNewCases.filter(
+      caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
+    ).length;
+    
+    const eligibleActive = filteredActiveCases.filter(
+      caseItem => !caseItem.isFirstPaymentPaid && caseItem.hasUnpaidPayment && !caseItem.hasReadyToPay && caseItem.hasPaymentPlan
+    ).length;
+    
+    return eligibleNew + eligibleActive;
+  }, [filteredNewCases, filteredActiveCases]);
+
   // Memoize handlerLead for FinanceTab to prevent infinite re-renders
   const handlerLeadForFinance = useMemo(() => {
     if (!selectedCase) return null;
@@ -733,6 +1090,29 @@ const MyCasesPage: React.FC = () => {
       lead_type: selectedCase.isNewLead ? 'new' : 'legacy'
     } as any;
   }, [selectedCase?.id, selectedCase?.lead_number, selectedCase?.client_name, selectedCase?.category, selectedCase?.stage, selectedCase?.assigned_date, selectedCase?.value, selectedCase?.currency, selectedCase?.isNewLead]);
+
+  // Create client object for WhatsApp modal
+  const clientForWhatsApp = useMemo(() => {
+    if (!selectedCase) return undefined;
+    return {
+      id: selectedCase.isNewLead ? selectedCase.id : `legacy_${selectedCase.id}`,
+      name: selectedCase.client_name,
+      lead_number: selectedCase.lead_number,
+      lead_type: selectedCase.isNewLead ? 'new' : 'legacy'
+    };
+  }, [selectedCase]);
+
+  // Create client object for Email modal
+  const clientForEmail = useMemo(() => {
+    if (!selectedCase) return undefined;
+    return {
+      id: selectedCase.isNewLead ? selectedCase.id : `legacy_${selectedCase.id}`,
+      name: selectedCase.client_name,
+      lead_number: selectedCase.lead_number,
+      lead_type: selectedCase.isNewLead ? 'new' : 'legacy',
+      topic: selectedCase.category
+    };
+  }, [selectedCase]);
 
   // Get unique stages and categories from all cases
   const allCases = [...newCases, ...activeCases, ...closedCases];
@@ -853,24 +1233,9 @@ const MyCasesPage: React.FC = () => {
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
                     <div className="flex items-center justify-end gap-2">
-                      {caseItem.stage_colour ? (() => {
-                        const badgeTextColour = getContrastingTextColor(caseItem.stage_colour);
-                        return (
-                          <span 
-                            className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1" 
-                            style={{ 
-                              backgroundColor: caseItem.stage_colour, 
-                              color: badgeTextColour 
-                            }}
-                          >
-                            {caseItem.stage}
-                          </span>
-                        );
-                      })() : (
-                        <span className="badge text-xs sm:text-sm px-1.5 sm:px-2 py-0.5 sm:py-1 bg-gray-100 text-gray-800">
-                          {caseItem.stage}
-                        </span>
-                      )}
+                      <span className="text-xs sm:text-sm text-black">
+                        {caseItem.stage}
+                      </span>
                     </div>
                   </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
@@ -880,11 +1245,10 @@ const MyCasesPage: React.FC = () => {
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
-                            const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-                            navigate(`/clients/${navigationId}`);
+                            handleOpenRMQForCloser(caseItem);
                           }}
                           className="btn btn-sm btn-error p-1.5 sm:p-2 rounded animate-pulse"
-                          title="Missing Payment Rows - Click to create finance plan"
+                          title="Missing Payment Plan - Click to message closer"
                         >
                           <ExclamationTriangleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
                         </button>
@@ -1026,6 +1390,30 @@ const MyCasesPage: React.FC = () => {
             </select>
           </div>
 
+          {/* Bulk Start Case Button */}
+          {eligibleStartCaseCount > 0 && (
+            <button
+              className="btn btn-primary btn-sm sm:btn-md whitespace-nowrap"
+              onClick={handleBulkStartCase}
+              title={`Start ${eligibleStartCaseCount} case${eligibleStartCaseCount > 1 ? 's' : ''}`}
+            >
+              <PlayIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
+              Start Case ({eligibleStartCaseCount})
+            </button>
+          )}
+
+          {/* Bulk Sent to Finance Button */}
+          {eligibleReadyToPayCount > 0 && (
+            <button
+              className="btn btn-warning btn-sm sm:btn-md whitespace-nowrap"
+              onClick={handleBulkMarkAsReadyToPay}
+              title={`Mark ${eligibleReadyToPayCount} case${eligibleReadyToPayCount > 1 ? 's' : ''} as ready to pay`}
+            >
+              <PaperAirplaneIcon className="w-4 h-4 sm:w-5 sm:h-5 mr-1 sm:mr-2" />
+              Sent to Finance ({eligibleReadyToPayCount})
+            </button>
+          )}
+
           {/* Clear Filters Button */}
           {hasActiveFilters && (
             <button
@@ -1108,9 +1496,6 @@ const MyCasesPage: React.FC = () => {
                   onClick={(e) => {
                     e.stopPropagation();
                     handleEmail(selectedCase);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedCase(null);
                   }}
                   className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
                   title="Email"
@@ -1126,9 +1511,6 @@ const MyCasesPage: React.FC = () => {
                   onClick={(e) => {
                     e.stopPropagation();
                     handleWhatsApp(selectedCase);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedCase(null);
                   }}
                   className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
                   title="WhatsApp"
@@ -1162,9 +1544,6 @@ const MyCasesPage: React.FC = () => {
                   onClick={(e) => {
                     e.stopPropagation();
                     handleEditLead(selectedCase);
-                    setShowActionMenu(false);
-                    setSelectedRowId(null);
-                    setSelectedCase(null);
                   }}
                   className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
                   title="Edit Lead"
@@ -1284,6 +1663,75 @@ const MyCasesPage: React.FC = () => {
             </div>
           </div>
         </div>
+      )}
+
+      {/* WhatsApp Modal */}
+      {selectedCase && clientForWhatsApp && (
+        <SchedulerWhatsAppModal
+          isOpen={isWhatsAppModalOpen}
+          onClose={() => {
+            setIsWhatsAppModalOpen(false);
+            setSelectedCase(null);
+            setSelectedRowId(null);
+          }}
+          client={clientForWhatsApp}
+        />
+      )}
+
+      {/* Email Modal */}
+      {selectedCase && clientForEmail && (
+        <SchedulerEmailThreadModal
+          isOpen={isEmailModalOpen}
+          onClose={() => {
+            setIsEmailModalOpen(false);
+            setSelectedCase(null);
+            setSelectedRowId(null);
+          }}
+          client={clientForEmail}
+        />
+      )}
+
+      {/* Edit Lead Drawer */}
+      {showEditLeadDrawer && selectedCase && (
+        <EditLeadDrawer
+          isOpen={showEditLeadDrawer}
+          onClose={() => {
+            setShowEditLeadDrawer(false);
+            setSelectedCase(null);
+            setSelectedRowId(null);
+          }}
+          lead={selectedCase ? {
+            id: selectedCase.isNewLead ? selectedCase.id : `legacy_${selectedCase.id}`,
+            lead_number: selectedCase.lead_number,
+            name: selectedCase.client_name,
+            category: selectedCase.category,
+            stage: selectedCase.stage,
+            created_at: selectedCase.assigned_date,
+            balance: selectedCase.value || undefined,
+            balance_currency: selectedCase.currency || undefined,
+            lead_type: selectedCase.isNewLead ? 'new' : 'legacy',
+            number_of_applicants_meeting: selectedCase.applicants_count || undefined,
+          } as any : null}
+          onSave={async () => {
+            await fetchMyCases();
+          }}
+        />
+      )}
+
+      {/* RMQ Messages Modal */}
+      {isRMQModalOpen && selectedCase && (
+        <RMQMessagesPage
+          isOpen={isRMQModalOpen}
+          onClose={() => {
+            setIsRMQModalOpen(false);
+            setRmqCloserUserId(null);
+            setSelectedCase(null);
+          }}
+          initialUserId={rmqCloserUserId || undefined}
+          initialMessage="The finance plan is not ready for this lead. Please create the payment plan."
+          initialLeadNumber={selectedCase.lead_number}
+          initialLeadName={selectedCase.client_name}
+        />
       )}
     </div>
   );
