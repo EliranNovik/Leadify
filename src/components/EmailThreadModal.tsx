@@ -246,13 +246,58 @@ const convertBodyToHtml = (text: string) => {
   return result.replace(/\n/g, '<br>');
 };
 
+// Filter out problematic image URLs that are known to be blocked by CORS
+const filterProblematicImages = (html: string): string => {
+  if (!html) return html;
+  
+  // List of domains/patterns that are commonly blocked by CORS
+  const problematicPatterns = [
+    'lh7-rt.googleusercontent.com',
+    'googleusercontent.com',
+    'drive.google.com',
+  ];
+  
+  // Remove img tags with problematic URLs to prevent CORS errors
+  let filteredHtml = html;
+  
+  problematicPatterns.forEach(pattern => {
+    // Escape special regex characters in the pattern
+    const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // More aggressive regex to catch all variations of img tags with problematic URLs
+    // This will match img tags containing the pattern anywhere (in src, alt, or other attributes)
+    const regex = new RegExp(
+      `<img[^>]*?${escapedPattern}[^>]*?>`,
+      'gis'
+    );
+    
+    // Replace problematic img tags with empty string (remove them completely)
+    filteredHtml = filteredHtml.replace(regex, '');
+    
+    // Also try matching with src attribute specifically (more specific match)
+    const srcRegex = new RegExp(
+      `<img[^>]*?src\\s*=\\s*["'][^"']*?${escapedPattern}[^"']*?["'][^>]*?>`,
+      'gis'
+    );
+    filteredHtml = filteredHtml.replace(srcRegex, '');
+  });
+  
+  return filteredHtml;
+};
+
 const sanitizeEmailHtml = (html: string): string => {
-  return sanitizeHtml(html, {
-    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div'],
+  // First filter out problematic images
+  const filteredHtml = filterProblematicImages(html);
+  
+  return sanitizeHtml(filteredHtml, {
+    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
     allowedAttributes: {
       a: ['href', 'target', 'rel'],
-      span: ['style'],
-      div: ['style'],
+      span: ['style', 'dir'],
+      div: ['style', 'dir'],
+      p: ['style', 'dir'],
+      body: ['style', 'dir'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin'],
     },
     allowedSchemes: ['http', 'https', 'mailto'],
     disallowedTagsMode: 'discard',
@@ -266,6 +311,63 @@ const replaceTemplateTokens = (content: string, contact: Contact | null) => {
     .replace(/\{lead_number\}/gi, contact?.lead_number || '')
     .replace(/\{topic\}/gi, contact?.topic || '')
     .replace(/\{lead_type\}/gi, contact?.lead_type || '');
+};
+
+// Check if an email is from the office domain (always team/user, never client)
+const isOfficeEmail = (email: string | null | undefined): boolean => {
+  if (!email) return false;
+  return email.toLowerCase().endsWith('@lawoffice.org.il');
+};
+
+// Build email-to-display-name mapping for all employees
+const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
+  const emailToNameMap = new Map<string, string>();
+  
+  try {
+    // Fetch all employees and users in parallel
+    const [employeesResult, usersResult] = await Promise.all([
+      supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .not('display_name', 'is', null),
+      supabase
+        .from('users')
+        .select('employee_id, email')
+        .not('email', 'is', null)
+    ]);
+    
+    if (employeesResult.error || usersResult.error) {
+      console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
+      return emailToNameMap;
+    }
+    
+    // Create employee_id to email mapping from users table
+    const employeeIdToEmail = new Map<number, string>();
+    usersResult.data?.forEach((user: any) => {
+      if (user.employee_id && user.email) {
+        employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
+      }
+    });
+    
+    // Map emails to display names
+    employeesResult.data?.forEach((emp: any) => {
+      if (!emp.display_name) return;
+      
+      // Method 1: Use email from users table (employee_id match)
+      const emailFromUsers = employeeIdToEmail.get(emp.id);
+      if (emailFromUsers) {
+        emailToNameMap.set(emailFromUsers, emp.display_name);
+      }
+      
+      // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
+      const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+      emailToNameMap.set(patternEmail, emp.display_name);
+    });
+  } catch (error) {
+    console.error('Error building employee email-to-name map:', error);
+  }
+  
+  return emailToNameMap;
 };
 
 interface EmailThreadModalProps {
@@ -1490,8 +1592,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
-            const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(rawContent));
-            const previewHtml = cleanedHtml && cleanedHtml.trim() ? cleanedHtml : convertBodyToHtml(rawContent);
+            // Filter problematic images before processing
+            const filteredContent = filterProblematicImages(rawContent);
+            const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(filteredContent));
+            const previewHtml = cleanedHtml && cleanedHtml.trim() ? cleanedHtml : convertBodyToHtml(filteredContent);
 
             updates[message.id] = {
               html: cleanedHtml,
@@ -1708,14 +1812,41 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         console.log('📧 No emails found for this contact');
       }
       
+      // Build employee email-to-name mapping once for all emails
+      const employeeEmailMap = await buildEmployeeEmailToNameMap();
+      
       const formattedThread: EmailMessage[] = (data || []).map((row: any) => {
-        const rawHtml = typeof row.body_html === 'string' ? row.body_html : null;
-        const rawPreview = typeof row.body_preview === 'string' ? row.body_preview : null;
-        const cleanedHtml = rawHtml ? extractHtmlBody(rawHtml) : null;
+        let rawHtml = typeof row.body_html === 'string' ? row.body_html : null;
+        let rawPreview = typeof row.body_preview === 'string' ? row.body_preview : null;
+        
+        // Filter out problematic images BEFORE processing to prevent CORS errors
+        if (rawHtml) {
+          rawHtml = filterProblematicImages(rawHtml);
+        }
+        if (rawPreview) {
+          rawPreview = filterProblematicImages(rawPreview);
+        }
+        
+        // Preserve original Outlook HTML as much as possible
+        // Only extract body if it's wrapped in <body> tags, but preserve all formatting
+        let cleanedHtml = null;
+        if (rawHtml) {
+          const bodyMatch = rawHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          if (bodyMatch) {
+            // Extract body content but preserve the inner HTML structure
+            cleanedHtml = bodyMatch[1];
+          } else {
+            // No body tags, use as-is
+            cleanedHtml = rawHtml;
+          }
+        }
+        
         const cleanedPreview = rawPreview ? extractHtmlBody(rawPreview) : null;
 
         const fallbackText = cleanedPreview || cleanedHtml || row.subject || '';
         const resolvedHtml = cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : null);
+        
+        // Sanitize but preserve Outlook's direction and style attributes
         const sanitizedHtml = resolvedHtml ? sanitizeEmailHtml(resolvedHtml) : null;
         const sanitizedPreview = cleanedPreview
           ? sanitizeEmailHtml(cleanedPreview)
@@ -1758,18 +1889,38 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           console.log(`📎 Parsed ${parsedAttachments.length} attachments for email ${row.id}:`, parsedAttachments.map((a: any) => ({ name: a.name, size: a.size, hasId: !!a.id, hasContentBytes: !!a.contentBytes })));
         }
 
+        // Determine if email is from team/user based on sender email domain
+        // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+        const senderEmail = row.sender_email || '';
+        const isFromOffice = isOfficeEmail(senderEmail);
+        
+        // Override direction field: if sender is from office domain, it's always outgoing (team/user)
+        let correctedDirection = row.direction === 'outgoing' ? 'outgoing' : 'incoming';
+        if (isFromOffice) {
+          correctedDirection = 'outgoing';
+        }
+        
+        // Get sender display name - use employee display_name for office emails
+        let senderDisplayName = row.sender_name || 'Team';
+        if (isFromOffice) {
+          // For team/user emails: use employee display_name from cache if available
+          senderDisplayName = employeeEmailMap.get(senderEmail.toLowerCase()) || row.sender_name || 'Team';
+        }
+
         return {
           id: row.message_id || row.id?.toString?.() || `email_${row.id}`,
           subject: row.subject || 'No Subject',
           body_html: sanitizedHtml,
           body_preview: sanitizedPreview ?? null,
-          sender_name: row.sender_name || 'Team',
-          sender_email: row.sender_email || '',
+          sender_name: senderDisplayName,
+          sender_email: senderEmail,
           recipient_list: row.recipient_list || '',
           sent_at: row.sent_at,
-          direction: row.direction === 'outgoing' ? 'outgoing' : 'incoming',
-          attachments: parsedAttachments
-        } as EmailMessage;
+          direction: correctedDirection,
+          attachments: parsedAttachments,
+          // Store employee display_name if from office domain for use in display
+          sender_display_name: isFromOffice ? senderDisplayName : undefined
+        } as EmailMessage & { sender_display_name?: string };
       });
 
       // Only set emails if this is still the contact we're loading for
@@ -1910,6 +2061,75 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [emailThread]);
+
+  // Handle image loading errors in email content (CORS-blocked images from external domains)
+  useEffect(() => {
+    if (!isOpen || emailThread.length === 0) return;
+
+    // Small delay to ensure DOM is updated after emailThread changes
+    const timeoutId = setTimeout(() => {
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach((img: HTMLImageElement) => {
+          // Remove existing error handlers to avoid duplicates
+          const existingHandler = (img as any).__errorHandler;
+          if (existingHandler) {
+            img.removeEventListener('error', existingHandler);
+          }
+
+          // Check if image is already in an error state (failed to load)
+          if (img.complete && img.naturalHeight === 0) {
+            // Image already failed to load
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+            return;
+          }
+
+          // Check for known problematic URLs (Google Drive, etc.) and hide them preemptively
+          const src = img.src || img.getAttribute('src') || '';
+          if (src && (
+            src.includes('lh7-rt.googleusercontent.com') ||
+            src.includes('googleusercontent.com/docsz') ||
+            src.includes('google-drive') ||
+            src.includes('drive.google.com')
+          )) {
+            // Pre-emptively hide known problematic external images
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+            return;
+          }
+
+          // Add error handler to hide images that fail to load (CORS issues)
+          const errorHandler = () => {
+            // Hide the image instead of showing broken image icon
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+          };
+
+          img.addEventListener('error', errorHandler);
+          // Store reference to handler for cleanup
+          (img as any).__errorHandler = errorHandler;
+        });
+      });
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      // Cleanup: remove error handlers
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach(img => {
+          const handler = (img as any).__errorHandler;
+          if (handler) {
+            img.removeEventListener('error', handler);
+            delete (img as any).__errorHandler;
+          }
+        });
+      });
+    };
+  }, [isOpen, emailThread]);
 
   const handleContactSelect = async (contact: Contact) => {
     console.log(`👤 Selecting contact: ${contact.name} (ID: ${contact.id})`);
@@ -2431,26 +2651,58 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     return /[\u0590-\u05FF]/.test(visibleText);
   };
 
+  // Check if text contains both Hebrew and English/Latin characters (mixed content)
+  const containsMixedContent = (text?: string | null): boolean => {
+    if (!text) return false;
+    const visibleText = extractVisibleText(text);
+    const hasHebrew = /[\u0590-\u05FF]/.test(visibleText);
+    const hasEnglish = /[a-zA-Z]/.test(visibleText);
+    return hasHebrew && hasEnglish;
+  };
+
+  // Count Hebrew vs English characters to determine dominant language
+  const getDominantLanguage = (text?: string | null): 'hebrew' | 'english' => {
+    if (!text) return 'english';
+    const visibleText = extractVisibleText(text);
+    
+    // Count Hebrew characters
+    const hebrewMatches = visibleText.match(/[\u0590-\u05FF]/g);
+    const hebrewCount = hebrewMatches ? hebrewMatches.length : 0;
+    
+    // Count English/Latin characters (letters only, not spaces/punctuation)
+    const englishMatches = visibleText.match(/[a-zA-Z]/g);
+    const englishCount = englishMatches ? englishMatches.length : 0;
+    
+    // If more Hebrew characters, return 'hebrew', otherwise 'english'
+    return hebrewCount > englishCount ? 'hebrew' : 'english';
+  };
+
   // Get direction for plain text (no HTML)
+  // Based on dominant language: more Hebrew = RTL, more English = LTR
   const getTextDirection = (text?: string | null): 'rtl' | 'ltr' => {
     if (!text) return 'ltr';
-    return /[\u0590-\u05FF]/.test(text) ? 'rtl' : 'ltr';
+    const dominant = getDominantLanguage(text);
+    return dominant === 'hebrew' ? 'rtl' : 'ltr';
+  };
+
+  // Get alignment for text - based on dominant language
+  const getTextAlignment = (text?: string | null): 'right' | 'left' => {
+    if (!text) return 'left';
+    const dominant = getDominantLanguage(text);
+    return dominant === 'hebrew' ? 'right' : 'left';
   };
 
   const getMessageDirection = (message: EmailMessage): 'rtl' | 'ltr' => {
-    // Check subject (plain text)
-    if (message.subject && /[\u0590-\u05FF]/.test(message.subject)) {
-      return 'rtl';
-    }
-    // Check body_html (extract visible text only)
-    if (message.body_html && containsRTL(message.body_html)) {
-      return 'rtl';
-    }
-    // Check body_preview (extract visible text only)
-    if (message.body_preview && containsRTL(message.body_preview)) {
-      return 'rtl';
-    }
-    return 'ltr';
+    // Combine all text content to determine overall direction
+    const allText = [
+      message.subject || '',
+      message.body_html ? extractVisibleText(message.body_html) : '',
+      message.body_preview ? extractVisibleText(message.body_preview) : ''
+    ].join(' ');
+    
+    // Determine dominant language based on character count
+    const dominant = getDominantLanguage(allText);
+    return dominant === 'hebrew' ? 'rtl' : 'ltr';
   };
 
   const formatLastMessageTime = (dateString: string) => {
@@ -2553,31 +2805,45 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   return (
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
-      {/* CSS to ensure email content displays fully */}
+      {/* CSS to ensure email content displays fully and preserves Outlook formatting */}
       <style>{`
-        .email-content .email-body {
+        .email-content {
           max-width: none !important;
           overflow: visible !important;
           word-wrap: break-word !important;
-          white-space: pre-wrap !important;
         }
-        .email-content .email-body * {
+        .email-content * {
           max-width: none !important;
           overflow: visible !important;
         }
-        .email-content .email-body img {
+        .email-content img {
           max-width: 100% !important;
           height: auto !important;
         }
-        .email-content .email-body table {
+        .email-content img[data-load-error="true"] {
+          display: none !important;
+        }
+        .email-content table {
           width: 100% !important;
           border-collapse: collapse !important;
         }
-        .email-content .email-body p, 
-        .email-content .email-body div, 
-        .email-content .email-body span {
-          white-space: pre-wrap !important;
+        .email-content p, 
+        .email-content div, 
+        .email-content span {
           word-wrap: break-word !important;
+        }
+        /* Preserve Outlook's original text direction and alignment */
+        .email-content [dir] {
+          /* Let Outlook's dir attribute control direction */
+        }
+        .email-content [dir="auto"] {
+          unicode-bidi: plaintext;
+        }
+        .email-content [dir="rtl"] {
+          text-align: right;
+        }
+        .email-content [dir="ltr"] {
+          text-align: left;
         }
       `}</style>
       <div className="h-full flex flex-col overflow-hidden">
@@ -2589,7 +2855,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               {selectedContact && !isMobile && (
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span className="text-gray-600">
+                  <span 
+                    className="text-gray-600"
+                    dir={getTextDirection(selectedContact.name)}
+                    style={{ textAlign: getTextAlignment(selectedContact.name) }}
+                  >
                     {selectedContact.name} ({selectedContact.lead_number})
                   </span>
                 </div>
@@ -2736,10 +3006,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                        {contact.name.charAt(0).toUpperCase()}
                      </div>
                                          <div className="flex-1 min-w-0">
-                       <div className="font-semibold text-gray-900 truncate text-sm md:text-base">
+                       <div 
+                         className="font-semibold text-gray-900 truncate text-sm md:text-base"
+                         dir={getTextDirection(contact.name)}
+                         style={{ textAlign: getTextAlignment(contact.name) }}
+                       >
                          {contact.name}
                        </div>
-                       <div className="text-xs md:text-sm text-gray-500 truncate">
+                       <div className="text-xs md:text-sm text-gray-500 truncate" dir="ltr">
                          {contact.email}
                        </div>
                                                 <div className="flex items-center justify-between">
@@ -2799,10 +3073,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           {selectedContact.name.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <h3 className="font-semibold text-gray-900 text-sm">
+                          <h3 
+                            className="font-semibold text-gray-900 text-sm"
+                            dir={getTextDirection(selectedContact.name)}
+                            style={{ textAlign: getTextAlignment(selectedContact.name) }}
+                          >
                             {selectedContact.name}
                           </h3>
-                          <p className="text-xs text-gray-500">
+                          <p className="text-xs text-gray-500" dir="ltr">
                             {selectedContact.lead_number}
                           </p>
                         </div>
@@ -2819,10 +3097,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                         {selectedContact.name.charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <h3 className="font-semibold text-gray-900">
+                        <h3 
+                          className="font-semibold text-gray-900"
+                          dir={getTextDirection(selectedContact.name)}
+                          style={{ textAlign: getTextAlignment(selectedContact.name) }}
+                        >
                           {selectedContact.name}
                         </h3>
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-gray-500" dir="ltr">
                           {selectedContact.lead_number}
                         </p>
                       </div>
@@ -2859,10 +3141,27 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       {emailThread.map((message, index) => {
                         const showDateSeparator = index === 0 || 
                           new Date(message.sent_at).toDateString() !== new Date(emailThread[index - 1].sent_at).toDateString();
-                        const isOutgoing = message.direction === 'outgoing';
-                        const senderDisplayName = isOutgoing 
-                          ? (currentUserFullName || message.sender_name || userEmail || 'You')
-                          : (message.sender_name || selectedContact.name || 'Sender');
+                        
+                        // Determine if email is from team/user based on sender email domain
+                        // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+                        const senderEmail = message.sender_email || '';
+                        const isFromOffice = isOfficeEmail(senderEmail);
+                        // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
+                        const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
+                        
+                        // Get sender display name - use employee display_name for office emails
+                        let senderDisplayName: string;
+                        if (isOutgoing) {
+                          // For team/user emails: use employee display_name from cache if available, otherwise fallback
+                          senderDisplayName = (message as any).sender_display_name 
+                            || message.sender_name 
+                            || currentUserFullName 
+                            || userEmail 
+                            || 'You';
+                        } else {
+                          // For client emails
+                          senderDisplayName = message.sender_name || selectedContact.name || 'Sender';
+                        }
                         const messageDirection = getMessageDirection(message);
                         const isRTLMessage = messageDirection === 'rtl';
                         
@@ -2896,26 +3195,39 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                               </div>
                               <div
                                 className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                                style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', textAlign: 'left' }}
-                                dir="ltr"
+                                style={{ 
+                                  wordBreak: 'break-word', 
+                                  overflowWrap: 'anywhere'
+                                }}
                               >
                                 <div className="mb-2">
-                                  <div className="text-sm font-semibold text-gray-900" dir={getTextDirection(message.subject)}>{message.subject}</div>
-                                  <div className="text-xs text-gray-500 mt-1" dir="ltr">{formatTime(message.sent_at)}</div>
+                                  <div 
+                                    className="text-sm font-semibold text-gray-900" 
+                                    dir="auto"
+                                  >
+                                    {message.subject}
+                                  </div>
+                                  <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.sent_at)}</div>
                                 </div>
                                 
                                 {message.body_html ? (
                                   <div
                                     dangerouslySetInnerHTML={{ __html: message.body_html }}
-                                    className="prose prose-sm max-w-none text-gray-700 break-words"
-                                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                    className="prose prose-sm max-w-none text-gray-700 break-words email-content"
+                                    style={{ 
+                                      wordBreak: 'break-word', 
+                                      overflowWrap: 'anywhere'
+                                    }}
                                     dir="auto"
                                   />
                                 ) : message.body_preview ? (
                                   <div
                                     className="text-gray-700 whitespace-pre-wrap break-words"
-                                    style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                                    dir={getTextDirection(message.body_preview)}
+                                    style={{ 
+                                      wordBreak: 'break-word', 
+                                      overflowWrap: 'anywhere'
+                                    }}
+                                    dir="auto"
                                   >
                                     {message.body_preview}
                                   </div>
@@ -3364,13 +3676,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           {contact.name?.charAt(0).toUpperCase()}
                         </div>
                         <div className="flex-1 min-w-0">
-                          <div className="font-semibold text-gray-900 truncate">
+                          <div 
+                            className="font-semibold text-gray-900 truncate"
+                            dir={getTextDirection(contact.name)}
+                            style={{ textAlign: getTextAlignment(contact.name) }}
+                          >
                             {contact.name}
                           </div>
-                          <div className="text-sm text-gray-500 truncate">
+                          <div className="text-sm text-gray-500 truncate" dir="ltr">
                             {contact.email || 'No email'}
                           </div>
-                          <div className="text-xs text-gray-400">
+                          <div className="text-xs text-gray-400" dir="ltr">
                             Lead: {contact.lead_number}
                           </div>
                         </div>
@@ -3475,16 +3791,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <p className="font-semibold text-gray-900 truncate">
+                              <p 
+                                className="font-semibold text-gray-900 truncate"
+                                dir={getTextDirection(displayName)}
+                                style={{ textAlign: getTextAlignment(displayName) }}
+                              >
                                 {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                               </p>
-                              <span className="text-xs text-gray-500 font-mono">{result.lead_number}</span>
+                              <span className="text-xs text-gray-500 font-mono" dir="ltr">{result.lead_number}</span>
                             </div>
                             {displayEmail && (
-                              <p className="text-sm text-gray-600 truncate">{displayEmail}</p>
+                              <p className="text-sm text-gray-600 truncate" dir="ltr">{displayEmail}</p>
                             )}
                             {displayPhone && (
-                              <p className="text-xs text-gray-500 truncate">{displayPhone}</p>
+                              <p className="text-xs text-gray-500 truncate" dir="ltr">{displayPhone}</p>
                             )}
                           </div>
                           <svg className="w-5 h-5 text-blue-600 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">

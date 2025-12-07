@@ -4,6 +4,7 @@ import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, Chevr
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { appendEmailSignature } from '../lib/emailSignature';
+import sanitizeHtml from 'sanitize-html';
 import {
   getMailboxStatus,
   triggerMailboxSync,
@@ -212,6 +213,65 @@ const convertBodyToHtml = (text: string) => {
   return escaped.replace(/\n/g, '<br>');
 };
 
+// Filter out problematic image URLs that are known to be blocked by CORS
+const filterProblematicImages = (html: string): string => {
+  if (!html) return html;
+  
+  // List of domains/patterns that are commonly blocked by CORS
+  const problematicPatterns = [
+    'lh7-rt.googleusercontent.com',
+    'googleusercontent.com',
+    'drive.google.com',
+  ];
+  
+  // Remove img tags with problematic URLs to prevent CORS errors
+  let filteredHtml = html;
+  
+  problematicPatterns.forEach(pattern => {
+    // Escape special regex characters in the pattern
+    const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    
+    // More aggressive regex to catch all variations of img tags with problematic URLs
+    // This will match img tags containing the pattern anywhere (in src, alt, or other attributes)
+    const regex = new RegExp(
+      `<img[^>]*?${escapedPattern}[^>]*?>`,
+      'gis'
+    );
+    
+    // Replace problematic img tags with empty string (remove them completely)
+    filteredHtml = filteredHtml.replace(regex, '');
+    
+    // Also try matching with src attribute specifically (more specific match)
+    const srcRegex = new RegExp(
+      `<img[^>]*?src\\s*=\\s*["'][^"']*?${escapedPattern}[^"']*?["'][^>]*?>`,
+      'gis'
+    );
+    filteredHtml = filteredHtml.replace(srcRegex, '');
+  });
+  
+  return filteredHtml;
+};
+
+// Sanitize email HTML - preserve Outlook formatting
+const sanitizeEmailHtml = (html: string): string => {
+  // First filter out problematic images to prevent CORS errors
+  const filteredHtml = filterProblematicImages(html);
+  
+  return sanitizeHtml(filteredHtml, {
+    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
+    allowedAttributes: {
+      a: ['href', 'target', 'rel'],
+      span: ['style', 'dir'],
+      div: ['style', 'dir'],
+      p: ['style', 'dir'],
+      body: ['style', 'dir'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin'],
+    },
+    allowedSchemes: ['http', 'https', 'mailto'],
+    disallowedTagsMode: 'discard',
+  });
+};
+
 const replaceTemplateTokens = (content: string, client: SchedulerEmailThreadModalProps['client']) => {
   if (!content) return '';
   return content
@@ -219,6 +279,63 @@ const replaceTemplateTokens = (content: string, client: SchedulerEmailThreadModa
     .replace(/\{lead_number\}/gi, client?.lead_number || '')
     .replace(/\{topic\}/gi, client?.topic || '')
     .replace(/\{lead_type\}/gi, client?.lead_type || '');
+};
+
+// Check if an email is from the office domain (always team/user, never client)
+const isOfficeEmail = (email: string | null | undefined): boolean => {
+  if (!email) return false;
+  return email.toLowerCase().endsWith('@lawoffice.org.il');
+};
+
+// Build email-to-display-name mapping for all employees
+const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
+  const emailToNameMap = new Map<string, string>();
+  
+  try {
+    // Fetch all employees and users in parallel
+    const [employeesResult, usersResult] = await Promise.all([
+      supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .not('display_name', 'is', null),
+      supabase
+        .from('users')
+        .select('employee_id, email')
+        .not('email', 'is', null)
+    ]);
+    
+    if (employeesResult.error || usersResult.error) {
+      console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
+      return emailToNameMap;
+    }
+    
+    // Create employee_id to email mapping from users table
+    const employeeIdToEmail = new Map<number, string>();
+    usersResult.data?.forEach((user: any) => {
+      if (user.employee_id && user.email) {
+        employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
+      }
+    });
+    
+    // Map emails to display names
+    employeesResult.data?.forEach((emp: any) => {
+      if (!emp.display_name) return;
+      
+      // Method 1: Use email from users table (employee_id match)
+      const emailFromUsers = employeeIdToEmail.get(emp.id);
+      if (emailFromUsers) {
+        emailToNameMap.set(emailFromUsers, emp.display_name);
+      }
+      
+      // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
+      const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+      emailToNameMap.set(patternEmail, emp.display_name);
+    });
+  } catch (error) {
+    console.error('Error building employee email-to-name map:', error);
+  }
+  
+  return emailToNameMap;
 };
 
 const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ isOpen, onClose, client, onClientUpdate }) => {
@@ -368,6 +485,75 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   useEffect(() => {
     scrollToBottom();
   }, [emails]);
+
+  // Handle image loading errors in email content (CORS-blocked images from external domains)
+  useEffect(() => {
+    if (!isOpen || emails.length === 0) return;
+
+    // Small delay to ensure DOM is updated after emails changes
+    const timeoutId = setTimeout(() => {
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach((img: HTMLImageElement) => {
+          // Remove existing error handlers to avoid duplicates
+          const existingHandler = (img as any).__errorHandler;
+          if (existingHandler) {
+            img.removeEventListener('error', existingHandler);
+          }
+
+          // Check if image is already in an error state (failed to load)
+          if (img.complete && img.naturalHeight === 0) {
+            // Image already failed to load
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+            return;
+          }
+
+          // Check for known problematic URLs (Google Drive, etc.) and hide them preemptively
+          const src = img.src || img.getAttribute('src') || '';
+          if (src && (
+            src.includes('lh7-rt.googleusercontent.com') ||
+            src.includes('googleusercontent.com/docsz') ||
+            src.includes('google-drive') ||
+            src.includes('drive.google.com')
+          )) {
+            // Pre-emptively hide known problematic external images
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+            return;
+          }
+
+          // Add error handler to hide images that fail to load (CORS issues)
+          const errorHandler = () => {
+            // Hide the image instead of showing broken image icon
+            img.style.display = 'none';
+            img.setAttribute('data-load-error', 'true');
+          };
+
+          img.addEventListener('error', errorHandler);
+          // Store reference to handler for cleanup
+          (img as any).__errorHandler = errorHandler;
+        });
+      });
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      // Cleanup: remove error handlers
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach(img => {
+          const handler = (img as any).__errorHandler;
+          if (handler) {
+            img.removeEventListener('error', handler);
+            delete (img as any).__errorHandler;
+          }
+        });
+      });
+    };
+  }, [isOpen, emails]);
 
   const pushRecipient = (list: string[], address: string) => {
     const normalized = address.trim();
@@ -582,8 +768,12 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
           try {
             const rawContent = await fetchEmailBodyFromBackend(userId, message.message_id);
             if (!rawContent || typeof rawContent !== 'string') return;
-            const cleanedHtml = extractHtmlBody(rawContent);
-            const sanitised = cleanedHtml ? cleanedHtml : rawContent;
+            
+            // Filter problematic images before processing
+            const filteredContent = filterProblematicImages(rawContent);
+            const cleanedHtml = extractHtmlBody(filteredContent);
+            const sanitised = cleanedHtml ? sanitizeEmailHtml(cleanedHtml) : sanitizeEmailHtml(filteredContent);
+            
             updates[message.message_id] = {
               html: sanitised,
               preview: sanitised,
@@ -651,19 +841,116 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         return;
       }
       
-      // Format emails for display
-      const formattedEmailsForModal = (emailData || []).map((email: any) => ({
-        id: email.id,
-        message_id: email.message_id,
-        subject: email.subject || 'No Subject',
-        body_html: email.body_html ? extractHtmlBody(email.body_html) : null,
-        body_preview: email.body_preview ? extractHtmlBody(email.body_preview) : (email.body_html ? extractHtmlBody(email.body_html) : null),
-        from: email.sender_email || '',
-        to: email.recipient_list || '',
-        date: email.sent_at,
-        direction: email.direction,
-        attachments: email.attachments || []
-      }));
+      // Build employee email-to-name mapping once for all emails
+      const employeeEmailMap = await buildEmployeeEmailToNameMap();
+      
+      // Format emails for display - preserve Outlook HTML structure
+      const formattedEmailsForModal = (emailData || []).map((email: any) => {
+        let rawHtml = typeof email.body_html === 'string' ? email.body_html : null;
+        let rawPreview = typeof email.body_preview === 'string' ? email.body_preview : null;
+        
+        // Filter out problematic images BEFORE processing to prevent CORS errors
+        if (rawHtml) {
+          rawHtml = filterProblematicImages(rawHtml);
+        }
+        if (rawPreview) {
+          rawPreview = filterProblematicImages(rawPreview);
+        }
+        
+        // Preserve original Outlook HTML as much as possible
+        // Only extract body if it's wrapped in <body> tags, but preserve all formatting
+        let cleanedHtml = null;
+        if (rawHtml) {
+          const bodyMatch = rawHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          if (bodyMatch) {
+            // Extract body content but preserve the inner HTML structure
+            cleanedHtml = bodyMatch[1];
+          } else {
+            // No body tags, use as-is
+            cleanedHtml = rawHtml;
+          }
+        }
+        
+        let cleanedPreview = null;
+        if (rawPreview) {
+          const previewMatch = rawPreview.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+          if (previewMatch) {
+            cleanedPreview = previewMatch[1];
+          } else {
+            cleanedPreview = rawPreview;
+          }
+        } else if (cleanedHtml) {
+          cleanedPreview = cleanedHtml;
+        }
+        
+        const fallbackText = cleanedPreview || cleanedHtml || email.subject || '';
+        
+        // Sanitize but preserve Outlook's direction and style attributes
+        const sanitizedHtml = cleanedHtml ? sanitizeEmailHtml(cleanedHtml) : null;
+        const sanitizedPreview = cleanedPreview
+          ? sanitizeEmailHtml(cleanedPreview)
+          : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
+
+        // Parse attachments from JSONB - it might be a string or already an array
+        let parsedAttachments: any[] = [];
+        if (email.attachments) {
+          try {
+            // If it's a string, parse it
+            if (typeof email.attachments === 'string') {
+              parsedAttachments = JSON.parse(email.attachments);
+            } 
+            // If it's already an array, use it directly
+            else if (Array.isArray(email.attachments)) {
+              parsedAttachments = email.attachments;
+            }
+            // If it's an object with a value property (Graph API format), extract the array
+            else if (email.attachments.value && Array.isArray(email.attachments.value)) {
+              parsedAttachments = email.attachments.value;
+            }
+            // If it's a single object, wrap it in an array
+            else if (typeof email.attachments === 'object') {
+              parsedAttachments = [email.attachments];
+            }
+          } catch (e) {
+            console.error('Error parsing attachments:', e, email.attachments);
+            parsedAttachments = [];
+          }
+        }
+        
+        // Filter out inline attachments that shouldn't be displayed as separate attachments
+        parsedAttachments = parsedAttachments.filter((att: any) => {
+          // Only show non-inline attachments or if isInline is false/undefined
+          return att && !att.isInline && att.name;
+        });
+        
+        // Determine if email is from team/user based on sender email domain
+        // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+        const senderEmail = email.sender_email || '';
+        const isFromOffice = isOfficeEmail(senderEmail);
+        
+        // Override direction field: if sender is from office domain, it's always outgoing (team/user)
+        let correctedDirection = email.direction;
+        if (isFromOffice) {
+          correctedDirection = 'outgoing';
+        }
+        
+        return {
+          id: email.id,
+          message_id: email.message_id,
+          subject: email.subject || 'No Subject',
+          body_html: sanitizedHtml,
+          body_preview: sanitizedPreview || '',
+          from: senderEmail,
+          to: email.recipient_list || '',
+          date: email.sent_at,
+          direction: correctedDirection,
+          sender_email: senderEmail, // Keep original for reference
+          sender_name: email.sender_name || null, // Keep original sender_name
+          attachments: parsedAttachments,
+          // Store employee display_name if from office domain (fetched from tenants_employee table)
+          sender_display_name: isFromOffice ? (employeeEmailMap.get(senderEmail.toLowerCase()) || email.sender_name || null) : null
+        };
+      });
       
       setEmails(formattedEmailsForModal);
       await hydrateEmailBodies(formattedEmailsForModal);
@@ -971,31 +1258,45 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     <>
       {createPortal(
         <div className="fixed inset-0 bg-white z-[9999]">
-          {/* CSS to ensure email content displays fully */}
+          {/* CSS to ensure email content displays fully and preserves Outlook formatting */}
           <style>{`
-            .email-content .email-body {
+            .email-content {
               max-width: none !important;
               overflow: visible !important;
               word-wrap: break-word !important;
-              white-space: pre-wrap !important;
             }
-            .email-content .email-body * {
+            .email-content * {
               max-width: none !important;
               overflow: visible !important;
             }
-            .email-content .email-body img {
+            .email-content img {
               max-width: 100% !important;
               height: auto !important;
             }
-            .email-content .email-body table {
+            .email-content img[data-load-error="true"] {
+              display: none !important;
+            }
+            .email-content table {
               width: 100% !important;
               border-collapse: collapse !important;
             }
-            .email-content .email-body p, 
-            .email-content .email-body div, 
-            .email-content .email-body span {
-              white-space: pre-wrap !important;
+            .email-content p, 
+            .email-content div, 
+            .email-content span {
               word-wrap: break-word !important;
+            }
+            /* Preserve Outlook's original text direction and alignment */
+            .email-content [dir] {
+              /* Let Outlook's dir attribute control direction */
+            }
+            .email-content [dir="auto"] {
+              unicode-bidi: plaintext;
+            }
+            .email-content [dir="rtl"] {
+              text-align: right;
+            }
+            .email-content [dir="ltr"] {
+              text-align: left;
             }
           `}</style>
           <div className="h-full flex flex-col">
@@ -1105,7 +1406,12 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
                 
                 // Search in sender name (display name)
-                const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
+                // Determine if from office domain (team/user) based on email, not just direction
+                const isFromOffice = isOfficeEmail(message.from);
+                const isTeamEmail = isFromOffice || message.direction === 'outgoing';
+                const senderName = isTeamEmail 
+                  ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                  : (client?.name || 'Client');
                 if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
                 
                 return false;
@@ -1146,7 +1452,12 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                       if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
                       
                       // Search in sender name (display name)
-                      const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client?.name;
+                      // Determine if from office domain (team/user) based on email, not just direction
+                      const isFromOffice = isOfficeEmail(message.from);
+                      const isTeamEmail = isFromOffice || message.direction === 'outgoing';
+                      const senderName = isTeamEmail 
+                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        : (client?.name || 'Client');
                       if (senderName && senderName.toLowerCase().includes(searchTerm)) return true;
                       
                       return false;
@@ -1155,10 +1466,28 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                     .map((message, index, filteredMessages) => {
                       const showDateSeparator = index === 0 || 
                         new Date(message.date).toDateString() !== new Date(filteredMessages[index - 1].date).toDateString();
-                      const isOutgoing = message.direction === 'outgoing';
-                      const senderDisplayName = isOutgoing 
-                        ? (currentUserFullName || message.from || 'Team')
-                        : (client?.name || message.from || 'Client');
+                      
+                      // Determine if email is from team/user based on sender email domain
+                      // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+                      const senderEmail = message.from || '';
+                      const isFromOffice = isOfficeEmail(senderEmail);
+                      // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
+                      const isTeamEmail = isFromOffice ? true : (message.direction === 'outgoing');
+                      
+                      // Get sender display name - use employee display_name for office emails
+                      let senderDisplayName: string;
+                      if (isTeamEmail) {
+                        // For team/user emails: use employee display_name from cache if available, otherwise fallback
+                        senderDisplayName = (message as any).sender_display_name 
+                          || message.sender_name 
+                          || currentUserFullName 
+                          || senderEmail 
+                          || 'Team';
+                      } else {
+                        // For client emails
+                        senderDisplayName = client?.name || message.sender_name || senderEmail || 'Client';
+                      }
+                      
                       const messageDirection = getMessageDirection(message);
                       const isRTLMessage = messageDirection === 'rtl';
                       
@@ -1172,18 +1501,18 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                             </div>
                           )}
                           
-                          <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
+                          <div className={`flex flex-col ${isTeamEmail ? 'items-end' : 'items-start'}`}>
                             <div className="flex items-center gap-2 mb-1">
                               <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                isOutgoing
+                                isTeamEmail
                                   ? 'bg-blue-100 text-blue-700 border border-blue-200'
                                   : 'bg-pink-100 text-pink-700 border border-pink-200'
                               }`}>
-                                {isOutgoing ? 'Team' : 'Client'}
+                                {isTeamEmail ? 'Team' : 'Client'}
                               </div>
                               <div
                                 className={`text-xs font-semibold ${
-                                  isOutgoing ? 'text-blue-600' : 'text-gray-600'
+                                  isTeamEmail ? 'text-blue-600' : 'text-gray-600'
                                 }`}
                                 dir={getTextDirection(senderDisplayName)}
                               >
@@ -1192,29 +1521,42 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                             </div>
                             <div
                               className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', textAlign: 'left' }}
-                              dir="ltr"
+                              style={{ 
+                                wordBreak: 'break-word', 
+                                overflowWrap: 'anywhere'
+                              }}
                             >
                               <div className="mb-2">
-                                <div className="text-sm font-semibold text-gray-900" dir={getTextDirection(message.subject)}>{message.subject}</div>
-                                <div className="text-xs text-gray-500 mt-1" dir="ltr">{formatTime(message.date)}</div>
+                                <div 
+                                  className="text-sm font-semibold text-gray-900" 
+                                  dir="auto"
+                                >
+                                  {message.subject}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.date)}</div>
                               </div>
                               
                               {message.body_html ? (
                                 <div
                                   dangerouslySetInnerHTML={{ __html: message.body_html }}
-                                  className="prose prose-sm max-w-none text-gray-700 break-words"
-                                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                  className="prose prose-sm max-w-none text-gray-700 break-words email-content"
+                                  style={{ 
+                                    wordBreak: 'break-word', 
+                                    overflowWrap: 'anywhere'
+                                  }}
                                   dir="auto"
                                 />
                               ) : message.body_preview ? (
+                                // body_preview is sanitized HTML, so always render it as HTML
                                 <div
-                                  className="text-gray-700 whitespace-pre-wrap break-words"
-                                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
-                                  dir={getTextDirection(message.body_preview)}
-                                >
-                                  {message.body_preview}
-                                </div>
+                                  dangerouslySetInnerHTML={{ __html: message.body_preview }}
+                                  className="prose prose-sm max-w-none text-gray-700 break-words email-content"
+                                  style={{ 
+                                    wordBreak: 'break-word', 
+                                    overflowWrap: 'anywhere'
+                                  }}
+                                  dir="auto"
+                                />
                               ) : (
                                 <div className="text-gray-500 italic">No content available</div>
                               )}

@@ -424,6 +424,63 @@ const replaceTemplateTokens = (content: string, client: any) => {
     .replace(/\{lead_type\}/gi, client?.lead_type || '');
 };
 
+// Check if an email is from the office domain (always team/user, never client)
+const isOfficeEmail = (email: string | null | undefined): boolean => {
+  if (!email) return false;
+  return email.toLowerCase().endsWith('@lawoffice.org.il');
+};
+
+// Build email-to-display-name mapping for all employees
+const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
+  const emailToNameMap = new Map<string, string>();
+  
+  try {
+    // Fetch all employees and users in parallel
+    const [employeesResult, usersResult] = await Promise.all([
+      supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .not('display_name', 'is', null),
+      supabase
+        .from('users')
+        .select('employee_id, email')
+        .not('email', 'is', null)
+    ]);
+    
+    if (employeesResult.error || usersResult.error) {
+      console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
+      return emailToNameMap;
+    }
+    
+    // Create employee_id to email mapping from users table
+    const employeeIdToEmail = new Map<number, string>();
+    usersResult.data?.forEach((user: any) => {
+      if (user.employee_id && user.email) {
+        employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
+      }
+    });
+    
+    // Map emails to display names
+    employeesResult.data?.forEach((emp: any) => {
+      if (!emp.display_name) return;
+      
+      // Method 1: Use email from users table (employee_id match)
+      const emailFromUsers = employeeIdToEmail.get(emp.id);
+      if (emailFromUsers) {
+        emailToNameMap.set(emailFromUsers, emp.display_name);
+      }
+      
+      // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
+      const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+      emailToNameMap.set(patternEmail, emp.display_name);
+    });
+  } catch (error) {
+    console.error('Error building employee email-to-name map:', error);
+  }
+  
+  return emailToNameMap;
+};
+
 const emailTemplates = [
   {
     name: 'Document Reminder',
@@ -462,18 +519,20 @@ async function fetchCurrentUserFullName() {
   return null;
 }
 
-// Utility to sanitize email HTML for modal view
+// Utility to sanitize email HTML for modal view - preserve Outlook formatting
 function sanitizeEmailHtml(html: string): string {
   return sanitizeHtml(html, {
-    allowedTags: [
-      'p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a'
-    ],
+    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
     allowedAttributes: {
-      'a': ['href', 'target', 'rel']
+      a: ['href', 'target', 'rel'],
+      span: ['style', 'dir'],
+      div: ['style', 'dir'],
+      p: ['style', 'dir'],
+      body: ['style', 'dir'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin'],
     },
     allowedSchemes: ['http', 'https', 'mailto'],
     disallowedTagsMode: 'discard',
-    allowedStyles: {},
   });
 }
 
@@ -2285,13 +2344,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const bodyPreview = e.body_preview || '';
           const body = bodyHtml || bodyPreview || e.subject || '';
           
+          // Determine if email is from team/user based on sender email domain
+          // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+          const senderEmail = e.sender_email || '';
+          const isFromOffice = isOfficeEmail(senderEmail);
+          // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
+          const isOutgoing = isFromOffice ? true : (e.direction === 'outgoing');
+          
           return {
             id: e.message_id,
             date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
             time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
             raw_date: e.sent_at,
-            employee: e.direction === 'outgoing' ? (userFullName || 'You') : client.name,
-            direction: e.direction === 'outgoing' ? 'out' : 'in',
+            employee: isOutgoing ? (userFullName || 'You') : client.name,
+            direction: isOutgoing ? 'out' : 'in',
             kind: 'email',
             length: '',
             content: body,
@@ -2302,7 +2368,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             body_html: bodyHtml,
             body_preview: bodyPreview || null,
             contact_id: e.contact_id || null,
-            sender_email: e.sender_email || null,
+            sender_email: senderEmail || null,
             recipient_list: e.recipient_list || null,
           };
         });
@@ -2681,23 +2747,76 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           console.log(`📧 After strict filtering by contact, ${clientEmails.length} emails remain`);
         }
         
-        // Format emails for modal display
+        // Build employee email-to-name mapping once for all emails
+        const employeeEmailMap = await buildEmployeeEmailToNameMap();
+        
+        // Format emails for modal display - preserve Outlook HTML structure
         const formattedEmailsForModal = clientEmails.map((e: any) => {
           const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
           const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
-          const cleanedHtml = rawHtml && rawHtml.trim() ? extractHtmlBody(rawHtml) : null;
-          const cleanedPreview = rawPreview && rawPreview.trim() ? extractHtmlBody(rawPreview) : null;
+          
+          // Preserve original Outlook HTML as much as possible
+          let cleanedHtml = null;
+          if (rawHtml) {
+            const bodyMatch = rawHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+            if (bodyMatch) {
+              // Extract body content but preserve the inner HTML structure
+              cleanedHtml = bodyMatch[1];
+            } else {
+              // No body tags, use as-is
+              cleanedHtml = rawHtml;
+            }
+          }
+          
+          let cleanedPreview = null;
+          if (rawPreview) {
+            const previewMatch = rawPreview.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+            if (previewMatch) {
+              cleanedPreview = previewMatch[1];
+            } else {
+              cleanedPreview = rawPreview;
+            }
+          } else if (cleanedHtml) {
+            cleanedPreview = cleanedHtml;
+          }
+          
           const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
+          
+          // Sanitize but preserve Outlook's direction and style attributes
+          const sanitizedHtml = cleanedHtml ? sanitizeEmailHtml(cleanedHtml) : null;
+          const sanitizedPreview = cleanedPreview
+            ? sanitizeEmailHtml(cleanedPreview)
+            : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
+          
+          // Determine if email is from team/user based on sender email domain
+          // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+          const senderEmail = e.sender_email || '';
+          const isFromOffice = isOfficeEmail(senderEmail);
+          
+          // Override direction field: if sender is from office domain, it's always outgoing (team/user)
+          let correctedDirection = e.direction;
+          if (isFromOffice) {
+            correctedDirection = 'outgoing';
+          }
+          
+          // Get sender display name - use employee display_name for office emails
+          let senderDisplayName = null;
+          if (isFromOffice) {
+            // For team/user emails: use employee display_name from cache if available
+            senderDisplayName = employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null;
+          }
+          
           return {
           id: e.message_id,
           subject: e.subject,
-          from: e.sender_email,
+          from: senderEmail,
           to: e.recipient_list,
           date: e.sent_at,
-            bodyPreview: cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : ''),
-          direction: e.direction,
+            bodyPreview: sanitizedPreview || '',
+          direction: correctedDirection,
           attachments: e.attachments,
           contact_id: e.contact_id,
+          sender_display_name: senderDisplayName,
           };
         });
         
@@ -3056,6 +3175,54 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }
   }, [emails, isEmailModalOpen]);
+
+  // Handle image loading errors in email content (CORS-blocked images from external domains)
+  useEffect(() => {
+    if (!isEmailModalOpen || emails.length === 0) return;
+
+    // Small delay to ensure DOM is updated after emails changes
+    const timeoutId = setTimeout(() => {
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach(img => {
+          // Remove existing error handlers to avoid duplicates
+          const existingHandler = (img as any).__errorHandler;
+          if (existingHandler) {
+            img.removeEventListener('error', existingHandler);
+          }
+
+          // Add error handler to hide images that fail to load (CORS issues)
+          const errorHandler = () => {
+            // Hide the image instead of showing broken image icon
+            img.style.display = 'none';
+            // Optionally add a data attribute for debugging
+            img.setAttribute('data-load-error', 'true');
+          };
+
+          img.addEventListener('error', errorHandler);
+          // Store reference to handler for cleanup
+          (img as any).__errorHandler = errorHandler;
+        });
+      });
+    }, 100);
+
+    return () => {
+      clearTimeout(timeoutId);
+      // Cleanup: remove error handlers
+      const emailContentDivs = document.querySelectorAll('.email-content');
+      emailContentDivs.forEach(div => {
+        const images = div.querySelectorAll('img');
+        images.forEach(img => {
+          const handler = (img as any).__errorHandler;
+          if (handler) {
+            img.removeEventListener('error', handler);
+            delete (img as any).__errorHandler;
+          }
+        });
+      });
+    };
+  }, [isEmailModalOpen, emails]);
 
   // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
   const openEditDrawer = async (idx: number) => {
@@ -3918,31 +4085,45 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       {/* Email Thread Modal - Inline modal showing all interactions filtered by selected contact */}
       {isEmailModalOpen && createPortal(
         <div className="fixed inset-0 bg-white z-[9999]">
-          {/* CSS to ensure email content displays fully */}
+          {/* CSS to ensure email content displays fully and preserves Outlook formatting */}
           <style>{`
-            .email-content .email-body {
+            .email-content {
               max-width: none !important;
               overflow: visible !important;
               word-wrap: break-word !important;
-              white-space: pre-wrap !important;
             }
-            .email-content .email-body * {
+            .email-content * {
               max-width: none !important;
               overflow: visible !important;
             }
-            .email-content .email-body img {
+            .email-content img {
               max-width: 100% !important;
               height: auto !important;
             }
-            .email-content .email-body table {
+            .email-content img[data-load-error="true"] {
+              display: none !important;
+            }
+            .email-content table {
               width: 100% !important;
               border-collapse: collapse !important;
             }
-            .email-content .email-body p, 
-            .email-content .email-body div, 
-            .email-content .email-body span {
-              white-space: pre-wrap !important;
+            .email-content p, 
+            .email-content div, 
+            .email-content span {
               word-wrap: break-word !important;
+            }
+            /* Preserve Outlook's original text direction and alignment */
+            .email-content [dir] {
+              /* Let Outlook's dir attribute control direction */
+            }
+            .email-content [dir="auto"] {
+              unicode-bidi: plaintext;
+            }
+            .email-content [dir="rtl"] {
+              text-align: right;
+            }
+            .email-content [dir="ltr"] {
+              text-align: left;
             }
           `}</style>
           <div className="h-full flex flex-col">
@@ -4163,7 +4344,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
                       
                       // Search in sender name (display name)
-                      const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name;
+                      // Determine if from office domain (team/user) based on email, not just direction
+                      const isFromOffice = isOfficeEmail(message.from);
+                      const isTeamEmail = isFromOffice || message.direction === 'outgoing';
+                      const senderName = isTeamEmail 
+                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        : (selectedContactForEmail?.contact.name || client.name || 'Client');
                       if (senderName.toLowerCase().includes(searchTerm)) return true;
                       
                       return false;
@@ -4172,10 +4358,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     .map((message, index, filteredMessages) => {
                       const showDateSeparator = index === 0 || 
                         new Date(message.date).toDateString() !== new Date(filteredMessages[index - 1].date).toDateString();
-                      const isOutgoing = message.direction === 'outgoing';
-                      const senderDisplayName = isOutgoing 
-                        ? (currentUserFullName || message.from || 'Team')
-                        : (selectedContactForEmail?.contact.name || client.name || message.from || 'Client');
+                      
+                      // Determine if email is from team/user based on sender email domain
+                      // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+                      const senderEmail = message.from || '';
+                      const isFromOffice = isOfficeEmail(senderEmail);
+                      // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
+                      const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
+                      
+                      // Get sender display name - use employee display_name for office emails
+                      let senderDisplayName: string;
+                      if (isOutgoing) {
+                        // For team/user emails: use employee display_name from cache if available, otherwise fallback
+                        senderDisplayName = (message as any).sender_display_name 
+                          || currentUserFullName 
+                          || message.from 
+                          || 'Team';
+                      } else {
+                        // For client emails
+                        senderDisplayName = selectedContactForEmail?.contact.name || client.name || message.from || 'Client';
+                      }
                       const messageDirection = getMessageDirection(message);
                       const isRTLMessage = messageDirection === 'rtl';
                       
@@ -4209,19 +4411,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             </div>
                             <div
                               className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                              style={{ wordBreak: 'break-word', overflowWrap: 'anywhere', textAlign: 'left' }}
-                              dir="ltr"
+                              style={{ 
+                                wordBreak: 'break-word', 
+                                overflowWrap: 'anywhere'
+                              }}
                             >
                               <div className="mb-2">
-                                <div className="text-sm font-semibold text-gray-900" dir={getTextDirection(message.subject)}>{message.subject || '(no subject)'}</div>
-                                <div className="text-xs text-gray-500 mt-1" dir="ltr">{formatTime(message.date)}</div>
+                                <div 
+                                  className="text-sm font-semibold text-gray-900" 
+                                  dir="auto"
+                                >
+                                  {message.subject || '(no subject)'}
+                                </div>
+                                <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.date)}</div>
                               </div>
                               
                               {message.bodyPreview ? (
                                 <div
                                   dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
-                                  className="prose prose-sm max-w-none text-gray-700 break-words"
-                                  style={{ wordBreak: 'break-word', overflowWrap: 'anywhere' }}
+                                  className="prose prose-sm max-w-none text-gray-700 break-words email-content"
+                                  style={{ 
+                                    wordBreak: 'break-word', 
+                                    overflowWrap: 'anywhere'
+                                  }}
                                   dir="auto"
                                 />
                               ) : (
