@@ -1,5 +1,8 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon } from '@heroicons/react/24/solid';
+import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
+import { XMarkIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import * as XLSX from 'xlsx';
+import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
@@ -3915,6 +3918,7 @@ const PiesReport = () => <div className="p-6">Pies Analysis Content</div>;
 const TasksReport = () => <div className="p-6">Tasks Analysis Content</div>;
 const ProfitabilityReport = () => <div className="p-6">Profitability Finances Content</div>;
 const CollectionDueReport = () => {
+  const navigate = useNavigate();
   const today = new Date();
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
   const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
@@ -3926,6 +3930,7 @@ const CollectionDueReport = () => {
     order: '',
     department: '',
     employee: '',
+    employeeType: 'case_handler', // 'case_handler' or 'actual_employee_due'
   });
   const [employeeData, setEmployeeData] = useState<any[]>([]);
   const [departmentData, setDepartmentData] = useState<any[]>([]);
@@ -3935,6 +3940,17 @@ const CollectionDueReport = () => {
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+  
+  // Drawer state for lead details
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [drawerTitle, setDrawerTitle] = useState('');
+  const [drawerLeads, setDrawerLeads] = useState<any[]>([]);
+  const [drawerLoading, setDrawerLoading] = useState(false);
+  
+  // Store maps for accessing leadIds when drawer opens
+  const [employeeMapStore, setEmployeeMapStore] = useState<Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
+  const [departmentMapStore, setDepartmentMapStore] = useState<Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -3964,12 +3980,141 @@ const CollectionDueReport = () => {
       if (catData) {
         setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
       }
+
+      // Fetch all categories with their parent main category names using JOINs (for drawer)
+      const { data: categoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        `)
+        .order('name', { ascending: true });
+      
+      if (!categoriesError && categoriesData) {
+        setAllCategories(categoriesData);
+      }
     };
     fetchOptions();
   }, []);
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Helper function to get category name from ID with main category (similar to CalendarPage)
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      // If no category_id but we have a fallback category, try to find it in the loaded categories
+      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+        // Try to find the fallback category in the loaded categories
+        // First try by ID if fallbackCategory is a number
+        let foundCategory = null;
+        if (typeof fallbackCategory === 'number') {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.id.toString() === fallbackCategory.toString()
+          );
+        }
+        
+        // If not found by ID, try by name
+        if (!foundCategory) {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.name.toLowerCase().trim() === String(fallbackCategory).toLowerCase().trim()
+          );
+        }
+        
+        if (foundCategory) {
+          // Return category name with main category in parentheses
+          if (foundCategory.misc_maincategory?.name) {
+            return `${foundCategory.name} (${foundCategory.misc_maincategory.name})`;
+          } else {
+            return foundCategory.name; // Fallback if no main category
+          }
+        } else {
+          return String(fallbackCategory); // Use as-is if not found in loaded categories
+        }
+      }
+      return '--';
+    }
+    
+    // If allCategories is not loaded yet, return the original value
+    if (!allCategories || allCategories.length === 0) {
+      return String(categoryId);
+    }
+    
+    // First try to find by ID
+    const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (categoryById) {
+      // Return category name with main category in parentheses
+      if (categoryById.misc_maincategory?.name) {
+        return `${categoryById.name} (${categoryById.misc_maincategory.name})`;
+      } else {
+        return categoryById.name; // Fallback if no main category
+      }
+    }
+    
+    // If not found by ID, try to find by name (in case it's already a name)
+    const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
+    if (categoryByName) {
+      // Return category name with main category in parentheses
+      if (categoryByName.misc_maincategory?.name) {
+        return `${categoryByName.name} (${categoryByName.misc_maincategory.name})`;
+      } else {
+        return categoryByName.name; // Fallback if no main category
+      }
+    }
+    
+    return String(categoryId); // Fallback to original value if not found
+  };
+
+  // Export functions for Excel
+  const exportEmployeeTable = () => {
+    if (employeeData.length === 0) {
+      toast.error('No data to export');
+      return;
+    }
+
+    const headers = ['Employee', 'Department', 'Cases', 'Applicants', 'Total'];
+    const excelData = employeeData.map(row => ({
+      'Employee': row.employee,
+      'Department': row.department,
+      'Cases': row.cases,
+      'Applicants': row.applicants,
+      'Total': formatCurrency(row.total)
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'By Employee');
+    
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `Collection_Due_By_Employee_${dateStr}.xlsx`);
+  };
+
+  const exportDepartmentTable = () => {
+    if (departmentData.length === 0) {
+      toast.error('No data to export');
+      return;
+    }
+
+    const headers = ['Department', 'Cases', 'Applicants', 'Total'];
+    const excelData = departmentData.map(row => ({
+      'Department': row.department,
+      'Cases': row.cases,
+      'Applicants': row.applicants,
+      'Total': formatCurrency(row.total)
+    }));
+
+    const ws = XLSX.utils.json_to_sheet(excelData);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'By Department');
+    
+    const dateStr = new Date().toISOString().split('T')[0];
+    XLSX.writeFile(wb, `Collection_Due_By_Department_${dateStr}.xlsx`);
   };
 
   const handleSearch = async () => {
@@ -3980,11 +4125,13 @@ const CollectionDueReport = () => {
       
       // First, let's check what exists in the database without filters to debug
       console.log('🔍 Collection Due Report - DEBUG: Checking all payment_plans in date range...');
+      const debugNewFromDate = filters.fromDate ? `${filters.fromDate}T00:00:00` : '2020-01-01T00:00:00';
+      const debugNewToDate = filters.toDate ? `${filters.toDate}T23:59:59` : '2030-12-31T23:59:59';
       const { data: debugNewPayments, error: debugNewError } = await supabase
         .from('payment_plans')
         .select('id, lead_id, due_date, ready_to_pay, cancel_date, paid')
-        .gte('due_date', filters.fromDate || '2020-01-01')
-        .lte('due_date', filters.toDate || '2030-12-31')
+        .gte('due_date', debugNewFromDate)
+        .lte('due_date', debugNewToDate)
         .limit(10);
       
       if (debugNewError) {
@@ -4007,6 +4154,7 @@ const CollectionDueReport = () => {
           due_date,
           cancel_date,
           ready_to_pay,
+          ready_to_pay_by,
           paid
         `)
         .eq('ready_to_pay', true)
@@ -4015,12 +4163,14 @@ const CollectionDueReport = () => {
         .is('cancel_date', null);
 
       if (filters.fromDate) {
-        console.log('🔍 Collection Due Report - Filtering new payments from date:', filters.fromDate);
-        newPaymentsQuery = newPaymentsQuery.gte('due_date', filters.fromDate);
+        const fromDateTime = `${filters.fromDate}T00:00:00`;
+        console.log('🔍 Collection Due Report - Filtering new payments from date:', fromDateTime);
+        newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
       }
       if (filters.toDate) {
-        console.log('🔍 Collection Due Report - Filtering new payments to date:', filters.toDate);
-        newPaymentsQuery = newPaymentsQuery.lte('due_date', filters.toDate);
+        const toDateTime = `${filters.toDate}T23:59:59`;
+        console.log('🔍 Collection Due Report - Filtering new payments to date:', toDateTime);
+        newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
       }
 
       const { data: newPayments, error: newError } = await newPaymentsQuery;
@@ -4032,13 +4182,15 @@ const CollectionDueReport = () => {
       
       // DEBUG: Check without ready_to_pay filter
       console.log('🔍 Collection Due Report - DEBUG: Checking new payments WITHOUT ready_to_pay filter...');
+      const debugFromDate = filters.fromDate ? `${filters.fromDate}T00:00:00` : '2020-01-01T00:00:00';
+      const debugToDate = filters.toDate ? `${filters.toDate}T23:59:59` : '2030-12-31T23:59:59';
       const { data: debugNewWithoutFilter, error: debugNewWithoutError } = await supabase
         .from('payment_plans')
         .select('id, lead_id, due_date, ready_to_pay, cancel_date, paid')
         .not('due_date', 'is', null)
         .is('cancel_date', null)
-        .gte('due_date', filters.fromDate || '2020-01-01')
-        .lte('due_date', filters.toDate || '2030-12-31')
+        .gte('due_date', debugFromDate)
+        .lte('due_date', debugToDate)
         .limit(10);
       
       if (!debugNewWithoutError) {
@@ -4048,11 +4200,13 @@ const CollectionDueReport = () => {
 
       // DEBUG: Check legacy payments
       console.log('🔍 Collection Due Report - DEBUG: Checking all finances_paymentplanrow in date range...');
+      const debugLegacyFromDate = filters.fromDate ? `${filters.fromDate}T00:00:00` : '2020-01-01T00:00:00';
+      const debugLegacyToDate = filters.toDate ? `${filters.toDate}T23:59:59` : '2030-12-31T23:59:59';
       const { data: debugLegacyPayments, error: debugLegacyError } = await supabase
         .from('finances_paymentplanrow')
         .select('id, lead_id, due_date, date, ready_to_pay, cancel_date, actual_date')
-        .gte('date', filters.fromDate || '2020-01-01')
-        .lte('date', filters.toDate || '2030-12-31')
+        .gte('date', debugLegacyFromDate)
+        .lte('date', debugLegacyToDate)
         .limit(10);
       
       if (debugLegacyError) {
@@ -4076,7 +4230,7 @@ const CollectionDueReport = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow
-      // Filter by 'date' column and only include payments with due_date NOT NULL (sent to finance)
+      // Filter by 'date' column for date range and only include payments with due_date NOT NULL
       console.log('🔍 Collection Due Report - Fetching legacy payment plans from finances_paymentplanrow...');
       let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
@@ -4084,6 +4238,7 @@ const CollectionDueReport = () => {
           id,
           lead_id,
           value,
+          value_base,
           vat_value,
           currency_id,
           due_date,
@@ -4091,20 +4246,34 @@ const CollectionDueReport = () => {
           cancel_date,
           ready_to_pay,
           actual_date,
+          due_by_id,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
-        .is('actual_date', null) // Only unpaid payments (actual_date IS NULL means not paid)
-        .is('cancel_date', null)
-        .not('due_date', 'is', null); // due_date IS NOT NULL means sent to finance
+        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
+        .is('cancel_date', null); // Exclude cancelled payments (only fetch if cancel_date IS NULL)
 
-      // Filter by 'date' column from finances_paymentplanrow
+      // Filter by 'date' column from finances_paymentplanrow for date range
       if (filters.fromDate) {
-        console.log('🔍 Collection Due Report - Filtering legacy payments by date column from:', filters.fromDate);
-        legacyPaymentsQuery = legacyPaymentsQuery.gte('date', filters.fromDate);
+        const fromDateTime = `${filters.fromDate}T00:00:00`;
+        console.log('🔍 Collection Due Report - Filtering legacy payments by date column from:', fromDateTime);
+        legacyPaymentsQuery = legacyPaymentsQuery.gte('date', fromDateTime);
       }
       if (filters.toDate) {
-        console.log('🔍 Collection Due Report - Filtering legacy payments by date column to:', filters.toDate);
-        legacyPaymentsQuery = legacyPaymentsQuery.lte('date', filters.toDate);
+        const toDateTime = `${filters.toDate}T23:59:59`;
+        console.log('🔍 Collection Due Report - Filtering legacy payments by date column to:', toDateTime);
+        legacyPaymentsQuery = legacyPaymentsQuery.lte('date', toDateTime);
+      }
+
+      // Also filter by due_date to match the date range
+      if (filters.fromDate) {
+        const fromDateTime = `${filters.fromDate}T00:00:00`;
+        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date from:', fromDateTime);
+        legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+      }
+      if (filters.toDate) {
+        const toDateTime = `${filters.toDate}T23:59:59`;
+        console.log('🔍 Collection Due Report - Filtering legacy payments by due_date to:', toDateTime);
+        legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
       }
 
       const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
@@ -4268,9 +4437,11 @@ const CollectionDueReport = () => {
           console.log('✅ Collection Due Report - Fetched legacy leads for applicants:', legacyLeadsForApplicants?.length || 0);
           if (legacyLeadsForApplicants) {
             legacyLeadsForApplicants.forEach(lead => {
-              if (lead.no_of_applicants) {
-                legacyApplicantsCountMap.set(lead.id.toString(), Number(lead.no_of_applicants) || 0);
-              }
+              // Handle bigint null values - convert to number, default to 0 if null
+              const applicantsCount = lead.no_of_applicants !== null && lead.no_of_applicants !== undefined
+                ? Number(lead.no_of_applicants)
+                : 0;
+              legacyApplicantsCountMap.set(lead.id.toString(), applicantsCount);
             });
           }
         }
@@ -4285,48 +4456,74 @@ const CollectionDueReport = () => {
 
       // Collect handler names from new leads and handler IDs from legacy leads
       const allHandlerNames = new Set<string>(); // For new leads - handler is text field
-      const allHandlerIds: number[] = []; // For legacy leads - case_handler_id is numeric
+      const allHandlerIds: number[] = []; // For legacy leads - case_handler_id or due_by_id is numeric
       
-      if (newLeadsMap.size > 0) {
-        console.log('🔍 Collection Due Report - Collecting handler names from new leads...');
-        newLeadsMap.forEach((lead, leadId) => {
-          console.log('📊 New lead handler info:', {
-            leadId,
-            handler: lead.handler,
-            case_handler_id: lead.case_handler_id
-          });
-          // For new leads, use the handler text field (display_name)
-          if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
-            allHandlerNames.add(lead.handler.trim());
-            console.log('✅ Added handler name:', lead.handler.trim());
-          }
-        });
-      }
-      if (legacyLeadsMap.size > 0) {
-        console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads...');
-        legacyLeadsMap.forEach((lead: any, leadId: any) => {
-          console.log('📊 Legacy lead handler info:', {
-            leadId,
-            case_handler_id: lead.case_handler_id,
-            case_handler_id_type: typeof lead.case_handler_id
-          });
-          const handlerId = normalizeHandlerId(lead.case_handler_id);
+      if (filters.employeeType === 'actual_employee_due') {
+        // Collect ready_to_pay_by from new payments
+        console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments...');
+        (newPayments || []).forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.ready_to_pay_by);
           if (handlerId !== null) {
             allHandlerIds.push(handlerId);
-            console.log('✅ Added handler ID:', handlerId);
-          } else {
-            console.log('⚠️ Handler ID is null for lead:', leadId);
+            console.log('✅ Added ready_to_pay_by:', handlerId);
           }
         });
+        
+        // Collect due_by_id from legacy payments
+        console.log('🔍 Collection Due Report - Collecting due_by_id from legacy payments...');
+        filteredLegacyPayments.forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            console.log('✅ Added due_by_id:', handlerId);
+          }
+        });
+      } else {
+        // Collect handler names from new leads (default)
+        if (newLeadsMap.size > 0) {
+          console.log('🔍 Collection Due Report - Collecting handler names from new leads...');
+          newLeadsMap.forEach((lead, leadId) => {
+            console.log('📊 New lead handler info:', {
+              leadId,
+              handler: lead.handler,
+              case_handler_id: lead.case_handler_id
+            });
+            // For new leads, use the handler text field (display_name)
+            if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+              allHandlerNames.add(lead.handler.trim());
+              console.log('✅ Added handler name:', lead.handler.trim());
+            }
+          });
+        }
+        
+        // Collect case_handler_id from legacy leads (default)
+        if (legacyLeadsMap.size > 0) {
+          console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads...');
+          legacyLeadsMap.forEach((lead: any, leadId: any) => {
+            console.log('📊 Legacy lead handler info:', {
+              leadId,
+              case_handler_id: lead.case_handler_id,
+              case_handler_id_type: typeof lead.case_handler_id
+            });
+            const handlerId = normalizeHandlerId(lead.case_handler_id);
+            if (handlerId !== null) {
+              allHandlerIds.push(handlerId);
+              console.log('✅ Added handler ID:', handlerId);
+            } else {
+              console.log('⚠️ Handler ID is null for lead:', leadId);
+            }
+          });
+        }
       }
       console.log('📊 Collection Due Report - All collected handler names (new):', Array.from(allHandlerNames));
       console.log('📊 Collection Due Report - All collected handler IDs (legacy):', allHandlerIds);
 
       // Fetch handler information:
-      // 1. For new leads: fetch employees by display_name (handler text field) to get their IDs
-      // 2. For legacy leads: fetch employees by ID (case_handler_id) to get their display_name
+      // 1. For new leads (case_handler mode): fetch employees by display_name (handler text field) to get their IDs
+      // 2. For new leads (actual_employee_due mode): ready_to_pay_by IDs are collected into allHandlerIds
+      // 3. For legacy leads: fetch employees by ID (case_handler_id or due_by_id) to get their display_name
       const handlerMap = new Map<number, string>(); // ID -> display_name
-      const handlerNameToIdMap = new Map<string, number>(); // display_name -> ID (for new leads)
+      const handlerNameToIdMap = new Map<string, number>(); // display_name -> ID (for new leads in case_handler mode)
       
       // Fetch employees by display_name for new leads
       if (allHandlerNames.size > 0) {
@@ -4352,10 +4549,10 @@ const CollectionDueReport = () => {
         }
       }
       
-      // Fetch employees by ID for legacy leads
+      // Fetch employees by ID (includes legacy case_handler_id/due_by_id and new ready_to_pay_by when in actual_employee_due mode)
       const uniqueHandlerIds = Array.from(new Set(allHandlerIds));
       if (uniqueHandlerIds.length > 0) {
-        console.log('🔍 Collection Due Report - Fetching handler names by ID for', uniqueHandlerIds.length, 'legacy handlers:', uniqueHandlerIds);
+        console.log('🔍 Collection Due Report - Fetching handler names by ID for', uniqueHandlerIds.length, 'handlers:', uniqueHandlerIds);
         const { data: handlerData, error: handlerError } = await supabase
           .from('tenants_employee')
           .select('id, display_name')
@@ -4398,20 +4595,28 @@ const CollectionDueReport = () => {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) return;
 
-        // Get handler - for new leads, use handler text field (display_name), not case_handler_id
+        // Get handler - use ready_to_pay_by if "Actual Employee Due" is selected, otherwise use handler from lead
         let handlerId: number | null = null;
         let handlerName = '—';
         
-        // For new leads, handler is stored as text (display_name) in the 'handler' column
-        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
-          const handlerNameFromLead = lead.handler.trim();
-          // Look up the employee ID by display_name
-          handlerId = handlerNameToIdMap.get(handlerNameFromLead) || null;
+        if (filters.employeeType === 'actual_employee_due') {
+          // Use ready_to_pay_by from payment if "Actual Employee Due" is selected
+          handlerId = normalizeHandlerId(payment.ready_to_pay_by);
           if (handlerId !== null) {
-            handlerName = handlerMap.get(handlerId) || handlerNameFromLead;
-          } else {
-            // Handler name not found in map, use the name directly
-            handlerName = handlerNameFromLead;
+            handlerName = handlerMap.get(handlerId) || '—';
+          }
+        } else {
+          // For new leads, handler is stored as text (display_name) in the 'handler' column
+          if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+            const handlerNameFromLead = lead.handler.trim();
+            // Look up the employee ID by display_name
+            handlerId = handlerNameToIdMap.get(handlerNameFromLead) || null;
+            if (handlerId !== null) {
+              handlerName = handlerMap.get(handlerId) || handlerNameFromLead;
+            } else {
+              // Handler name not found in map, use the name directly
+              handlerName = handlerNameFromLead;
+            }
           }
         }
 
@@ -4459,9 +4664,18 @@ const CollectionDueReport = () => {
           return;
         }
 
-        // Get handler - use handlerMap for consistent lookup
-        const handlerId = normalizeHandlerId(lead.case_handler_id);
+        // Get handler - use case_handler_id or due_by_id based on filter selection
+        let handlerId: number | null = null;
         let handlerName = '—';
+        
+        if (filters.employeeType === 'actual_employee_due') {
+          // Use due_by_id from payment if "Actual Employee Due" is selected
+          handlerId = normalizeHandlerId(payment.due_by_id);
+        } else {
+          // Use case_handler_id from lead if "Case Handler" is selected (default)
+          handlerId = normalizeHandlerId(lead.case_handler_id);
+        }
+        
         if (handlerId !== null) {
           handlerName = handlerMap.get(handlerId) || '—';
           if (handlerName === '—') {
@@ -4470,7 +4684,9 @@ const CollectionDueReport = () => {
             console.warn('⚠️ Collection Due Report - Legacy lead handler not found in map, will fetch:', {
               handlerId,
               handlerIdType: typeof handlerId,
+              employeeType: filters.employeeType,
               case_handler_id: lead.case_handler_id,
+              due_by_id: payment.due_by_id,
               mapKeys: Array.from(handlerMap.keys()),
               leadId: payment.lead_id
             });
@@ -4484,11 +4700,33 @@ const CollectionDueReport = () => {
         const departmentId = department?.id?.toString() || null;
         const departmentName = department?.name || mainCategory?.name || category?.name || '—';
 
-        const value = Number(payment.value || 0);
+        // Use value_base for legacy payments as specified
+        const value = Number(payment.value_base || 0);
         let vat = Number(payment.vat_value || 0);
-        const accountingCurrency: any = payment.accounting_currencies ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) : null;
-        const currency = accountingCurrency?.name || (payment.currency_id === 2 ? '€' : payment.currency_id === 3 ? '$' : payment.currency_id === 4 ? '£' : '₪');
-        if (!vat && currency === '₪') {
+        
+        // Get currency from accounting_currencies relation (joined via currency_id)
+        const accountingCurrency: any = payment.accounting_currencies 
+          ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
+          : null;
+        
+        // Map currency_id to currency symbol/name (currency_id 1 = NIS, 2 = EUR, 3 = USD, 4 = GBP)
+        let currency = '₪'; // Default to NIS
+        if (accountingCurrency?.name) {
+          currency = accountingCurrency.name;
+        } else if (accountingCurrency?.iso_code) {
+          currency = accountingCurrency.iso_code;
+        } else if (payment.currency_id) {
+          switch (payment.currency_id) {
+            case 1: currency = '₪'; break; // NIS
+            case 2: currency = '€'; break; // EUR
+            case 3: currency = '$'; break; // USD
+            case 4: currency = '£'; break; // GBP
+            default: currency = '₪'; break;
+          }
+        }
+        
+        // Calculate VAT if not provided and currency is NIS (₪)
+        if (!vat && (currency === '₪' || currency === 'ILS')) {
           vat = Math.round(value * 0.18 * 100) / 100;
         }
         const amount = value + vat;
@@ -4564,6 +4802,7 @@ const CollectionDueReport = () => {
       console.log('✅ Collection Due Report - Final filtered payments:', filteredPayments.length);
 
       // Group by employee
+      // Cases count uses a Set to ensure each lead is counted only once, even if there are multiple payments for the same lead
       const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
       filteredPayments.forEach(payment => {
         const key = payment.handlerId?.toString() || 'unassigned';
@@ -4572,14 +4811,14 @@ const CollectionDueReport = () => {
             handlerId: payment.handlerId,
             handlerName: payment.handlerName,
             departmentName: payment.departmentName,
-            cases: new Set(),
+            cases: new Set(), // Set ensures unique lead IDs - no duplicates
             applicantsLeads: new Set(),
             applicants: 0,
             total: 0,
           });
         }
         const entry = employeeMap.get(key)!;
-        entry.cases.add(payment.leadId);
+        entry.cases.add(payment.leadId); // Set automatically prevents duplicate lead IDs
         entry.total += payment.amount;
 
         // Add applicants count only once per lead
@@ -4700,12 +4939,17 @@ const CollectionDueReport = () => {
         }
       }
 
+      // Store maps for drawer access
+      setEmployeeMapStore(employeeMap);
+      
       const employeeDataArray = Array.from(employeeMap.values()).map(entry => ({
         employee: entry.handlerName,
         department: entry.departmentName,
         cases: entry.cases.size,
         applicants: entry.applicants,
         total: entry.total,
+        handlerId: entry.handlerId, // Store handlerId for drawer access
+        leadIds: Array.from(entry.cases), // Store leadIds for drawer
       })).sort((a, b) => b.total - a.total);
 
       console.log('✅ Collection Due Report - Employee data array:', employeeDataArray.length, 'employees');
@@ -4756,11 +5000,15 @@ const CollectionDueReport = () => {
         }
       });
 
+      // Store department map for drawer access
+      setDepartmentMapStore(departmentMap);
+      
       const departmentDataArray = Array.from(departmentMap.values()).map(entry => ({
         department: entry.departmentName,
         cases: entry.cases.size,
         applicants: entry.applicants,
         total: entry.total,
+        leadIds: Array.from(entry.cases), // Store leadIds for drawer
       })).sort((a, b) => b.total - a.total);
 
       console.log('✅ Collection Due Report - Department data array:', departmentDataArray.length, 'departments');
@@ -4787,6 +5035,142 @@ const CollectionDueReport = () => {
       minimumFractionDigits: 1,
       maximumFractionDigits: 1,
     }).format(amount);
+  };
+
+  const handleOpenDrawer = async (leadIds: string[], title: string) => {
+    setDrawerLoading(true);
+    setIsDrawerOpen(true);
+    setDrawerTitle(title);
+    
+    try {
+      // Separate new and legacy leadIds
+      const newLeadIds: string[] = [];
+      const legacyLeadIds: number[] = [];
+      
+      leadIds.forEach(leadId => {
+        if (leadId.startsWith('legacy_')) {
+          const legacyId = Number(leadId.replace('legacy_', ''));
+          if (!Number.isNaN(legacyId)) {
+            legacyLeadIds.push(legacyId);
+          }
+        } else {
+          newLeadIds.push(leadId);
+        }
+      });
+
+      const leadsData: any[] = [];
+
+      // Fetch new leads
+      if (newLeadIds.length > 0) {
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            lead_number,
+            name,
+            category_id,
+            topic,
+            balance,
+            balance_currency
+          `)
+          .in('id', newLeadIds);
+
+        if (newLeadsError) {
+          console.error('Error fetching new leads for drawer:', newLeadsError);
+        } else {
+          // Fetch applicants count for new leads
+          const { data: contacts, error: contactsError } = await supabase
+            .from('contacts')
+            .select('lead_id')
+            .in('lead_id', newLeadIds)
+            .eq('is_persecuted', false);
+
+          const applicantsCountMap = new Map<string, number>();
+          if (!contactsError && contacts) {
+            contacts.forEach(contact => {
+              const count = applicantsCountMap.get(contact.lead_id) || 0;
+              applicantsCountMap.set(contact.lead_id, count + 1);
+            });
+          }
+
+          newLeads?.forEach(lead => {
+            leadsData.push({
+              leadId: lead.id,
+              leadNumber: lead.lead_number, // For new leads, use lead_number column
+              clientName: lead.name,
+              categoryId: lead.category_id,
+              topic: lead.topic || '—',
+              applicants: applicantsCountMap.get(lead.id) || 0,
+              value: lead.balance || 0,
+              currency: lead.balance_currency || '₪',
+              leadType: 'new',
+            });
+          });
+        }
+      }
+
+      // Fetch legacy leads
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            name,
+            category_id,
+            topic,
+            total,
+            currency_id,
+            no_of_applicants,
+            accounting_currencies!leads_lead_currency_id_fkey(name, iso_code)
+          `)
+          .in('id', legacyLeadIds);
+
+        if (legacyLeadsError) {
+          console.error('Error fetching legacy leads for drawer:', legacyLeadsError);
+        } else {
+          legacyLeads?.forEach(lead => {
+            const accountingCurrency: any = lead.accounting_currencies 
+              ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+              : null;
+            
+            const currency = accountingCurrency?.name || accountingCurrency?.iso_code ||
+              (lead.currency_id === 2 ? '€' : 
+               lead.currency_id === 3 ? '$' : 
+               lead.currency_id === 4 ? '£' : '₪');
+
+            // Handle bigint null values for applicants
+            const applicantsCount = lead.no_of_applicants !== null && lead.no_of_applicants !== undefined
+              ? Number(lead.no_of_applicants)
+              : 0;
+
+            leadsData.push({
+              leadId: lead.id,
+              leadNumber: lead.id.toString(), // For legacy leads, use id column as lead number
+              clientName: lead.name,
+              categoryId: lead.category_id,
+              topic: lead.topic || '—',
+              applicants: applicantsCount,
+              value: lead.total || 0,
+              currency: currency,
+              leadType: 'legacy',
+            });
+          });
+        }
+      }
+
+      setDrawerLeads(leadsData);
+    } catch (error) {
+      console.error('Error fetching leads for drawer:', error);
+      setDrawerLeads([]);
+    } finally {
+      setDrawerLoading(false);
+    }
+  };
+
+  const handleCloseDrawer = () => {
+    setIsDrawerOpen(false);
+    setDrawerTitle('');
+    setDrawerLeads([]);
   };
 
   return (
@@ -4855,13 +5239,14 @@ const CollectionDueReport = () => {
             <label className="label mb-2"><span className="label-text">By employee:</span></label>
             <select
               className="select select-bordered"
-              value={filters.employee}
-              onChange={e => handleFilterChange('employee', e.target.value)}
+              value={filters.employeeType}
+              onChange={e => {
+                handleFilterChange('employeeType', e.target.value);
+                handleFilterChange('employee', ''); // Reset employee filter when changing type
+              }}
             >
-              <option value="">Case Handler</option>
-              {employees.map(emp => (
-                <option key={emp.id} value={emp.id.toString()}>{emp.name}</option>
-              ))}
+              <option value="case_handler">Case Handler</option>
+              <option value="actual_employee_due">Actual Employee Due</option>
             </select>
           </div>
         </div>
@@ -4888,18 +5273,29 @@ const CollectionDueReport = () => {
           </div>
 
           {/* By Employee Table */}
-          <div className="card bg-base-100 shadow-lg mb-6">
-            <div className="card-body">
-              <h3 className="text-xl font-bold mb-4">By Employee</h3>
-              <div className="overflow-x-auto">
-                <table className="table w-full">
+          <div className="-mx-4 sm:-mx-6 md:mx-0 mb-6">
+            <div className="px-4 sm:px-6 md:px-0">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold">By Employee</h3>
+                <button
+                  onClick={exportEmployeeTable}
+                  className="btn btn-sm btn-outline btn-primary flex items-center gap-2"
+                  title="Export to Excel"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Export Excel</span>
+                </button>
+              </div>
+              <div className="overflow-x-auto -mx-4 sm:-mx-6 md:mx-0">
+                <div className="px-4 sm:px-6 md:px-0">
+                  <table className="table w-full">
                   <thead>
                     <tr>
-                      <th>Employee</th>
-                      <th>Department</th>
-                      <th>Cases</th>
-                      <th>Applicants</th>
-                      <th>Total</th>
+                      <th className="text-left">Employee</th>
+                      <th className="text-left">Department</th>
+                      <th className="text-center">Cases</th>
+                      <th className="text-center">Applicants</th>
+                      <th className="text-right">Total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4912,13 +5308,17 @@ const CollectionDueReport = () => {
                     ) : employeeData.length > 0 ? (
                       employeeData.map((row, index) => (
                         <tr key={index}>
-                          <td className="font-medium">{row.employee}</td>
-                          <td>{row.department}</td>
+                          <td className="text-left font-medium">{row.employee}</td>
+                          <td className="text-left">{row.department}</td>
                           <td className="text-center">{row.cases}</td>
                           <td className="text-center">{row.applicants}</td>
                           <td className="text-right font-semibold">
                             {formatCurrency(row.total)}
-                            <InformationCircleIcon className="w-4 h-4 inline-block ml-2 text-gray-400" />
+                            <InformationCircleIcon 
+                              className="w-4 h-4 inline-block ml-2 text-gray-400 hover:text-primary cursor-pointer transition-colors" 
+                              onClick={() => handleOpenDrawer(row.leadIds || [], `${row.employee} - Leads`)}
+                              title="View leads"
+                            />
                           </td>
                         </tr>
                       ))
@@ -4928,23 +5328,35 @@ const CollectionDueReport = () => {
                       </tr>
                     )}
                   </tbody>
-                </table>
+                  </table>
+                </div>
               </div>
             </div>
           </div>
 
           {/* By Department Table */}
-          <div className="card bg-base-100 shadow-lg">
-            <div className="card-body">
-              <h3 className="text-xl font-bold mb-4">By Department</h3>
-              <div className="overflow-x-auto">
-                <table className="table w-full">
+          <div className="-mx-4 sm:-mx-6 md:mx-0">
+            <div className="px-4 sm:px-6 md:px-0">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-xl font-bold">By Department</h3>
+                <button
+                  onClick={exportDepartmentTable}
+                  className="btn btn-sm btn-outline btn-primary flex items-center gap-2"
+                  title="Export to Excel"
+                >
+                  <ArrowDownTrayIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Export Excel</span>
+                </button>
+              </div>
+              <div className="overflow-x-auto -mx-4 sm:-mx-6 md:mx-0">
+                <div className="px-4 sm:px-6 md:px-0">
+                  <table className="table w-full">
                   <thead>
                     <tr>
-                      <th>Department</th>
-                      <th>Cases</th>
-                      <th>Applicants</th>
-                      <th>Total</th>
+                      <th className="text-left">Department</th>
+                      <th className="text-center">Cases</th>
+                      <th className="text-center">Applicants</th>
+                      <th className="text-right">Total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -4957,10 +5369,17 @@ const CollectionDueReport = () => {
                     ) : departmentData.length > 0 ? (
                       departmentData.map((row, index) => (
                         <tr key={index}>
-                          <td className="font-medium">{row.department}</td>
+                          <td className="text-left font-medium">{row.department}</td>
                           <td className="text-center">{row.cases}</td>
                           <td className="text-center">{row.applicants}</td>
-                          <td className="text-right font-semibold">{formatCurrency(row.total)}</td>
+                          <td className="text-right font-semibold">
+                            {formatCurrency(row.total)}
+                            <InformationCircleIcon 
+                              className="w-4 h-4 inline-block ml-2 text-gray-400 hover:text-primary cursor-pointer transition-colors" 
+                              onClick={() => handleOpenDrawer(row.leadIds || [], `${row.department} - Leads`)}
+                              title="View leads"
+                            />
+                          </td>
                         </tr>
                       ))
                     ) : (
@@ -4969,8 +5388,97 @@ const CollectionDueReport = () => {
                       </tr>
                     )}
                   </tbody>
-                </table>
+                  </table>
+                </div>
               </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Leads Drawer */}
+      {isDrawerOpen && (
+        <div className="fixed inset-0 z-[1000] flex">
+          {/* Overlay */}
+          <div 
+            className="fixed inset-0 bg-black/30 transition-opacity duration-300" 
+            onClick={handleCloseDrawer}
+          />
+          
+          {/* Drawer */}
+          <div className="ml-auto w-full max-w-4xl bg-white h-full shadow-2xl flex flex-col z-[1100]">
+            {/* Header */}
+            <div className="flex items-center justify-between px-6 py-4 border-b border-gray-200">
+              <div>
+                <h2 className="text-xl font-bold text-gray-900">{drawerTitle}</h2>
+                <p className="text-sm text-gray-500 mt-1">
+                  {drawerLeads.length} {drawerLeads.length === 1 ? 'lead' : 'leads'}
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost btn-circle"
+                onClick={handleCloseDrawer}
+                aria-label="Close drawer"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {drawerLoading ? (
+                <div className="flex justify-center items-center py-12">
+                  <span className="loading loading-spinner loading-lg"></span>
+                </div>
+              ) : drawerLeads.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="table w-full">
+                    <thead>
+                      <tr className="bg-gray-50">
+                        <th className="text-left">Lead</th>
+                        <th className="text-left">Category</th>
+                        <th className="text-left">Topic</th>
+                        <th className="text-center">Applicants</th>
+                        <th className="text-right">Value</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {drawerLeads.map((lead, index) => (
+                        <tr 
+                          key={index} 
+                          className="hover:bg-gray-50 cursor-pointer transition-colors"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (lead.leadNumber) {
+                              navigate(`/clients/${lead.leadNumber}`);
+                            }
+                          }}
+                        >
+                          <td className="text-left">
+                            <div>
+                              <div className="font-semibold">#{lead.leadNumber}</div>
+                              <div className="text-sm text-gray-600">{lead.clientName}</div>
+                            </div>
+                          </td>
+                          <td className="text-left">{getCategoryName(lead.categoryId) || '—'}</td>
+                          <td className="text-left">{lead.topic || '—'}</td>
+                          <td className="text-center">{lead.applicants || 0}</td>
+                          <td className="text-right">
+                            {lead.value > 0 
+                              ? `${lead.value.toLocaleString()} ${lead.currency}`
+                              : '—'
+                            }
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12 text-gray-500">
+                  No leads found
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -4979,6 +5487,654 @@ const CollectionDueReport = () => {
   );
 };
 const SumActiveReport = () => <div className="p-6">Sum Active Cases Content</div>;
+
+const ContributionAllReport = () => {
+  const today = new Date();
+  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
+  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
+
+  const [filters, setFilters] = useState({
+    fromDate: firstDayOfMonth,
+    toDate: lastDayOfMonth,
+  });
+  const [departmentData, setDepartmentData] = useState<Map<string, { employees: any[]; supervisor: { id: number; name: string } | null }>>(new Map());
+  const [loading, setLoading] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
+
+  useEffect(() => {
+    const fetchDepartments = async () => {
+      const { data: deptData } = await supabase
+        .from('tenant_departement')
+        .select('id, name')
+        .order('name');
+      if (deptData) {
+        setDepartments(deptData.map(dept => ({ id: dept.id.toString(), name: dept.name })));
+      }
+    };
+    fetchDepartments();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const formatCurrency = (amount: number) => {
+    return new Intl.NumberFormat('he-IL', {
+      style: 'currency',
+      currency: 'ILS',
+      minimumFractionDigits: 0,
+      maximumFractionDigits: 0,
+    }).format(amount);
+  };
+
+  const handleSearch = async () => {
+    setLoading(true);
+    setSearchPerformed(true);
+    try {
+      console.log('🔍 ContributionAll Report - Starting search with filters:', filters);
+
+      // Step 1: Find all leads that have been through stage 60 (signed agreement)
+      const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
+      const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+
+      let stageHistoryQuery = supabase
+        .from('leads_leadstage')
+        .select('id, stage, cdate, lead_id, newlead_id')
+        .eq('stage', 60); // Stage 60 = signed agreement
+
+      if (fromDateTime) {
+        stageHistoryQuery = stageHistoryQuery.gte('cdate', fromDateTime);
+      }
+      if (toDateTime) {
+        stageHistoryQuery = stageHistoryQuery.lte('cdate', toDateTime);
+      }
+
+      const { data: stageHistoryData, error: stageHistoryError } = await stageHistoryQuery;
+      if (stageHistoryError) throw stageHistoryError;
+
+      console.log('✅ ContributionAll Report - Found', stageHistoryData?.length || 0, 'leads with stage 60');
+
+      // Separate new and legacy lead IDs
+      const newLeadIds = new Set<string>();
+      const legacyLeadIds = new Set<number>();
+
+      stageHistoryData?.forEach((entry: any) => {
+        if (entry.newlead_id) {
+          newLeadIds.add(entry.newlead_id.toString());
+        }
+        if (entry.lead_id !== null && entry.lead_id !== undefined) {
+          legacyLeadIds.add(Number(entry.lead_id));
+        }
+      });
+
+      console.log('📊 ContributionAll Report - New leads:', newLeadIds.size, 'Legacy leads:', legacyLeadIds.size);
+
+      // Step 2: Fetch new leads data
+      const newLeadsMap = new Map();
+      if (newLeadIds.size > 0) {
+        const newLeadIdsArray = Array.from(newLeadIds);
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            lead_number,
+            name,
+            balance,
+            balance_currency,
+            proposal_total,
+            proposal_currency,
+            closer,
+            manager,
+            handler,
+            case_handler_id,
+            category_id,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', newLeadIdsArray);
+
+        if (newLeadsError) {
+          console.error('❌ ContributionAll Report - Error fetching new leads:', newLeadsError);
+        } else {
+          newLeads?.forEach(lead => {
+            newLeadsMap.set(lead.id, lead);
+          });
+          console.log('✅ ContributionAll Report - Fetched', newLeads?.length || 0, 'new leads');
+        }
+      }
+
+      // Step 3: Fetch legacy leads data
+      const legacyLeadsMap = new Map();
+      if (legacyLeadIds.size > 0) {
+        const legacyLeadIdsArray = Array.from(legacyLeadIds);
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            name,
+            total,
+            currency_id,
+            closer_id,
+            meeting_manager_id,
+            case_handler_id,
+            category_id,
+            accounting_currencies!leads_lead_currency_id_fkey(name, iso_code),
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', legacyLeadIdsArray);
+
+        if (legacyLeadsError) {
+          console.error('❌ ContributionAll Report - Error fetching legacy leads:', legacyLeadsError);
+        } else {
+          legacyLeads?.forEach(lead => {
+            // Store with both number and string keys for compatibility
+            const leadIdNum = Number(lead.id);
+            const leadIdStr = lead.id.toString();
+            legacyLeadsMap.set(leadIdNum, lead);
+            if (leadIdNum.toString() !== leadIdStr) {
+              legacyLeadsMap.set(leadIdStr, lead);
+            }
+          });
+          console.log('✅ ContributionAll Report - Fetched', legacyLeads?.length || 0, 'legacy leads');
+        }
+      }
+
+      // Step 4: Fetch payment plans for new leads - filter by due_date within date range (like Collection Due)
+      const newPaymentsList: Array<{ leadId: string; amount: number }> = [];
+      if (newLeadIds.size > 0) {
+        const newLeadIdsArray = Array.from(newLeadIds);
+        const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
+        const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+
+        let newPaymentsQuery = supabase
+          .from('payment_plans')
+          .select('lead_id, value, value_vat, currency, due_date')
+          .in('lead_id', newLeadIdsArray)
+          .eq('ready_to_pay', true)
+          .eq('paid', false)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null);
+
+        if (fromDateTime) {
+          newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (toDateTime) {
+          newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
+        }
+
+        const { data: newPayments, error: newPaymentsError } = await newPaymentsQuery;
+
+        if (newPaymentsError) {
+          console.error('❌ ContributionAll Report - Error fetching new payments:', newPaymentsError);
+        } else {
+          newPayments?.forEach(payment => {
+            const value = Number(payment.value || 0);
+            let vat = Number(payment.value_vat || 0);
+            if (!vat && (payment.currency || '₪') === '₪') {
+              vat = Math.round(value * 0.18 * 100) / 100;
+            }
+            const amount = value + vat;
+            newPaymentsList.push({ leadId: payment.lead_id, amount });
+          });
+          console.log('✅ ContributionAll Report - Fetched payment plans for', newPayments?.length || 0, 'new leads');
+        }
+      }
+
+      // Step 5: Fetch payment plans for legacy leads - filter by date and due_date within date range (like Collection Due)
+      const legacyPaymentsList: Array<{ leadId: number; amount: number }> = [];
+      if (legacyLeadIds.size > 0) {
+        const legacyLeadIdsArray = Array.from(legacyLeadIds);
+        const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
+        const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+
+        let legacyPaymentsQuery = supabase
+          .from('finances_paymentplanrow')
+          .select('lead_id, value_base, vat_value, currency_id, due_date, date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)')
+          .in('lead_id', legacyLeadIdsArray)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null);
+
+        // Filter by 'date' column within date range
+        if (fromDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.gte('date', fromDateTime);
+        }
+        if (toDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.lte('date', toDateTime);
+        }
+
+        // Also filter by due_date to match the date range
+        if (fromDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (toDateTime) {
+          legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
+        }
+
+        const { data: legacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
+
+        if (legacyPaymentsError) {
+          console.error('❌ ContributionAll Report - Error fetching legacy payments:', legacyPaymentsError);
+        } else {
+          legacyPayments?.forEach((payment: any) => {
+            const value = Number(payment.value_base || 0);
+            let vat = Number(payment.vat_value || 0);
+            
+            const accountingCurrency: any = payment.accounting_currencies 
+              ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
+              : null;
+            
+            const currency = accountingCurrency?.name || accountingCurrency?.iso_code ||
+              (payment.currency_id === 2 ? '€' : 
+               payment.currency_id === 3 ? '$' : 
+               payment.currency_id === 4 ? '£' : '₪');
+            
+            if (!vat && (currency === '₪' || currency === 'ILS')) {
+              vat = Math.round(value * 0.18 * 100) / 100;
+            }
+            const amount = value + vat;
+            legacyPaymentsList.push({ leadId: Number(payment.lead_id), amount });
+          });
+          console.log('✅ ContributionAll Report - Fetched payment plans for', legacyPayments?.length || 0, 'legacy leads');
+        }
+      }
+
+      // Step 6: Fetch employee information
+      const employeeMap = new Map<number, string>();
+      const allEmployeeIds = new Set<number>();
+
+      // Collect employee IDs from new leads (closer and manager for signed, case_handler for payments)
+      newLeadsMap.forEach((lead: any) => {
+        if (lead.closer) {
+          allEmployeeIds.add(Number(lead.closer));
+        }
+        if (lead.manager) {
+          allEmployeeIds.add(Number(lead.manager));
+        }
+        if (lead.case_handler_id) {
+          allEmployeeIds.add(Number(lead.case_handler_id));
+        }
+      });
+
+      // Collect employee IDs from legacy leads (closer_id and meeting_manager_id for signed, case_handler_id for payments)
+      legacyLeadsMap.forEach((lead: any) => {
+        if (lead.closer_id !== null && lead.closer_id !== undefined) {
+          allEmployeeIds.add(Number(lead.closer_id));
+        }
+        if (lead.meeting_manager_id !== null && lead.meeting_manager_id !== undefined) {
+          allEmployeeIds.add(Number(lead.meeting_manager_id));
+        }
+        if (lead.case_handler_id) {
+          allEmployeeIds.add(Number(lead.case_handler_id));
+        }
+      });
+
+      if (allEmployeeIds.size > 0) {
+        const employeeIdsArray = Array.from(allEmployeeIds);
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, department_id, tenant_departement!department_id(id, name)')
+          .in('id', employeeIdsArray);
+
+        if (employeeError) {
+          console.error('❌ ContributionAll Report - Error fetching employees:', employeeError);
+        } else {
+          employeeData?.forEach(emp => {
+            employeeMap.set(Number(emp.id), emp.display_name || `Employee #${emp.id}`);
+          });
+          console.log('✅ ContributionAll Report - Fetched', employeeData?.length || 0, 'employees');
+        }
+      }
+
+      // Step 7: Process data and group by department and employee
+      const departmentEmployeeMap = new Map<string, Map<number, { 
+        employeeName: string; 
+        signed: number; 
+        signedPortion: number;
+        due: number;
+        duePortion: number;
+        hExpert: number;
+        expertPortion: number;
+        total: number;
+        totalPortion: number;
+        percentOfIncome: number;
+        normalized: number;
+      }>>();
+
+      // Helper function to initialize employee data in the map
+      const initializeEmployee = (deptName: string, empId: number, empName: string) => {
+        if (!departmentEmployeeMap.has(deptName)) {
+          departmentEmployeeMap.set(deptName, new Map());
+        }
+        const employeeMapForDept = departmentEmployeeMap.get(deptName)!;
+        if (!employeeMapForDept.has(empId)) {
+          employeeMapForDept.set(empId, { 
+            employeeName: empName, 
+            signed: 0, 
+            signedPortion: 0,
+            due: 0,
+            duePortion: 0,
+            hExpert: 0,
+            expertPortion: 0,
+            total: 0,
+            totalPortion: 0,
+            percentOfIncome: 0,
+            normalized: 0
+          });
+        }
+        return employeeMapForDept.get(empId)!;
+      };
+
+      // Process new leads - calculate signed amounts (using closer and manager, not handler)
+      newLeadsMap.forEach((lead: any, leadId: string) => {
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentName = department?.name || 'Unassigned';
+
+        // Signed = value of lead (balance || proposal_total, like SignedSalesReportPage)
+        const balanceAmount = Number(lead.balance || 0);
+        const proposalAmount = Number(lead.proposal_total || 0);
+        const signedValue = balanceAmount || proposalAmount || 0;
+
+        // Attribute to closer if exists
+        if (lead.closer) {
+          const closerId = Number(lead.closer);
+          if (closerId) {
+            const closerName = employeeMap.get(closerId) || 'Unknown';
+            const closerData = initializeEmployee(departmentName, closerId, closerName);
+            closerData.signed += signedValue;
+          }
+        }
+
+        // Attribute to manager if exists
+        if (lead.manager) {
+          const managerId = Number(lead.manager);
+          if (managerId) {
+            const managerName = employeeMap.get(managerId) || 'Unknown';
+            const managerData = initializeEmployee(departmentName, managerId, managerName);
+            managerData.signed += signedValue;
+          }
+        }
+      });
+
+      // Process new payments - calculate due amounts (like Collection Due)
+      newPaymentsList.forEach(payment => {
+        const lead = newLeadsMap.get(payment.leadId);
+        if (!lead) return;
+
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentName = department?.name || 'Unassigned';
+
+        const employeeId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+        if (!employeeId) return;
+
+        const employeeName = employeeMap.get(employeeId) || 'Unknown';
+        const employeeData = initializeEmployee(departmentName, employeeId, employeeName);
+        
+        // Add payment amount to due (process each payment individually like Collection Due)
+        employeeData.due += payment.amount;
+      });
+
+      // Process legacy leads - calculate signed amounts (using closer_id and meeting_manager_id, not case_handler_id)
+      legacyLeadsMap.forEach((lead: any, leadId: number) => {
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentName = department?.name || 'Unassigned';
+
+        // Signed = value of lead (total for legacy leads, like SignedSalesReportPage)
+        const signedValue = Number(lead.total || 0);
+
+        // Attribute to closer if exists
+        if (lead.closer_id !== null && lead.closer_id !== undefined) {
+          const closerId = Number(lead.closer_id);
+          if (closerId) {
+            const closerName = employeeMap.get(closerId) || 'Unknown';
+            const closerData = initializeEmployee(departmentName, closerId, closerName);
+            closerData.signed += signedValue;
+          }
+        }
+
+        // Attribute to manager if exists
+        if (lead.meeting_manager_id !== null && lead.meeting_manager_id !== undefined) {
+          const managerId = Number(lead.meeting_manager_id);
+          if (managerId) {
+            const managerName = employeeMap.get(managerId) || 'Unknown';
+            const managerData = initializeEmployee(departmentName, managerId, managerName);
+            managerData.signed += signedValue;
+          }
+        }
+      });
+
+      // Process legacy payments - calculate due amounts (like Collection Due)
+      legacyPaymentsList.forEach(payment => {
+        // Try both number and string keys for lookup
+        const leadIdKey = payment.leadId.toString();
+        const lead = legacyLeadsMap.get(payment.leadId) || legacyLeadsMap.get(leadIdKey);
+        if (!lead) return;
+
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentName = department?.name || 'Unassigned';
+
+        const employeeId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+        if (!employeeId) return;
+
+        const employeeName = employeeMap.get(employeeId) || 'Unknown';
+        const employeeData = initializeEmployee(departmentName, employeeId, employeeName);
+        
+        // Add payment amount to due (process each payment individually like Collection Due)
+        employeeData.due += payment.amount;
+      });
+
+      // Calculate total for each employee
+      departmentEmployeeMap.forEach((employeeMap) => {
+        employeeMap.forEach((employeeData) => {
+          employeeData.total = employeeData.signed + employeeData.due;
+        });
+      });
+
+      // Step 8: Fetch supervisors (employees with bonuses_role = 'dm')
+      const supervisorMap = new Map<string, { id: number; name: string }>(); // department_id -> supervisor
+      const { data: supervisorsData, error: supervisorsError } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, department_id')
+        .eq('bonuses_role', 'dm');
+
+      if (supervisorsError) {
+        console.error('❌ ContributionAll Report - Error fetching supervisors:', supervisorsError);
+      } else {
+        supervisorsData?.forEach(supervisor => {
+          if (supervisor.department_id) {
+            const deptId = supervisor.department_id.toString();
+            supervisorMap.set(deptId, {
+              id: supervisor.id,
+              name: supervisor.display_name || `Employee #${supervisor.id}`
+            });
+          }
+        });
+        console.log('✅ ContributionAll Report - Fetched', supervisorsData?.length || 0, 'supervisors');
+      }
+
+      // Step 9: Fetch department IDs to match supervisors
+      const departmentNameToIdMap = new Map<string, string>();
+      const { data: allDepartments, error: deptError } = await supabase
+        .from('tenant_departement')
+        .select('id, name');
+
+      if (!deptError && allDepartments) {
+        allDepartments.forEach(dept => {
+          departmentNameToIdMap.set(dept.name, dept.id.toString());
+        });
+      }
+
+      // Step 10: Convert to array format for display with supervisor info
+      const departmentDataMap = new Map<string, { employees: any[]; supervisor: { id: number; name: string } | null }>();
+      departmentEmployeeMap.forEach((employeeMap, deptName) => {
+        const employees = Array.from(employeeMap.values()).sort((a, b) => a.employeeName.localeCompare(b.employeeName));
+        const deptId = departmentNameToIdMap.get(deptName);
+        const supervisor = deptId ? supervisorMap.get(deptId) || null : null;
+        departmentDataMap.set(deptName, { employees, supervisor });
+      });
+
+      setDepartmentData(departmentDataMap);
+      console.log('✅ ContributionAll Report - Processed data for', departmentDataMap.size, 'departments');
+    } catch (error) {
+      console.error('Error fetching contribution data:', error);
+      toast.error('Failed to fetch contribution data.');
+      setDepartmentData(new Map<string, { employees: any[]; supervisor: { id: number; name: string } | null }>());
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      {/* Filters */}
+      <div className="bg-white mb-8">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">From date:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.fromDate}
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <label className="label mb-2"><span className="label-text">To date:</span></label>
+            <input
+              type="date"
+              className="input input-bordered"
+              value={filters.toDate}
+              onChange={e => handleFilterChange('toDate', e.target.value)}
+            />
+          </div>
+          <div className="form-control">
+            <button
+              className="btn btn-primary w-full"
+              onClick={handleSearch}
+              disabled={loading}
+            >
+              {loading ? 'Loading...' : 'Calc'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Results */}
+      {searchPerformed && (
+        <div>
+          {loading ? (
+            <div className="flex justify-center p-8">
+              <span className="loading loading-spinner loading-lg"></span>
+            </div>
+          ) : departmentData.size > 0 ? (
+            <div className="space-y-8">
+              {Array.from(departmentData.entries()).map(([deptName, deptData]) => (
+                <div key={deptName} className="-mx-4 sm:-mx-6 md:mx-0">
+                  <div className="px-4 sm:px-6 md:px-0">
+                    <h3 className="text-xl font-bold mb-4">{deptName}</h3>
+                    <div className="overflow-x-auto">
+                      <table className="table w-full text-xs sm:text-sm">
+                        <thead>
+                          <tr className="bg-white">
+                            <th className="text-left text-xs sm:text-sm">Employee</th>
+                            <th className="text-right text-xs sm:text-sm">Signed</th>
+                            <th className="text-right text-xs sm:text-sm bg-gray-100">Signed Portion</th>
+                            <th className="text-right text-xs sm:text-sm">Due</th>
+                            <th className="text-right text-xs sm:text-sm bg-gray-100">Due Portion</th>
+                            <th className="text-right text-xs sm:text-sm">H. Expert</th>
+                            <th className="text-right text-xs sm:text-sm bg-gray-100">Expert Portion</th>
+                            <th className="text-right text-xs sm:text-sm">Total</th>
+                            <th className="text-right text-xs sm:text-sm bg-gray-100">Total Portion</th>
+                            <th className="text-right text-xs sm:text-sm">% of income</th>
+                            <th className="text-right text-xs sm:text-sm">Normalized</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {deptData.employees.map((emp, index) => (
+                            <tr key={index}>
+                              <td className="text-left font-medium text-xs sm:text-sm">{emp.employeeName}</td>
+                              <td className="text-right text-xs sm:text-sm">{formatCurrency(emp.signed)}</td>
+                              <td className="text-right text-xs sm:text-sm bg-gray-50">{formatCurrency(emp.signedPortion)}</td>
+                              <td className="text-right text-xs sm:text-sm">{formatCurrency(emp.due)}</td>
+                              <td className="text-right text-xs sm:text-sm bg-gray-50">{formatCurrency(emp.duePortion)}</td>
+                              <td className="text-right text-xs sm:text-sm">{formatCurrency(emp.hExpert)}</td>
+                              <td className="text-right text-xs sm:text-sm bg-gray-50">{formatCurrency(emp.expertPortion)}</td>
+                              <td className="text-right text-xs sm:text-sm">{formatCurrency(emp.total)}</td>
+                              <td className="text-right text-xs sm:text-sm bg-gray-50">{formatCurrency(emp.totalPortion)}</td>
+                              <td className="text-right text-xs sm:text-sm">{emp.percentOfIncome}%</td>
+                              <td className="text-right text-xs sm:text-sm">{emp.normalized}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                    {/* Supervisor Information */}
+                    <div className="mt-4 flex items-center justify-between">
+                      <div className="flex items-center gap-4">
+                        {deptData.supervisor ? (
+                          <>
+                            <span className="font-bold text-sm">Supervisor: {deptData.supervisor.name}</span>
+                            <span className="text-sm">Credit as supervisor: {formatCurrency(0)}</span>
+                          </>
+                        ) : (
+                          <span className="text-sm text-gray-500">The department has no supervisor</span>
+                        )}
+                      </div>
+                      {deptData.supervisor && (
+                        <button className="btn btn-success text-white">
+                          Total: {formatCurrency(0)}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-center p-8 bg-base-200 rounded-lg">
+              No data found for the selected date range.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const AllContributionReport = ContributionAllReport;
 
 type ReportItem = {
   label: string;
@@ -5061,6 +6217,12 @@ const reports: ReportSection[] = [
     items: [
       { label: 'Experts Assignment', icon: AcademicCapIcon, component: ExpertsAssignmentReport },
       { label: 'Experts Results', icon: AcademicCapIcon, component: ExpertsResultsReport },
+    ],
+  },
+  {
+    category: 'Contribution',
+    items: [
+      { label: 'All', icon: RectangleStackIcon, component: AllContributionReport },
     ],
   },
   {

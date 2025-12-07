@@ -228,6 +228,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .update({ 
             ready_to_pay: true,
             ready_to_pay_by: currentUserEmployeeId,
+            due_by_id: currentUserEmployeeId,
             date: currentDate,
             due_date: currentDate
           })

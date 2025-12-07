@@ -83,6 +83,7 @@ const WhatsAppLeadsPage: React.FC = () => {
   const [isLocked, setIsLocked] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const leadsListRef = useRef<HTMLDivElement>(null);
 
   // Media modal state
   const [selectedMedia, setSelectedMedia] = useState<{url: string, type: 'image' | 'video', caption?: string} | null>(null);
@@ -231,11 +232,72 @@ const WhatsAppLeadsPage: React.FC = () => {
     loadTemplates();
   }, []);
 
+  // Helper function to process messages and create leads map
+  const processMessagesToLeads = (incomingMessages: any[]) => {
+    const leadMap = new Map<string, WhatsAppLead>();
+    
+    incomingMessages?.forEach((message) => {
+      // CRITICAL: Only use phone_number from database - never extract or fallback
+      // This prevents different numbers from being grouped together
+      const phoneNumber = message.phone_number || 'unknown';
+      
+      // Skip messages without a valid phone_number
+      if (!phoneNumber || phoneNumber === 'unknown') {
+        return;
+      }
+      
+      if (!leadMap.has(phoneNumber)) {
+        // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
+        const isConnected = !!message.lead_id || !!message.legacy_id;
+        
+        // Count unread messages (messages that are not read or is_read is null/false)
+        const isUnread = !message.is_read || message.is_read === false;
+        
+        leadMap.set(phoneNumber, {
+          ...message,
+          phone_number: phoneNumber,
+          is_connected: isConnected,
+          message_count: 1,
+          unread_count: isUnread ? 1 : 0,
+          last_message_at: message.sent_at
+        });
+      } else {
+        const existingLead = leadMap.get(phoneNumber)!;
+        existingLead.message_count += 1;
+        
+        // Increment unread count if this message is unread
+        const isUnread = !message.is_read || message.is_read === false;
+        if (isUnread) {
+          existingLead.unread_count = (existingLead.unread_count || 0) + 1;
+        }
+        
+        // Keep the most recent message as the main message (but preserve phone_number)
+        if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
+          const updatedLead = {
+            ...message,
+            phone_number: phoneNumber,
+            message_count: existingLead.message_count,
+            unread_count: existingLead.unread_count,
+            last_message_at: message.sent_at
+          };
+          Object.assign(existingLead, updatedLead);
+        }
+      }
+    });
+
+    // Filter out connected leads and convert to array
+    return Array.from(leadMap.values())
+      .filter(lead => !lead.is_connected && lead.phone_number !== 'unknown')
+      .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+  };
+
   // Fetch WhatsApp leads (messages from unconnected numbers)
   useEffect(() => {
-    const fetchWhatsAppLeads = async () => {
+    const fetchWhatsAppLeads = async (showLoading = true) => {
       try {
-        setLoading(true);
+        if (showLoading) {
+          setLoading(true);
+        }
         console.log('🔍 Fetching WhatsApp leads...');
 
         // Get all incoming WhatsApp messages, including read status
@@ -247,96 +309,76 @@ const WhatsAppLeadsPage: React.FC = () => {
 
         if (error) {
           console.error('Error fetching WhatsApp messages:', error);
-          toast.error('Failed to load WhatsApp leads');
+          if (showLoading) {
+            toast.error('Failed to load WhatsApp leads');
+          }
           return;
         }
 
-        console.log('📨 Raw incoming messages:', incomingMessages?.length || 0);
-        console.log('📨 Sample message data:', incomingMessages?.slice(0, 3));
-
-        // Group messages by phone number and identify unconnected ones
-        const leadMap = new Map<string, WhatsAppLead>();
-        
-        incomingMessages?.forEach((message) => {
-          // Use phone_number field directly from database, fallback to extraction if not available
-          const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
-          
-          console.log('🔍 Processing message:', {
-            id: message.id,
-            sender_name: message.sender_name,
-            phone_number: message.phone_number,
-            extractedPhone: phoneNumber,
-            lead_id: message.lead_id,
-            legacy_id: message.legacy_id
-          });
-          
-          if (!leadMap.has(phoneNumber)) {
-            // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
-            // Backend should handle phone number matching, frontend only checks if lead exists
-            const isConnected = !!message.lead_id || !!message.legacy_id;
-            
-            // Count unread messages (messages that are not read or is_read is null/false)
-            const isUnread = !message.is_read || message.is_read === false;
-            
-            leadMap.set(phoneNumber, {
-              ...message,
-              phone_number: phoneNumber,
-              is_connected: isConnected,
-              message_count: 1,
-              unread_count: isUnread ? 1 : 0,
-              last_message_at: message.sent_at
-            });
-          } else {
-            const existingLead = leadMap.get(phoneNumber)!;
-            existingLead.message_count += 1;
-            
-            // Increment unread count if this message is unread
-            const isUnread = !message.is_read || message.is_read === false;
-            if (isUnread) {
-              existingLead.unread_count = (existingLead.unread_count || 0) + 1;
-            }
-            
-            // Keep the most recent message as the main message
-            if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
-              Object.assign(existingLead, {
-                ...message,
-                phone_number: phoneNumber,
-                message_count: existingLead.message_count,
-                unread_count: existingLead.unread_count,
-                last_message_at: message.sent_at
-              });
-            }
-          }
-        });
-
-        // Filter out connected leads and convert to array
-        const unconnectedLeads = Array.from(leadMap.values())
-          .filter(lead => !lead.is_connected && lead.phone_number !== 'unknown')
-          .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+        const unconnectedLeads = processMessagesToLeads(incomingMessages || []);
 
         console.log('📊 Unconnected leads found:', unconnectedLeads.length);
-        console.log('📋 Sample unconnected leads:', unconnectedLeads.slice(0, 3));
-        console.log('📋 All unconnected leads details:', unconnectedLeads.map(lead => ({
-          phone_number: lead.phone_number,
-          sender_name: lead.sender_name,
-          message: lead.message,
-          is_connected: lead.is_connected,
-          message_count: lead.message_count
-        })));
-        setLeads(unconnectedLeads);
+        
+        if (showLoading) {
+          // Initial load - replace all leads
+          setLeads(unconnectedLeads);
+        } else {
+          // Polling refresh - merge intelligently without resetting
+          setLeads(prevLeads => {
+            // Create a map of existing leads by phone number
+            const existingLeadsMap = new Map<string, WhatsAppLead>();
+            prevLeads.forEach(lead => {
+              if (lead.phone_number) {
+                existingLeadsMap.set(lead.phone_number, lead);
+              }
+            });
+
+            // Merge new/updated leads with existing ones
+            const mergedLeads: WhatsAppLead[] = [];
+            const processedPhoneNumbers = new Set<string>();
+
+            // First, add all new/updated leads (sorted by date)
+            unconnectedLeads.forEach(newLead => {
+              const phoneNumber = newLead.phone_number;
+              if (phoneNumber) {
+                processedPhoneNumbers.add(phoneNumber);
+                mergedLeads.push(newLead);
+              }
+            });
+
+            // Then, add existing leads that weren't in the new data (they might have been connected)
+            prevLeads.forEach(existingLead => {
+              if (existingLead.phone_number && !processedPhoneNumbers.has(existingLead.phone_number)) {
+                mergedLeads.push(existingLead);
+              }
+            });
+
+            // Sort by last_message_at (descending - most recent first)
+            mergedLeads.sort((a, b) => 
+              new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+            );
+
+            return mergedLeads;
+          });
+        }
 
       } catch (error) {
         console.error('Error fetching WhatsApp leads:', error);
-        toast.error('Failed to load WhatsApp leads');
+        if (showLoading) {
+          toast.error('Failed to load WhatsApp leads');
+        }
       } finally {
-        setLoading(false);
+        if (showLoading) {
+          setLoading(false);
+        }
       }
     };
 
-    fetchWhatsAppLeads();
+    // Initial load with loading screen
+    fetchWhatsAppLeads(true);
     
-    // Set up polling to refresh every 30 seconds
-    const interval = setInterval(fetchWhatsAppLeads, 30000);
+    // Set up polling to refresh every 30 seconds (without loading screen)
+    const interval = setInterval(() => fetchWhatsAppLeads(false), 30000);
     return () => clearInterval(interval);
   }, []);
 
@@ -407,38 +449,18 @@ const WhatsAppLeadsPage: React.FC = () => {
       try {
         console.log('🔄 Fetching messages for lead:', selectedLead.phone_number);
         
-        // Fetch messages that match the phone number or sender name
-        const [phoneQuery, nameQuery] = await Promise.all([
-          supabase
-            .from('whatsapp_messages')
-            .select('*')
-            .eq('phone_number', selectedLead.phone_number)
-            .order('sent_at', { ascending: true }),
-          supabase
-            .from('whatsapp_messages')
-            .select('*')
-            .eq('sender_name', selectedLead.sender_name)
-            .order('sent_at', { ascending: true })
-        ]);
-
-        // Combine results and remove duplicates
-        const phoneMessages = phoneQuery.data || [];
-        const nameMessages = nameQuery.data || [];
-        const allMessages = [...phoneMessages, ...nameMessages];
+        // CRITICAL: Only fetch messages by exact phone_number match
+        // Do NOT query by sender_name to avoid mixing messages from different numbers
+        const { data, error } = await supabase
+          .from('whatsapp_messages')
+          .select('*')
+          .eq('phone_number', selectedLead.phone_number)
+          .order('sent_at', { ascending: true });
         
         console.log('🔍 Query results:', {
-          phoneMessages: phoneMessages.length,
-          nameMessages: nameMessages.length,
-          totalMessages: allMessages.length
+          phoneNumber: selectedLead.phone_number,
+          messagesCount: data?.length || 0
         });
-        
-        // Remove duplicates based on message ID
-        const uniqueMessages = allMessages.filter((message, index, self) => 
-          index === self.findIndex(m => m.id === message.id)
-        );
-        
-        const data = uniqueMessages;
-        const error = phoneQuery.error || nameQuery.error;
 
         if (error) {
           console.error('Error fetching messages:', error);
@@ -589,6 +611,7 @@ const WhatsAppLeadsPage: React.FC = () => {
       loadUserNames();
     }
   }, [messages]);
+
 
   // Filter leads based on search term and sort by latest message
   const filteredLeads = leads.filter(lead =>
@@ -857,29 +880,15 @@ const WhatsAppLeadsPage: React.FC = () => {
         if (!selectedLead) return;
         
         try {
-          const [phoneQuery, nameQuery] = await Promise.all([
-            supabase
-              .from('whatsapp_messages')
-              .select('*')
-              .eq('phone_number', selectedLead.phone_number)
-              .order('sent_at', { ascending: true }),
-            supabase
-              .from('whatsapp_messages')
-              .select('*')
-              .eq('sender_name', selectedLead.sender_name)
-              .order('sent_at', { ascending: true })
-          ]);
-
-          const phoneMessages = phoneQuery.data || [];
-          const nameMessages = nameQuery.data || [];
-          const allMessages = [...phoneMessages, ...nameMessages];
-          
-          const uniqueMessages = allMessages.filter((message, index, self) => 
-            index === self.findIndex(m => m.id === message.id)
-          );
+          // CRITICAL: Only fetch by exact phone_number match to avoid mixing messages
+          const { data: uniqueMessages } = await supabase
+            .from('whatsapp_messages')
+            .select('*')
+            .eq('phone_number', selectedLead.phone_number)
+            .order('sent_at', { ascending: true });
           
           // Process template messages for display
-          const processedMessages = uniqueMessages.map(processTemplateMessage);
+          const processedMessages = (uniqueMessages || []).map(processTemplateMessage);
           
           // Only update if there are actual changes
           setMessages(prevMessages => {
@@ -920,49 +929,36 @@ const WhatsAppLeadsPage: React.FC = () => {
               .order('sent_at', { ascending: false });
 
             if (incomingMessages) {
-              const leadMap = new Map<string, WhatsAppLead>();
+              const unconnectedLeads = processMessagesToLeads(incomingMessages);
               
-              incomingMessages.forEach((message) => {
-                const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
-                
-                if (!leadMap.has(phoneNumber)) {
-                  // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
-                  // Backend should handle phone number matching, frontend only checks if lead exists
-                  const isConnected = !!message.lead_id || !!message.legacy_id;
-                  const isUnread = !message.is_read || message.is_read === false;
-                  
-                  leadMap.set(phoneNumber, {
-                    ...message,
-                    phone_number: phoneNumber,
-                    is_connected: isConnected,
-                    message_count: 1,
-                    unread_count: isUnread ? 1 : 0,
-                    last_message_at: message.sent_at
-                  });
-                } else {
-                  const existingLead = leadMap.get(phoneNumber)!;
-                  existingLead.message_count += 1;
-                  const isUnread = !message.is_read || message.is_read === false;
-                  if (isUnread) {
-                    existingLead.unread_count = (existingLead.unread_count || 0) + 1;
-                  }
-                  if (new Date(message.sent_at) > new Date(existingLead.last_message_at)) {
-                    Object.assign(existingLead, {
-                      ...message,
-                      phone_number: phoneNumber,
-                      message_count: existingLead.message_count,
-                      unread_count: existingLead.unread_count,
-                      last_message_at: message.sent_at
-                    });
-                  }
-                }
-              });
+              // Merge intelligently without resetting (same as polling)
+              setLeads(prevLeads => {
+                const mergedLeads: WhatsAppLead[] = [];
+                const processedPhoneNumbers = new Set<string>();
 
-              const updatedLeads = Array.from(leadMap.values())
-                .filter(lead => !lead.is_connected && lead.phone_number !== 'unknown')
-                .sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
-              
-              setLeads(updatedLeads);
+                // First, add all new/updated leads (sorted by date)
+                unconnectedLeads.forEach(newLead => {
+                  const phoneNumber = newLead.phone_number;
+                  if (phoneNumber) {
+                    processedPhoneNumbers.add(phoneNumber);
+                    mergedLeads.push(newLead);
+                  }
+                });
+
+                // Then, add existing leads that weren't in the new data
+                prevLeads.forEach(existingLead => {
+                  if (existingLead.phone_number && !processedPhoneNumbers.has(existingLead.phone_number)) {
+                    mergedLeads.push(existingLead);
+                  }
+                });
+
+                // Sort by last_message_at (descending - most recent first)
+                mergedLeads.sort((a, b) => 
+                  new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime()
+                );
+
+                return mergedLeads;
+              });
             }
           } catch (error) {
             console.error('Error refreshing leads:', error);
@@ -1187,13 +1183,14 @@ const WhatsAppLeadsPage: React.FC = () => {
       console.log('✅ Created new lead:', newLead);
 
       // Update the WhatsApp messages to link them to the new lead
+      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
         .update({ 
           lead_id: newLead.id,
           legacy_id: null // Clear legacy_id since this is a new lead
         })
-        .or(`sender_name.ilike.%${lead.phone_number}%,sender_name.ilike.%${lead.sender_name}%,message.ilike.%${lead.phone_number}%`);
+        .eq('phone_number', lead.phone_number); // Exact match only, no wildcards
 
       if (updateError) {
         console.error('Error linking messages to lead:', updateError);
@@ -1460,13 +1457,14 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Update WhatsApp messages to link them to the sublead
+      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
         .update({ 
           lead_id: insertedSubLead.id,
           legacy_id: null
         })
-        .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`);
+        .eq('phone_number', selectedLead.phone_number); // Exact match only, no wildcards
 
       if (updateError) {
         console.error('Error linking messages to sublead:', updateError);
@@ -1668,13 +1666,14 @@ const WhatsAppLeadsPage: React.FC = () => {
       }
 
       // Update WhatsApp messages to link them to the target lead
+      // CRITICAL: Only update by exact phone_number match to avoid updating messages from other numbers
       const { error: updateError } = await supabase
         .from('whatsapp_messages')
         .update({ 
           lead_id: isLegacyLead ? null : targetLeadId,
           legacy_id: isLegacyLead ? targetLeadId : null
         })
-        .or(`sender_name.ilike.%${selectedLead.phone_number}%,sender_name.ilike.%${selectedLead.sender_name}%,message.ilike.%${selectedLead.phone_number}%`);
+        .eq('phone_number', selectedLead.phone_number); // Exact match only, no wildcards
 
       if (updateError) {
         console.error('Error linking messages to lead:', updateError);
@@ -2120,7 +2119,7 @@ const WhatsAppLeadsPage: React.FC = () => {
             </div>
 
             {/* Leads List */}
-            <div className="flex-1 overflow-y-auto">
+            <div ref={leadsListRef} className="flex-1 overflow-y-auto">
               {loading ? (
                 <div className="flex items-center justify-center h-32">
                   <div className="loading loading-spinner loading-lg text-green-600"></div>
@@ -2147,7 +2146,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${
                         isSelected ? 'bg-green-50 border-l-4 border-l-green-500' : ''
                       }`}
                     >
@@ -2170,9 +2169,9 @@ const WhatsAppLeadsPage: React.FC = () => {
                         </div>
 
                         {/* Lead Info */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="flex flex-col">
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <div className="flex items-center justify-between gap-2 mb-1">
+                            <div className="flex flex-col min-w-0 flex-1">
                               <h3 className="font-semibold text-gray-900 truncate">
                                 {lead.sender_name && lead.sender_name !== lead.phone_number && !lead.sender_name.match(/^\d+$/) 
                                   ? lead.sender_name 
@@ -2185,11 +2184,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                               )}
                             </div>
                             <div className="flex items-center gap-1 flex-shrink-0">
-                              <span className="text-xs text-gray-500">
+                              <span className="text-xs text-gray-500 whitespace-nowrap">
                                 {formatTime(lead.last_message_at)}
                               </span>
                               {lead.unread_count && lead.unread_count > 0 && (
-                                <span className="bg-cyan-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)]">
+                                <span className="bg-cyan-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center shadow-[0_4px_12px_rgba(6,182,212,0.35)] flex-shrink-0">
                                   {lead.unread_count}
                                 </span>
                               )}
@@ -2274,8 +2273,8 @@ const WhatsAppLeadsPage: React.FC = () => {
                 {/* Desktop Header */}
                 {!isMobile && (
                   <div className="sticky top-0 z-10 flex items-center justify-between p-4 border-b border-gray-200 bg-white">
-                    <div className="flex items-center gap-3">
-                      <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center">
+                    <div className="flex items-center gap-3 min-w-0 flex-1">
+                      <div className="w-10 h-10 bg-green-100 rounded-full flex items-center justify-center flex-shrink-0">
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) ? (
                           <span className="text-green-600 font-semibold text-lg">
                             {selectedLead.sender_name.charAt(0).toUpperCase()}
@@ -2284,18 +2283,18 @@ const WhatsAppLeadsPage: React.FC = () => {
                           <PhoneIcon className="w-5 h-5 text-green-600" />
                         )}
                       </div>
-                      <div>
-                        <h3 className="font-semibold text-gray-900">
+                      <div className="min-w-0 flex-1">
+                        <h3 className="font-semibold text-gray-900 truncate">
                           {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) 
                             ? selectedLead.sender_name 
                             : selectedLead.phone_number || 'Unknown Number'}
                         </h3>
                         {selectedLead.sender_name && selectedLead.sender_name !== selectedLead.phone_number && !selectedLead.sender_name.match(/^\d+$/) && (
-                          <p className="text-sm text-gray-500">
+                          <p className="text-sm text-gray-500 truncate">
                             {selectedLead.phone_number}
                           </p>
                         )}
-                        <p className="text-sm text-gray-500">
+                        <p className="text-sm text-gray-500 truncate">
                           {selectedLead.message_count} messages • Last message {formatTime(selectedLead.last_message_at)}
                         </p>
                       </div>
