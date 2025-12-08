@@ -458,6 +458,7 @@ const PipelinePage: React.FC = () => {
   const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null); // User ID from users table (for RLS)
   
   // State for editing fields in collapsible section
   const [editingFields, setEditingFields] = useState<Record<string | number, { facts?: boolean; special_notes?: boolean }>>({});
@@ -772,6 +773,16 @@ const PipelinePage: React.FC = () => {
             allowedStageIds
           });
           
+          // Special logging for employee_id 54
+          if (Number(currentUserEmployeeId) === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Starting fetch for employee_id 54', {
+              pipelineMode,
+              currentUserFullName,
+              currentUserEmployeeId,
+              currentUserEmployeeIdType: typeof currentUserEmployeeId
+            });
+          }
+          
           if (currentUserEmployeeId) {
             if (pipelineMode === 'closer') {
               // Use direct employee name filtering (more reliable than complex JOINs)
@@ -895,6 +906,7 @@ const PipelinePage: React.FC = () => {
                   category_id,
                   stage,
                   eligible,
+                  unactivated_at,
                   number_of_applicants_meeting,
                   potential_applicants_meeting,
                   balance,
@@ -920,6 +932,33 @@ const PipelinePage: React.FC = () => {
               
               console.log('🔍 Pipeline Debug - Scheduler mode, checking lead counts...');
               
+              // Special logging for employee_id 54
+              if (Number(currentUserEmployeeId) === 54) {
+                console.log('🔍 EMPLOYEE_ID_54 DEBUG - Checking new leads with scheduler name:', currentUserFullName);
+                
+                // Check if there are ANY leads with this scheduler name
+                const { count: totalWithSchedulerName, error: countError } = await supabase
+                  .from('leads')
+                  .select('*', { count: 'exact', head: true })
+                  .eq('scheduler', currentUserFullName);
+                
+                console.log('🔍 EMPLOYEE_ID_54 DEBUG - Total new leads with scheduler name:', {
+                  schedulerName: currentUserFullName,
+                  count: totalWithSchedulerName,
+                  countError
+                });
+                
+                // Get all unique scheduler values to see what's in the database
+                const { data: allSchedulers } = await supabase
+                  .from('leads')
+                  .select('scheduler')
+                  .not('scheduler', 'is', null)
+                  .limit(100);
+                
+                const uniqueSchedulers = [...new Set(allSchedulers?.map(l => l.scheduler).filter(Boolean))];
+                console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample unique scheduler names in database:', uniqueSchedulers.slice(0, 20));
+              }
+              
               // First, check sample lead data to see actual values
               const { data: schedulerSampleLeads } = await supabase
                 .from('leads')
@@ -928,6 +967,11 @@ const PipelinePage: React.FC = () => {
                 .limit(10);
               
               console.log('🔍 Pipeline Debug - Sample scheduler leads (first 10):', schedulerSampleLeads);
+              
+              // Special logging for employee_id 54
+              if (Number(currentUserEmployeeId) === 54) {
+                console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample new leads found:', schedulerSampleLeads);
+              }
               
               // Debug: Check counts without filters
               const { count: schedulerCountWithoutFilters } = await supabase
@@ -980,6 +1024,7 @@ const PipelinePage: React.FC = () => {
               
               newLeadsQuery = newLeadsQuery
                 .eq('eligible', true)
+                .is('unactivated_at', null) // Only active leads (unactivated_at IS NULL)
                 .in('stage', allowedStageIds);
             }
           } else {
@@ -999,42 +1044,57 @@ const PipelinePage: React.FC = () => {
                 category_id,
                 stage,
                 eligible,
+                unactivated_at,
                 number_of_applicants_meeting,
                 potential_applicants_meeting,
-                  balance,
-                  balance_currency,
-                  probability,
-                  email,
-                  phone,
-                  comments,
-                  label,
-                  latest_interaction,
-                  country_id,
-                  language,
-                  source,
-                  meetings (
-                    meeting_date
-                  )
+                balance,
+                balance_currency,
+                probability,
+                email,
+                phone,
+                comments,
+                label,
+                latest_interaction,
+                country_id,
+                language,
+                source,
+                meetings (
+                  meeting_date
+                )
               `);
-            
-            // For scheduler pipeline, filter by eligible; for closer, no eligible filter
-            if (pipelineMode !== 'closer') {
-              newLeadsQuery = newLeadsQuery.eq('eligible', true);
-            }
-            
-            newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
             
             // Apply filter if user is logged in
             // For new leads: scheduler and closer are stored as strings (display names)
-            if (currentUserFullName) {
+            // IMPORTANT: For scheduler/closer pipelines, we MUST filter by scheduler/closer name
               if (pipelineMode === 'closer') {
+              if (currentUserFullName) {
                 // Closer is stored as string (display name) for new leads
                 newLeadsQuery = newLeadsQuery.eq('closer', currentUserFullName);
+              } else {
+                console.error('❌ Pipeline Error - No currentUserFullName for closer pipeline, cannot filter leads');
+                // Set empty results if no user name
+                newLeadsQuery = newLeadsQuery.eq('id', '__no_results__'); // Force no results
+              }
               } else if (pipelineMode === 'scheduler') {
+              if (currentUserFullName) {
                 // Scheduler is stored as string (display name) for new leads
                 newLeadsQuery = newLeadsQuery.eq('scheduler', currentUserFullName);
+              } else {
+                console.error('❌ Pipeline Error - No currentUserFullName for scheduler pipeline, cannot filter leads');
+                // Set empty results if no user name
+                newLeadsQuery = newLeadsQuery.eq('id', '__no_results__'); // Force no results
               }
             }
+            
+            // For scheduler pipeline, filter by eligible; for closer, no eligible filter
+            if (pipelineMode === 'scheduler') {
+              newLeadsQuery = newLeadsQuery.eq('eligible', true);
+            }
+            
+            // Only show active leads (unactivated_at IS NULL) - apply to both scheduler and closer
+            newLeadsQuery = newLeadsQuery.is('unactivated_at', null);
+            
+            newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
           }
           
           const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
@@ -1091,7 +1151,58 @@ const PipelinePage: React.FC = () => {
           
           // Apply filter using employee ID (columns are now bigint)
           // For legacy leads: scheduler is stored in meeting_scheduler_id (bigint), closer is stored in closer_id (bigint)
+          // IMPORTANT: For scheduler/closer pipelines, we MUST filter by employee ID
+          if (pipelineMode === 'scheduler' || pipelineMode === 'closer') {
+            if (!currentUserEmployeeId) {
+              console.error('❌ Pipeline Error - No currentUserEmployeeId for', pipelineMode, 'pipeline, cannot filter legacy leads');
+              // Force no results by filtering for non-existent ID
+              legacyLeadsQuery = legacyLeadsQuery.eq('id', -999999);
+            }
+          }
+          
           if (currentUserEmployeeId) {
+            // Special logging for employee_id 54
+            if (Number(currentUserEmployeeId) === 54) {
+              console.log('🔍 EMPLOYEE_ID_54 DEBUG - Filtering legacy leads', {
+                pipelineMode,
+                currentUserEmployeeId,
+                currentUserEmployeeIdType: typeof currentUserEmployeeId
+              });
+              
+              // Check if there are ANY legacy leads with meeting_scheduler_id = 54
+              const { count: totalWithSchedulerId54, error: schedulerIdError } = await supabase
+                .from('leads_lead')
+                .select('*', { count: 'exact', head: true })
+                .eq('meeting_scheduler_id', 54)
+                .eq('status', 0);
+              
+              console.log('🔍 EMPLOYEE_ID_54 DEBUG - Total legacy leads with meeting_scheduler_id = 54:', {
+                count: totalWithSchedulerId54,
+                error: schedulerIdError
+              });
+              
+              // Get sample leads with meeting_scheduler_id = 54
+              const { data: sampleLeadsWithId54 } = await supabase
+                .from('leads_lead')
+                .select('id, name, stage, eligibile, meeting_scheduler_id, status')
+                .eq('meeting_scheduler_id', 54)
+                .eq('status', 0)
+                .limit(10);
+              
+              console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample legacy leads with meeting_scheduler_id = 54:', sampleLeadsWithId54);
+              
+              // Check what unique meeting_scheduler_id values exist
+              const { data: allSchedulerIds } = await supabase
+                .from('leads_lead')
+                .select('meeting_scheduler_id')
+                .not('meeting_scheduler_id', 'is', null)
+                .eq('status', 0)
+                .limit(100);
+              
+              const uniqueSchedulerIds = [...new Set(allSchedulerIds?.map(l => l.meeting_scheduler_id).filter(Boolean))];
+              console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample unique meeting_scheduler_id values in database:', uniqueSchedulerIds.slice(0, 20));
+            }
+            
             if (pipelineMode === 'closer') {
               // Closer is stored as employee ID (bigint) in closer_id for legacy leads
               legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', currentUserEmployeeId);
@@ -1138,7 +1249,12 @@ const PipelinePage: React.FC = () => {
           
           const { count: legacyCountWithoutFilters } = await countQueryWithEmployee;
           
+          // Check for eligibile = 'true' (legacy leads use 'true'/'false' strings, not 'yes'/'no')
           const { count: legacyCountWithEligibile } = await countQueryWithEmployee
+            .eq('eligibile', 'true');
+          
+          // Also check for 'yes' for backwards compatibility
+          const { count: legacyCountWithEligibileYes } = await countQueryWithEmployee
             .eq('eligibile', 'yes');
           
           // Check for null eligibile
@@ -1148,16 +1264,23 @@ const PipelinePage: React.FC = () => {
           const { count: legacyCountWithStage } = await countQueryWithEmployee
             .in('stage', allowedLegacyStageIds);
           
-          const { count: legacyCountWithBoth } = await countQueryWithEmployee
+          // Check with both 'true' and 'yes' for eligible
+          const { count: legacyCountWithBothTrue } = await countQueryWithEmployee
+            .eq('eligibile', 'true')
+            .in('stage', allowedLegacyStageIds);
+          
+          const { count: legacyCountWithBothYes } = await countQueryWithEmployee
             .eq('eligibile', 'yes')
             .in('stage', allowedLegacyStageIds);
           
           console.log('🔍 Pipeline Debug - Legacy leads counts:', {
             totalWithoutFilters: legacyCountWithoutFilters,
-            withEligibileYes: legacyCountWithEligibile,
+            withEligibileTrue: legacyCountWithEligibile,
+            withEligibileYes: legacyCountWithEligibileYes,
             withEligibileNull: legacyCountWithEligibileNull,
             withStageFilter: legacyCountWithStage,
-            withBothFilters: legacyCountWithBoth
+            withBothFiltersTrue: legacyCountWithBothTrue,
+            withBothFiltersYes: legacyCountWithBothYes
           });
           
           // Get all unique stage values from sample data
@@ -1174,8 +1297,9 @@ const PipelinePage: React.FC = () => {
           if (pipelineMode === 'closer') {
             legacyLeadsQuery = legacyLeadsQuery.in('stage', allowedLegacyStageIds);
           } else {
+            // Legacy leads use 'true'/'false' strings for eligibile field, not 'yes'/'no'
             legacyLeadsQuery = legacyLeadsQuery
-              .eq('eligibile', 'yes') // Only fetch eligible legacy leads for scheduler
+              .eq('eligibile', 'true') // Only fetch eligible legacy leads for scheduler
               .in('stage', allowedLegacyStageIds);
           }
           
@@ -1185,6 +1309,31 @@ const PipelinePage: React.FC = () => {
             count: legacyLeadsData?.length || 0,
             sampleStages: legacyLeadsData?.slice(0, 5).map(l => ({ id: l.id, name: l.name, stage: l.stage, eligibile: l.eligibile }))
           });
+          
+          // Special logging for employee_id 54
+          if (Number(currentUserEmployeeId) === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Legacy leads fetched:', {
+              count: legacyLeadsData?.length || 0,
+              error: legacyLeadsError,
+              sampleLeads: legacyLeadsData?.slice(0, 5).map(l => ({
+                id: l.id,
+                name: l.name,
+                stage: l.stage,
+                eligibile: l.eligibile,
+                eligibileType: typeof l.eligibile,
+                eligibileString: String(l.eligibile || ''),
+                status: l.status,
+                meeting_scheduler_id: l.meeting_scheduler_id,
+                cdate: l.cdate
+              })),
+              uniqueEligibileValues: [...new Set((legacyLeadsData || []).map(l => l.eligibile))],
+              eligibileValueCounts: (legacyLeadsData || []).reduce((acc: any, l: any) => {
+                const val = String(l.eligibile || '');
+                acc[val] = (acc[val] || 0) + 1;
+                return acc;
+              }, {})
+            });
+          }
 
 
           if (legacyLeadsError) {
@@ -1217,23 +1366,44 @@ const PipelinePage: React.FC = () => {
           // Fetch follow-ups from follow_ups table for the current user BEFORE processing leads
           let followUpsMap = new Map<string, string>(); // Map lead_id -> follow-up date
           
-          if (userId) {
+          // Use currentUserId (from users table) for RLS compliance, fallback to userId if not available
+          const followUpUserId = currentUserId || userId;
+          if (followUpUserId) {
             // Fetch follow-ups for new leads
             const newLeadIds = newLeadsData?.map((lead: any) => lead.id) || [];
             if (newLeadIds.length > 0) {
               const { data: newFollowups } = await supabase
                 .from('follow_ups')
                 .select('new_lead_id, date')
-                .eq('user_id', userId)
+                .eq('user_id', followUpUserId)
                 .in('new_lead_id', newLeadIds)
                 .is('lead_id', null);
               
               if (newFollowups) {
                 newFollowups.forEach(fu => {
                   if (fu.new_lead_id) {
-                    const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
-                    if (dateStr) {
-                      followUpsMap.set(fu.new_lead_id, dateStr);
+                    try {
+                      if (fu.date) {
+                        const dateObj = new Date(fu.date);
+                        if (isNaN(dateObj.getTime())) {
+                          console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date in follow_ups for new lead:', {
+                            new_lead_id: fu.new_lead_id,
+                            date: fu.date,
+                            dateType: typeof fu.date
+                          });
+                        } else {
+                          const dateStr = dateObj.toISOString().split('T')[0];
+                          if (dateStr) {
+                            followUpsMap.set(fu.new_lead_id, dateStr);
+                          }
+                        }
+                      }
+                    } catch (error) {
+                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for new lead:', {
+                        new_lead_id: fu.new_lead_id,
+                        date: fu.date,
+                        error
+                      });
                     }
                   }
                 });
@@ -1246,16 +1416,35 @@ const PipelinePage: React.FC = () => {
               const { data: legacyFollowups } = await supabase
                 .from('follow_ups')
                 .select('lead_id, date')
-                .eq('user_id', userId)
+                .eq('user_id', followUpUserId)
                 .in('lead_id', legacyLeadIds)
                 .is('new_lead_id', null);
               
               if (legacyFollowups) {
                 legacyFollowups.forEach(fu => {
                   if (fu.lead_id) {
-                    const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
-                    if (dateStr) {
-                      followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+                    try {
+                      if (fu.date) {
+                        const dateObj = new Date(fu.date);
+                        if (isNaN(dateObj.getTime())) {
+                          console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date in follow_ups for legacy lead:', {
+                            lead_id: fu.lead_id,
+                            date: fu.date,
+                            dateType: typeof fu.date
+                          });
+                        } else {
+                          const dateStr = dateObj.toISOString().split('T')[0];
+                          if (dateStr) {
+                            followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+                          }
+                        }
+                      }
+                    } catch (error) {
+                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for legacy lead:', {
+                        lead_id: fu.lead_id,
+                        date: fu.date,
+                        error
+                      });
                     }
                   }
                 });
@@ -1264,7 +1453,68 @@ const PipelinePage: React.FC = () => {
           }
 
           // Process new leads with proper category handling
-          const processedNewLeads = (newLeadsData || []).map((lead: any) => {
+          // Filter out non-eligible, inactive, wrong scheduler, and wrong stage leads for scheduler pipeline (explicit check)
+          const eligibleNewLeads = pipelineMode === 'scheduler' 
+            ? (newLeadsData || []).filter((lead: any) => {
+                const isEligible = lead.eligible === true;
+                const isActive = lead.unactivated_at === null || lead.unactivated_at === undefined;
+                const isCorrectScheduler = currentUserFullName ? lead.scheduler === currentUserFullName : true;
+                const stageStr = String(lead.stage || '');
+                const isCorrectStage = allowedStageIds.includes(stageStr);
+                const shouldInclude = isEligible && isActive && isCorrectScheduler && isCorrectStage;
+                
+                if (!shouldInclude && Number(currentUserEmployeeId) === 54) {
+                  console.log('🔍 EMPLOYEE_ID_54 DEBUG - Filtering out new lead:', {
+                    id: lead.id,
+                    name: lead.name,
+                    scheduler: lead.scheduler,
+                    expectedScheduler: currentUserFullName,
+                    stage: lead.stage,
+                    allowedStages: allowedStageIds,
+                    eligible: lead.eligible,
+                    eligibleType: typeof lead.eligible,
+                    unactivated_at: lead.unactivated_at,
+                    isEligible,
+                    isActive,
+                    isCorrectScheduler,
+                    isCorrectStage,
+                    reason: !isEligible ? 'not eligible' : !isActive ? 'not active' : !isCorrectScheduler ? 'wrong scheduler' : 'wrong stage'
+                  });
+                }
+                return shouldInclude;
+              })
+            : pipelineMode === 'closer'
+            ? (newLeadsData || []).filter((lead: any) => {
+                // For closer mode, filter by active status, correct closer, and correct stage
+                const isActive = lead.unactivated_at === null || lead.unactivated_at === undefined;
+                const isCorrectCloser = currentUserFullName ? lead.closer === currentUserFullName : true;
+                const stageStr = String(lead.stage || '');
+                const isCorrectStage = allowedStageIds.includes(stageStr);
+                return isActive && isCorrectCloser && isCorrectStage;
+              })
+            : (newLeadsData || []).filter((lead: any) => {
+                // For other modes, still filter by active status and correct stage
+                const isActive = lead.unactivated_at === null || lead.unactivated_at === undefined;
+                const stageStr = String(lead.stage || '');
+                const isCorrectStage = allowedStageIds.includes(stageStr);
+                return isActive && isCorrectStage;
+              });
+          
+          if (Number(currentUserEmployeeId) === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - New leads eligible/active filtering:', {
+              totalBeforeFilter: (newLeadsData || []).length,
+              totalAfterFilter: eligibleNewLeads.length,
+              pipelineMode,
+              sampleBeforeFilter: (newLeadsData || []).slice(0, 3).map((l: any) => ({
+                id: l.id,
+                name: l.name,
+                eligible: l.eligible,
+                unactivated_at: l.unactivated_at
+              }))
+            });
+          }
+          
+          const processedNewLeads = eligibleNewLeads.map((lead: any) => {
             // Debug: Log language data for new leads
             if (lead.id === 'L34' || lead.lead_number === 'L34') {
               console.log('🔍 Debug Lead L34 language:', {
@@ -1290,7 +1540,73 @@ const PipelinePage: React.FC = () => {
           });
 
           // Process legacy leads
-          const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
+          // Filter out non-eligible, inactive, wrong scheduler, and wrong stage leads for scheduler pipeline (explicit check)
+          // Legacy leads use 'eligibile' field (TEXT column) with string values 'true'/'false' in leads_lead table
+          // Legacy leads: status 0 = Active, status 10 = Not active
+          const eligibleLegacyLeads = pipelineMode === 'scheduler'
+            ? (legacyLeadsData || []).filter((lead: any) => {
+                const eligibileValue = String(lead.eligibile || '').toLowerCase().trim();
+                // eligibile is a TEXT column, so check for string 'true' (case-insensitive)
+                const isEligible = eligibileValue === 'true';
+                const isActive = lead.status === 0; // Status 0 = Active
+                const isCorrectScheduler = currentUserEmployeeId ? Number(lead.meeting_scheduler_id) === Number(currentUserEmployeeId) : true;
+                const stageNum = Number(lead.stage);
+                const isCorrectStage = allowedLegacyStageIds.includes(stageNum);
+                const shouldInclude = isEligible && isActive && isCorrectScheduler && isCorrectStage;
+                
+                if (!shouldInclude && Number(currentUserEmployeeId) === 54) {
+                  console.log('🔍 EMPLOYEE_ID_54 DEBUG - Filtering out legacy lead:', {
+                    id: lead.id,
+                    name: lead.name,
+                    meeting_scheduler_id: lead.meeting_scheduler_id,
+                    expectedSchedulerId: currentUserEmployeeId,
+                    stage: lead.stage,
+                    allowedStages: allowedLegacyStageIds,
+                    eligibile: lead.eligibile,
+                    eligibileType: typeof lead.eligibile,
+                    eligibileValue: eligibileValue,
+                    status: lead.status,
+                    isEligible,
+                    isActive,
+                    isCorrectScheduler,
+                    isCorrectStage,
+                    reason: !isEligible ? 'not eligible (eligibile !== "true")' : !isActive ? 'not active (status !== 0)' : !isCorrectScheduler ? 'wrong scheduler' : 'wrong stage'
+                  });
+                }
+                return shouldInclude;
+              })
+            : pipelineMode === 'closer'
+            ? (legacyLeadsData || []).filter((lead: any) => {
+                // For closer mode, filter by active status (status 0), correct closer, and correct stage
+                const isActive = lead.status === 0;
+                const isCorrectCloser = currentUserEmployeeId ? Number(lead.closer_id) === Number(currentUserEmployeeId) : true;
+                const stageNum = Number(lead.stage);
+                const isCorrectStage = allowedLegacyStageIds.includes(stageNum);
+                return isActive && isCorrectCloser && isCorrectStage;
+              })
+            : (legacyLeadsData || []).filter((lead: any) => {
+                // For other modes, still filter by active status (status 0) and correct stage
+                const isActive = lead.status === 0;
+                const stageNum = Number(lead.stage);
+                const isCorrectStage = allowedLegacyStageIds.includes(stageNum);
+                return isActive && isCorrectStage;
+              });
+          
+          if (Number(currentUserEmployeeId) === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Legacy leads eligible/active filtering:', {
+              totalBeforeFilter: (legacyLeadsData || []).length,
+              totalAfterFilter: eligibleLegacyLeads.length,
+              pipelineMode,
+              sampleBeforeFilter: (legacyLeadsData || []).slice(0, 3).map((l: any) => ({
+                id: l.id,
+                name: l.name,
+                eligibile: l.eligibile,
+                status: l.status
+              }))
+            });
+          }
+          
+          const processedLegacyLeads = eligibleLegacyLeads.map(lead => {
             const currencyCode = currencyMap[lead.currency_id] || null;
             
             return {
@@ -1342,6 +1658,34 @@ const PipelinePage: React.FC = () => {
           const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
           );
+
+          // Comprehensive logging for debugging
+          if (Number(currentUserEmployeeId) === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Final lead counts:', {
+              newLeadsCount: processedNewLeads.length,
+              legacyLeadsCount: processedLegacyLeads.length,
+              totalLeads: allLeads.length,
+              pipelineMode,
+              currentUserFullName,
+              currentUserEmployeeId,
+              sampleNewLeads: processedNewLeads.slice(0, 3).map((l: any) => ({
+                id: l.id,
+                name: l.name,
+                scheduler: l.scheduler,
+                eligible: l.eligible,
+                unactivated_at: l.unactivated_at,
+                stage: l.stage
+              })),
+              sampleLegacyLeads: processedLegacyLeads.slice(0, 3).map((l: any) => ({
+                id: l.id,
+                name: l.name,
+                meeting_scheduler_id: (l as any).meeting_scheduler_id,
+                eligibile: (l as any).eligibile,
+                status: (l as any).status,
+                stage: l.stage
+              }))
+            });
+          }
 
           // Fetch tags for all leads
           await fetchTagsForLeads(allLeads);
@@ -2406,7 +2750,8 @@ const PipelinePage: React.FC = () => {
       }
       
       // Handle follow-up save/update in follow_ups table
-      if (editLeadData.next_followup !== selectedLead.next_followup && userId) {
+      // Use currentUserId (from users table) instead of userId (auth ID) for RLS compliance
+      if (editLeadData.next_followup !== selectedLead.next_followup && currentUserId) {
         const isLegacyLead = selectedLead.lead_type === 'legacy' || selectedLead.id.toString().startsWith('legacy_');
         
         if (editLeadData.next_followup && editLeadData.next_followup.trim() !== '') {
@@ -2417,7 +2762,7 @@ const PipelinePage: React.FC = () => {
             const { data } = await supabase
               .from('follow_ups')
               .select('id')
-              .eq('user_id', userId)
+              .eq('user_id', currentUserId)
               .eq('lead_id', legacyId)
               .is('new_lead_id', null)
               .maybeSingle();
@@ -2426,7 +2771,7 @@ const PipelinePage: React.FC = () => {
             const { data } = await supabase
               .from('follow_ups')
               .select('id')
-              .eq('user_id', userId)
+              .eq('user_id', currentUserId)
               .eq('new_lead_id', selectedLead.id)
               .is('lead_id', null)
               .maybeSingle();
@@ -2439,7 +2784,7 @@ const PipelinePage: React.FC = () => {
               .from('follow_ups')
               .update({ date: editLeadData.next_followup + 'T00:00:00Z' })
               .eq('id', existingFollowup.id)
-              .eq('user_id', userId);
+              .eq('user_id', currentUserId);
             
             if (followupError) {
               console.error('Error updating follow-up:', followupError);
@@ -2448,7 +2793,7 @@ const PipelinePage: React.FC = () => {
           } else {
             // Create new follow-up
             const insertData: any = {
-              user_id: userId,
+              user_id: currentUserId, // Use currentUserId from users table for RLS
               date: editLeadData.next_followup + 'T00:00:00Z',
               created_at: new Date().toISOString()
             };
@@ -2478,14 +2823,14 @@ const PipelinePage: React.FC = () => {
             await supabase
               .from('follow_ups')
               .delete()
-              .eq('user_id', userId)
+              .eq('user_id', currentUserId)
               .eq('lead_id', legacyId)
               .is('new_lead_id', null);
           } else {
             await supabase
               .from('follow_ups')
               .delete()
-              .eq('user_id', userId)
+              .eq('user_id', currentUserId)
               .eq('new_lead_id', selectedLead.id)
               .is('lead_id', null);
           }
@@ -3787,6 +4132,10 @@ const PipelinePage: React.FC = () => {
             console.error('🔍 User data fetch error details:', userError);
             setCurrentUserFullName('Eliran');
             return;
+          }
+          
+          if (userData?.id) {
+            setCurrentUserId(userData.id); // Store user ID from users table for RLS
           }
           
           if (userData?.full_name) {

@@ -697,6 +697,15 @@ const SchedulerToolPage: React.FC = () => {
         return;
       }
 
+      // Special logging for employee_id 54
+      if (userData.employee_id === '54' || userData.employee_id === 54) {
+        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Starting fetchSchedulerLeads', {
+          userData,
+          employee_id: userData.employee_id,
+          employee_idType: typeof userData.employee_id
+        });
+      }
+
       // First, get the employee's display name for filtering new leads
       let employeeDisplayName = null;
       if (userData?.employee_id) {
@@ -708,8 +717,24 @@ const SchedulerToolPage: React.FC = () => {
         
         if (!employeeError && employeeData) {
           employeeDisplayName = employeeData.display_name;
+          
+          // Special logging for employee_id 54
+          if (userData.employee_id === '54' || userData.employee_id === 54) {
+            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Employee display name:', {
+              employee_id: userData.employee_id,
+              display_name: employeeDisplayName
+            });
+          }
         } else {
           console.error('❌ Could not find employee display name for ID:', userData.employee_id);
+          
+          // Special logging for employee_id 54
+          if (userData.employee_id === '54' || userData.employee_id === 54) {
+            console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error fetching employee display name:', {
+              employee_id: userData.employee_id,
+              error: employeeError
+            });
+          }
         }
       }
 
@@ -776,6 +801,36 @@ const SchedulerToolPage: React.FC = () => {
 
 
       // Fetch legacy leads with scheduler assigned to current user and specific stages
+      
+      // Special logging for employee_id 54
+      if (userData.employee_id === '54' || userData.employee_id === 54) {
+        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Fetching legacy leads', {
+          employee_id: userData.employee_id,
+          employee_idType: typeof userData.employee_id,
+          employee_idAsString: String(userData.employee_id),
+          employee_idAsNumber: Number(userData.employee_id)
+        });
+        
+        // Check if there are ANY legacy leads with meeting_scheduler_id = 54
+        const { count: totalWithSchedulerId54, error: schedulerIdError } = await supabase
+          .from('leads_lead')
+          .select('*', { count: 'exact', head: true })
+          .eq('meeting_scheduler_id', 54);
+        
+        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Total legacy leads with meeting_scheduler_id = 54:', {
+          count: totalWithSchedulerId54,
+          error: schedulerIdError
+        });
+        
+        // Get sample leads with meeting_scheduler_id = 54
+        const { data: sampleLeadsWithId54 } = await supabase
+          .from('leads_lead')
+          .select('id, name, stage, eligibile, meeting_scheduler_id')
+          .eq('meeting_scheduler_id', 54)
+          .limit(10);
+        
+        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample legacy leads with meeting_scheduler_id = 54:', sampleLeadsWithId54);
+      }
 
       const { data: legacyLeads, error: legacyError } = await supabase
         .from('leads_lead')
@@ -801,12 +856,26 @@ const SchedulerToolPage: React.FC = () => {
           probability,
           eligibile
         `)
-        .eq('meeting_scheduler_id', String(userData.employee_id)) // Filter by current user's employee ID (ensure string)
+        .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
         .in('stage', [0, 10, 11, 15]); // Only show leads with stages 0, 10, 11, 15
 
       if (legacyError) {
         console.error('❌ Error fetching legacy leads:', legacyError);
         throw legacyError;
+      }
+      
+      // Special logging for employee_id 54
+      if (userData.employee_id === '54' || userData.employee_id === 54) {
+        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Legacy leads fetched:', {
+          count: legacyLeads?.length || 0,
+          sampleLeads: legacyLeads?.slice(0, 5).map(l => ({
+            id: l.id,
+            name: l.name,
+            stage: l.stage,
+            eligibile: l.eligibile,
+            meeting_scheduler_id: l.meeting_scheduler_id
+          }))
+        });
       }
 
 
@@ -900,10 +969,37 @@ const SchedulerToolPage: React.FC = () => {
           
           if (newFollowups) {
             newFollowups.forEach(fu => {
-              if (fu.new_lead_id) {
-                const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
-                if (dateStr) {
-                  followUpsMap.set(fu.new_lead_id, dateStr);
+              if (fu.new_lead_id && fu.date) {
+                try {
+                  const date = safeParseDate(fu.date);
+                  if (date && !isNaN(date.getTime())) {
+                    // Double-check date is valid before calling toISOString
+                    const dateStr = date.toISOString().split('T')[0];
+                    if (dateStr && dateStr !== 'Invalid Date') {
+                      followUpsMap.set(fu.new_lead_id, dateStr);
+                    } else {
+                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date string result for new lead:', {
+                        new_lead_id: fu.new_lead_id,
+                        date: fu.date,
+                        dateType: typeof fu.date,
+                        dateStr
+                      });
+                    }
+                  } else {
+                    console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date object for new lead:', {
+                      new_lead_id: fu.new_lead_id,
+                      date: fu.date,
+                      dateType: typeof fu.date,
+                      dateObject: date
+                    });
+                  }
+                } catch (error) {
+                  console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for new lead:', {
+                    new_lead_id: fu.new_lead_id,
+                    date: fu.date,
+                    dateType: typeof fu.date,
+                    error
+                  });
                 }
               }
             });
@@ -922,10 +1018,37 @@ const SchedulerToolPage: React.FC = () => {
           
           if (legacyFollowups) {
             legacyFollowups.forEach(fu => {
-              if (fu.lead_id) {
-                const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
-                if (dateStr) {
-                  followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+              if (fu.lead_id && fu.date) {
+                try {
+                  const date = safeParseDate(fu.date);
+                  if (date && !isNaN(date.getTime())) {
+                    // Double-check date is valid before calling toISOString
+                    const dateStr = date.toISOString().split('T')[0];
+                    if (dateStr && dateStr !== 'Invalid Date') {
+                      followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+                    } else {
+                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date string result for legacy lead:', {
+                        lead_id: fu.lead_id,
+                        date: fu.date,
+                        dateType: typeof fu.date,
+                        dateStr
+                      });
+                    }
+                  } else {
+                    console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date object for legacy lead:', {
+                      lead_id: fu.lead_id,
+                      date: fu.date,
+                      dateType: typeof fu.date,
+                      dateObject: date
+                    });
+                  }
+                } catch (error) {
+                  console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for legacy lead:', {
+                    lead_id: fu.lead_id,
+                    date: fu.date,
+                    dateType: typeof fu.date,
+                    error
+                  });
                 }
               }
             });
@@ -1115,10 +1238,51 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
+  // Helper function to safely parse dates
+  const safeParseDate = (dateString: string | null | undefined): Date | null => {
+    if (!dateString) return null;
+    try {
+      // Handle empty strings
+      if (typeof dateString === 'string' && dateString.trim() === '') {
+        return null;
+      }
+      
+      const date = new Date(dateString);
+      
+      // Check if date is valid using multiple methods
+      if (isNaN(date.getTime())) {
+        return null;
+      }
+      
+      // Additional check: verify the date is within a reasonable range
+      // (between year 1900 and 2100)
+      const year = date.getFullYear();
+      if (year < 1900 || year > 2100) {
+        console.warn('🔍 EMPLOYEE_ID_54 DEBUG - Date outside reasonable range:', {
+          dateString,
+          year,
+          date: date.toISOString()
+        });
+        return null;
+      }
+      
+      return date;
+    } catch (error) {
+      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error in safeParseDate:', {
+        dateString,
+        dateType: typeof dateString,
+        error
+      });
+      return null;
+    }
+  };
+
   const formatDate = (dateString: string) => {
     if (!dateString) return 'N/A';
     try {
-      return new Date(dateString).toLocaleDateString('en-US', {
+      const date = safeParseDate(dateString);
+      if (!date) return 'Invalid Date';
+      return date.toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'short',
         day: 'numeric'
@@ -2022,12 +2186,20 @@ const SchedulerToolPage: React.FC = () => {
 
         switch (sortConfig.key) {
           case 'created_at':
-            aValue = new Date(a.created_at).getTime();
-            bValue = new Date(b.created_at).getTime();
+            {
+              const aDate = safeParseDate(a.created_at);
+              const bDate = safeParseDate(b.created_at);
+              aValue = aDate ? aDate.getTime() : 0;
+              bValue = bDate ? bDate.getTime() : 0;
+            }
             break;
           case 'latest_interaction':
-            aValue = a.latest_interaction ? new Date(a.latest_interaction).getTime() : 0;
-            bValue = b.latest_interaction ? new Date(b.latest_interaction).getTime() : 0;
+            {
+              const aDate = safeParseDate(a.latest_interaction);
+              const bDate = safeParseDate(b.latest_interaction);
+              aValue = aDate ? aDate.getTime() : 0;
+              bValue = bDate ? bDate.getTime() : 0;
+            }
             break;
           case 'total':
             // Extract numeric value from total string
@@ -2037,8 +2209,12 @@ const SchedulerToolPage: React.FC = () => {
             bValue = parseFloat(bTotalStr.replace(/[^\d.-]/g, '')) || 0;
             break;
           case 'next_followup':
-            aValue = a.next_followup ? new Date(a.next_followup).getTime() : 0;
-            bValue = b.next_followup ? new Date(b.next_followup).getTime() : 0;
+            {
+              const aDate = safeParseDate(a.next_followup);
+              const bDate = safeParseDate(b.next_followup);
+              aValue = aDate ? aDate.getTime() : 0;
+              bValue = bDate ? bDate.getTime() : 0;
+            }
             break;
           default:
             return 0;
@@ -2099,27 +2275,34 @@ const SchedulerToolPage: React.FC = () => {
   const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
     if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
     
-    const followUpDate = new Date(followUpDateStr);
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    
-    // Set follow up date to start of day for comparison
-    const followUpDateStart = new Date(followUpDate);
-    followUpDateStart.setHours(0, 0, 0, 0);
-    
-    // Calculate difference in days
-    const diffTime = followUpDateStart.getTime() - today.getTime();
-    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
-    if (diffDays < 0) {
-      // Past follow up date - red
-      return 'bg-red-500 text-white';
-    } else if (diffDays === 0) {
-      // Today - green
-      return 'bg-green-500 text-white';
-    } else {
-      // Tomorrow or more than 1 day away - yellow
-      return 'bg-yellow-500 text-white';
+    try {
+      const followUpDate = safeParseDate(followUpDateStr);
+      if (!followUpDate) return 'bg-gray-100 text-gray-600';
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Set follow up date to start of day for comparison
+      const followUpDateStart = new Date(followUpDate);
+      followUpDateStart.setHours(0, 0, 0, 0);
+      
+      // Calculate difference in days
+      const diffTime = followUpDateStart.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays < 0) {
+        // Past follow up date - red
+        return 'bg-red-500 text-white';
+      } else if (diffDays === 0) {
+        // Today - green
+        return 'bg-green-500 text-white';
+      } else {
+        // Tomorrow or more than 1 day away - yellow
+        return 'bg-yellow-500 text-white';
+      }
+    } catch (error) {
+      console.error('Error parsing follow-up date for color:', followUpDateStr, error);
+      return 'bg-gray-100 text-gray-600';
     }
   };
 
