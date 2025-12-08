@@ -126,8 +126,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     return getFieldValue(client, 'eligible') === true || getFieldValue(client, 'eligible') === 'true';
   };
 
+  // State for current user's follow-up
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [currentUserFollowup, setCurrentUserFollowup] = useState<string | null>(null);
+  const [followupId, setFollowupId] = useState<number | null>(null);
+
   const getNextFollowup = () => {
-    return getFieldValue(client, 'next_followup');
+    // Return the current user's follow-up from the follow_ups table
+    return currentUserFollowup;
   };
 
   const [probability, setProbability] = useState(getProbability());
@@ -311,24 +317,89 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // State to hold current user's display name
   const [currentUserName, setCurrentUserName] = useState<string>('Unknown');
 
+  // Fetch current user ID and name
   useEffect(() => {
-    async function fetchUserName() {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (user && user.email) {
-        const { data: userProfile } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('email', user.email)
-          .single();
-        if (userProfile && userProfile.full_name) {
-          setCurrentUserName(userProfile.full_name);
-        } else {
-          setCurrentUserName(user.email || 'Unknown');
+    async function fetchUserInfo() {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user && user.email) {
+          const { data: userProfile } = await supabase
+            .from('users')
+            .select('id, full_name, email')
+            .eq('email', user.email)
+            .single();
+          if (userProfile) {
+            setCurrentUserId(userProfile.id);
+            if (userProfile.full_name) {
+              setCurrentUserName(userProfile.full_name);
+            } else {
+              setCurrentUserName(userProfile.email || 'Unknown');
+            }
+          }
         }
+      } catch (error) {
+        console.error('Error fetching user info:', error);
       }
     }
-    fetchUserName();
+    fetchUserInfo();
   }, []);
+
+  // Fetch current user's follow-up for this lead
+  useEffect(() => {
+    const fetchUserFollowup = async () => {
+      if (!currentUserId || !client?.id) {
+        setCurrentUserFollowup(null);
+        setFollowupId(null);
+        return;
+      }
+
+      try {
+        let query;
+
+        if (isLegacy) {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          query = supabase
+            .from('follow_ups')
+            .select('id, date')
+            .eq('lead_id', legacyId)
+            .eq('user_id', currentUserId)
+            .is('new_lead_id', null)
+            .maybeSingle();
+        } else {
+          query = supabase
+            .from('follow_ups')
+            .select('id, date')
+            .eq('new_lead_id', client.id)
+            .eq('user_id', currentUserId)
+            .is('lead_id', null)
+            .maybeSingle();
+        }
+
+        const { data, error } = await query;
+
+        if (error && error.code !== 'PGRST116') { // PGRST116 is "no rows returned", which is fine
+          console.error('Error fetching follow-up:', error);
+          return;
+        }
+
+        if (data) {
+          setFollowupId(data.id);
+          // Convert date to string format for display
+          const dateStr = data.date ? new Date(data.date).toISOString().split('T')[0] : null;
+          setCurrentUserFollowup(dateStr);
+        } else {
+          setFollowupId(null);
+          setCurrentUserFollowup(null);
+        }
+      } catch (error) {
+        console.error('Error fetching user follow-up:', error);
+        setCurrentUserFollowup(null);
+        setFollowupId(null);
+      }
+    };
+
+    fetchUserFollowup();
+  }, [currentUserId, client?.id]);
 
   const handleProbabilityChange = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const newProbability = Number(event.target.value);
@@ -393,17 +464,40 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       return;
     }
 
+    if (!currentUserId) {
+      alert('User not authenticated');
+      return;
+    }
+
     try {
-      const tableName = isLegacy ? 'leads_lead' : 'leads';
-      const idField = isLegacy ? 'id' : 'id';
-      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-      
-      const { error } = await supabase
-        .from(tableName)
-        .update({ next_followup: followupDate })
-        .eq(idField, clientId);
-      
+      const insertData: any = {
+        user_id: currentUserId,
+        date: followupDate + 'T00:00:00Z', // Convert to timestamp format
+        created_at: new Date().toISOString()
+      };
+
+      if (isLegacy) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        insertData.lead_id = legacyId;
+        insertData.new_lead_id = null;
+      } else {
+        insertData.new_lead_id = client.id;
+        insertData.lead_id = null;
+      }
+
+      const { data, error } = await supabase
+        .from('follow_ups')
+        .insert(insertData)
+        .select('id')
+        .single();
+
       if (error) throw error;
+
+      // Update local state
+      if (data) {
+        setFollowupId(data.id);
+        setCurrentUserFollowup(followupDate);
+      }
       
       setIsAddingFollowup(false);
       setIsEditingFollowup(false);
@@ -425,18 +519,24 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       return;
     }
 
+    if (!followupId || !currentUserId) {
+      alert('Follow-up not found or user not authenticated');
+      return;
+    }
+
     try {
-      const tableName = isLegacy ? 'leads_lead' : 'leads';
-      const idField = isLegacy ? 'id' : 'id';
-      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-      
       const { error } = await supabase
-        .from(tableName)
-        .update({ next_followup: followupDate })
-        .eq(idField, clientId);
+        .from('follow_ups')
+        .update({ 
+          date: followupDate + 'T00:00:00Z' // Convert to timestamp format
+        })
+        .eq('id', followupId)
+        .eq('user_id', currentUserId);
       
       if (error) throw error;
       
+      // Update local state
+      setCurrentUserFollowup(followupDate);
       setIsEditingFollowup(false);
       setFollowupDate('');
       
@@ -455,18 +555,25 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       return;
     }
 
+    if (!followupId || !currentUserId) {
+      alert('Follow-up not found or user not authenticated');
+      return;
+    }
+
     try {
-      const tableName = isLegacy ? 'leads_lead' : 'leads';
-      const idField = isLegacy ? 'id' : 'id';
-      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
-      
-      // Set next_followup to null to clear it
       const { error } = await supabase
-        .from(tableName)
-        .update({ next_followup: null })
-        .eq(idField, clientId);
+        .from('follow_ups')
+        .delete()
+        .eq('id', followupId)
+        .eq('user_id', currentUserId);
       
       if (error) throw error;
+      
+      // Update local state
+      setFollowupId(null);
+      setCurrentUserFollowup(null);
+      setIsEditingFollowup(false);
+      setFollowupDate('');
       
       // Refresh client data in parent component
       if (onClientUpdate) {

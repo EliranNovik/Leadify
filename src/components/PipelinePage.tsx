@@ -796,7 +796,6 @@ const PipelinePage: React.FC = () => {
                   balance,
                   balance_currency,
                   probability,
-                  next_followup,
                   email,
                   phone,
                   comments,
@@ -901,7 +900,6 @@ const PipelinePage: React.FC = () => {
                   balance,
                   balance_currency,
                   probability,
-                  next_followup,
                   email,
                   phone,
                   comments,
@@ -1003,21 +1001,20 @@ const PipelinePage: React.FC = () => {
                 eligible,
                 number_of_applicants_meeting,
                 potential_applicants_meeting,
-                balance,
-                balance_currency,
-                probability,
-                next_followup,
-                email,
-                phone,
-                comments,
-                label,
-                latest_interaction,
-                country_id,
-                language,
-                source,
-                meetings (
-                  meeting_date
-                )
+                  balance,
+                  balance_currency,
+                  probability,
+                  email,
+                  phone,
+                  comments,
+                  label,
+                  latest_interaction,
+                  country_id,
+                  language,
+                  source,
+                  meetings (
+                    meeting_date
+                  )
               `);
             
             // For scheduler pipeline, filter by eligible; for closer, no eligible filter
@@ -1239,9 +1236,59 @@ const PipelinePage: React.FC = () => {
               lead_type: 'new' as const,
               // New leads use language text column directly - preserve even if null/empty
               language: lead.language || null,
-              language_id: null // New leads don't use language_id
+              language_id: null, // New leads don't use language_id
+              next_followup: followUpsMap.get(lead.id) || null // Get follow-up from follow_ups table
             };
           });
+
+          // Fetch follow-ups from follow_ups table for the current user
+          let followUpsMap = new Map<string, string>(); // Map lead_id -> follow-up date
+          
+          if (userId) {
+            // Fetch follow-ups for new leads
+            const newLeadIds = newLeadsData?.map((lead: any) => lead.id) || [];
+            if (newLeadIds.length > 0) {
+              const { data: newFollowups } = await supabase
+                .from('follow_ups')
+                .select('new_lead_id, date')
+                .eq('user_id', userId)
+                .in('new_lead_id', newLeadIds)
+                .is('lead_id', null);
+              
+              if (newFollowups) {
+                newFollowups.forEach(fu => {
+                  if (fu.new_lead_id) {
+                    const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
+                    if (dateStr) {
+                      followUpsMap.set(fu.new_lead_id, dateStr);
+                    }
+                  }
+                });
+              }
+            }
+            
+            // Fetch follow-ups for legacy leads
+            const legacyLeadIds = legacyLeadsData?.map((lead: any) => lead.id) || [];
+            if (legacyLeadIds.length > 0) {
+              const { data: legacyFollowups } = await supabase
+                .from('follow_ups')
+                .select('lead_id, date')
+                .eq('user_id', userId)
+                .in('lead_id', legacyLeadIds)
+                .is('new_lead_id', null);
+              
+              if (legacyFollowups) {
+                legacyFollowups.forEach(fu => {
+                  if (fu.lead_id) {
+                    const dateStr = fu.date ? new Date(fu.date).toISOString().split('T')[0] : null;
+                    if (dateStr) {
+                      followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+                    }
+                  }
+                });
+              }
+            }
+          }
 
           // Process legacy leads
           const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
@@ -1266,7 +1313,7 @@ const PipelinePage: React.FC = () => {
               balance_currency: currencyCode,
               probability: typeof lead.probability === 'string' ? parseFloat(lead.probability) : lead.probability,
               eligibility_status: null,
-              next_followup: lead.next_followup,
+              next_followup: followUpsMap.get(`legacy_${lead.id}`) || null, // Get follow-up from follow_ups table
               manual_interactions: [],
               email: lead.email,
               mobile: null,
@@ -1921,6 +1968,39 @@ const PipelinePage: React.FC = () => {
     // Get language name
     const languageName = getLanguageName(lead.language_id, lead.language);
     
+    // Fetch follow-up from follow_ups table for current user
+    let followUpDate = '';
+    if (userId) {
+      const isLegacyLead = lead.lead_type === 'legacy' || lead.id.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        const legacyId = lead.id.toString().replace('legacy_', '');
+        const { data: followUpData } = await supabase
+          .from('follow_ups')
+          .select('date')
+          .eq('user_id', userId)
+          .eq('lead_id', legacyId)
+          .is('new_lead_id', null)
+          .maybeSingle();
+        
+        if (followUpData?.date) {
+          followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+        }
+      } else {
+        const { data: followUpData } = await supabase
+          .from('follow_ups')
+          .select('date')
+          .eq('user_id', userId)
+          .eq('new_lead_id', lead.id)
+          .is('lead_id', null)
+          .maybeSingle();
+        
+        if (followUpData?.date) {
+          followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+        }
+      }
+    }
+    
     // Reset the edit form data with current lead data
     setEditLeadData({
       tags: '',
@@ -1933,7 +2013,7 @@ const PipelinePage: React.FC = () => {
       number_of_applicants_meeting: lead.number_of_applicants_meeting?.toString() || '',
       potential_applicants_meeting: lead.potential_applicants_meeting?.toString() || '',
       balance: lead.balance?.toString() || '',
-      next_followup: lead.next_followup || '',
+      next_followup: followUpDate, // Use follow-up from follow_ups table
       balance_currency: currentCurrency,
       eligible: lead.eligible !== false,
     });
@@ -2174,11 +2254,7 @@ const PipelinePage: React.FC = () => {
           }
           updateData.probability = probabilityValue;
         }
-        if (editLeadData.next_followup !== selectedLead.next_followup) {
-          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-            null : editLeadData.next_followup;
-          updateData.next_followup = followupValue;
-        }
+        // Follow-up is now handled separately in follow_ups table, not in updateData
         if (editLeadData.balance !== selectedLead.balance?.toString()) {
           const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
           updateData.total = balanceValue;
@@ -2306,11 +2382,7 @@ const PipelinePage: React.FC = () => {
             updateData.balance = null;
           }
         }
-        if (editLeadData.next_followup !== selectedLead.next_followup) {
-          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-            null : editLeadData.next_followup;
-          updateData.next_followup = followupValue;
-        }
+        // Follow-up is now handled separately in follow_ups table, not in updateData
         if (editLeadData.balance_currency !== selectedLead.balance_currency) {
           updateData.balance_currency = editLeadData.balance_currency;
         }
@@ -2332,6 +2404,93 @@ const PipelinePage: React.FC = () => {
       // Save tags if they changed
       if (currentLeadTags !== (selectedLead?.tags || '')) {
         await saveLeadTags(selectedLead.id.toString(), currentLeadTags);
+      }
+      
+      // Handle follow-up save/update in follow_ups table
+      if (editLeadData.next_followup !== selectedLead.next_followup && userId) {
+        const isLegacyLead = selectedLead.lead_type === 'legacy' || selectedLead.id.toString().startsWith('legacy_');
+        
+        if (editLeadData.next_followup && editLeadData.next_followup.trim() !== '') {
+          // Check if follow-up already exists
+          let existingFollowup;
+          if (isLegacyLead) {
+            const legacyId = selectedLead.id.toString().replace('legacy_', '');
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id')
+              .eq('user_id', userId)
+              .eq('lead_id', legacyId)
+              .is('new_lead_id', null)
+              .maybeSingle();
+            existingFollowup = data;
+          } else {
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id')
+              .eq('user_id', userId)
+              .eq('new_lead_id', selectedLead.id)
+              .is('lead_id', null)
+              .maybeSingle();
+            existingFollowup = data;
+          }
+          
+          if (existingFollowup) {
+            // Update existing follow-up
+            const { error: followupError } = await supabase
+              .from('follow_ups')
+              .update({ date: editLeadData.next_followup + 'T00:00:00Z' })
+              .eq('id', existingFollowup.id)
+              .eq('user_id', userId);
+            
+            if (followupError) {
+              console.error('Error updating follow-up:', followupError);
+              toast.error('Failed to update follow-up date');
+            }
+          } else {
+            // Create new follow-up
+            const insertData: any = {
+              user_id: userId,
+              date: editLeadData.next_followup + 'T00:00:00Z',
+              created_at: new Date().toISOString()
+            };
+            
+            if (isLegacyLead) {
+              const legacyId = selectedLead.id.toString().replace('legacy_', '');
+              insertData.lead_id = legacyId;
+              insertData.new_lead_id = null;
+            } else {
+              insertData.new_lead_id = selectedLead.id;
+              insertData.lead_id = null;
+            }
+            
+            const { error: followupError } = await supabase
+              .from('follow_ups')
+              .insert(insertData);
+            
+            if (followupError) {
+              console.error('Error creating follow-up:', followupError);
+              toast.error('Failed to save follow-up date');
+            }
+          }
+        } else {
+          // Delete follow-up if date is empty
+          if (isLegacyLead) {
+            const legacyId = selectedLead.id.toString().replace('legacy_', '');
+            await supabase
+              .from('follow_ups')
+              .delete()
+              .eq('user_id', userId)
+              .eq('lead_id', legacyId)
+              .is('new_lead_id', null);
+          } else {
+            await supabase
+              .from('follow_ups')
+              .delete()
+              .eq('user_id', userId)
+              .eq('new_lead_id', selectedLead.id)
+              .is('lead_id', null);
+          }
+        }
       }
       
       // Refresh leads

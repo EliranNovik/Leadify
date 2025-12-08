@@ -6,7 +6,7 @@ import OverdueFollowups from './OverdueFollowups';
 import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
@@ -19,6 +19,7 @@ import { useNavigate } from 'react-router-dom';
 import { getStageName } from '../lib/stageUtils';
 import EmployeeScoreboard from './EmployeeScoreboard';
 import { formatMeetingValue } from '../lib/meetingValue';
+import { toast } from 'react-hot-toast';
 
 
 
@@ -102,6 +103,9 @@ const Dashboard: React.FC = () => {
   const [tomorrowFollowUps, setTomorrowFollowUps] = useState<any[]>([]);
   const [todayFollowUpsLoading, setTodayFollowUpsLoading] = useState(false);
   const [tomorrowFollowUpsLoading, setTomorrowFollowUpsLoading] = useState(false);
+  const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
+  const [editFollowUpDate, setEditFollowUpDate] = useState<string>('');
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
 
   const navigate = useNavigate();
@@ -333,10 +337,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Optimized function to fetch follow-up leads data using employee relationship
+  // Optimized function to fetch follow-up leads data using the new follow_ups table
   const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow', fetchAll = false) => {
     try {
-      // Get current user's data with employee relationship using JOIN
+      // Get current user's data
       const { data: { user } } = await supabase.auth.getUser();
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
@@ -345,214 +349,173 @@ const Dashboard: React.FC = () => {
       console.log('🔍 Dashboard - Fetching user data for auth_id:', user.id);
       const { data: userData, error: userDataError } = await supabase
         .from('users')
-        .select(`
-          id,
-          full_name,
-          employee_id,
-          tenants_employee!employee_id(
-            id,
-            display_name
-          )
-        `)
+        .select('id')
         .eq('auth_id', user.id)
         .single();
 
-      if (userDataError) {
+      if (userDataError || !userData?.id) {
         console.error('❌ Dashboard - Error fetching user data:', userDataError);
-        console.error('❌ Dashboard - User data error details:', {
-          message: userDataError.message,
-          details: userDataError.details,
-          hint: userDataError.hint,
-          code: userDataError.code
-        });
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
 
-      if (!userData) {
-        return { newLeads: [], legacyLeads: [], totalCount: 0 };
-      }
-
-      // Use display_name from employee table or full_name from users table
-      const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
-      const userEmployeeId = userData.employee_id;
+      const userId = userData.id;
       
-      if (!userFullName) {
-        return { newLeads: [], legacyLeads: [], totalCount: 0 };
-      }
-      
-      // Get today's date as YYYY-MM-DD string
+      // Get today's date for filtering
       const today = new Date();
-      const todayStr = today.toISOString().split('T')[0];
+      today.setHours(0, 0, 0, 0);
+      const todayStart = today.toISOString();
+      today.setHours(23, 59, 59, 999);
+      const todayEnd = today.toISOString();
       
-      // Get tomorrow's date as YYYY-MM-DD string
+      // Get tomorrow's date for filtering
       const tomorrow = new Date(today);
       tomorrow.setDate(tomorrow.getDate() + 1);
-      const tomorrowStr = tomorrow.toISOString().split('T')[0];
+      tomorrow.setHours(0, 0, 0, 0);
+      const tomorrowStart = tomorrow.toISOString();
+      tomorrow.setHours(23, 59, 59, 999);
+      const tomorrowEnd = tomorrow.toISOString();
       
       const fiftyDaysAgo = new Date();
       fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
-      const fiftyDaysAgoStr = fiftyDaysAgo.toISOString().split('T')[0];
+      fiftyDaysAgo.setHours(0, 0, 0, 0);
+      const fiftyDaysAgoISO = fiftyDaysAgo.toISOString();
       
-      // Fetch new leads (using display_name for filtering)
-      let newLeadsQuery = supabase
-        .from('leads')
-        .select('id, lead_number, name, stage, topic, next_followup, expert, manager, meeting_manager, category, category_id, balance, balance_currency, probability, handler, scheduler, closer, meeting_manager_id, expert_id, case_handler_id')
-        .not('next_followup', 'is', null)
-        .not('lead_number', 'is', null) // Filter out deleted leads (those without lead_number)
-        .neq('lead_number', '') // Also filter out empty string lead_numbers
-        .is('unactivated_at', null); // Filter out inactive leads (same logic as closed deals widget)
-      
-      // Apply date filter - exact date matching
+      // Fetch new leads with follow-ups from follow_ups table
+      let newFollowupsQuery = supabase
+        .from('follow_ups')
+        .select(`
+          id,
+          date,
+          new_lead_id,
+          leads!follow_ups_new_lead_id_fkey (
+            id,
+            lead_number,
+            name,
+            stage,
+            topic,
+            status,
+            unactivated_at,
+            expert,
+            manager,
+            meeting_manager,
+            category,
+            category_id,
+            balance,
+            balance_currency,
+            probability,
+            handler,
+            scheduler,
+            closer,
+            meeting_manager_id,
+            expert_id,
+            case_handler_id
+          )
+        `)
+        .eq('user_id', userId)
+        .not('new_lead_id', 'is', null);
+
+      // Apply date filter based on dateType
       if (dateType === 'today') {
-        // Exact match for today's date
-        newLeadsQuery = newLeadsQuery.eq('next_followup', todayStr);
+        newFollowupsQuery = newFollowupsQuery.gte('date', todayStart).lte('date', todayEnd);
       } else if (dateType === 'tomorrow') {
-        // Exact match for tomorrow's date
-        newLeadsQuery = newLeadsQuery.eq('next_followup', tomorrowStr);
+        newFollowupsQuery = newFollowupsQuery.gte('date', tomorrowStart).lte('date', tomorrowEnd);
       } else {
-        // overdue: less than today (before today)
-        newLeadsQuery = newLeadsQuery.lt('next_followup', todayStr).gte('next_followup', fiftyDaysAgoStr);
-      }
-      
-      // Apply role filter for new leads - check both text and numeric fields
-      const roleConditions: string[] = [];
-      // Text fields (display names)
-      if (userFullName) {
-        roleConditions.push(`expert.eq.${userFullName}`);
-        roleConditions.push(`manager.eq.${userFullName}`);
-        roleConditions.push(`meeting_manager.eq.${userFullName}`);
-        roleConditions.push(`handler.eq.${userFullName}`);
-        roleConditions.push(`scheduler.eq.${userFullName}`);
-        roleConditions.push(`closer.eq.${userFullName}`);
-      }
-      // Numeric fields (employee IDs)
-      if (userEmployeeId) {
-        roleConditions.push(`meeting_manager_id.eq.${userEmployeeId}`);
-        roleConditions.push(`expert_id.eq.${userEmployeeId}`);
-        roleConditions.push(`case_handler_id.eq.${userEmployeeId}`);
-      }
-      
-      if (roleConditions.length > 0) {
-        newLeadsQuery = newLeadsQuery.or(roleConditions.join(','));
-      }
-      
-      newLeadsQuery = newLeadsQuery.limit(fetchAll ? 1000 : 1000);
-      
-      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery;
-      if (newLeadsError) throw newLeadsError;
-
-      // Fetch legacy leads (using employee ID for efficient filtering)
-      // Strategy: Filter by role first (indexed), then filter by date in JavaScript
-      // This avoids slow text comparisons on next_followup in the database
-      let legacyLeadsData: any[] = [];
-      let legacyLeadsError: any = null;
-      
-      if (userEmployeeId) {
-        console.log(`🔍 Fetching legacy leads for ${dateType} follow-ups, userEmployeeId: ${userEmployeeId}, todayStr: ${todayStr}`);
-        
-        const baseSelect = 'id, name, stage, topic, next_followup, expert_id, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, case_handler_id, closer_id, category_id, total, currency_id';
-        
-        // Query each role separately (using indexed columns) and fetch all with next_followup
-        // Filter out inactive leads (status != 10) - same logic as closed deals widget
-        // Then filter by date in JavaScript
-        const roleQueries = [
-          { name: 'expert_id', query: supabase.from('leads_lead').select(baseSelect).eq('expert_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-          { name: 'meeting_manager_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_manager_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-          { name: 'meeting_lawyer_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_lawyer_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-          { name: 'meeting_scheduler_id', query: supabase.from('leads_lead').select(baseSelect).eq('meeting_scheduler_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-          { name: 'case_handler_id', query: supabase.from('leads_lead').select(baseSelect).eq('case_handler_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-          { name: 'closer_id', query: supabase.from('leads_lead').select(baseSelect).eq('closer_id', userEmployeeId).not('next_followup', 'is', null).neq('status', 10).limit(1000) },
-        ];
-        
-        // Execute all queries with timeout protection
-        const queryPromises = roleQueries.map(async ({ name, query }) => {
-          try {
-            const timeoutPromise = new Promise((_, reject) => 
-              setTimeout(() => reject(new Error(`Query timeout for ${name}`)), 10000)
-            );
-            const queryPromise = query;
-            const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-            console.log(`✅ ${name} query: ${result?.data?.length || 0} results`);
-            return { name, ...result };
-          } catch (err: any) {
-            console.warn(`❌ ${name} query timeout or error:`, err?.message || err);
-            return { name, data: null, error: err };
-          }
-        });
-        
-        const results = await Promise.allSettled(queryPromises);
-        
-        // Combine results and deduplicate by lead ID
-        const leadMap = new Map<number, any>();
-        
-        results.forEach((result) => {
-          if (result.status === 'fulfilled') {
-            const { name, data, error } = result.value as any;
-            if (!error && data) {
-              data.forEach((lead: any) => {
-                if (!leadMap.has(lead.id)) {
-                  leadMap.set(lead.id, lead);
-                }
-              });
-            } else if (error) {
-              console.warn(`Legacy lead query ${name} error:`, error);
-              if (!legacyLeadsError) legacyLeadsError = error;
-            }
-          } else {
-            console.warn(`Legacy lead query failed:`, result.reason);
-          }
-        });
-        
-        // Now filter by date in JavaScript (handles various date formats)
-        const allLeads = Array.from(leadMap.values());
-        console.log(`📊 Total leads with next_followup: ${allLeads.length}`);
-        
-        // Helper to normalize date strings for comparison
-        const normalizeDate = (dateStr: string | null): string | null => {
-          if (!dateStr) return null;
-          // Try to parse various date formats
-          const date = new Date(dateStr);
-          if (isNaN(date.getTime())) {
-            // If parsing fails, try to extract YYYY-MM-DD pattern
-            const match = dateStr.match(/(\d{4})-(\d{2})-(\d{2})/);
-            if (match) return match[0];
-            return null;
-          }
-          return date.toISOString().split('T')[0];
-        };
-        
-        // Filter by date type
-        legacyLeadsData = allLeads.filter((lead) => {
-          const followupDate = normalizeDate(lead.next_followup);
-          if (!followupDate) return false;
-          
-          if (dateType === 'today') {
-            return followupDate === todayStr;
-          } else if (dateType === 'tomorrow') {
-            return followupDate === tomorrowStr;
-          } else {
-            // overdue: less than today but not more than 50 days ago
-            return followupDate < todayStr && followupDate >= fiftyDaysAgoStr;
-          }
-        });
-        
-        console.log(`✅ Filtered to ${legacyLeadsData.length} legacy leads for ${dateType} follow-ups`);
-        legacyLeadsData.forEach((lead) => {
-          console.log(`📋 Legacy lead: ID=${lead.id}, name=${lead.name}, next_followup=${lead.next_followup} (normalized: ${normalizeDate(lead.next_followup)})`);
-        });
-      } else {
-        console.warn('⚠️ No userEmployeeId available for legacy leads query');
+        // overdue: less than today but not more than 50 days ago
+        newFollowupsQuery = newFollowupsQuery.gte('date', fiftyDaysAgoISO).lt('date', todayStart);
       }
 
-      if (legacyLeadsError) {
-        console.warn('Legacy leads error (non-fatal):', legacyLeadsError);
-        // Don't throw, just log - we'll return what we have
+      newFollowupsQuery = newFollowupsQuery.limit(fetchAll ? 1000 : 1000);
+      
+      const { data: newFollowupsData, error: newFollowupsError } = await newFollowupsQuery;
+      if (newFollowupsError) throw newFollowupsError;
+
+      // Fetch legacy leads with follow-ups from follow_ups table
+      let legacyFollowupsQuery = supabase
+        .from('follow_ups')
+        .select(`
+          id,
+          date,
+          lead_id,
+          leads_lead!follow_ups_lead_id_fkey (
+            id,
+            name,
+            stage,
+            topic,
+            status,
+            expert_id,
+            meeting_manager_id,
+            meeting_lawyer_id,
+            meeting_scheduler_id,
+            case_handler_id,
+            closer_id,
+            category_id,
+            total,
+            currency_id
+          )
+        `)
+        .eq('user_id', userId)
+        .not('lead_id', 'is', null);
+
+      // Apply date filter based on dateType
+      if (dateType === 'today') {
+        legacyFollowupsQuery = legacyFollowupsQuery.gte('date', todayStart).lte('date', todayEnd);
+      } else if (dateType === 'tomorrow') {
+        legacyFollowupsQuery = legacyFollowupsQuery.gte('date', tomorrowStart).lte('date', tomorrowEnd);
+      } else {
+        // overdue: less than today but not more than 50 days ago
+        legacyFollowupsQuery = legacyFollowupsQuery.gte('date', fiftyDaysAgoISO).lt('date', todayStart);
       }
+
+      legacyFollowupsQuery = legacyFollowupsQuery.limit(fetchAll ? 1000 : 1000);
+
+      const { data: legacyFollowupsData, error: legacyFollowupsError } = await legacyFollowupsQuery;
+      if (legacyFollowupsError) throw legacyFollowupsError;
+
+      // Process new leads - filter for active leads only
+      const processedNewLeads = (newFollowupsData || [])
+        .filter(followup => {
+          const lead = followup.leads as any;
+          // Filter out inactive leads: no lead_number, empty lead_number, or has unactivated_at
+          return lead && 
+                 lead.lead_number && 
+                 lead.lead_number !== '' && 
+                 !lead.unactivated_at &&
+                 lead.status !== 'not_qualified' && 
+                 lead.status !== 'declined';
+        })
+        .map(followup => {
+          const lead = followup.leads as any;
+          return {
+            ...lead,
+            next_followup: followup.date, // Include follow-up date for compatibility
+            follow_up_id: followup.id, // Include follow-up ID for editing/deleting
+            lead_type: 'new' as const
+          };
+        });
+
+      // Process legacy leads - filter for active leads only (status = 0, stage < 100)
+      const processedLegacyLeads = (legacyFollowupsData || [])
+        .filter(followup => {
+          const lead = followup.leads_lead as any;
+          return lead && 
+                 lead.status === 0 && 
+                 (lead.stage === null || lead.stage < 100);
+        })
+        .map(followup => {
+          const lead = followup.leads_lead as any;
+          return {
+            ...lead,
+            next_followup: followup.date, // Include follow-up date for compatibility
+            follow_up_id: followup.id, // Include follow-up ID for editing/deleting
+            lead_type: 'legacy' as const,
+            lead_number: lead.id?.toString() || ''
+          };
+        });
 
       const result = {
-        newLeads: newLeadsData || [],
-        legacyLeads: legacyLeadsData || [],
-        totalCount: (newLeadsData?.length || 0) + (legacyLeadsData?.length || 0)
+        newLeads: processedNewLeads,
+        legacyLeads: processedLegacyLeads,
+        totalCount: processedNewLeads.length + processedLegacyLeads.length
       };
       
       return result;
@@ -594,6 +557,120 @@ const Dashboard: React.FC = () => {
     if (!location) return false;
     const locationLower = location.toLowerCase().trim();
     return locationLower === 'online' || locationLower === 'teams' || locationLower === 'zoom';
+  };
+
+  // Fetch current user ID on mount
+  useEffect(() => {
+    const fetchUserId = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('id')
+            .eq('auth_id', user.id)
+            .single();
+          if (userData) {
+            setCurrentUserId(userData.id);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching user ID:', error);
+      }
+    };
+    fetchUserId();
+  }, []);
+
+  // Handler to edit follow-up date
+  const handleEditFollowUp = (lead: any) => {
+    setEditingFollowUpId(lead.follow_up_id);
+    setEditFollowUpDate(lead.next_followup ? new Date(lead.next_followup).toISOString().split('T')[0] : '');
+  };
+
+  // Handler to save edited follow-up date
+  const handleSaveFollowUp = async (lead: any) => {
+    if (!currentUserId || !editingFollowUpId) return;
+    
+    try {
+      if (editFollowUpDate && editFollowUpDate.trim() !== '') {
+        const { error } = await supabase
+          .from('follow_ups')
+          .update({ date: editFollowUpDate + 'T00:00:00Z' })
+          .eq('id', editingFollowUpId)
+          .eq('user_id', currentUserId);
+        
+        if (error) throw error;
+        
+        toast.success('Follow-up date updated successfully');
+      } else {
+        // Delete if date is empty
+        await handleDeleteFollowUp(lead);
+        return;
+      }
+      
+      // Refresh follow-ups
+      if (followUpTab === 'today') {
+        const result = await fetchFollowUpLeadsData('today');
+        setTodayFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else if (followUpTab === 'tomorrow') {
+        const result = await fetchFollowUpLeadsData('tomorrow');
+        setTomorrowFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else {
+        const result = await fetchFollowUpLeadsData('overdue');
+        setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
+      }
+      
+      setEditingFollowUpId(null);
+      setEditFollowUpDate('');
+    } catch (error: any) {
+      console.error('Error updating follow-up:', error);
+      toast.error(`Failed to update follow-up: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  // Handler to delete follow-up
+  const handleDeleteFollowUp = async (lead: any) => {
+    if (!currentUserId || !lead.follow_up_id) return;
+    
+    if (!window.confirm('Are you sure you want to delete this follow-up?')) {
+      return;
+    }
+    
+    try {
+      const { error } = await supabase
+        .from('follow_ups')
+        .delete()
+        .eq('id', lead.follow_up_id)
+        .eq('user_id', currentUserId);
+      
+      if (error) throw error;
+      
+      toast.success('Follow-up deleted successfully');
+      
+      // Refresh follow-ups
+      if (followUpTab === 'today') {
+        const result = await fetchFollowUpLeadsData('today');
+        setTodayFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else if (followUpTab === 'tomorrow') {
+        const result = await fetchFollowUpLeadsData('tomorrow');
+        setTomorrowFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else {
+        const result = await fetchFollowUpLeadsData('overdue');
+        setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
+      }
+      
+      setEditingFollowUpId(null);
+      setEditFollowUpDate('');
+    } catch (error: any) {
+      console.error('Error deleting follow-up:', error);
+      toast.error(`Failed to delete follow-up: ${error.message || 'Unknown error'}`);
+    }
+  };
+
+  // Handler to cancel editing
+  const handleCancelEditFollowUp = () => {
+    setEditingFollowUpId(null);
+    setEditFollowUpDate('');
   };
 
   // --- Add state for today's meetings (real data) ---
@@ -6063,7 +6140,7 @@ const Dashboard: React.FC = () => {
                         </div>
                         </div>
                       </div>
-                    {/* Action Buttons */}
+                      {/* Action Buttons */}
                       {(() => {
                         // meeting.link already prefers explicit Teams URL and falls back to location default_link
                         const hasLink = !!getValidTeamsLink(meeting.link);
@@ -6215,6 +6292,7 @@ const Dashboard: React.FC = () => {
                         <th>Amount</th>
                         <th>Follow-up Date</th>
                         {followUpTab === 'overdue' && <th>Days Overdue</th>}
+                        <th>Actions</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -6255,10 +6333,68 @@ const Dashboard: React.FC = () => {
                                 : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                               }
                             </td>
-                            <td>{lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}</td>
+                            <td>
+                              {editingFollowUpId === lead.follow_up_id ? (
+                                <div className="flex items-center gap-2">
+                                  <input
+                                    type="date"
+                                    value={editFollowUpDate}
+                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                    className="input input-sm input-bordered"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    className="btn btn-xs btn-primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSaveFollowUp(lead);
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCancelEditFollowUp();
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <span>{lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}</span>
+                              )}
+                            </td>
                             {followUpTab === 'overdue' && (
                               <td>{daysOverdue}</td>
                             )}
+                            <td onClick={(e) => e.stopPropagation()}>
+                              {editingFollowUpId !== lead.follow_up_id && (
+                                <div className="flex gap-1">
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEditFollowUp(lead);
+                                    }}
+                                    title="Edit follow-up date"
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost text-error"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteFollowUp(lead);
+                                    }}
+                                    title="Delete follow-up"
+                                  >
+                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                </div>
+                              )}
+                            </td>
                           </tr>
                         );
                       })}
@@ -6341,6 +6477,65 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Probability</span>
                               <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                            </div>
+                            {/* Follow-up Date */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Follow-up Date</span>
+                              {editingFollowUpId === lead.follow_up_id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="date"
+                                    value={editFollowUpDate}
+                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                    className="input input-xs input-bordered"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    className="btn btn-xs btn-primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSaveFollowUp(lead);
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCancelEditFollowUp();
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <span className="text-sm font-bold text-gray-800">
+                                    {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
+                                  </span>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEditFollowUp(lead);
+                                    }}
+                                    title="Edit follow-up date"
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost text-error"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteFollowUp(lead);
+                                    }}
+                                    title="Delete follow-up"
+                                  >
+                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>
@@ -6439,6 +6634,65 @@ const Dashboard: React.FC = () => {
                               <span className="text-sm font-semibold text-gray-500">Probability</span>
                               <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
                             </div>
+                            {/* Follow-up Date */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Follow-up Date</span>
+                              {editingFollowUpId === lead.follow_up_id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="date"
+                                    value={editFollowUpDate}
+                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                    className="input input-xs input-bordered"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    className="btn btn-xs btn-primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSaveFollowUp(lead);
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCancelEditFollowUp();
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <span className="text-sm font-bold text-gray-800">
+                                    {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
+                                  </span>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEditFollowUp(lead);
+                                    }}
+                                    title="Edit follow-up date"
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost text-error"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteFollowUp(lead);
+                                    }}
+                                    title="Delete follow-up"
+                                  >
+                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
                       </div>
@@ -6528,6 +6782,65 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Probability</span>
                               <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                            </div>
+                            {/* Follow-up Date */}
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Follow-up Date</span>
+                              {editingFollowUpId === lead.follow_up_id ? (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <input
+                                    type="date"
+                                    value={editFollowUpDate}
+                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                    className="input input-xs input-bordered"
+                                    onClick={(e) => e.stopPropagation()}
+                                  />
+                                  <button
+                                    className="btn btn-xs btn-primary"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleSaveFollowUp(lead);
+                                    }}
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleCancelEditFollowUp();
+                                    }}
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              ) : (
+                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                  <span className="text-sm font-bold text-gray-800">
+                                    {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
+                                  </span>
+                                  <button
+                                    className="btn btn-xs btn-ghost"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleEditFollowUp(lead);
+                                    }}
+                                    title="Edit follow-up date"
+                                  >
+                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                  <button
+                                    className="btn btn-xs btn-ghost text-error"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      handleDeleteFollowUp(lead);
+                                    }}
+                                    title="Delete follow-up"
+                                  >
+                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                  </button>
+                                </div>
+                              )}
                             </div>
                           </div>
                         </div>

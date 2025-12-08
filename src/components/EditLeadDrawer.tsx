@@ -182,7 +182,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       if (isLegacyLead) {
         const { data, error } = await supabase
           .from('leads_lead')
-          .select('name, topic, probability, no_of_applicants, total, next_followup, currency_id, eligibile, source_id, language_id, category_id')
+          .select('name, topic, probability, no_of_applicants, total, currency_id, eligibile, source_id, language_id, category_id')
           .eq('id', leadId)
           .single();
         
@@ -221,7 +221,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       } else {
         const { data, error } = await supabase
           .from('leads')
-          .select('name, topic, probability, number_of_applicants_meeting, potential_applicants_meeting, balance, next_followup, balance_currency, eligible, source, language, category_id')
+          .select('name, topic, probability, number_of_applicants_meeting, potential_applicants_meeting, balance, balance_currency, eligible, source, language, category_id')
           .eq('id', leadId)
           .single();
         
@@ -243,6 +243,43 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
         lead.balance_currency || '₪'
       );
       
+      // Fetch follow-up from follow_ups table
+      let followUpDate = '';
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id')
+          .eq('auth_id', user.id)
+          .single();
+        
+        if (userData) {
+          let followUpQuery;
+          if (isLegacyLead) {
+            followUpQuery = supabase
+              .from('follow_ups')
+              .select('date')
+              .eq('user_id', userData.id)
+              .eq('lead_id', leadId)
+              .is('new_lead_id', null)
+              .maybeSingle();
+          } else {
+            followUpQuery = supabase
+              .from('follow_ups')
+              .select('date')
+              .eq('user_id', userData.id)
+              .eq('new_lead_id', leadId)
+              .is('lead_id', null)
+              .maybeSingle();
+          }
+          
+          const { data: followUpData } = await followUpQuery;
+          if (followUpData?.date) {
+            followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+          }
+        }
+      }
+      
       // Reset the edit form data with current lead data
       setEditLeadData({
         tags: '',
@@ -259,7 +296,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
           ? (lead.potential_applicants_meeting || '') // Legacy leads might not have this field
           : (leadDetails?.potential_applicants_meeting || lead.potential_applicants_meeting || ''),
         balance: leadDetails?.total || leadDetails?.balance || lead.balance || lead.total || '',
-        next_followup: leadDetails?.next_followup || lead.next_followup || '',
+        next_followup: followUpDate || lead.next_followup || '',
         balance_currency: currentCurrency,
         eligible: isLegacyLead 
           ? (leadDetails?.eligibile !== 'no' && leadDetails?.eligibile !== false && lead.eligible !== false)
@@ -547,11 +584,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
             updateData.total = balanceValue;
           }
-          if (editLeadData.next_followup !== currentData.next_followup) {
-            const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-              new Date().toISOString().split('T')[0] : editLeadData.next_followup;
-            updateData.next_followup = followupValue;
-          }
+          // Follow-up is now handled separately in follow_ups table, not in updateData
           if (editLeadData.balance_currency !== getCurrencySymbol(currentData.currency_id)) {
             updateData.currency_id = currencyNameToId(editLeadData.balance_currency);
           }
@@ -673,11 +706,7 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
             }
             updateData.balance = balanceValue;
           }
-          if (editLeadData.next_followup !== currentData.next_followup) {
-            const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-              new Date().toISOString().split('T')[0] : editLeadData.next_followup;
-            updateData.next_followup = followupValue;
-          }
+          // Follow-up is now handled separately in follow_ups table, not in updateData
           if (editLeadData.balance_currency !== currentData.balance_currency) {
             updateData.balance_currency = editLeadData.balance_currency;
           }
@@ -691,6 +720,102 @@ const EditLeadDrawer: React.FC<EditLeadDrawerProps> = ({ isOpen, onClose, lead, 
       const leadIdForTags = isLegacyLead ? `legacy_${typeof lead.id === 'string' ? lead.id.replace('legacy_', '') : lead.id}` : lead.id;
       if (currentLeadTags !== '') {
         await saveLeadTags(leadIdForTags, currentLeadTags);
+      }
+      
+      // Handle follow-up save/update in follow_ups table
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id')
+          .eq('auth_id', user.id)
+          .single();
+        
+        if (userData) {
+          // Fetch current follow-up to compare
+          let currentFollowUp;
+          if (isLegacyLead) {
+            const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('user_id', userData.id)
+              .eq('lead_id', legacyId)
+              .is('new_lead_id', null)
+              .maybeSingle();
+            currentFollowUp = data;
+          } else {
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('user_id', userData.id)
+              .eq('new_lead_id', lead.id)
+              .is('lead_id', null)
+              .maybeSingle();
+            currentFollowUp = data;
+          }
+          
+          const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
+          const newFollowUpDate = editLeadData.next_followup || '';
+          
+          if (currentFollowUpDate !== newFollowUpDate) {
+            if (newFollowUpDate && newFollowUpDate.trim() !== '') {
+              // Update or create follow-up
+              if (currentFollowUp) {
+                // Update existing
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .update({ date: newFollowUpDate + 'T00:00:00Z' })
+                  .eq('id', currentFollowUp.id)
+                  .eq('user_id', userData.id);
+                
+                if (followupError) {
+                  console.error('Error updating follow-up:', followupError);
+                  toast.error('Failed to update follow-up date');
+                }
+              } else {
+                // Create new
+                const insertData: any = {
+                  user_id: userData.id,
+                  date: newFollowUpDate + 'T00:00:00Z',
+                  created_at: new Date().toISOString()
+                };
+                
+                if (isLegacyLead) {
+                  const legacyId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+                  insertData.lead_id = legacyId;
+                  insertData.new_lead_id = null;
+                } else {
+                  insertData.new_lead_id = lead.id;
+                  insertData.lead_id = null;
+                }
+                
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .insert(insertData);
+                
+                if (followupError) {
+                  console.error('Error creating follow-up:', followupError);
+                  toast.error('Failed to save follow-up date');
+                }
+              }
+            } else {
+              // Delete follow-up if date is empty
+              if (currentFollowUp) {
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .delete()
+                  .eq('id', currentFollowUp.id)
+                  .eq('user_id', userData.id);
+                
+                if (followupError) {
+                  console.error('Error deleting follow-up:', followupError);
+                  toast.error('Failed to delete follow-up');
+                }
+              }
+            }
+          }
+        }
       }
       
       // If no changes were detected, don't proceed with the update
