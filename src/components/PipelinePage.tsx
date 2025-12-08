@@ -1214,34 +1214,7 @@ const PipelinePage: React.FC = () => {
           
           // Note: Category handling is now done via getCategoryName function using allCategories state
           
-
-          // Process new leads with proper category handling
-          const processedNewLeads = (newLeadsData || []).map((lead: any) => {
-            // Debug: Log language data for new leads
-            if (lead.id === 'L34' || lead.lead_number === 'L34') {
-              console.log('🔍 Debug Lead L34 language:', {
-                id: lead.id,
-                lead_number: lead.lead_number,
-                language: lead.language,
-                languageType: typeof lead.language,
-                languageNull: lead.language === null,
-                languageUndefined: lead.language === undefined
-              });
-            }
-            
-            return {
-              ...lead,
-              category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
-              meetings: lead.meetings || [], // Ensure meetings is always an array
-              lead_type: 'new' as const,
-              // New leads use language text column directly - preserve even if null/empty
-              language: lead.language || null,
-              language_id: null, // New leads don't use language_id
-              next_followup: followUpsMap.get(lead.id) || null // Get follow-up from follow_ups table
-            };
-          });
-
-          // Fetch follow-ups from follow_ups table for the current user
+          // Fetch follow-ups from follow_ups table for the current user BEFORE processing leads
           let followUpsMap = new Map<string, string>(); // Map lead_id -> follow-up date
           
           if (userId) {
@@ -1289,6 +1262,32 @@ const PipelinePage: React.FC = () => {
               }
             }
           }
+
+          // Process new leads with proper category handling
+          const processedNewLeads = (newLeadsData || []).map((lead: any) => {
+            // Debug: Log language data for new leads
+            if (lead.id === 'L34' || lead.lead_number === 'L34') {
+              console.log('🔍 Debug Lead L34 language:', {
+                id: lead.id,
+                lead_number: lead.lead_number,
+                language: lead.language,
+                languageType: typeof lead.language,
+                languageNull: lead.language === null,
+                languageUndefined: lead.language === undefined
+              });
+            }
+            
+            return {
+              ...lead,
+              category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
+              meetings: lead.meetings || [], // Ensure meetings is always an array
+              lead_type: 'new' as const,
+              // New leads use language text column directly - preserve even if null/empty
+              language: lead.language || null,
+              language_id: null, // New leads don't use language_id
+              next_followup: followUpsMap.get(lead.id) || null // Get follow-up from follow_ups table
+            };
+          });
 
           // Process legacy leads
           const processedLegacyLeads = (legacyLeadsData || []).map(lead => {

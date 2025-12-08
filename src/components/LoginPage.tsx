@@ -243,6 +243,7 @@ const LoginPage: React.FC = () => {
                     placeholder="you@email.com"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
+                    onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
                     required
                     autoFocus
                   />
