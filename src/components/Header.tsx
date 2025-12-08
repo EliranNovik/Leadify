@@ -25,6 +25,7 @@ import {
   ChevronDownIcon,
   BoltIcon,
   ChatBubbleLeftRightIcon,
+  StarIcon,
 } from '@heroicons/react/24/outline';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
@@ -32,6 +33,7 @@ import { FaRobot } from 'react-icons/fa';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmployeeModal from './EmployeeModal';
 import RMQMessagesPage from '../pages/RMQMessagesPage';
+import HighlightsPanel from './HighlightsPanel';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 
 interface HeaderProps {
@@ -210,6 +212,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [isRmqModalOpen, setIsRmqModalOpen] = useState(false);
   const [selectedConversationId, setSelectedConversationId] = useState<number | undefined>();
   const [currentUser, setCurrentUser] = useState<any>(null);
+  const [isHighlightsPanelOpen, setIsHighlightsPanelOpen] = useState(false);
   const [newLeadsCount, setNewLeadsCount] = useState<number>(0);
   const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
   const createdStageIdsRef = useRef<number[]>([0, 11]);
@@ -2919,6 +2922,18 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   )}
                 </button>
 
+                {/* Highlights Option */}
+                <button
+                  onClick={() => {
+                    setShowMobileQuickActionsDropdown(false);
+                    setIsHighlightsPanelOpen(true);
+                  }}
+                  className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left border-b border-gray-100 hover:bg-gray-50 relative"
+                >
+                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                  <span className="text-sm font-medium">My Highlights</span>
+                </button>
+
                 {/* My Profile Option */}
                 <button
                   onClick={() => {
@@ -3657,6 +3672,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             )}
           </div>
 
+          {/* Highlights Button */}
+          <div className="relative hidden md:block">
+            <button
+              className="btn btn-ghost btn-circle flex items-center justify-center"
+              title="My Highlights"
+              onClick={() => setIsHighlightsPanelOpen(true)}
+            >
+              <StarIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
+            </button>
+          </div>
+
           {/* Microsoft sign in/out button */}
           <button 
             className={`btn btn-sm gap-2 hidden md:flex ${userAccount ? 'btn-primary' : 'btn-outline'}`} 
@@ -4060,6 +4086,12 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
           // Refresh messages when closing modal
           fetchRmqMessages();
         }} 
+      />
+
+      {/* Highlights Panel */}
+      <HighlightsPanel
+        isOpen={isHighlightsPanelOpen}
+        onClose={() => setIsHighlightsPanelOpen(false)}
       />
       
       <style>{`

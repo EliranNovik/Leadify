@@ -78,6 +78,7 @@ import { generateProformaName } from '../lib/proforma';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import SendPriceOfferModal from './SendPriceOfferModal';
+import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 
 const getContrastingTextColor = (hexColor?: string | null) => {
   if (!hexColor) return '#111827';
@@ -313,6 +314,8 @@ const Clients: React.FC<ClientsProps> = ({
   ]);
   // State to track if current user is a superuser
   const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
+  // State to track if current lead is in highlights
+  const [isInHighlightsState, setIsInHighlightsState] = useState<boolean>(false);
 
   // Helper function to extract country code and number from full phone number
   const parsePhoneNumber = (fullNumber: string | undefined | null) => {
@@ -1639,6 +1642,47 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
       setIsUnactivatedView(false);
     }
   }, [selectedClient?.id, selectedClient?.lead_type, (selectedClient as any)?.status, userManuallyExpanded]);
+
+  // Check if lead is in highlights
+  useEffect(() => {
+    const checkHighlightStatus = async () => {
+      if (!selectedClient?.id) {
+        setIsInHighlightsState(false);
+        return;
+      }
+
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const leadId = isLegacyLead 
+        ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+        : selectedClient.id;
+
+      const highlighted = await isInHighlights(leadId, isLegacyLead);
+      setIsInHighlightsState(highlighted);
+    };
+
+    checkHighlightStatus();
+  }, [selectedClient?.id, selectedClient?.lead_type]);
+
+  // Listen for highlight changes
+  useEffect(() => {
+    const handleHighlightChange = () => {
+      if (selectedClient?.id) {
+        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+        const leadId = isLegacyLead 
+          ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+          : selectedClient.id;
+        isInHighlights(leadId, isLegacyLead).then(setIsInHighlightsState);
+      }
+    };
+
+    window.addEventListener('highlights:added', handleHighlightChange);
+    window.addEventListener('highlights:removed', handleHighlightChange);
+
+    return () => {
+      window.removeEventListener('highlights:added', handleHighlightChange);
+      window.removeEventListener('highlights:removed', handleHighlightChange);
+    };
+  }, [selectedClient?.id, selectedClient?.lead_type]);
 
   // Update newPayment currency when selected client changes
   useEffect(() => {
@@ -9662,6 +9706,40 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <li>
                       <a
                         className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                        onClick={async () => {
+                          if (!selectedClient?.id) return;
+                          
+                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          const leadId = isLegacyLead 
+                            ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                            : selectedClient.id;
+                          const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                          if (isInHighlightsState) {
+                            await removeFromHighlights(leadId, isLegacyLead);
+                          } else {
+                            await addToHighlights(leadId, leadNumber, isLegacyLead);
+                          }
+                          
+                          (document.activeElement as HTMLElement | null)?.blur();
+                        }}
+                      >
+                        {isInHighlightsState ? (
+                          <>
+                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                            <span className="font-medium">Remove from Highlights</span>
+                          </>
+                        ) : (
+                          <>
+                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                            <span className="font-medium">Add to Highlights</span>
+                          </>
+                        )}
+                      </a>
+                    </li>
+                    <li>
+                      <a
+                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
                         onClick={() => {
                           openEditLeadDrawer();
                           (document.activeElement as HTMLElement | null)?.blur();
@@ -9758,6 +9836,40 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                       )}
                       <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                          onClick={async () => {
+                            if (!selectedClient?.id) return;
+                            
+                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead 
+                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                              : selectedClient.id;
+                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                            if (isInHighlightsState) {
+                              await removeFromHighlights(leadId, isLegacyLead);
+                            } else {
+                              await addToHighlights(leadId, leadNumber, isLegacyLead);
+                            }
+                            
+                            (document.activeElement as HTMLElement | null)?.blur();
+                          }}
+                        >
+                          {isInHighlightsState ? (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Remove from Highlights</span>
+                            </>
+                          ) : (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Add to Highlights</span>
+                            </>
+                          )}
+                        </a>
+                      </li>
                       <li>
                         <a
                           className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
