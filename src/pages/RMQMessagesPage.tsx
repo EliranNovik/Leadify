@@ -22,7 +22,9 @@ import {
   InformationCircleIcon,
   MicrophoneIcon,
   StopIcon,
-  Squares2X2Icon
+  Squares2X2Icon,
+  ChevronDownIcon,
+  ChevronUpIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
@@ -119,6 +121,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [allUsers, setAllUsers] = useState<User[]>([]);
   const [activeTab, setActiveTab] = useState<'chats' | 'groups'>('chats');
   const [showMobileConversations, setShowMobileConversations] = useState(true);
+  const [showMobileGroupMembers, setShowMobileGroupMembers] = useState(false);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [newGroupTitle, setNewGroupTitle] = useState('');
@@ -243,6 +246,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     borderClass?: string;
     gradientClass?: string;
     textClass?: string;
+    loading?: 'eager' | 'lazy';
   }
 
   const handleAvatarError = useCallback((userIdKey: string) => {
@@ -255,8 +259,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     photoUrl,
     sizeClass = 'w-12 h-12',
     borderClass = 'border-2 border-white',
-    gradientClass = 'from-purple-500 to-blue-500',
-    textClass = 'text-sm'
+    gradientClass = 'from-[#3E28CD] to-blue-500',
+    textClass = 'text-sm',
+    loading = 'eager'
   }: AvatarOptions) => {
     const fallbackKey = userId ? String(userId) : name || 'unknown';
     if (photoUrl && !failedPhotoIds[fallbackKey]) {
@@ -264,7 +269,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <img
           src={photoUrl}
           alt={name}
-          loading="lazy"
+          loading={loading}
           decoding="async"
           className={`${sizeClass} rounded-full object-cover ${borderClass} bg-gray-200`}
           onError={() => handleAvatarError(fallbackKey)}
@@ -1189,16 +1194,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           userId: avatarKey,
           name,
           photoUrl,
-          sizeClass: 'w-12 h-12',
+          sizeClass: 'w-14 h-14',
           borderClass: 'border-2 border-white shadow-md',
-          textClass: 'text-sm',
+          textClass: 'text-base',
         });
       }
     }
 
     return (
-      <div className="w-12 h-12 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
-        <UserGroupIcon className="w-6 h-6" />
+      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
+        <UserGroupIcon className="w-7 h-7" />
       </div>
     );
   };
@@ -2831,7 +2836,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 z-50 bg-gradient-to-br from-purple-50 to-blue-50">
+      <div className="fixed inset-0 z-50 bg-gradient-to-br" style={{ background: 'linear-gradient(to bottom right, rgba(62, 40, 205, 0.05), rgba(59, 130, 246, 0.05))' }}>
         <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
@@ -2843,68 +2848,65 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-gradient-to-br from-purple-50 to-blue-50 flex overflow-hidden">
+    <div className="fixed inset-0 z-50 bg-gradient-to-br flex overflow-hidden" style={{ background: 'linear-gradient(to bottom right, rgba(62, 40, 205, 0.05), rgba(59, 130, 246, 0.05))' }}>
       {/* Sidebar - Desktop */}
-      <div className="hidden lg:flex w-80 bg-white border-r border-gray-200 flex-col shadow-lg">
+      <div className="hidden lg:flex w-96 bg-white border-r border-gray-200 flex-col shadow-lg">
         {/* Header */}
         <div className="p-6 border-b border-gray-200 bg-white">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3">
-                <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(62, 26, 195, 0.1)' }}>
-                  <ChatBubbleLeftRightIcon className="w-6 h-6" style={{ color: '#3e1ac3' }} />
-                </div>
-                <div>
-                  <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
-                  <p className="text-gray-500 text-sm">Internal Communications</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
               {activeTab === 'groups' && (
                 <button
                   onClick={() => setShowCreateGroupModal(true)}
-                  className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200 gap-2"
+                  className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
+                  title="Create Group"
                 >
-                  <UserGroupIcon className="w-4 h-4" />
-                  Create Group
+                  <PlusIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
                 </button>
               )}
-                <button
-                onClick={onClose}
-                className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                title="Close Messages"
-              >
-                <XMarkIcon className="w-5 h-5" />
-                </button>
+              <ChatBubbleLeftRightIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
+              <div>
+                <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
+                <p className="text-gray-500 text-sm">Internal Communications</p>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Tabs - WhatsApp Style */}
-        <div className="flex border-b border-gray-200">
+        {/* Tabs - Modern Style */}
+        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 my-3">
           <button
             onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
               activeTab === 'chats'
-                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                ? 'text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
+            style={activeTab === 'chats' ? { backgroundColor: '#3E28CD' } : {}}
           >
             Chats
-            <span className="ml-2 text-xs text-gray-400">
+            <span className={`ml-2 text-xs ${
+              activeTab === 'chats' ? 'text-white/80' : 'text-gray-400'
+            }`}>
               {allUsers.length}
             </span>
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
               activeTab === 'groups'
-                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                ? 'text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
+            style={activeTab === 'groups' ? { backgroundColor: '#3E28CD' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
-              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${
+                activeTab === 'groups' 
+                  ? 'bg-white/20 text-white' 
+                  : 'bg-gray-200 text-gray-600'
+              }`}>
                 {filteredGroupConversations.length}
               </span>
             )}
@@ -2957,9 +2959,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         userId: user.id,
                         name: userName,
                         photoUrl: userPhoto,
-                        sizeClass: 'w-12 h-12',
+                        sizeClass: 'w-14 h-14',
                         borderClass: 'border-2 border-gray-200',
-                        textClass: 'text-sm',
+                        textClass: 'text-base',
                       })}
                     
                       <div className="flex-1 min-w-0">
@@ -3012,8 +3014,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     setShowMobileConversations(false);
                   }}
                   className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
-                    selectedConversation?.id === conversation.id ? 'bg-purple-50 border-l-4 border-purple-500' : ''
+                    selectedConversation?.id === conversation.id ? 'border-l-4' : ''
                   }`}
+                  style={selectedConversation?.id === conversation.id ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderLeftColor: '#3E28CD' } : {}}
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation)}
@@ -3027,7 +3030,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {formatMessageTime(conversation.last_message_at)}
                           </span>
                           {(conversation.unread_count || 0) > 0 && (
-                            <div className="w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                            <div className="w-5 h-5 text-white rounded-full flex items-center justify-center text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
                               {conversation.unread_count}
                             </div>
                           )}
@@ -3054,61 +3057,67 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         <div className="p-4 border-b border-gray-200 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <div className="w-8 h-8 rounded-full flex items-center justify-center" style={{ backgroundColor: 'rgba(62, 26, 195, 0.1)' }}>
-                  <ChatBubbleLeftRightIcon className="w-5 h-5" style={{ color: '#3e1ac3' }} />
-                </div>
+                {activeTab === 'groups' && (
+                  <button
+                    onClick={() => setShowCreateGroupModal(true)}
+                    className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
+                    title="Create Group"
+                  >
+                    <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                  </button>
+                )}
+                <ChatBubbleLeftRightIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Messages</h1>
                   <p className="text-gray-500 text-xs">Internal Communications</p>
                 </div>
               </div>
             <div className="flex items-center gap-2">
-              {activeTab === 'groups' && (
-                <button
-                  onClick={() => setShowCreateGroupModal(true)}
-                  className="btn btn-sm bg-purple-100 text-purple-700 border-purple-200 hover:bg-purple-200"
-                  title="Create Group"
-                >
-                  <UserGroupIcon className="w-4 h-4" />
-                </button>
-              )}
               <button
                 onClick={onClose}
-                className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
                 title="Close Messages"
               >
-                <XMarkIcon className="w-5 h-5" />
+                <XMarkIcon className="w-7 h-7" />
               </button>
             </div>
           </div>
         </div>
 
         {/* Mobile Tabs */}
-        <div className="flex border-b border-gray-200">
+        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 my-3">
           <button
             onClick={() => setActiveTab('chats')}
-            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
               activeTab === 'chats'
-                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                ? 'text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
+            style={activeTab === 'chats' ? { backgroundColor: '#3E28CD' } : {}}
           >
             Chats
-            <span className="ml-2 text-xs text-gray-400">
+            <span className={`ml-2 text-xs ${
+              activeTab === 'chats' ? 'text-white/80' : 'text-gray-400'
+            }`}>
               {allUsers.length}
             </span>
           </button>
           <button
             onClick={() => setActiveTab('groups')}
-            className={`flex-1 py-3 px-4 font-medium text-sm transition-colors ${
+            className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
               activeTab === 'groups'
-                ? 'text-purple-600 border-b-2 border-purple-600 bg-purple-50'
-                : 'text-gray-600 hover:text-gray-900 hover:bg-gray-50'
+                ? 'text-white shadow-md'
+                : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
+            style={activeTab === 'groups' ? { backgroundColor: '#3E28CD' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
-              <span className="ml-2 bg-purple-500 text-white text-xs rounded-full px-2 py-1">
+              <span className={`ml-2 text-xs rounded-full px-2 py-0.5 ${
+                activeTab === 'groups' 
+                  ? 'bg-white/20 text-white' 
+                  : 'bg-gray-200 text-gray-600'
+              }`}>
                 {filteredGroupConversations.length}
               </span>
             )}
@@ -3161,9 +3170,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         userId: user.id,
                         name: userName,
                         photoUrl: userPhoto,
-                        sizeClass: 'w-12 h-12',
+                        sizeClass: 'w-14 h-14',
                         borderClass: 'border-2 border-gray-200',
-                        textClass: 'text-sm',
+                        textClass: 'text-base',
                       })}
                     
                       <div className="flex-1 min-w-0">
@@ -3229,7 +3238,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {formatMessageTime(conversation.last_message_at)}
                           </span>
                           {(conversation.unread_count || 0) > 0 && (
-                            <div className="w-5 h-5 bg-purple-500 text-white rounded-full flex items-center justify-center text-xs font-bold">
+                            <div className="w-5 h-5 text-white rounded-full flex items-center justify-center text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
                               {conversation.unread_count}
                             </div>
                           )}
@@ -3308,10 +3317,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   )}
                   <button 
                     onClick={onClose}
-                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
                     title="Close Messages"
                   >
-                    <XMarkIcon className="w-5 h-5" />
+                    <XMarkIcon className="w-7 h-7" />
                   </button>
                 </div>
               </div>
@@ -3408,6 +3417,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             sizeClass: 'w-8 h-8',
                             borderClass: 'border border-gray-200',
                             textClass: 'text-xs',
+                            loading: 'lazy',
                           })}
                         </div>
                       )}
@@ -3470,14 +3480,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                         sizeClass: 'w-8 h-8',
                                         borderClass: 'border border-gray-200',
                                         textClass: 'text-xs',
+                                        loading: 'lazy',
                                       })}
                                     </div>
                                   )}
                                   <button
                                     onClick={() => playVoiceMessage(message.id)}
                                     className={`p-2 rounded-full transition-all flex-shrink-0 ${
-                                      isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
+                                      isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
                                     }`}
+                                    style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                    onMouseEnter={(e) => {
+                                      if (!isOwn) {
+                                        e.currentTarget.style.opacity = '0.8';
+                                      }
+                                    }}
+                                    onMouseLeave={(e) => {
+                                      if (!isOwn) {
+                                        e.currentTarget.style.opacity = '1';
+                                      }
+                                    }}
                                     title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
                                   >
                                     {playingVoiceId === message.id ? (
@@ -3508,20 +3530,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                             return (
                                               <div
                                                 key={index}
-                                                className={`transition-all duration-75 ${
-                                                  isOwn 
-                                                    ? isActive 
-                                                      ? 'bg-white' 
-                                                      : 'bg-white/40'
-                                                    : isActive
-                                                      ? 'bg-purple-500'
-                                                      : 'bg-purple-300'
-                                                }`}
+                                                className="transition-all duration-75"
                                                 style={{
                                                   width: '2px',
                                                   height: `${barHeight}%`,
                                                   minHeight: '3px',
-                                                  borderRadius: '1px'
+                                                  borderRadius: '1px',
+                                                  backgroundColor: isOwn 
+                                                    ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                                 }}
                                               />
                                             );
@@ -3694,7 +3711,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <button
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
-                      className="btn btn-ghost btn-circle btn-md text-gray-500 hover:text-purple-600 disabled:opacity-50"
+                      className="btn btn-ghost btn-circle btn-md text-gray-500 disabled:opacity-50"
+                      onMouseEnter={(e) => e.currentTarget.style.color = '#3E28CD'}
+                      onMouseLeave={(e) => e.currentTarget.style.color = ''}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
@@ -3739,7 +3758,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         {isUploadingFile ? (
                           <div className="loading loading-spinner loading-xs"></div>
                         ) : (
-                          <PaperClipIcon className="w-5 h-5 text-purple-600" />
+                          <PaperClipIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                         )}
                         <span className="text-sm text-gray-700">Attach File</span>
                       </button>
@@ -3747,7 +3766,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         onClick={() => handleDesktopToolSelect('emoji')}
                         className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
                       >
-                        <FaceSmileIcon className="w-5 h-5 text-purple-600" />
+                        <FaceSmileIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                         <span className="text-sm text-gray-700">Add Emoji</span>
                       </button>
                       <button
@@ -3885,23 +3904,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
           </>
         ) : (
-          <div className="flex-1 flex items-center justify-center bg-white">
-            <div className="text-center">
-              <div className="w-24 h-24 bg-gradient-to-br from-purple-100 to-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                <ChatBubbleLeftRightIcon className="w-12 h-12 text-purple-500" />
+          <>
+            {/* Chat Header - No Conversation Selected */}
+            <div className="p-4 border-b border-gray-200 bg-white shadow-sm">
+              <div className="flex items-center justify-end">
+                <button 
+                  onClick={onClose}
+                  className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
+                  title="Close Messages"
+                >
+                  <XMarkIcon className="w-7 h-7" />
+                </button>
               </div>
-              <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
-              <p className="text-gray-600 mb-6 max-w-md">
-                Pick your <span className="font-semibold text-purple-600">Employee</span> that you want to chat with.
-              </p>
-              <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
-                <div className="flex items-center gap-2">
-                  
-                  
+            </div>
+            <div className="flex-1 flex items-center justify-center bg-white">
+              <div className="text-center">
+                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
+                <p className="text-gray-600 mb-6 max-w-md">
+                  Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
+                </p>
+                <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
+                  <div className="flex items-center gap-2">
+                    
+                    
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          </>
         )}
       </div>
 
@@ -3961,46 +3992,63 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   )}
                   <button 
                     onClick={onClose}
-                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
                     title="Close Messages"
                   >
-                    <XMarkIcon className="w-5 h-5" />
+                    <XMarkIcon className="w-7 h-7" />
                   </button>
                 </div>
               </div>
               
-              {/* Group Members List - Mobile */}
+              {/* Group Members List - Mobile (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="pt-3 border-t border-gray-100">
-                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                    <div className="flex gap-4 pb-2 min-w-max">
-                      {selectedConversation.participants.map((participant) => {
-                        const userName = participant.user?.tenants_employee?.display_name || 
-                                       participant.user?.full_name || 
-                                       `User ${participant.user_id?.slice(-4)}`;
-                        const userPhoto = participant.user?.tenants_employee?.photo_url;
-                        const isCurrentUser = participant.user_id === currentUser?.id;
-                        
-                        return (
-                          <div 
-                            key={participant.id} 
-                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
-                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                          >
-                            {renderUserAvatar({
-                              userId: participant.user_id,
-                              name: userName,
-                              photoUrl: userPhoto,
-                              sizeClass: 'w-14 h-14',
-                              borderClass: 'border-2 border-gray-200',
-                              textClass: 'text-sm',
-                            })}
-                            <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
-                          </div>
-                        );
-                      })}
+                <div className="border-t border-gray-100">
+                  <button
+                    onClick={() => setShowMobileGroupMembers(!showMobileGroupMembers)}
+                    className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors"
+                  >
+                    <span className="text-sm font-medium text-gray-700">
+                      {selectedConversation.participants.length} {selectedConversation.participants.length === 1 ? 'member' : 'members'}
+                    </span>
+                    {showMobileGroupMembers ? (
+                      <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+                    ) : (
+                      <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+                    )}
+                  </button>
+                  {showMobileGroupMembers && (
+                    <div className="px-3 pb-3">
+                      <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                        <div className="flex gap-4 pb-2 min-w-max">
+                          {selectedConversation.participants.map((participant) => {
+                            const userName = participant.user?.tenants_employee?.display_name || 
+                                           participant.user?.full_name || 
+                                           `User ${participant.user_id?.slice(-4)}`;
+                            const userPhoto = participant.user?.tenants_employee?.photo_url;
+                            const isCurrentUser = participant.user_id === currentUser?.id;
+                            
+                            return (
+                              <div 
+                                key={participant.id} 
+                                onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                                className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                              >
+                                {renderUserAvatar({
+                                  userId: participant.user_id,
+                                  name: userName,
+                                  photoUrl: userPhoto,
+                                  sizeClass: 'w-14 h-14',
+                                  borderClass: 'border-2 border-gray-200',
+                                  textClass: 'text-sm',
+                                })}
+                                <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -4055,6 +4103,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           sizeClass: 'w-8 h-8',
                           borderClass: 'border border-gray-200',
                           textClass: 'text-xs',
+                          loading: 'lazy',
                         })}
                       </div>
                     )}
@@ -4116,14 +4165,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       sizeClass: 'w-7 h-7',
                                       borderClass: 'border border-gray-200',
                                       textClass: 'text-xs',
+                                      loading: 'lazy',
                                     })}
                                   </div>
                                 )}
                                 <button
                                   onClick={() => playVoiceMessage(message.id)}
                                   className={`p-2 rounded-full transition-all flex-shrink-0 ${
-                                    isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'bg-purple-100 text-purple-600 hover:bg-purple-200'
+                                    isOwn ? 'bg-white/20 text-white hover:bg-white/30' : 'text-white hover:opacity-80'
                                   }`}
+                                  style={!isOwn ? { backgroundColor: '#3E28CD' } : {}}
+                                  onMouseEnter={(e) => {
+                                    if (!isOwn) {
+                                      e.currentTarget.style.opacity = '0.8';
+                                    }
+                                  }}
+                                  onMouseLeave={(e) => {
+                                    if (!isOwn) {
+                                      e.currentTarget.style.opacity = '1';
+                                    }
+                                  }}
                                   title={playingVoiceId === message.id ? "Pause voice message" : "Play voice message"}
                                 >
                                   {playingVoiceId === message.id ? (
@@ -4154,20 +4215,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                           return (
                                             <div
                                               key={index}
-                                              className={`transition-all duration-75 ${
-                                                isOwn 
-                                                  ? isActive 
-                                                    ? 'bg-white' 
-                                                    : 'bg-white/40'
-                                                  : isActive
-                                                    ? 'bg-purple-500'
-                                                    : 'bg-purple-300'
-                                              }`}
+                                              className="transition-all duration-75"
                                               style={{
                                                 width: '1.5px',
                                                 height: `${barHeight}%`,
                                                 minHeight: '2px',
-                                                borderRadius: '0.75px'
+                                                borderRadius: '0.75px',
+                                                backgroundColor: isOwn 
+                                                  ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
+                                                  : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                               }}
                                             />
                                           );
@@ -4329,7 +4385,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           onClick={() => handleMobileToolSelect('lead')}
                           className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
                         >
-                          <PlusIcon className="w-4 h-4 text-purple-600" />
+                          <PlusIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
                           Attach lead
                         </button>
                         <button
@@ -4577,11 +4633,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               : [...prev, user.id]
                           );
                         }}
-                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all ${
+                        className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-all border-2 ${
                           isSelected 
-                            ? 'bg-purple-50 border-2 border-purple-200' 
-                            : 'hover:bg-gray-50 border-2 border-transparent'
+                            ? '' 
+                            : 'hover:bg-gray-50 border-transparent'
                         }`}
+                        style={isSelected ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderColor: 'rgba(62, 40, 205, 0.2)' } : {}}
                       >
                         <div className="relative">
                           {renderUserAvatar({
@@ -4593,7 +4650,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             textClass: 'text-sm',
                           })}
                           {isSelected && (
-                            <div className="absolute -top-1 -right-1 w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center">
+                            <div className="absolute -top-1 -right-1 w-5 h-5 rounded-full flex items-center justify-center" style={{ backgroundColor: '#3E28CD' }}>
                               <CheckIcon className="w-3 h-3 text-white" />
                             </div>
                           )}
@@ -4714,9 +4771,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           setMembersToAdd([...membersToAdd, user.id]);
                         }
                       }}
-                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors ${
-                        isSelected ? 'bg-purple-50 border-2 border-purple-500' : 'hover:bg-gray-50 border-2 border-transparent'
+                      className={`flex items-center gap-3 p-3 rounded-lg cursor-pointer transition-colors border-2 ${
+                        isSelected ? '' : 'hover:bg-gray-50 border-transparent'
                       }`}
+                      style={isSelected ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderColor: '#3E28CD' } : {}}
                     >
                       {renderUserAvatar({
                         userId: user.id,
@@ -4731,7 +4789,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         <p className="text-sm text-gray-500">{user.email}</p>
                       </div>
                       {isSelected && (
-                        <CheckIcon className="w-5 h-5 text-purple-600" />
+                        <CheckIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                       )}
                     </div>
                   );
