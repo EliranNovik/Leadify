@@ -25,7 +25,8 @@ import {
   Squares2X2Icon,
   ChevronDownIcon,
   ChevronUpIcon,
-  PhotoIcon
+  PhotoIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
@@ -3275,7 +3276,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <PlusIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
                 </button>
               )}
-              <img src="/RMQ_LOGO.png" alt="RMQ" className="w-20 h-20 object-contain" />
+              <ChatBubbleLeftRightIcon className="w-8 h-8" style={{ color: '#3E28CD' }} />
               <div>
                 <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
                 <p className="text-gray-500 text-sm">Internal Communications</p>
@@ -3509,7 +3510,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                   </button>
                 )}
-                <img src="/RMQ_LOGO.png" alt="RMQ" className="w-20 h-20 object-contain" />
+                <ChatBubbleLeftRightIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Messages</h1>
                   <p className="text-gray-500 text-xs">Internal Communications</p>
@@ -3735,11 +3736,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Chat Area - Desktop Only */}
-      <div className="hidden lg:flex flex-1 flex-col bg-white relative">
+      <div className="hidden lg:flex flex-1 flex-col relative">
         {selectedConversation ? (
           <>
             {/* Chat Header */}
-            <div className="p-4 border-b border-white/10 flex-none" style={{ backgroundColor: 'transparent' }}>
+            <div 
+              className="p-4 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
+              style={{ 
+                backgroundColor: 'rgba(255, 255, 255, 0.6)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+              }}
+            >
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <button
@@ -3750,10 +3759,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {getConversationAvatar(selectedConversation)}
                   <div>
-                    <h2 className="font-semibold text-gray-900">
+                    <h2 className="font-semibold text-gray-900" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                       {getConversationTitle(selectedConversation)}
                     </h2>
-                    <p className="text-sm text-gray-500">
+                    <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                       {selectedConversation.type === 'direct' ? (
                         (() => {
                           const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
@@ -3791,7 +3800,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
                       title="Reset to default white background"
                     >
-                      <XMarkIcon className="w-5 h-5" />
+                      <ArrowPathIcon className="w-5 h-5" />
                     </button>
                   )}
                   <input
@@ -3832,7 +3841,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               
               {/* Group Members List */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-gray-100">
+                <div className="mt-3 pt-3 border-t border-white/30">
                   <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
                     <div className="flex gap-4 pb-2 min-w-max">
                       {selectedConversation.participants.map((participant) => {
@@ -3856,7 +3865,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               borderClass: 'border-2 border-gray-200',
                               textClass: 'text-sm',
                             })}
-                            <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
+                            <span className="text-xs font-medium text-center max-w-[80px] truncate" style={{ color: '#111827', textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
                           </div>
                         );
                       })}
@@ -3872,6 +3881,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 relative"
               style={{
+                paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : 'white',
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
@@ -3900,16 +3910,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                   return (
                     <div key={message.id} className="relative">
-                      {/* Date Separator - Sticky */}
+                      {/* Date Separator */}
                       {showDateSeparator && (
-                        <div 
-                          className="flex items-center justify-center my-4"
-                          style={{
-                            position: 'sticky',
-                            top: '8px',
-                            zIndex: 20
-                          }}
-                        >
+                        <div className="flex items-center justify-center my-4">
                           <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
                             {formatDateSeparator(message.sent_at)}
                           </div>
@@ -4225,16 +4228,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <button
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
-                      className="btn btn-circle w-12 h-12 text-gray-500 disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow border border-white/30 hover:border-white/50"
-                      style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}
-                      onMouseEnter={(e) => {
-                        e.currentTarget.style.color = '#3E28CD';
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
-                      }}
-                      onMouseLeave={(e) => {
-                        e.currentTarget.style.color = '';
-                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
-                      }}
+                      className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
+                      style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
@@ -4437,7 +4432,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         ) : (
           <>
             {/* Chat Header - No Conversation Selected */}
-            <div className="p-4 border-b border-white/10" style={{ backgroundColor: 'transparent' }}>
+            <div 
+              className="p-4 border-b border-white/30 sticky top-0 z-20"
+              style={{ 
+                backgroundColor: 'rgba(255, 255, 255, 0.6)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+              }}
+            >
               <div className="flex items-center justify-end">
                 <button 
                   onClick={onClose}
@@ -4478,11 +4481,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Mobile Full Screen Chat */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white fixed inset-0 z-40 overflow-hidden relative`}>
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full fixed inset-0 z-40 overflow-hidden relative`}>
         {selectedConversation && (
           <>
             {/* Mobile Chat Header */}
-            <div className="p-4 border-b border-white/10 flex-none z-10" style={{ backgroundColor: 'transparent' }}>
+            <div 
+              className="p-4 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
+              style={{ 
+                backgroundColor: 'rgba(255, 255, 255, 0.6)',
+                backdropFilter: 'blur(10px)',
+                WebkitBackdropFilter: 'blur(10px)',
+                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+              }}
+            >
               <div className="flex items-center gap-3 mb-3">
                 <button
                   onClick={() => setShowMobileConversations(true)}
@@ -4492,10 +4503,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
                 {getConversationAvatar(selectedConversation)}
                 <div className="flex-1 min-w-0">
-                  <h2 className="font-semibold text-gray-900 truncate">
+                  <h2 className="font-semibold text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {getConversationTitle(selectedConversation)}
                   </h2>
-                  <p className="text-sm text-gray-500">
+                  <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {selectedConversation.type === 'direct' ? (
                       (() => {
                         const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
@@ -4532,7 +4543,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
                       title="Reset to default white background"
                     >
-                      <XMarkIcon className="w-5 h-5" />
+                      <ArrowPathIcon className="w-5 h-5" />
                     </button>
                   )}
                   {/* Add/Remove Member Buttons for Group Chats - Mobile */}
@@ -4566,7 +4577,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               
               {/* Group Members List - Mobile (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="border-t border-gray-100">
+                <div className="border-t border-white/30">
                   <button
                     onClick={() => setShowMobileGroupMembers(!showMobileGroupMembers)}
                     className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors"
@@ -4605,7 +4616,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   borderClass: 'border-2 border-gray-200',
                                   textClass: 'text-sm',
                                 })}
-                                <span className="text-xs text-gray-900 font-medium text-center max-w-[80px] truncate">{userName}</span>
+                                <span className="text-xs font-medium text-center max-w-[80px] truncate" style={{ color: '#111827', textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
                               </div>
                             );
                           })}
@@ -4623,6 +4634,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               onScroll={handleScroll}
               className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 min-h-0 overscroll-contain relative"
               style={{ 
+                paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
                 backgroundColor: chatBackgroundImageUrl ? 'transparent' : 'white',
@@ -4645,16 +4657,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                 return (
                   <div key={message.id}>
-                    {/* Date Separator - Sticky */}
+                    {/* Date Separator */}
                     {showDateSeparator && (
-                      <div 
-                        className="flex items-center justify-center my-4"
-                        style={{
-                          position: 'sticky',
-                          top: '8px',
-                          zIndex: 20
-                        }}
-                      >
+                      <div className="flex items-center justify-center my-4">
                         <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
                           {formatDateSeparator(message.sent_at)}
                         </div>
@@ -4947,8 +4952,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <div className="relative" ref={mobileToolsRef}>
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
-                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow border border-white/30 hover:border-white/50"
-                      style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}
+                      className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
+                      style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
