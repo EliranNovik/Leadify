@@ -127,6 +127,21 @@ io.on("connection", (socket) => {
     console.log(`✅ User ${user_id} marked conversation ${conversation_id} as read`);
   });
 
+  // Typing indicator
+  socket.on("typing", (data) => {
+    const { conversation_id, user_id, user_name, is_typing } = data;
+    console.log(`⌨️ User ${user_name} (${user_id}) is ${is_typing ? 'typing' : 'stopped typing'} in conversation ${conversation_id}`);
+    
+    // Broadcast typing status to all participants in the conversation room (except the sender)
+    const roomName = `conversation-${conversation_id}`;
+    socket.to(roomName).emit('typing', {
+      conversation_id,
+      user_id,
+      user_name,
+      is_typing
+    });
+  });
+
   // Request online status handler
   socket.on("request_online_status", (data) => {
     const { user_ids } = data;

@@ -48,6 +48,7 @@ class WebSocketService {
   private reconnectAttempts = 0;
   private maxReconnectAttempts = 5;
   private reconnectDelay = 1000;
+  private userId: string | null = null;
 
   // Event handlers
   private onMessageHandler: ((message: MessageData) => void) | null = null;
@@ -58,6 +59,7 @@ class WebSocketService {
   private onUserOnlineHandler: ((userId: string) => void) | null = null;
   private onUserOfflineHandler: ((userId: string) => void) | null = null;
   private onOnlineStatusResponseHandler: ((onlineUsers: string[]) => void) | null = null;
+  private onTypingHandler: ((data: TypingData) => void) | null = null;
 
   connect(userId: string): void {
     if (this.socket?.connected) {
@@ -158,7 +160,10 @@ class WebSocketService {
     });
 
     // Typing events
-    // Typing indicators removed - no longer needed
+    this.socket.on('typing', (data: TypingData) => {
+      console.log('⌨️ Typing event received:', data);
+      this.onTypingHandler?.(data);
+    });
 
     // Conversation events
     this.socket.on('conversation_updated', (update: ConversationUpdateData) => {
@@ -250,7 +255,17 @@ class WebSocketService {
     console.log('📤 Message emitted successfully');
   }
 
-  // Typing indicators removed - no longer needed
+  // Send typing indicator
+  sendTyping(conversationId: number, userId: string, userName: string, isTyping: boolean): void {
+    if (!this.socket?.connected) return;
+
+    this.socket.emit('typing', {
+      conversation_id: conversationId,
+      user_id: userId,
+      user_name: userName,
+      is_typing: isTyping
+    });
+  }
 
   // Join conversation room
   joinConversation(conversationId: number): void {
@@ -281,7 +296,9 @@ class WebSocketService {
     this.onMessageHandler = handler;
   }
 
-  // Typing indicators removed - no longer needed
+  onTyping(handler: (data: TypingData) => void): void {
+    this.onTypingHandler = handler;
+  }
 
   onConversationUpdate(handler: (update: ConversationUpdateData) => void): void {
     this.onConversationUpdateHandler = handler;

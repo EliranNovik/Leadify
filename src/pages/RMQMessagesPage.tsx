@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import websocketService, { MessageData, TypingData } from '../lib/websocket';
+import { motion, AnimatePresence } from 'framer-motion';
 
 const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
 import EmojiPicker from 'emoji-picker-react';
@@ -32,7 +33,8 @@ import {
   EnvelopeIcon,
   BriefcaseIcon,
   BuildingOfficeIcon,
-  ClockIcon
+  ClockIcon,
+  TrashIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
@@ -139,10 +141,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [activeTab, setActiveTab] = useState<'chats' | 'groups'>('chats');
   const [showMobileConversations, setShowMobileConversations] = useState(true);
   const [showMobileGroupMembers, setShowMobileGroupMembers] = useState(false);
+  const [showDesktopGroupMembers, setShowDesktopGroupMembers] = useState(false);
   const [showCreateGroupModal, setShowCreateGroupModal] = useState(false);
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [newGroupTitle, setNewGroupTitle] = useState('');
   const [newGroupDescription, setNewGroupDescription] = useState('');
+  const [isSuperUser, setIsSuperUser] = useState(false);
+  const [showDeleteGroupModal, setShowDeleteGroupModal] = useState(false);
   
   // Chat background image state
   const [chatBackgroundImageUrl, setChatBackgroundImageUrl] = useState<string | null>(null);
@@ -178,6 +183,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  const [lastOnlineTimes, setLastOnlineTimes] = useState<Map<string, Date>>(new Map());
+  const [typingUsers, setTypingUsers] = useState<Map<number, { userId: string; userName: string }>>(new Map());
   
   // Contact availability map (for sidebar)
   const [contactAvailabilityMap, setContactAvailabilityMap] = useState<{ [key: string]: boolean }>({});
@@ -217,6 +224,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
   const mobileMessageInputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const desktopMessagesContainerRef = useRef<HTMLDivElement>(null);
   const mobileMessagesContainerRef = useRef<HTMLDivElement>(null);
@@ -227,6 +235,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
   const [newMessagesCount, setNewMessagesCount] = useState(0);
+  const [showFloatingDate, setShowFloatingDate] = useState(false);
+  const [floatingDate, setFloatingDate] = useState<string | null>(null);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isScrollingForDateRef = useRef(false);
+  const rafRef = useRef<number | null>(null);
+  const lastDateRef = useRef<string | null>(null);
 
   // Helper functions
   const getRoleDisplayName = (role: string): string => {
@@ -1322,6 +1336,33 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     setSelectedMediaIndex(newIndex);
   };
 
+  // Helper function to format last online time
+  const formatLastOnlineTime = (lastOnlineDate: Date): string => {
+    const now = new Date();
+    const diffMs = now.getTime() - lastOnlineDate.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMs / 3600000);
+    const diffDays = Math.floor(diffMs / 86400000);
+
+    if (diffMins < 1) {
+      return 'just now';
+    } else if (diffMins < 60) {
+      return `${diffMins} minute${diffMins === 1 ? '' : 's'} ago`;
+    } else if (diffHours < 24) {
+      return `${diffHours} hour${diffHours === 1 ? '' : 's'} ago`;
+    } else if (diffDays < 7) {
+      return `${diffDays} day${diffDays === 1 ? '' : 's'} ago`;
+    } else {
+      // For longer periods, show the actual date/time
+      return lastOnlineDate.toLocaleDateString('en-US', { 
+        month: 'short', 
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      });
+    }
+  };
+
   // Function to check if employee is currently unavailable
   const checkEmployeeAvailability = useCallback(async (employeeDisplayName: string) => {
     try {
@@ -1545,6 +1586,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             full_name,
             email,
             employee_id,
+            is_superuser,
             tenants_employee!users_employee_id_fkey(
               display_name,
               bonuses_role,
@@ -1566,6 +1608,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
         setCurrentUser(userData as unknown as User);
         
+        // Set superuser status (check for true, 'true', or 1)
+        const superuserStatus = (userData as any).is_superuser === true || (userData as any).is_superuser === 'true' || (userData as any).is_superuser === 1;
+        setIsSuperUser(superuserStatus);
+        console.log('🔐 Superuser status:', {
+          is_superuser: (userData as any).is_superuser,
+          superuserStatus,
+          userData: userData
+        });
+        
         // Set chat background image URL if available
         const backgroundUrl = (userData as any)?.tenants_employee?.chat_background_image_url;
         setChatBackgroundImageUrl(backgroundUrl || null);
@@ -1579,22 +1630,71 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           // Online status handlers - MUST be set up before connecting
           websocketService.onUserOnline((userId: string) => {
             console.log('🟢 User came online:', userId);
+            const userIdStr = String(userId);
             setOnlineUsers(prev => {
               const newSet = new Set(prev);
-              newSet.add(String(userId));
+              newSet.add(userIdStr);
               console.log('📊 Online users after add:', Array.from(newSet));
               return newSet;
+            });
+            // Clear last online time when user comes back online
+            setLastOnlineTimes(prev => {
+              const newMap = new Map(prev);
+              newMap.delete(userIdStr);
+              return newMap;
             });
           });
 
           websocketService.onUserOffline((userId: string) => {
             console.log('🔴 User went offline:', userId);
+            const userIdStr = String(userId);
             setOnlineUsers(prev => {
               const newSet = new Set(prev);
-              newSet.delete(String(userId));
+              newSet.delete(userIdStr);
               console.log('📊 Online users after remove:', Array.from(newSet));
               return newSet;
             });
+            // Record the time when user went offline
+            setLastOnlineTimes(prev => {
+              const newMap = new Map(prev);
+              newMap.set(userIdStr, new Date());
+              return newMap;
+            });
+          });
+
+          // Typing indicator handler
+          websocketService.onTyping((data) => {
+            const { conversation_id, user_id, user_name, is_typing } = data;
+            
+            // Don't show typing indicator for own messages
+            if (user_id === currentUser?.id) return;
+            
+            if (is_typing) {
+              setTypingUsers(prev => {
+                const newMap = new Map(prev);
+                newMap.set(conversation_id, { userId: user_id, userName: user_name });
+                return newMap;
+              });
+              
+              // Clear typing indicator after 3 seconds
+              setTimeout(() => {
+                setTypingUsers(prev => {
+                  const newMap = new Map(prev);
+                  if (newMap.get(conversation_id)?.userId === user_id) {
+                    newMap.delete(conversation_id);
+                  }
+                  return newMap;
+                });
+              }, 3000);
+            } else {
+              setTypingUsers(prev => {
+                const newMap = new Map(prev);
+                if (newMap.get(conversation_id)?.userId === user_id) {
+                  newMap.delete(conversation_id);
+                }
+                return newMap;
+              });
+            }
           });
 
           websocketService.onConnect(() => {
@@ -1966,10 +2066,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Fetch read receipts for all messages
       if (messagesData && messagesData.length > 0 && currentUser) {
         const messageIds = messagesData.map(m => m.id);
+        // Filter out undefined/null message IDs
+        const validMessageIds = messageIds.filter(id => id != null && id !== undefined);
+        
+        if (validMessageIds.length === 0) {
+          setMessages(messagesData as unknown as Message[]);
+          return;
+        }
+
         const { data: readReceiptsData } = await supabase
           .from('message_read_receipts')
           .select('message_id, user_id, read_at')
-          .in('message_id', messageIds);
+          .in('message_id', validMessageIds);
 
         // Attach read receipts to messages
         const messagesWithReceipts = messagesData.map((msg: any) => ({
@@ -2005,17 +2113,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Ensure auto-scroll is enabled
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
+      setNewMessagesCount(0);
       
       // Force scroll to bottom after messages are loaded (works for both desktop and mobile)
-      if (!isScrollingRef.current) {
-        isScrollingRef.current = true;
+      // Use multiple attempts to ensure scroll happens after DOM updates
+      setTimeout(() => {
+        scrollToBottom('instant');
         setTimeout(() => {
           scrollToBottom('instant');
-          setTimeout(() => {
-            isScrollingRef.current = false;
-          }, 100);
-        }, 100);
-      }
+        }, 200);
+        setTimeout(() => {
+          scrollToBottom('smooth');
+        }, 400);
+      }, 100);
     } catch (error) {
       console.error('Error in fetchMessages:', error);
       toast.error('Failed to load messages');
@@ -2439,6 +2549,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const sendMessage = async () => {
     if (!selectedConversation || !currentUser || !newMessage.trim()) return;
     
+    // Stop typing indicator
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+      typingTimeoutRef.current = null;
+    }
+    if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
+      const userName = currentUser.full_name || currentUser.email || 'User';
+      websocketService.sendTyping(
+        selectedConversation.id,
+        currentUser.id,
+        userName,
+        false
+      );
+    }
+    
     setIsSending(true);
     try {
       // Send via WebSocket for real-time delivery
@@ -2628,6 +2753,44 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     } catch (error) {
       console.error('Error creating conversation:', error);
       toast.error('Failed to start conversation');
+    }
+  };
+
+  // Delete a single group chat (superuser only)
+  const deleteGroupChat = async () => {
+    if (!selectedConversation || !isSuperUser) {
+      toast.error('Only superusers can delete group chats');
+      return;
+    }
+
+    if (selectedConversation.type !== 'group') {
+      toast.error('Can only delete group chats');
+      return;
+    }
+
+    try {
+      // Delete conversation (cascade will handle participants and messages)
+      const { error } = await supabase
+        .from('conversations')
+        .delete()
+        .eq('id', selectedConversation.id);
+
+      if (error) {
+        console.error('Error deleting group chat:', error);
+        toast.error('Failed to delete group chat');
+        return;
+      }
+
+      toast.success('Group chat deleted successfully');
+      
+      // Close the modal and refresh conversations
+      setShowDeleteGroupModal(false);
+      setSelectedConversation(null);
+      await fetchConversations();
+      
+    } catch (error) {
+      console.error('Error deleting group chat:', error);
+      toast.error('Failed to delete group chat');
     }
   };
 
@@ -2898,21 +3061,141 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleScroll = useCallback(() => {
     const nearBottom = isNearBottom();
     
+    // Mark that we're scrolling
+    isScrollingForDateRef.current = true;
+    
+    // Clear any existing timeout
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = null;
+    }
+    
     // If user scrolls to bottom, enable auto-scroll and reset count
     if (nearBottom) {
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-    } else {
-      // If user scrolls up, disable auto-scroll temporarily
-      setShouldAutoScroll(false);
-      setIsUserScrolling(true);
+      setShowFloatingDate(false);
+      setFloatingDate(null);
+      lastDateRef.current = null;
+      isScrollingForDateRef.current = false;
+      // Cancel any pending RAF
+      if (rafRef.current !== null) {
+        cancelAnimationFrame(rafRef.current);
+        rafRef.current = null;
+      }
+      return;
     }
-  }, []);
+    
+    // If user scrolls up, disable auto-scroll temporarily
+    setShouldAutoScroll(false);
+    setIsUserScrolling(true);
+    
+    // Cancel any pending RAF and schedule a new one to batch updates
+    if (rafRef.current !== null) {
+      cancelAnimationFrame(rafRef.current);
+    }
+    
+    rafRef.current = requestAnimationFrame(() => {
+      // Calculate which date is visible at the top when scrolling
+      // Prioritize mobile container if it's visible, then desktop, then fallback
+      let container: HTMLDivElement | null = null;
+      if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+        container = mobileMessagesContainerRef.current;
+      } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+        container = desktopMessagesContainerRef.current;
+      } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+        container = messagesContainerRef.current;
+      }
+      
+      if (container && messages.length > 0) {
+        const containerRect = container.getBoundingClientRect();
+        const containerTop = containerRect.top;
+        
+        // Find the message closest to the top of the visible scroll area
+        let visibleDate: string | null = null;
+        let closestDistance = Infinity;
+        const messageElements = container.querySelectorAll('[data-message-id]');
+        
+        // Check each message element
+        for (let i = 0; i < messageElements.length; i++) {
+          const element = messageElements[i] as HTMLElement;
+          const elementRect = element.getBoundingClientRect();
+          
+          // Check if this message is visible in the viewport (partially or fully)
+          const isVisible = elementRect.top < containerRect.bottom && elementRect.bottom > containerTop;
+          
+          if (isVisible) {
+            // Calculate distance from top of container viewport
+            const distanceFromTop = elementRect.top - containerTop;
+            
+            // Find the message closest to the top (within first 200px of visible area)
+            if (distanceFromTop >= -50 && distanceFromTop < 200) {
+              const messageId = element.getAttribute('data-message-id');
+              if (messageId) {
+                const message = messages.find(m => String(m.id) === messageId);
+                if (message) {
+                  // Prefer messages closer to the top
+                  if (distanceFromTop < closestDistance) {
+                    visibleDate = message.sent_at;
+                    closestDistance = distanceFromTop;
+                  }
+                }
+              }
+            }
+          }
+        }
+        
+        // If we found a visible message, use its date
+        if (visibleDate) {
+          // Only update state if the date has actually changed
+          if (lastDateRef.current !== visibleDate) {
+            lastDateRef.current = visibleDate;
+            setFloatingDate(visibleDate);
+            setShowFloatingDate(true);
+          }
+        } else if (messageElements.length > 0) {
+          // Fallback: use the first visible message's date
+          // Find the first message that's at least partially visible
+          for (let i = 0; i < messageElements.length; i++) {
+            const element = messageElements[i] as HTMLElement;
+            const elementRect = element.getBoundingClientRect();
+            
+            if (elementRect.top < containerRect.bottom && elementRect.bottom > containerTop) {
+              const messageId = element.getAttribute('data-message-id');
+              if (messageId) {
+                const message = messages.find(m => String(m.id) === messageId);
+                if (message && lastDateRef.current !== message.sent_at) {
+                  lastDateRef.current = message.sent_at;
+                  setFloatingDate(message.sent_at);
+                  setShowFloatingDate(true);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      rafRef.current = null;
+    });
+    
+    // Set timeout to hide floating date after scrolling stops
+    scrollTimeoutRef.current = setTimeout(() => {
+      // When timeout fires, scrolling has stopped - hide the indicator
+      isScrollingForDateRef.current = false;
+      setShowFloatingDate(false);
+      lastDateRef.current = null;
+      // Clear the date after fade out animation
+      setTimeout(() => {
+        setFloatingDate(null);
+      }, 200);
+      scrollTimeoutRef.current = null;
+    }, 300); // Hide after 300ms of no scrolling
+  }, [messages, isNearBottom]);
 
   // Track previous message count to detect new messages
   const prevMessageCountRef = useRef(0);
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isScrollingRef = useRef(false);
 
   // Auto-scroll to bottom when new messages arrive (only if should auto-scroll)
@@ -3081,6 +3364,32 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialUserId, currentUser?.id, selectedConversation?.id, conversations.length]);
 
+  // Auto-scroll to bottom when conversation changes or messages are loaded
+  useEffect(() => {
+    if (selectedConversation && messages.length > 0) {
+      // Reset scroll state
+      setShouldAutoScroll(true);
+      setIsUserScrolling(false);
+      setNewMessagesCount(0);
+      
+      // Scroll to bottom with multiple attempts to ensure it works
+      // Use requestAnimationFrame for better timing with DOM updates
+      requestAnimationFrame(() => {
+        setTimeout(() => {
+          scrollToBottom('instant');
+          requestAnimationFrame(() => {
+            setTimeout(() => {
+              scrollToBottom('instant');
+              setTimeout(() => {
+                scrollToBottom('smooth');
+              }, 200);
+            }, 200);
+          });
+        }, 100);
+      });
+    }
+  }, [selectedConversation?.id, messages.length]); // Trigger when conversation ID or message count changes
+
   // Set initial message when conversation is selected and initialMessage/lead info is provided
   useEffect(() => {
     if (selectedConversation && (initialMessage || (initialLeadNumber && initialLeadName)) && newMessage === '') {
@@ -3140,6 +3449,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
     if (e.target !== mobileMessageInputRef.current) {
       adjustTextareaHeight(mobileMessageInputRef.current);
+    }
+
+    // Send typing indicator
+    if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
+      const userName = currentUser.full_name || currentUser.email || 'User';
+      
+      // Send typing started
+      websocketService.sendTyping(
+        selectedConversation.id,
+        currentUser.id,
+        userName,
+        true
+      );
+
+      // Clear existing timeout
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+
+      // Set timeout to stop typing after 2 seconds of inactivity
+      typingTimeoutRef.current = setTimeout(() => {
+        if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
+          websocketService.sendTyping(
+            selectedConversation.id,
+            currentUser.id,
+            userName,
+            false
+          );
+        }
+      }, 2000);
     }
   };
 
@@ -3389,8 +3728,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
     const refreshReadReceipts = async () => {
       const messageIds = messages
-        .filter(msg => msg.sender_id === currentUser.id) // Only refresh for own messages
-        .map(msg => msg.id);
+        .filter(msg => msg.sender_id === currentUser.id && msg.id != null) // Only refresh for own messages with valid IDs
+        .map(msg => msg.id)
+        .filter(id => id != null && id !== undefined); // Filter out any undefined/null values
       
       if (messageIds.length === 0) return;
 
@@ -3682,20 +4022,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               Incomplete Profile
                             </span>
                           )}
-                          {isOnline ? (
+                          {isOnline && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
                               <span className="relative flex h-1.5 w-1.5">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
                               </span>
                               Online
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-                              <span className="relative flex h-1.5 w-1.5">
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
-                              </span>
-                              Offline
                             </span>
                           )}
                         </div>
@@ -3955,20 +4288,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               Incomplete
                             </span>
                           )}
-                          {isOnline ? (
+                          {isOnline && (
                             <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
                               <span className="relative flex h-1.5 w-1.5">
                                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
                                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
                               </span>
                               Online
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
-                              <span className="relative flex h-1.5 w-1.5">
-                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
-                              </span>
-                              Offline
                             </span>
                           )}
                         </div>
@@ -4139,14 +4465,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </span>
                                   <span className="text-xs font-medium text-green-600">Online</span>
                                 </div>
-                              ) : (
+                              ) : !isEmployeeUnavailable ? (
                                 <div className="flex items-center gap-1.5 mt-1">
                                   <span className="relative flex h-2 w-2">
                                     <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
                                   </span>
-                                  <span className="text-xs font-medium text-gray-500">Offline</span>
+                                  <span className="text-xs font-medium text-gray-500">
+                                    {otherUserId && lastOnlineTimes.has(otherUserId) 
+                                      ? `Last online: ${formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}`
+                                      : 'Offline'
+                                    }
+                                  </span>
                                 </div>
-                              )}
+                              ) : null}
                               {isEmployeeUnavailable && (
                                 <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full mt-1 w-fit" title={unavailabilityReason || 'Currently unavailable'}>
                                   <ClockIcon className="w-4 h-4 text-orange-600" />
@@ -4227,6 +4558,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         <UserIcon className="w-5 h-5" />
                       </button>
+                      {isSuperUser && (
+                        <button
+                          onClick={() => setShowDeleteGroupModal(true)}
+                          className="btn btn-ghost btn-sm btn-circle text-red-500 hover:bg-red-50"
+                          title="Delete Group Chat"
+                        >
+                          <TrashIcon className="w-5 h-5" />
+                        </button>
+                      )}
                     </>
                   )}
                   <button 
@@ -4239,38 +4579,55 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               </div>
               
-              {/* Group Members List */}
+              {/* Group Members List - Desktop (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="mt-3 pt-3 border-t border-white/30">
-                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                    <div className="flex gap-4 pb-2 min-w-max">
-                      {selectedConversation.participants.map((participant) => {
-                        const userName = participant.user?.tenants_employee?.display_name || 
-                                       participant.user?.full_name || 
-                                       `User ${participant.user_id?.slice(-4)}`;
-                        const userPhoto = participant.user?.tenants_employee?.photo_url;
-                        const isCurrentUser = participant.user_id === currentUser?.id;
-                        
-                        return (
-                          <div 
-                            key={participant.id} 
-                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
-                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                          >
-                            {renderUserAvatar({
-                              userId: participant.user_id,
-                              name: userName,
-                              photoUrl: userPhoto,
-                              sizeClass: 'w-14 h-14',
-                              borderClass: 'border-2 border-gray-200',
-                              textClass: 'text-sm',
-                            })}
-                            <span className="text-xs font-medium text-center max-w-[80px] truncate" style={{ color: '#111827', textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
-                          </div>
-                        );
-                      })}
+                <div className="mt-3 border-t border-white/30">
+                  <button
+                    onClick={() => setShowDesktopGroupMembers(!showDesktopGroupMembers)}
+                    className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors"
+                  >
+                    <span className="text-sm font-medium text-gray-700">
+                      {selectedConversation.participants.length} {selectedConversation.participants.length === 1 ? 'member' : 'members'}
+                    </span>
+                    {showDesktopGroupMembers ? (
+                      <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+                    ) : (
+                      <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+                    )}
+                  </button>
+                  {showDesktopGroupMembers && (
+                    <div className="px-3 pb-3">
+                      <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                        <div className="flex gap-4 pb-2 min-w-max">
+                          {selectedConversation.participants.map((participant) => {
+                            const userName = participant.user?.tenants_employee?.display_name || 
+                                           participant.user?.full_name || 
+                                           `User ${participant.user_id?.slice(-4)}`;
+                            const userPhoto = participant.user?.tenants_employee?.photo_url;
+                            const isCurrentUser = participant.user_id === currentUser?.id;
+                            
+                            return (
+                              <div 
+                                key={participant.id} 
+                                onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                                className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                              >
+                                {renderUserAvatar({
+                                  userId: participant.user_id,
+                                  name: userName,
+                                  photoUrl: userPhoto,
+                                  sizeClass: 'w-14 h-14',
+                                  borderClass: 'border-2 border-gray-200',
+                                  textClass: 'text-sm',
+                                })}
+                                <span className="text-xs font-medium text-center max-w-[80px] truncate" style={{ color: '#111827', textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               )}
             </div>
@@ -4290,6 +4647,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
               }}
             >
+              {/* Floating Date Indicator - Desktop */}
+              {showFloatingDate && floatingDate && (
+                <div 
+                  className="fixed top-20 left-1/2 -translate-x-1/2 z-50 transition-opacity duration-300 pointer-events-none"
+                  style={{ opacity: showFloatingDate ? 1 : 0 }}
+                >
+                  <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
+                    {formatDateSeparator(floatingDate)}
+                  </div>
+                </div>
+              )}
               {messages.length === 0 ? (
                 <div className="text-center py-12">
                   <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
@@ -4297,27 +4665,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
                 </div>
               ) : (
-                messages.map((message, index) => {
-                  const isOwn = message.sender_id === currentUser?.id;
-                  const senderName = message.sender?.tenants_employee?.display_name || 
-                                   message.sender?.full_name || 
-                                   'Unknown User';
-                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
+                <AnimatePresence initial={false}>
+                  {messages.map((message, index) => {
+                    const isOwn = message.sender_id === currentUser?.id;
+                    const senderName = message.sender?.tenants_employee?.display_name || 
+                                     message.sender?.full_name || 
+                                     'Unknown User';
+                    const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
-                  // Check if we need to show a date separator
-                  const showDateSeparator = index === 0 || 
-                    !isSameDay(new Date(message.sent_at), new Date(messages[index - 1].sent_at));
+                    // Check if we need to show a date separator (removed - using floating indicator instead)
+                    const showDateSeparator = false; // Disabled inline separators
 
-                  return (
-                    <div key={message.id} className="relative">
-                      {/* Date Separator */}
-                      {showDateSeparator && (
-                        <div className="flex items-center justify-center my-4">
-                          <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-md" style={{ backgroundColor: '#3E17C3' }}>
-                            {formatDateSeparator(message.sent_at)}
-                          </div>
-                        </div>
-                      )}
+                    return (
+                      <motion.div
+                        key={message.id}
+                        initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                        animate={{ opacity: 1, y: 0, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.95 }}
+                        transition={{ 
+                          duration: 0.3,
+                          ease: [0.4, 0, 0.2, 1]
+                        }}
+                        className="relative"
+                        data-message-id={message.id}
+                      >
+                      {/* Date Separator - Removed inline separators */}
                       
                       <div
                         className={`flex gap-3 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
@@ -4340,7 +4712,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       
                       <div className={`max-w-xs sm:max-w-md ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                         {!isOwn && selectedConversation.type !== 'direct' && (
-                          <span className="text-xs text-gray-500 mb-1 px-3">
+                          <span 
+                            className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                            style={{
+                              backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                              backdropFilter: 'blur(10px)',
+                              WebkitBackdropFilter: 'blur(10px)',
+                              color: '#374151',
+                              border: '1px solid rgba(255, 255, 255, 0.3)',
+                              textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                            }}
+                          >
                             {senderName}
                           </span>
                         )}
@@ -4602,12 +4984,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         )}
                       </div>
                     </div>
-                    </div>
-                  );
-                })
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
               )}
               
-              {/* Typing indicators removed */}
+              {/* Typing indicator */}
+              {selectedConversation && typingUsers.has(selectedConversation.id) && (
+                <div className="flex items-center gap-2 px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                    <span className="text-sm text-gray-500 italic">
+                      {typingUsers.get(selectedConversation.id)?.userName} is typing...
+                    </span>
+                  </div>
+                </div>
+              )}
               
               {/* New messages indicator when user is scrolled up */}
               {isUserScrolling && !shouldAutoScroll && (
@@ -4887,15 +5284,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               <div className="text-center relative z-10">
-                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
-                <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
-                <p className="text-gray-600 mb-6 max-w-md">
-                  Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
-                </p>
-                <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
-                  <div className="flex items-center gap-2">
-                    
-                    
+                <div 
+                  className="inline-block px-8 py-6 rounded-2xl backdrop-blur-md shadow-xl"
+                  style={{
+                    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                    backdropFilter: 'blur(10px)',
+                    WebkitBackdropFilter: 'blur(10px)',
+                    border: '1px solid rgba(255, 255, 255, 0.3)'
+                  }}
+                >
+                  <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
+                  <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
+                  <p className="text-gray-600 mb-6 max-w-md">
+                    Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
+                  </p>
+                  <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
+                    <div className="flex items-center gap-2">
+                      
+                      
+                    </div>
                   </div>
                 </div>
               </div>
@@ -4910,7 +5317,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Mobile Chat Header */}
             <div 
-              className="p-4 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
+              className="px-3 py-2 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
               style={{ 
                 backgroundColor: 'rgba(255, 255, 255, 0.6)',
                 backdropFilter: 'blur(10px)',
@@ -4918,7 +5325,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
               }}
             >
-              <div className="flex items-center gap-3 mb-3">
+              <div className="flex items-center gap-2 mb-1">
                 <button
                   onClick={() => setShowMobileConversations(true)}
                   className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
@@ -4927,7 +5334,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
                 {getConversationAvatar(selectedConversation)}
                 <div className="flex-1 min-w-0">
-                  <h2 className="font-semibold text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                  <h2 className="font-semibold text-sm text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {getConversationTitle(selectedConversation)}
                   </h2>
                   {selectedConversation.type === 'direct' ? (
@@ -4945,38 +5352,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         
                         return (
                           <>
-                            <div className="flex flex-wrap items-center gap-2 text-base text-gray-600 mt-1" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                              {role && (
-                                <div className="flex items-center gap-1.5">
-                                  <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#10b981' }} />
-                                  <span className="truncate">{role}</span>
-                                </div>
-                              )}
-                              {isEmployeeUnavailable && (
-                                <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
-                                  <ClockIcon className="w-4 h-4 flex-shrink-0 text-orange-600" />
-                                  <span className="text-sm font-medium text-orange-700 truncate">
-                                    Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
-                                  </span>
-                                </div>
-                              )}
-                            </div>
+                            {isEmployeeUnavailable && (
+                              <div className="flex items-center gap-1 px-1.5 py-0.5 bg-orange-100 rounded-full mt-0.5" title={unavailabilityReason || 'Currently unavailable'}>
+                                <ClockIcon className="w-3 h-3 flex-shrink-0 text-orange-600" />
+                                <span className="text-xs font-medium text-orange-700 truncate">
+                                  Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
+                                </span>
+                              </div>
+                            )}
                             {isOnline ? (
-                              <div className="flex items-center gap-1.5 mt-1">
-                                <span className="relative flex h-2 w-2">
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <span className="relative flex h-1.5 w-1.5">
                                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
                                 </span>
                                 <span className="text-xs font-medium text-green-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Online</span>
                               </div>
-                            ) : (
-                              <div className="flex items-center gap-1.5 mt-1">
-                                <span className="relative flex h-2 w-2">
-                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
+                            ) : !isEmployeeUnavailable ? (
+                              <div className="flex items-center gap-1 mt-0.5">
+                                <span className="relative flex h-1.5 w-1.5">
+                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
                                 </span>
-                                <span className="text-xs font-medium text-gray-500" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Offline</span>
+                                <span className="text-xs font-medium text-gray-500" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                                  {otherUserId && lastOnlineTimes.has(otherUserId) 
+                                    ? `Last online: ${formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}`
+                                    : 'Offline'
+                                  }
+                                </span>
                               </div>
-                            )}
+                            ) : null}
                           </>
                         );
                       }
@@ -5029,14 +5433,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         <UserIcon className="w-5 h-5" />
                       </button>
+                      {isSuperUser && (
+                        <button
+                          onClick={() => setShowDeleteGroupModal(true)}
+                          className="btn btn-ghost btn-sm btn-circle text-red-500 hover:bg-red-50"
+                          title="Delete Group Chat"
+                        >
+                          <TrashIcon className="w-5 h-5" />
+                        </button>
+                      )}
                     </>
                   )}
                   <button 
                     onClick={onClose}
-                    className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
+                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
                     title="Close Messages"
                   >
-                    <XMarkIcon className="w-7 h-7" />
+                    <XMarkIcon className="w-5 h-5" />
                   </button>
                 </div>
               </div>
@@ -5110,27 +5523,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
               }}
             >
-              {                messages.map((message, index) => {
+              {/* Floating Date Indicator - Mobile */}
+              {showFloatingDate && floatingDate && (
+                <div 
+                  className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] transition-opacity duration-300 pointer-events-none"
+                  style={{ opacity: showFloatingDate ? 1 : 0 }}
+                >
+                  <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
+                    {formatDateSeparator(floatingDate)}
+                  </div>
+                </div>
+              )}
+              <AnimatePresence initial={false}>
+                {messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
                   const senderName = message.sender?.tenants_employee?.display_name || 
                                    message.sender?.full_name || 
                                    'Unknown User';
                   const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
-                  // Check if we need to show a date separator
-                  const showDateSeparator = index === 0 || 
-                    !isSameDay(new Date(message.sent_at), new Date(messages[index - 1].sent_at));
+                  // Date separators removed - using floating indicator instead
 
-                return (
-                  <div key={message.id}>
-                    {/* Date Separator */}
-                    {showDateSeparator && (
-                      <div className="flex items-center justify-center my-4">
-                        <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-md" style={{ backgroundColor: '#3E17C3' }}>
-                          {formatDateSeparator(message.sent_at)}
-                        </div>
-                      </div>
-                    )}
+                  return (
+                    <motion.div
+                      key={message.id}
+                      initial={{ opacity: 0, y: 20, scale: 0.95 }}
+                      animate={{ opacity: 1, y: 0, scale: 1 }}
+                      exit={{ opacity: 0, scale: 0.95 }}
+                      transition={{ 
+                        duration: 0.3,
+                        ease: [0.4, 0, 0.2, 1]
+                      }}
+                      data-message-id={message.id}
+                    >
+                    {/* Date Separator - Removed inline separators */}
                     
                     <div
                       className={`flex gap-2 group ${isOwn ? 'flex-row-reverse' : 'flex-row'}`}
@@ -5414,11 +5840,51 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       )}
                     </div>
                     </div>
-                  </div>
-                );
-              })}
+                      </motion.div>
+                    );
+                  })}
+                </AnimatePresence>
               
-              {/* Mobile Typing indicators removed */}
+              {/* New messages indicator when user is scrolled up - Mobile */}
+              {isUserScrolling && !shouldAutoScroll && (
+                <div className="fixed bottom-20 right-4 z-50">
+                  <button
+                    onClick={() => {
+                      setShouldAutoScroll(true);
+                      setNewMessagesCount(0);
+                      scrollToBottom('smooth');
+                    }}
+                    className="text-white rounded-full p-3 shadow-lg transition-all relative"
+                    style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}
+                    title={newMessagesCount > 0 ? `${newMessagesCount} new message${newMessagesCount > 1 ? 's' : ''} - click to scroll down` : "New messages - click to scroll down"}
+                  >
+                    {newMessagesCount > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow-lg">
+                        {newMessagesCount > 99 ? '99+' : newMessagesCount}
+                      </span>
+                    )}
+                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
+                    </svg>
+                  </button>
+                </div>
+              )}
+              
+              {/* Mobile Typing indicator */}
+              {selectedConversation && typingUsers.has(selectedConversation.id) && (
+                <div className="flex items-center gap-2 px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="flex gap-1">
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }}></span>
+                      <span className="w-2 h-2 bg-gray-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }}></span>
+                    </div>
+                    <span className="text-sm text-gray-500 italic" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                      {typingUsers.get(selectedConversation.id)?.userName} is typing...
+                    </span>
+                  </div>
+                </div>
+              )}
               
               <div ref={messagesEndRef} />
             </div>
@@ -5962,6 +6428,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               >
                 Close
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Group Chat Confirmation Modal */}
+      {showDeleteGroupModal && selectedConversation && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-md mx-4">
+            <div className="p-6">
+              <div className="flex items-center gap-3 mb-4">
+                <div className="w-12 h-12 rounded-full bg-red-100 flex items-center justify-center">
+                  <TrashIcon className="w-6 h-6 text-red-600" />
+                </div>
+                <div>
+                  <h3 className="text-lg font-semibold text-gray-900">Delete Group Chat</h3>
+                  <p className="text-sm text-gray-500">This action cannot be undone</p>
+                </div>
+              </div>
+              <p className="text-gray-700 mb-6">
+                Are you sure you want to delete <strong>"{selectedConversation.title || 'this group chat'}"</strong>? 
+                All messages and participants will be permanently removed.
+              </p>
+              <div className="flex justify-end gap-3">
+                <button
+                  onClick={() => setShowDeleteGroupModal(false)}
+                  className="btn btn-ghost"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={deleteGroupChat}
+                  className="btn btn-error text-white"
+                >
+                  Delete Group Chat
+                </button>
+              </div>
             </div>
           </div>
         </div>
