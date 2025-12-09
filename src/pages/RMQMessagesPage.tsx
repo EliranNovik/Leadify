@@ -26,9 +26,16 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   PhotoIcon,
-  ArrowPathIcon
+  ArrowPathIcon,
+  PhoneIcon,
+  DevicePhoneMobileIcon,
+  EnvelopeIcon,
+  BriefcaseIcon,
+  BuildingOfficeIcon,
+  ClockIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
+import EmployeeModal from '../components/EmployeeModal';
 
 interface User {
   id: string;
@@ -38,9 +45,12 @@ interface User {
   is_active?: boolean;
   tenants_employee?: {
     display_name: string;
+    official_name?: string;
     bonuses_role: string;
     department_id: number;
     photo_url?: string;
+    mobile?: string;
+    phone?: string;
     tenant_departement?: {
       name: string;
     };
@@ -155,6 +165,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isLeadSearchOpen, setIsLeadSearchOpen] = useState(false);
   const [leadSearchQuery, setLeadSearchQuery] = useState('');
   const [leadSearchResults, setLeadSearchResults] = useState<any[]>([]);
+  
+  // Employee modal state
+  const [showEmployeeInfoModal, setShowEmployeeInfoModal] = useState(false);
+  const [showEmployeeProfileModal, setShowEmployeeProfileModal] = useState(false);
+  const [selectedEmployee, setSelectedEmployee] = useState<any>(null);
+  
+  // Employee availability state
+  const [isEmployeeUnavailable, setIsEmployeeUnavailable] = useState(false);
+  const [unavailabilityReason, setUnavailabilityReason] = useState<string | null>(null);
+  const [unavailabilityTimePeriod, setUnavailabilityTimePeriod] = useState<string | null>(null);
+  
+  // Contact availability map (for sidebar)
+  const [contactAvailabilityMap, setContactAvailabilityMap] = useState<{ [key: string]: boolean }>({});
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
   const [selectedLead, setSelectedLead] = useState<any>(null);
   const [showMobileTools, setShowMobileTools] = useState(false);
@@ -1295,6 +1318,137 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     setSelectedMediaIndex(newIndex);
   };
 
+  // Function to check if employee is currently unavailable
+  const checkEmployeeAvailability = useCallback(async (employeeDisplayName: string) => {
+    try {
+      const today = new Date();
+      const todayYear = today.getFullYear();
+      const todayMonth = String(today.getMonth() + 1).padStart(2, '0');
+      const todayDay = String(today.getDate()).padStart(2, '0');
+      const todayString = `${todayYear}-${todayMonth}-${todayDay}`;
+
+      const { data: employeeData, error } = await supabase
+        .from('tenants_employee')
+        .select('unavailable_times, unavailable_ranges')
+        .eq('display_name', employeeDisplayName)
+        .single();
+
+      if (error || !employeeData) {
+        setIsEmployeeUnavailable(false);
+        setUnavailabilityReason(null);
+        return;
+      }
+
+      const unavailableTimes = employeeData.unavailable_times || [];
+      const unavailableRanges = employeeData.unavailable_ranges || [];
+      
+      const now = new Date();
+      const currentTime = now.getHours() * 60 + now.getMinutes();
+
+      // Check for specific time slots on today's date
+      const todayTimes = unavailableTimes.filter((time: any) => time.date === todayString);
+      
+      // Check if current time is within any unavailable time slot
+      for (const time of todayTimes) {
+        const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
+        const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
+        
+        if (currentTime >= startTime && currentTime <= endTime) {
+          setIsEmployeeUnavailable(true);
+          setUnavailabilityReason(time.reason || 'Unavailable');
+          setUnavailabilityTimePeriod(`${time.startTime} - ${time.endTime}`);
+          return;
+        }
+      }
+
+      // Check for date ranges that include today
+      const todayRanges = unavailableRanges.filter((range: any) => 
+        todayString >= range.startDate && todayString <= range.endDate
+      );
+
+      if (todayRanges.length > 0) {
+        setIsEmployeeUnavailable(true);
+        setUnavailabilityReason(todayRanges[0].reason || 'Unavailable');
+        const startDate = new Date(todayRanges[0].startDate);
+        const endDate = new Date(todayRanges[0].endDate);
+        const startDateStr = startDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        const endDateStr = endDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+        setUnavailabilityTimePeriod(startDateStr === endDateStr ? startDateStr : `${startDateStr} - ${endDateStr}`);
+        return;
+      }
+
+      // Employee is available
+      setIsEmployeeUnavailable(false);
+      setUnavailabilityReason(null);
+      setUnavailabilityTimePeriod(null);
+    } catch (error) {
+      console.error('Error checking employee availability:', error);
+      setIsEmployeeUnavailable(false);
+      setUnavailabilityReason(null);
+      setUnavailabilityTimePeriod(null);
+    }
+  }, []);
+
+  // Function to check availability for all contacts
+  const checkAllContactsAvailability = useCallback(async () => {
+    try {
+      const today = new Date();
+      const todayYear = today.getFullYear();
+      const todayMonth = String(today.getMonth() + 1).padStart(2, '0');
+      const todayDay = String(today.getDate()).padStart(2, '0');
+      const todayString = `${todayYear}-${todayMonth}-${todayDay}`;
+
+      const now = new Date();
+      const currentTime = now.getHours() * 60 + now.getMinutes();
+
+      const availabilityMap: { [key: string]: boolean } = {};
+
+      // Get all employees with unavailable times
+      const { data: employees, error } = await supabase
+        .from('tenants_employee')
+        .select('display_name, unavailable_times, unavailable_ranges')
+        .not('unavailable_times', 'is', null);
+
+      if (error || !employees) {
+        setContactAvailabilityMap({});
+        return;
+      }
+
+      employees.forEach(employee => {
+        const unavailableTimes = employee.unavailable_times || [];
+        const unavailableRanges = employee.unavailable_ranges || [];
+
+        // Check for specific time slots on today's date
+        const todayTimes = unavailableTimes.filter((time: any) => time.date === todayString);
+        
+        // Check if current time is within any unavailable time slot
+        for (const time of todayTimes) {
+          const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
+          const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
+          
+          if (currentTime >= startTime && currentTime <= endTime) {
+            availabilityMap[employee.display_name] = true;
+            return;
+          }
+        }
+
+        // Check for date ranges that include today
+        const todayRanges = unavailableRanges.filter((range: any) => 
+          todayString >= range.startDate && todayString <= range.endDate
+        );
+
+        if (todayRanges.length > 0) {
+          availabilityMap[employee.display_name] = true;
+        }
+      });
+
+      setContactAvailabilityMap(availabilityMap);
+    } catch (error) {
+      console.error('Error checking contacts availability:', error);
+      setContactAvailabilityMap({});
+    }
+  }, []);
+
   const getConversationTitle = (conversation: Conversation): string => {
     // If it has a custom title, use it
     if (conversation.title && conversation.title.trim() !== '') {
@@ -1305,7 +1459,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
       const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
       if (otherParticipant?.user) {
-        const name = otherParticipant.user.tenants_employee?.display_name || 
+        const name = otherParticipant.user.tenants_employee?.official_name || 
+                     otherParticipant.user.tenants_employee?.display_name || 
                      otherParticipant.user.full_name || 
                      'Unknown User';
         return name;
@@ -1327,14 +1482,41 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           'Unknown User';
         const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
         const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
-        return renderUserAvatar({
-          userId: avatarKey,
-          name,
-          photoUrl,
-          sizeClass: 'w-14 h-14',
-          borderClass: 'border-2 border-white shadow-md',
-          textClass: 'text-base',
-        });
+        const handleAvatarClick = () => {
+          const employee = otherParticipant.user?.tenants_employee;
+          if (employee) {
+            setSelectedEmployee({
+              id: otherParticipant.user.employee_id?.toString() || '',
+              display_name: employee.display_name || name,
+              official_name: employee.official_name || employee.display_name || name,
+              email: otherParticipant.user.email || '',
+              bonuses_role: employee.bonuses_role || '',
+              department: employee.tenant_departement?.name || '',
+              photo_url: photoUrl,
+              mobile: employee.mobile,
+              phone: employee.phone,
+              is_active: otherParticipant.user.is_active,
+              user: otherParticipant.user
+            });
+            setShowEmployeeInfoModal(true);
+          }
+        };
+        return (
+          <button
+            onClick={handleAvatarClick}
+            className="cursor-pointer hover:opacity-80 transition-opacity"
+            title={`View ${name}'s profile`}
+          >
+            {renderUserAvatar({
+              userId: avatarKey,
+              name,
+              photoUrl,
+              sizeClass: 'w-16 h-16',
+              borderClass: '',
+              textClass: 'text-lg',
+            })}
+          </button>
+        );
       }
     }
 
@@ -1468,9 +1650,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               is_active,
               tenants_employee!users_employee_id_fkey(
                 display_name,
+                official_name,
                 bonuses_role,
                 department_id,
                 photo_url,
+                mobile,
+                phone,
                 tenant_departement!tenants_employee_department_id_fkey(
                   name
                 )
@@ -1592,9 +1777,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               is_active,
               tenants_employee!users_employee_id_fkey(
                 display_name,
+                official_name,
                 bonuses_role,
                 department_id,
                 photo_url,
+                mobile,
+                phone,
                 tenant_departement!tenants_employee_department_id_fkey(
                   name
                 )
@@ -2741,6 +2929,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     resetInputHeights();
   }, [selectedConversation?.id]);
 
+  // Check employee availability when conversation is selected
+  useEffect(() => {
+    if (selectedConversation?.type === 'direct' && selectedConversation.participants) {
+      const otherParticipant = selectedConversation.participants.find(p => p.user_id !== currentUser?.id);
+      if (otherParticipant?.user?.tenants_employee?.display_name) {
+        checkEmployeeAvailability(otherParticipant.user.tenants_employee.display_name);
+      } else {
+        setIsEmployeeUnavailable(false);
+        setUnavailabilityReason(null);
+        setUnavailabilityTimePeriod(null);
+      }
+    } else {
+      setIsEmployeeUnavailable(false);
+      setUnavailabilityReason(null);
+      setUnavailabilityTimePeriod(null);
+    }
+  }, [selectedConversation?.id, currentUser?.id, checkEmployeeAvailability]);
+
+  // Check availability for all contacts when they are loaded
+  useEffect(() => {
+    if (allUsers.length > 0) {
+      checkAllContactsAvailability();
+    }
+  }, [allUsers.length, checkAllContactsAvailability]);
+
   // Cleanup audio when conversation changes or component unmounts
   useEffect(() => {
     return () => {
@@ -3264,7 +3477,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-white border-r border-gray-200 flex-col shadow-lg">
         {/* Header */}
-        <div className="p-6 border-b border-gray-200/50" style={{ backgroundColor: 'transparent' }}>
+        <div className="p-6 border-b border-gray-200 bg-white">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {activeTab === 'groups' && (
@@ -3279,7 +3492,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               <ChatBubbleLeftRightIcon className="w-8 h-8" style={{ color: '#3E28CD' }} />
               <div>
                 <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
-                <p className="text-gray-500 text-sm">Internal Communications</p>
+                <p className="text-sm text-gray-500">Internal Communications</p>
               </div>
             </div>
           </div>
@@ -3326,7 +3539,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Search */}
-        <div className="p-4 border-b border-gray-100">
+        <div className="p-4 border-b border-gray-200 bg-white">
           <div className="relative">
             <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -3340,7 +3553,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Content Area */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto bg-white">
           {activeTab === 'chats' ? (
             contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
@@ -3359,22 +3572,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+                const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
 
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors"
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white"
                   >
                     <div className="flex items-center gap-3">
-                      {renderUserAvatar({
-                        userId: user.id,
-                        name: userName,
-                        photoUrl: userPhoto,
-                        sizeClass: 'w-14 h-14',
-                        borderClass: 'border-2 border-gray-200',
-                        textClass: 'text-base',
-                      })}
+                      <div className="relative">
+                        {renderUserAvatar({
+                          userId: user.id,
+                          name: userName,
+                          photoUrl: userPhoto,
+                          sizeClass: 'w-14 h-14',
+                          borderClass: '',
+                          textClass: 'text-base',
+                        })}
+                        {isUnavailable && (
+                          <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-white">
+                            <ClockIcon className="w-3 h-3 text-white" />
+                          </div>
+                        )}
+                      </div>
                     
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-gray-900 truncate">
@@ -3457,7 +3678,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     fetchMessages(conversation.id);
                     setShowMobileConversations(false);
                   }}
-                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                  className={`p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors bg-white ${
                     selectedConversation?.id === conversation.id ? 'border-l-4' : ''
                   }`}
                   style={selectedConversation?.id === conversation.id ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderLeftColor: '#3E28CD' } : {}}
@@ -3498,7 +3719,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Mobile Sidebar */}
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-white flex flex-col`}>
         {/* Mobile Header */}
-        <div className="p-4 border-b border-gray-200/50" style={{ backgroundColor: 'transparent' }}>
+        <div className="p-4 border-b border-gray-200 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {activeTab === 'groups' && (
@@ -3513,7 +3734,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <ChatBubbleLeftRightIcon className="w-7 h-7" style={{ color: '#3E28CD' }} />
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Messages</h1>
-                  <p className="text-gray-500 text-xs">Internal Communications</p>
+                  <p className="text-xs text-gray-500">Internal Communications</p>
                 </div>
               </div>
             <div className="flex items-center gap-2">
@@ -3569,7 +3790,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Mobile Search */}
-        <div className="p-4 border-b border-gray-100">
+        <div className="p-4 border-b border-gray-200 bg-white">
           <div className="relative">
             <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -3583,7 +3804,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Mobile Content */}
-        <div className="flex-1 overflow-y-auto">
+        <div className="flex-1 overflow-y-auto bg-white">
           {activeTab === 'chats' ? (
             contactsWithLastMessage.length === 0 ? (
               <div className="p-6 text-center text-gray-500">
@@ -3602,22 +3823,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const userRole = rawRole && rawRole.trim().length > 0 ? rawRole.trim() : 'Employee';
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
+                const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
 
                 return (
                   <div
                     key={user.id}
                     onClick={() => startDirectConversation(user.id)}
-                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
+                    className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
                   >
                     <div className="flex items-center gap-3">
-                      {renderUserAvatar({
-                        userId: user.id,
-                        name: userName,
-                        photoUrl: userPhoto,
-                        sizeClass: 'w-14 h-14',
-                        borderClass: 'border-2 border-gray-200',
-                        textClass: 'text-base',
-                      })}
+                      <div className="relative">
+                        {renderUserAvatar({
+                          userId: user.id,
+                          name: userName,
+                          photoUrl: userPhoto,
+                          sizeClass: 'w-14 h-14',
+                          borderClass: '',
+                          textClass: 'text-base',
+                        })}
+                        {isUnavailable && (
+                          <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-white">
+                            <ClockIcon className="w-3 h-3 text-white" />
+                          </div>
+                        )}
+                      </div>
                     
                       <div className="flex-1 min-w-0">
                         <div className="font-semibold text-gray-900 truncate">
@@ -3700,7 +3929,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     fetchMessages(conversation.id);
                     setShowMobileConversations(false);
                   }}
-                  className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100"
+                  className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
                 >
                   <div className="flex items-center gap-3">
                     {getConversationAvatar(conversation)}
@@ -3758,25 +3987,50 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <ArrowLeftIcon className="w-5 h-5" />
                   </button>
                   {getConversationAvatar(selectedConversation)}
-                  <div>
+                  <div className="flex-1">
                     <h2 className="font-semibold text-gray-900" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                       {getConversationTitle(selectedConversation)}
                     </h2>
-                    <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                      {selectedConversation.type === 'direct' ? (
-                        (() => {
-                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
-                          if (otherParticipant?.user?.tenants_employee) {
-                            const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
-                            const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
-                            return `${role}${department ? ` • ${department}` : ''}`;
-                          }
-                          return 'Direct message';
-                        })()
-                      ) : (
-                        `${selectedConversation.participants?.length || 0} members`
-                      )}
-                    </p>
+                    {selectedConversation.type === 'direct' ? (
+                      (() => {
+                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                        if (otherParticipant?.user) {
+                          const employee = otherParticipant.user.tenants_employee;
+                          const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
+                          const department = employee?.tenant_departement?.name || '';
+                          
+                          return (
+                            <div className="flex flex-wrap items-center gap-3 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                              {role && (
+                                <div className="flex items-center gap-1.5">
+                                  <BriefcaseIcon className="w-4 h-4" style={{ color: '#3E17C3' }} />
+                                  <span>{role}</span>
+                                </div>
+                              )}
+                              {department && (
+                                <div className="flex items-center gap-1.5">
+                                  <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#3E17C3' }} />
+                                  <span>{department}</span>
+                                </div>
+                              )}
+                              {isEmployeeUnavailable && (
+                                <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
+                                  <ClockIcon className="w-4 h-4 text-orange-600" />
+                                  <span className="text-sm font-medium text-orange-700">
+                                    Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                          );
+                        }
+                        return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;
+                      })()
+                    ) : (
+                      <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                        {selectedConversation.participants?.length || 0} members
+                      </p>
+                    )}
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
@@ -3892,9 +4146,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             >
               {messages.length === 0 ? (
                 <div className="text-center py-12">
-                  <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto text-gray-300 mb-4" />
-                  <p className="text-gray-500 font-medium">No messages yet</p>
-                  <p className="text-gray-400 text-sm">Start the conversation!</p>
+                  <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
+                  <p className="font-medium" style={{ color: chatBackgroundImageUrl ? 'white' : '#6b7280' }}>No messages yet</p>
+                  <p className="text-sm" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : '#9ca3af' }}>Start the conversation!</p>
                 </div>
               ) : (
                 messages.map((message, index) => {
@@ -3957,9 +4211,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 ? isEmojiOnly(message.content) 
                                   ? 'bg-white text-gray-900 rounded-br-md'
                                   : 'text-white rounded-br-md'
-                                : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                                : 'border rounded-bl-md'
                             }`}
-                            style={isOwn && !isEmojiOnly(message.content) ? { backgroundColor: '#3e2bcd' } : {}}
+                            style={isOwn && !isEmojiOnly(message.content) 
+                              ? { backgroundColor: '#3e2bcd' } 
+                              : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
+                            }
                           >
                           {/* Message content */}
                           {message.content && (
@@ -4054,16 +4311,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                                   borderRadius: '1px',
                                                   backgroundColor: isOwn 
                                                     ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
-                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                    : chatBackgroundImageUrl
+                                                      ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                      : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                                 }}
                                               />
                                             );
                                           });
                                         })()}
                                       </div>
-                                      <span className={`text-sm font-mono whitespace-nowrap ${
-                                        isOwn ? 'text-white/80' : 'text-gray-600'
-                                      }`}>
+                                      <span className="text-sm font-mono whitespace-nowrap" style={{
+                                        color: isOwn 
+                                          ? 'rgba(255, 255, 255, 0.8)' 
+                                          : chatBackgroundImageUrl 
+                                            ? 'rgba(255, 255, 255, 0.9)' 
+                                            : '#4b5563'
+                                      }}>
                                         {formatVoiceDuration(message.voice_duration)}
                                       </span>
                                     </div>
@@ -4087,7 +4350,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       </svg>
                                     </div>
                                   </div>
-                                  <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2">
+                                  <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
                                     <div className="flex items-center gap-2">
                                       <span className="truncate">{message.attachment_name}</span>
                                       <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
@@ -4113,20 +4376,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 // File attachment
                                 <div className="flex items-center gap-3 p-3">
                                   <div className={`p-3 rounded-lg ${
-                                    isOwn ? 'bg-white/20' : 'bg-gray-200'
+                                    isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-200'
                                   }`}>
                                     <PaperClipIcon className={`w-5 h-5 ${
-                                      isOwn ? 'text-white' : 'text-gray-600'
+                                      isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
                                     }`} />
                                   </div>
                                   <div className="flex-1 min-w-0">
                                     <button
                                       onClick={() => window.open(message.attachment_url, '_blank')}
                                       className="text-sm font-medium hover:underline truncate block"
+                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
                                     >
                                       {message.attachment_name}
                                     </button>
-                                    <p className="text-xs opacity-75">
+                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
                                       {Math.round((message.attachment_size || 0) / 1024)} KB • 
                                       {message.attachment_type?.split('/')[1]?.toUpperCase() || 'FILE'}
                                     </p>
@@ -4138,9 +4402,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           
                           {/* Timestamp inside message bubble */}
                           <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                            <span className={`text-xs ${
-                              isOwn ? 'text-white/70' : 'text-gray-500'
-                            }`}>
+                            <span className="text-xs" style={{
+                              color: isOwn 
+                                ? 'rgba(255, 255, 255, 0.7)' 
+                                : '#6b7280'
+                            }}>
                               {formatMessageTime(message.sent_at)}
                             </span>
                             {isOwn && renderReadReceipts(message)}
@@ -4506,21 +4772,46 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <h2 className="font-semibold text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {getConversationTitle(selectedConversation)}
                   </h2>
-                  <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                    {selectedConversation.type === 'direct' ? (
-                      (() => {
-                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
-                        if (otherParticipant?.user?.tenants_employee) {
-                          const role = getRoleDisplayName(otherParticipant.user.tenants_employee.bonuses_role || '');
-                          const department = otherParticipant.user.tenants_employee.tenant_departement?.name || '';
-                          return `${role}${department ? ` • ${department}` : ''}`;
-                        }
-                        return 'Direct message';
-                      })()
-                    ) : (
-                      `${selectedConversation.participants?.length || 0} members`
-                    )}
-                  </p>
+                  {selectedConversation.type === 'direct' ? (
+                    (() => {
+                      const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                      if (otherParticipant?.user) {
+                        const employee = otherParticipant.user.tenants_employee;
+                        const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
+                        const department = employee?.tenant_departement?.name || '';
+                        
+                        return (
+                          <div className="flex flex-wrap items-center gap-2 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                            {role && (
+                              <div className="flex items-center gap-1.5">
+                                <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#3E17C3' }} />
+                                <span className="truncate">{role}</span>
+                              </div>
+                            )}
+                            {department && (
+                              <div className="flex items-center gap-1.5">
+                                <BuildingOfficeIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#3E17C3' }} />
+                                <span className="truncate">{department}</span>
+                              </div>
+                            )}
+                            {isEmployeeUnavailable && (
+                              <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
+                                <ClockIcon className="w-4 h-4 flex-shrink-0 text-orange-600" />
+                                <span className="text-sm font-medium text-orange-700 truncate">
+                                  Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      }
+                      return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;
+                    })()
+                  ) : (
+                    <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                      {selectedConversation.participants?.length || 0} members
+                    </p>
+                  )}
                 </div>
                 <div className="flex items-center gap-1">
                   {/* Background Image Upload Button - Mobile */}
@@ -4703,9 +4994,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               ? isEmojiOnly(message.content) 
                                 ? 'bg-white text-gray-900 rounded-br-md'
                                 : 'text-white rounded-br-md'
-                              : 'bg-white text-gray-900 border border-gray-200 rounded-bl-md'
+                              : 'border rounded-bl-md'
                           }`}
-                          style={isOwn && !isEmojiOnly(message.content) ? { backgroundColor: '#3e2bcd' } : {}}
+                          style={isOwn && !isEmojiOnly(message.content) 
+                            ? { backgroundColor: '#3e2bcd' } 
+                            : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
+                          }
                         >
                         {/* Message content */}
                         {message.content && (
@@ -4800,16 +5094,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                                 borderRadius: '0.75px',
                                                 backgroundColor: isOwn 
                                                   ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
-                                                  : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                  : chatBackgroundImageUrl
+                                                    ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
+                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                               }}
                                             />
                                           );
                                         });
                                       })()}
                                     </div>
-                                    <span className={`text-xs font-mono whitespace-nowrap ${
-                                      isOwn ? 'text-white/80' : 'text-gray-600'
-                                    }`}>
+                                    <span className="text-xs font-mono whitespace-nowrap" style={{
+                                      color: isOwn 
+                                        ? 'rgba(255, 255, 255, 0.8)' 
+                                        : chatBackgroundImageUrl 
+                                          ? 'rgba(255, 255, 255, 0.9)' 
+                                          : '#4b5563'
+                                    }}>
                                       {formatVoiceDuration(message.voice_duration)}
                                     </span>
                                   </div>
@@ -4833,7 +5133,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </svg>
                                   </div>
                                 </div>
-                                <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2">
+                                <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
                                   <div className="flex items-center gap-2">
                                     <span className="truncate">{message.attachment_name}</span>
                                     <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
@@ -4855,37 +5155,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </button>
                                 </div>
                               </div>
-                            ) : (
-                              // File attachment
-                              <div className="flex items-center gap-2 p-3">
-                                <div className={`p-2 rounded ${
-                                  isOwn ? 'bg-white/20' : 'bg-gray-200'
-                                }`}>
-                                  <PaperClipIcon className={`w-4 h-4 ${
-                                    isOwn ? 'text-white' : 'text-gray-600'
-                                  }`} />
+                              ) : (
+                                // File attachment
+                                <div className="flex items-center gap-2 p-3">
+                                  <div className={`p-2 rounded ${
+                                    isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-200'
+                                  }`}>
+                                    <PaperClipIcon className={`w-4 h-4 ${
+                                      isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
+                                    }`} />
+                                  </div>
+                                  <div className="flex-1 min-w-0">
+                                    <button
+                                      onClick={() => window.open(message.attachment_url, '_blank')}
+                                      className="text-xs font-medium hover:underline truncate block"
+                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                    >
+                                      {message.attachment_name}
+                                    </button>
+                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                      {Math.round((message.attachment_size || 0) / 1024)} KB
+                                    </p>
+                                  </div>
                                 </div>
-                                <div className="flex-1 min-w-0">
-                                  <button
-                                    onClick={() => window.open(message.attachment_url, '_blank')}
-                                    className="text-xs font-medium hover:underline truncate block"
-                                  >
-                                    {message.attachment_name}
-                                  </button>
-                                  <p className="text-xs opacity-75">
-                                    {Math.round((message.attachment_size || 0) / 1024)} KB
-                                  </p>
-                                </div>
-                              </div>
-                            )}
+                              )}
                           </div>
                         )}
                         
                         {/* Timestamp inside message bubble - Mobile */}
                         <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
-                          <span className={`text-xs ${
-                            isOwn ? 'text-white/70' : 'text-gray-500'
-                          }`}>
+                          <span className="text-xs" style={{
+                            color: isOwn 
+                              ? 'rgba(255, 255, 255, 0.7)' 
+                              : '#6b7280'
+                          }}>
                             {formatMessageTime(message.sent_at)}
                           </span>
                           {isOwn && renderReadReceipts(message)}
@@ -5639,6 +5942,172 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
           </div>
         </div>
+      )}
+
+      {/* Employee Info Modal */}
+      {showEmployeeInfoModal && selectedEmployee && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-bold text-gray-900">Employee Information</h3>
+                <button
+                  onClick={() => {
+                    setShowEmployeeInfoModal(false);
+                    setSelectedEmployee(null);
+                  }}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="flex flex-col items-center mb-6">
+                {/* Employee Avatar */}
+                {selectedEmployee.photo_url ? (
+                  <div className="w-40 h-40 rounded-full overflow-hidden shadow-lg mb-4">
+                    <img
+                      src={selectedEmployee.photo_url}
+                      alt={selectedEmployee.official_name || selectedEmployee.display_name}
+                      className="w-full h-full object-cover"
+                    />
+                  </div>
+                ) : (
+                  <div className="w-40 h-40 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white text-5xl font-bold shadow-lg mb-4">
+                    {(selectedEmployee.official_name || selectedEmployee.display_name)?.charAt(0)?.toUpperCase() || 'U'}
+                  </div>
+                )}
+                
+                {/* Employee Name */}
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedEmployee.official_name || selectedEmployee.display_name}</h2>
+                
+                {/* Employee Email */}
+                {selectedEmployee.email && (
+                  <p className="text-gray-600 mb-4">{selectedEmployee.email}</p>
+                )}
+              </div>
+
+              {/* Employee Details */}
+              <div className="space-y-4">
+                {/* Role */}
+                {selectedEmployee.bonuses_role && (
+                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
+                    <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
+                      <UserIcon className="w-5 h-5 text-purple-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-500">Role</p>
+                      <p className="font-semibold text-gray-900">
+                        {getRoleDisplayName(selectedEmployee.bonuses_role)}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Department */}
+                {selectedEmployee.department && (
+                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
+                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
+                      <UserGroupIcon className="w-5 h-5 text-blue-600" />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-500">Department</p>
+                      <p className="font-semibold text-gray-900">{selectedEmployee.department}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Mobile */}
+                {selectedEmployee.mobile && (
+                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
+                    <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
+                      <DevicePhoneMobileIcon className="w-5 h-5 text-green-600" style={{ color: '#3E17C3' }} />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-500">Mobile</p>
+                      <p className="font-semibold text-gray-900">{selectedEmployee.mobile}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Phone */}
+                {selectedEmployee.phone && (
+                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
+                    <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center">
+                      <PhoneIcon className="w-5 h-5 text-orange-600" style={{ color: '#3E17C3' }} />
+                    </div>
+                    <div className="flex-1">
+                      <p className="text-sm text-gray-500">Phone</p>
+                      <p className="font-semibold text-gray-900">{selectedEmployee.phone}</p>
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-gray-200 flex gap-3">
+              <button
+                onClick={() => {
+                  setShowEmployeeInfoModal(false);
+                  setSelectedEmployee(null);
+                }}
+                className="btn btn-outline flex-1"
+              >
+                Close
+              </button>
+              <button
+                onClick={() => {
+                  setShowEmployeeInfoModal(false);
+                  setShowEmployeeProfileModal(true);
+                }}
+                className="btn btn-primary flex-1"
+                style={{ backgroundColor: '#3E17C3', borderColor: '#3E17C3' }}
+              >
+                View Full Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Employee Profile Modal */}
+      {showEmployeeProfileModal && selectedEmployee && (
+        <EmployeeModal
+          employee={{
+            id: selectedEmployee.id,
+            display_name: selectedEmployee.official_name || selectedEmployee.display_name,
+            email: selectedEmployee.email,
+            bonuses_role: selectedEmployee.bonuses_role,
+            department: selectedEmployee.department,
+            is_active: selectedEmployee.is_active,
+            photo_url: selectedEmployee.photo_url,
+            mobile: selectedEmployee.mobile,
+            phone: selectedEmployee.phone,
+          }}
+          allEmployees={allUsers
+            .filter(user => user.tenants_employee)
+            .map(user => ({
+              id: user.employee_id?.toString() || '',
+              display_name: user.tenants_employee?.official_name || user.tenants_employee?.display_name || user.full_name || '',
+              email: user.email,
+              bonuses_role: user.tenants_employee?.bonuses_role || '',
+              department: user.tenants_employee?.tenant_departement?.name || '',
+              is_active: user.is_active ?? true,
+              photo_url: user.tenants_employee?.photo_url,
+              mobile: user.tenants_employee?.mobile,
+              phone: user.tenants_employee?.phone,
+            }))}
+          isOpen={showEmployeeProfileModal}
+          onClose={() => {
+            setShowEmployeeProfileModal(false);
+            setSelectedEmployee(null);
+          }}
+        />
       )}
     </div>
   );
