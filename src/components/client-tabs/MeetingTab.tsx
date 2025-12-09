@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import toast from 'react-hot-toast';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
@@ -105,6 +105,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [meetings, setMeetings] = useState<Meeting[]>([]);
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [isCreatingMeeting, setIsCreatingMeeting] = useState(false);
+  const [showScheduleDrawer, setShowScheduleDrawer] = useState(false);
   const [sendingEmailMeetingId, setSendingEmailMeetingId] = useState<number | null>(null);
   const [editingBriefId, setEditingBriefId] = useState<number | null>(null);
   const [editedBrief, setEditedBrief] = useState<string>('');
@@ -166,6 +167,56 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en'>('he');
   const [reminderTemplates, setReminderTemplates] = useState<Array<{ id: number; language: string; content: string; name: string; params?: string; param_mapping?: any }>>([]);
   const [sendingWhatsAppMeetingId, setSendingWhatsAppMeetingId] = useState<number | null>(null);
+  
+  // Schedule Meeting Drawer state
+  const [scheduleMeetingFormData, setScheduleMeetingFormData] = useState({
+    date: '',
+    time: '09:00',
+    location: 'Teams',
+    manager: '',
+    helper: '',
+    brief: '',
+    attendance_probability: 'Medium',
+    complexity: 'Simple',
+    car_number: '',
+    calendar: 'current', // 'current' or 'active_client'
+  });
+  const [isSchedulingMeeting, setIsSchedulingMeeting] = useState(false);
+  const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
+  const [showTimeDropdown, setShowTimeDropdown] = useState(false);
+  const timeDropdownRef = useRef<HTMLDivElement>(null);
+  const [showManagerDropdown, setShowManagerDropdown] = useState(false);
+  const managerDropdownRef = useRef<HTMLDivElement>(null);
+  const [managerSearchTerm, setManagerSearchTerm] = useState('');
+  const [showHelperDropdown, setShowHelperDropdown] = useState(false);
+  const helperDropdownRef = useRef<HTMLDivElement>(null);
+  const [helperSearchTerm, setHelperSearchTerm] = useState('');
+
+  // Reschedule drawer state
+  const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
+  const [rescheduleFormData, setRescheduleFormData] = useState({
+    date: '',
+    time: '09:00',
+    location: 'Teams',
+    calendar: 'active_client',
+    manager: '',
+    helper: '',
+    brief: '',
+    attendance_probability: 'Medium',
+    complexity: 'Simple',
+    car_number: '',
+  });
+  const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
+  const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
+  const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
+  const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
+
+  // Helper function to get tomorrow's date
+  const getTomorrowDate = () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    return tomorrow.toISOString().split('T')[0];
+  };
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
@@ -252,6 +303,104 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchEmployees();
     fetchMeetingLocations();
     fetchReminderTemplates();
+  }, []);
+
+  // Set default location to Teams when meeting locations are loaded
+  useEffect(() => {
+    if (allMeetingLocations.length > 0 && !scheduleMeetingFormData.location) {
+      const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
+      setScheduleMeetingFormData(prev => ({
+        ...prev,
+        location: teamsLocation.name,
+      }));
+    }
+  }, [allMeetingLocations]);
+
+  // Fetch meeting counts by time for the selected date
+  useEffect(() => {
+    const fetchMeetingCounts = async () => {
+      if (!scheduleMeetingFormData.date) {
+        setMeetingCountsByTime({});
+        return;
+      }
+
+      try {
+        const { data: meetings, error } = await supabase
+          .from('meetings')
+          .select('meeting_time')
+          .eq('meeting_date', scheduleMeetingFormData.date)
+          .or('status.is.null,status.neq.canceled');
+
+        if (error) {
+          console.error('Error fetching meeting counts:', error);
+          setMeetingCountsByTime({});
+          return;
+        }
+
+        const counts: Record<string, number> = {};
+        if (meetings) {
+          meetings.forEach((meeting: any) => {
+            if (meeting.meeting_time) {
+              const timeStr = typeof meeting.meeting_time === 'string' 
+                ? meeting.meeting_time.substring(0, 5) 
+                : new Date(meeting.meeting_time).toTimeString().substring(0, 5);
+              counts[timeStr] = (counts[timeStr] || 0) + 1;
+            }
+          });
+        }
+        setMeetingCountsByTime(counts);
+      } catch (error) {
+        console.error('Error fetching meeting counts:', error);
+        setMeetingCountsByTime({});
+      }
+    };
+
+    fetchMeetingCounts();
+  }, [scheduleMeetingFormData.date]);
+
+  // Handle click outside for dropdowns
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (timeDropdownRef.current && !timeDropdownRef.current.contains(event.target as Node)) {
+        setShowTimeDropdown(false);
+      }
+      if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
+        setShowManagerDropdown(false);
+      }
+      if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
+        setShowHelperDropdown(false);
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, []);
+
+      // Reset form and set default location to Teams when drawer opens
+      useEffect(() => {
+        if (showScheduleDrawer && allMeetingLocations.length > 0) {
+          const teamsLocation = allMeetingLocations.find(loc => loc.name === 'Teams') || allMeetingLocations[0];
+          setScheduleMeetingFormData({
+            date: '',
+            time: '09:00',
+            location: teamsLocation.name,
+            manager: '',
+            helper: '',
+            brief: '',
+            attendance_probability: 'Medium',
+            complexity: 'Simple',
+            car_number: '',
+            calendar: 'active_client',
+          });
+        }
+      }, [showScheduleDrawer, allMeetingLocations]);
+
+  // Simplified employee unavailability check (can be enhanced later)
+  const isEmployeeUnavailable = useCallback((employeeName: string, date: string, time: string): boolean => {
+    // This is a simplified version - can be enhanced with actual availability data
+    return false;
   }, []);
 
   const fetchMeetings = async () => {
@@ -1395,6 +1544,39 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const upcomingMeetings = meetings.filter(m => !isPastMeeting(m));
   const pastMeetings = meetings.filter(m => isPastMeeting(m));
 
+  // Fetch upcoming meetings for reschedule drawer
+  useEffect(() => {
+    const fetchRescheduleMeetings = async () => {
+      if (!client.id || !showRescheduleDrawer) return;
+      
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      
+      let query = supabase
+        .from('meetings')
+        .select('*')
+        .neq('status', 'canceled')
+        .gte('meeting_date', new Date().toISOString().split('T')[0])
+        .order('meeting_date', { ascending: true });
+      
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        query = query.eq('legacy_lead_id', legacyId);
+      } else {
+        query = query.eq('client_id', client.id);
+      }
+      
+      const { data, error } = await query;
+      
+      if (!error && data) {
+        setRescheduleMeetings(data);
+      } else {
+        setRescheduleMeetings([]);
+      }
+    };
+    
+    fetchRescheduleMeetings();
+  }, [client.id, showRescheduleDrawer]);
+
   const handleToggleMeetingConfirmation = async () => {
     if (!client.id) return;
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -1478,6 +1660,785 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     } catch (error) {
       console.error('Error updating meeting confirmation:', error);
       toast.error('Failed to update meeting confirmation');
+    }
+  };
+
+  // Create calendar event function (same as Clients.tsx)
+  const createCalendarEvent = async (accessToken: string, meetingDetails: {
+    subject: string;
+    startDateTime: string;
+    endDateTime: string;
+    location: string;
+    calendar?: string;
+    manager?: string;
+    helper?: string;
+    brief?: string;
+    attendance_probability?: string;
+    complexity?: string;
+    car_number?: string;
+    expert?: string;
+    amount?: number;
+    currency?: string;
+  }) => {
+    const calendarEmail = meetingDetails.calendar === 'active_client' 
+      ? 'shared-newclients@lawoffice.org.il' 
+      : 'shared-potentialclients@lawoffice.org.il';
+    
+    const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
+    
+    const description = [
+      'Meeting Details:',
+      `Manager: ${meetingDetails.manager || 'Not specified'}`,
+      `Helper: ${meetingDetails.helper || 'Not specified'}`,
+      `Expert: ${meetingDetails.expert || 'Not specified'}`,
+      `Amount: ${meetingDetails.currency || '₪'}${meetingDetails.amount || 0}`,
+      `Attendance Probability: ${meetingDetails.attendance_probability || 'Not specified'}`,
+      `Complexity: ${meetingDetails.complexity || 'Not specified'}`,
+      meetingDetails.car_number ? `Car Number: ${meetingDetails.car_number}` : '',
+      meetingDetails.brief ? `Brief: ${meetingDetails.brief}` : '',
+      '',
+      'Generated by RMQ 2.0 System'
+    ].filter(line => line !== '').join('\n');
+
+    const body: any = {
+      subject: meetingDetails.subject,
+      start: {
+        dateTime: meetingDetails.startDateTime,
+        timeZone: 'UTC'
+      },
+      end: {
+        dateTime: meetingDetails.endDateTime,
+        timeZone: 'UTC'
+      },
+      location: {
+        displayName: meetingDetails.location
+      },
+      body: {
+        contentType: 'text',
+        content: description
+      },
+    };
+
+    if (meetingDetails.location === 'Teams') {
+      body.isOnlineMeeting = true;
+      body.onlineMeetingProvider = 'teamsForBusiness';
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      let errorMessage = 'Failed to create calendar event';
+      if (response.status === 403) {
+        errorMessage = `Access denied to calendar ${calendarEmail}. Please check permissions.`;
+      } else if (response.status === 404) {
+        errorMessage = `Calendar ${calendarEmail} not found. Please verify the calendar exists.`;
+      } else if (response.status === 400) {
+        errorMessage = `Invalid request to calendar ${calendarEmail}. ${error.error?.message || ''}`;
+      } else {
+        errorMessage = error.error?.message || `HTTP ${response.status}: ${response.statusText}`;
+      }
+      throw new Error(errorMessage);
+    }
+
+    const data = await response.json();
+    const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
+    
+    return {
+      joinUrl: joinUrl,
+      id: data.id,
+      onlineMeeting: data.onlineMeeting
+    };
+  };
+
+  // Test calendar access permissions
+  const testCalendarAccess = async (accessToken: string, calendarEmail: string) => {
+    try {
+      const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar`;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${accessToken}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      
+      return response.ok;
+    } catch (error) {
+      console.error(`Calendar access test failed for ${calendarEmail}:`, error);
+      return false;
+    }
+  };
+
+  // Handle schedule meeting from drawer (same logic as Clients.tsx)
+  const handleScheduleMeetingFromDrawer = async () => {
+    if (!client) return;
+    if (!instance || typeof instance.getAllAccounts !== 'function' || typeof instance.acquireTokenSilent !== 'function') {
+      toast.error('Microsoft login is not available. Please try again later.');
+      return;
+    }
+    setIsSchedulingMeeting(true);
+    try {
+      const account = instance.getAllAccounts()[0];
+      if (!account) {
+        toast.error("You must be signed in to schedule a Teams meeting.");
+        setIsSchedulingMeeting(false);
+        return;
+      }
+
+      // Get current user's full_name from database
+      let currentUserFullName = '';
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', account.username)
+          .single();
+        if (userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        }
+      } catch (error) {
+        console.log('Could not fetch user full_name');
+      }
+
+      let teamsMeetingUrl = '';
+      const selectedLocation = allMeetingLocations.find(
+        loc => loc.name === scheduleMeetingFormData.location
+      );
+
+      // If this is a Teams meeting, create an online event via Graph
+      if (scheduleMeetingFormData.location === 'Teams') {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({
+            ...loginRequest,
+            account,
+          });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+
+        const [year, month, day] = scheduleMeetingFormData.date.split('-').map(Number);
+        const [hours, minutes] = scheduleMeetingFormData.time.split(':').map(Number);
+        const start = new Date(year, month - 1, day, hours, minutes);
+        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+
+        const calendarEmail = scheduleMeetingFormData.calendar === 'active_client' 
+          ? 'shared-newclients@lawoffice.org.il' 
+          : 'shared-potentialclients@lawoffice.org.il';
+        
+        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+        
+        if (!hasAccess) {
+          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`);
+          setIsSchedulingMeeting(false);
+          return;
+        }
+
+        const categoryName = client.category || 'No Category';
+        const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - ${scheduleMeetingFormData.brief || 'Meeting'}`;
+        
+        try {
+          const calendarEventData = await createCalendarEvent(accessToken, {
+            subject: meetingSubject,
+            startDateTime: start.toISOString(),
+            endDateTime: end.toISOString(),
+            location: scheduleMeetingFormData.location,
+            calendar: scheduleMeetingFormData.calendar,
+            manager: scheduleMeetingFormData.manager,
+            helper: scheduleMeetingFormData.helper,
+            brief: scheduleMeetingFormData.brief,
+            attendance_probability: scheduleMeetingFormData.attendance_probability,
+            complexity: scheduleMeetingFormData.complexity,
+            car_number: scheduleMeetingFormData.car_number,
+            expert: client.expert || '---',
+            amount: 0,
+            currency: '₪',
+          });
+          teamsMeetingUrl = calendarEventData.joinUrl;
+        } catch (calendarError) {
+          console.error('Calendar creation failed:', calendarError);
+          const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+          toast.error(`Failed to create calendar event: ${errorMessage}`);
+          setIsSchedulingMeeting(false);
+          return;
+        }
+      } else if (selectedLocation?.default_link) {
+        teamsMeetingUrl = selectedLocation.default_link;
+      }
+
+      // Check if this is a legacy lead
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
+
+      const meetingData = {
+        client_id: isLegacyLead ? null : client.id,
+        legacy_lead_id: isLegacyLead ? legacyId : null,
+        meeting_date: scheduleMeetingFormData.date,
+        meeting_time: scheduleMeetingFormData.time,
+        meeting_location: scheduleMeetingFormData.location,
+        meeting_manager: scheduleMeetingFormData.manager || '',
+        meeting_currency: '₪',
+        meeting_amount: 0,
+        expert: client.expert || '---',
+        helper: scheduleMeetingFormData.helper || '---',
+        teams_meeting_url: teamsMeetingUrl,
+        meeting_brief: scheduleMeetingFormData.brief || '',
+        attendance_probability: scheduleMeetingFormData.attendance_probability,
+        complexity: scheduleMeetingFormData.complexity,
+        car_number: scheduleMeetingFormData.car_number || '',
+        scheduler: currentUserFullName,
+        last_edited_timestamp: new Date().toISOString(),
+        last_edited_by: currentUserFullName,
+        calendar_type: scheduleMeetingFormData.calendar === 'active_client' ? 'active_client' : 'potential_client',
+      };
+
+      const { data: insertedData, error: meetingError } = await supabase
+        .from('meetings')
+        .insert([meetingData])
+        .select();
+
+      if (meetingError) {
+        console.error('Meeting creation error:', meetingError);
+        throw meetingError;
+      }
+
+      // Helper function to get employee ID from display name
+      const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
+        if (!displayName || displayName === '---' || displayName.trim() === '') return null;
+        
+        // Try exact match first
+        let employee = allEmployees.find((emp: any) => 
+          emp.display_name && emp.display_name.trim() === displayName.trim()
+        );
+        
+        // If not found, try case-insensitive match
+        if (!employee) {
+          employee = allEmployees.find((emp: any) => 
+            emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
+          );
+        }
+        
+        if (!employee) {
+          console.warn(`Employee not found for display name: "${displayName}"`);
+          return null;
+        }
+        
+        // Ensure ID is a number
+        return typeof employee.id === 'number' ? employee.id : parseInt(employee.id, 10);
+      };
+
+      // Resolve manager and helper employee IDs
+      const managerEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.manager);
+      const helperEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.helper);
+      
+      // Resolve scheduler employee ID
+      const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      
+      // Resolve expert employee ID
+      const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
+
+      // Update client/lead record with roles (but NOT stage - as per user requirement)
+      if (isLegacyLead) {
+        const updatePayload: any = {};
+
+        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
+        if (schedulerEmployeeId !== null) {
+          updatePayload.meeting_scheduler_id = schedulerEmployeeId;
+        }
+
+        // Update manager and helper for legacy leads
+        if (managerEmployeeId !== null) {
+          updatePayload.meeting_manager_id = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.meeting_lawyer_id = helperEmployeeId;
+        }
+        
+        // Update expert for legacy leads (must be numeric employee ID, not display name)
+        if (expertEmployeeId !== null) {
+          updatePayload.expert_id = expertEmployeeId;
+        }
+
+        // Only update if there are changes to make
+        if (Object.keys(updatePayload).length > 0) {
+          const { error: updateError } = await supabase
+            .from('leads_lead')
+            .update(updatePayload)
+            .eq('id', legacyId);
+
+          if (updateError) {
+            console.error('Error updating legacy lead roles:', updateError);
+            // Don't throw - meeting was created successfully, this is just a bonus update
+          }
+        }
+      } else {
+        const updatePayload: any = {};
+
+        // Update scheduler for new leads
+        if (schedulerEmployeeId !== null) {
+          updatePayload.scheduler = currentUserFullName; // New leads use display name
+        }
+
+        // Update manager and helper for new leads (as employee IDs)
+        if (managerEmployeeId !== null) {
+          updatePayload.manager = managerEmployeeId;
+        }
+        if (helperEmployeeId !== null) {
+          updatePayload.helper = helperEmployeeId;
+        }
+
+        // Note: Expert is not updated for new leads in Clients.tsx, so we follow the same pattern
+
+        // Only update if there are changes to make
+        if (Object.keys(updatePayload).length > 0) {
+          const { error: updateError } = await supabase
+            .from('leads')
+            .update(updatePayload)
+            .eq('id', client.id);
+
+          if (updateError) {
+            console.error('Error updating new lead roles:', updateError);
+            // Don't throw - meeting was created successfully, this is just a bonus update
+          }
+        }
+      }
+
+      // Update UI
+      setShowScheduleDrawer(false);
+      setIsSchedulingMeeting(false);
+      
+      // Reset form
+      setScheduleMeetingFormData({
+        date: '',
+        time: '09:00',
+        location: 'Teams',
+        manager: '',
+        helper: '',
+        brief: '',
+        attendance_probability: 'Medium',
+        complexity: 'Simple',
+        car_number: '',
+        calendar: 'active_client',
+      });
+      
+      toast.success('Meeting scheduled successfully!');
+      
+      if (onClientUpdate) await onClientUpdate();
+      await fetchMeetings();
+    } catch (error) {
+      console.error('Error scheduling meeting:', error);
+      toast.error('Failed to schedule meeting. Please try again.');
+      setIsSchedulingMeeting(false);
+    }
+  };
+
+  // Handle cancel meeting
+  const handleCancelMeeting = async () => {
+    if (!client || !meetingToDelete) return;
+    setIsReschedulingMeeting(true);
+    try {
+      const account = instance.getAllAccounts()[0];
+      
+      // Cancel the meeting
+      const { data: { user } } = await supabase.auth.getUser();
+      const editor = user?.email || account?.name || 'system';
+      const { error: cancelError } = await supabase
+        .from('meetings')
+        .update({ 
+          status: 'canceled', 
+          last_edited_timestamp: new Date().toISOString(), 
+          last_edited_by: editor 
+        })
+        .eq('id', meetingToDelete);
+      
+      if (cancelError) throw cancelError;
+
+      // Get meeting details for email
+      const { data: canceledMeeting, error: fetchError } = await supabase
+        .from('meetings')
+        .select('*')
+        .eq('id', meetingToDelete)
+        .single();
+      
+      if (fetchError) throw fetchError;
+
+      // Send cancellation email to client
+      if (client.email && canceledMeeting) {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+        
+        const userName = account?.name || 'Staff';
+        let signature = (account && (account as any).signature) ? (account as any).signature : null;
+        if (!signature) {
+          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+        }
+        
+        const emailBody = `
+          <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+            <p>Dear ${client.name},</p>
+            <p>We regret to inform you that your meeting scheduled for:</p>
+            <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+              <li><strong>Date:</strong> ${canceledMeeting.meeting_date}</li>
+              <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : ''}</li>
+              <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
+            </ul>
+            <p>has been canceled.</p>
+            <p>If you have any questions or would like to reschedule, please let us know.</p>
+            <div style='margin-top:32px;'>${signature}</div>
+          </div>
+        `;
+        const subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
+        await sendEmail(accessToken, {
+          to: client.email,
+          subject,
+          body: emailBody,
+        });
+      }
+
+      toast.success('Meeting canceled and client notified.');
+      setShowRescheduleDrawer(false);
+      setMeetingToDelete(null);
+      setRescheduleFormData({
+        date: '',
+        time: '09:00',
+        location: 'Teams',
+        calendar: 'active_client',
+        manager: '',
+        helper: '',
+        brief: '',
+        attendance_probability: 'Medium',
+        complexity: 'Simple',
+        car_number: '',
+      });
+      setRescheduleOption('cancel');
+      if (onClientUpdate) await onClientUpdate();
+      await fetchMeetings();
+    } catch (error) {
+      toast.error('Failed to cancel meeting.');
+      console.error(error);
+    } finally {
+      setIsReschedulingMeeting(false);
+    }
+  };
+
+  // Handle reschedule meeting
+  const handleRescheduleMeeting = async () => {
+    if (!client || !rescheduleFormData.date || !rescheduleFormData.time) return;
+    setIsReschedulingMeeting(true);
+    try {
+      const account = instance.getAllAccounts()[0];
+      
+      // Determine which meeting to cancel
+      let meetingIdToCancel = meetingToDelete;
+      if (!meetingIdToCancel && rescheduleMeetings.length > 0) {
+        meetingIdToCancel = rescheduleMeetings[0]?.id;
+      }
+      
+      let canceledMeeting = null;
+      
+      // Cancel the selected meeting if one is selected
+      if (meetingIdToCancel) {
+        const { data: { user } } = await supabase.auth.getUser();
+        const editor = user?.email || account?.name || 'system';
+        const { error: cancelError } = await supabase
+          .from('meetings')
+          .update({ 
+            status: 'canceled', 
+            last_edited_timestamp: new Date().toISOString(), 
+            last_edited_by: editor 
+          })
+          .eq('id', meetingIdToCancel);
+        
+        if (cancelError) throw cancelError;
+
+        const { data: canceledMeetingData } = await supabase
+          .from('meetings')
+          .select('*')
+          .eq('id', meetingIdToCancel)
+          .single();
+        
+        canceledMeeting = canceledMeetingData;
+      }
+
+      // Get current user's full_name from database
+      let currentUserFullName = '';
+      try {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('email', account.username)
+          .single();
+        if (userData?.full_name) {
+          currentUserFullName = userData.full_name;
+        }
+      } catch (error) {
+        console.log('Could not fetch user full_name');
+      }
+
+      // Create the new meeting
+      let teamsMeetingUrl = '';
+      const selectedLocation = allMeetingLocations.find(
+        loc => loc.name === rescheduleFormData.location
+      );
+
+      // If this is a Teams meeting, create an online event via Graph
+      if (rescheduleFormData.location === 'Teams') {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+
+        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+        const start = new Date(year, month - 1, day, hours, minutes);
+        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
+
+        const calendarEmail = 'shared-newclients@lawoffice.org.il'; // Always use active client calendar
+        
+        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+        
+        if (!hasAccess) {
+          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`);
+          setIsReschedulingMeeting(false);
+          return;
+        }
+
+        const categoryName = client.category || 'No Category';
+        const meetingSubject = `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
+        
+        try {
+          const calendarEventData = await createCalendarEvent(accessToken, {
+            subject: meetingSubject,
+            startDateTime: start.toISOString(),
+            endDateTime: end.toISOString(),
+            location: rescheduleFormData.location,
+            calendar: rescheduleFormData.calendar,
+            manager: rescheduleFormData.manager,
+            helper: rescheduleFormData.helper,
+            brief: rescheduleFormData.brief,
+            attendance_probability: rescheduleFormData.attendance_probability,
+            complexity: rescheduleFormData.complexity,
+            car_number: rescheduleFormData.car_number,
+            expert: client.expert || '---',
+            amount: 0,
+            currency: '₪',
+          });
+          teamsMeetingUrl = calendarEventData.joinUrl;
+        } catch (calendarError) {
+          console.error('Calendar creation failed:', calendarError);
+          const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
+          toast.error(`Failed to create calendar event: ${errorMessage}`);
+          setIsReschedulingMeeting(false);
+          return;
+        }
+      } else if (selectedLocation?.default_link) {
+        teamsMeetingUrl = selectedLocation.default_link;
+      }
+
+      // Check if this is a legacy lead
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
+
+      const meetingData = {
+        client_id: isLegacyLead ? null : client.id,
+        legacy_lead_id: isLegacyLead ? legacyId : null,
+        meeting_date: rescheduleFormData.date,
+        meeting_time: rescheduleFormData.time,
+        meeting_location: rescheduleFormData.location,
+        meeting_manager: rescheduleFormData.manager || '',
+        meeting_currency: '₪',
+        meeting_amount: 0,
+        expert: client.expert || '---',
+        helper: rescheduleFormData.helper || '---',
+        teams_meeting_url: teamsMeetingUrl,
+        meeting_brief: rescheduleFormData.brief || '',
+        attendance_probability: rescheduleFormData.attendance_probability,
+        complexity: rescheduleFormData.complexity,
+        car_number: rescheduleFormData.car_number || '',
+        scheduler: currentUserFullName,
+        last_edited_timestamp: new Date().toISOString(),
+        last_edited_by: currentUserFullName,
+        calendar_type: 'active_client', // Always active_client for MeetingTab
+      };
+
+      const { data: insertedData, error: meetingError } = await supabase
+        .from('meetings')
+        .insert([meetingData])
+        .select();
+
+      if (meetingError) {
+        console.error('Meeting creation error:', meetingError);
+        throw meetingError;
+      }
+
+      // Send notification email to client
+      if (client.email) {
+        let accessToken;
+        try {
+          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
+          accessToken = response.accessToken;
+        } catch (error) {
+          if (error instanceof InteractionRequiredAuthError) {
+            const response = await instance.loginPopup(loginRequest);
+            accessToken = response.accessToken;
+          } else {
+            throw error;
+          }
+        }
+        
+        const userName = account?.name || 'Staff';
+        let signature = (account && (account as any).signature) ? (account as any).signature : null;
+        if (!signature) {
+          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+        }
+        
+        const meetingLink = getValidTeamsLink(teamsMeetingUrl);
+        const joinButton = meetingLink
+          ? `<div style='margin:24px 0;'>
+              <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
+            </div>`
+          : '';
+        
+        let emailBody = '';
+        let emailSubject = '';
+        
+        if (canceledMeeting) {
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${client.name},</p>
+              <p>We regret to inform you that your previous meeting scheduled for:</p>
+              <ul style='margin:16px 0 16px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${canceledMeeting.meeting_date || 'N/A'}</li>
+                <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : 'N/A'}</li>
+                <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
+              </ul>
+              <p>has been canceled. Please find below the details for your new meeting:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
+                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
+                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+              </ul>
+              ${joinButton}
+              <p>Please check the calendar invitation attached for the exact meeting time.</p>
+              <p>If you have any questions or need to reschedule again, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+          emailSubject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
+        } else {
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${client.name},</p>
+              <p>We have scheduled a new meeting for you. Please find the details below:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
+                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
+                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+              </ul>
+              ${joinButton}
+              <p>Please check the calendar invitation attached for the exact meeting time.</p>
+              <p>If you have any questions or need to reschedule, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+          emailSubject = `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`;
+        }
+        
+        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+        const startDateTime = new Date(year, month - 1, day, hours, minutes);
+        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000);
+        
+        const categoryName = client.category || 'No Category';
+        const meetingSubject = canceledMeeting 
+          ? `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting Rescheduled`
+          : `[#${client.lead_number || client.id}] ${client.name} - ${categoryName} - Meeting`;
+        
+        try {
+          await createCalendarEventWithAttendee(accessToken, {
+            subject: meetingSubject,
+            startDateTime: startDateTime.toISOString(),
+            endDateTime: endDateTime.toISOString(),
+            location: rescheduleFormData.location === 'Teams' ? 'Microsoft Teams Meeting' : rescheduleFormData.location,
+            description: emailBody,
+            attendeeEmail: client.email,
+            attendeeName: client.name,
+            organizerEmail: account.username || 'noreply@lawoffice.org.il',
+            organizerName: userName,
+            teamsJoinUrl: meetingLink || undefined,
+            timeZone: 'Asia/Jerusalem'
+          });
+          
+          await sendEmail(accessToken, {
+            to: client.email,
+            subject: emailSubject,
+            body: emailBody,
+          });
+        } catch (calendarError) {
+          console.error('Failed to create calendar invitation:', calendarError);
+          await sendEmail(accessToken, {
+            to: client.email,
+            subject: emailSubject,
+            body: emailBody,
+          });
+        }
+      }
+
+      toast.success('Meeting rescheduled and client notified.');
+      setShowRescheduleDrawer(false);
+      setMeetingToDelete(null);
+      setRescheduleFormData({
+        date: '',
+        time: '09:00',
+        location: 'Teams',
+        calendar: 'active_client',
+        manager: '',
+        helper: '',
+        brief: '',
+        attendance_probability: 'Medium',
+        complexity: 'Simple',
+        car_number: '',
+      });
+      setRescheduleOption('cancel');
+      if (onClientUpdate) await onClientUpdate();
+      await fetchMeetings();
+    } catch (error) {
+      toast.error('Failed to reschedule meeting.');
+      console.error(error);
+    } finally {
+      setIsReschedulingMeeting(false);
     }
   };
 
@@ -2334,6 +3295,31 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <p className="text-sm text-gray-500">Schedule and track client meetings</p>
           </div>
         </div>
+        {/* Schedule/Reschedule Meeting Button - Only show when stage is 60 or higher (client signed agreement and beyond) */}
+        {(() => {
+          const stageId = typeof client.stage === 'number' ? client.stage : 
+                          typeof client.stage === 'string' ? parseInt(client.stage, 10) : null;
+          return stageId !== null && stageId >= 60;
+        })() && (
+          <button
+            onClick={() => {
+              if (upcomingMeetings.length > 0) {
+                setShowRescheduleDrawer(true);
+              } else {
+                setShowScheduleDrawer(true);
+              }
+            }}
+            className="btn text-white border-none"
+            style={{ 
+              background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+              border: 'none',
+              boxShadow: 'none'
+            }}
+          >
+            <CalendarIcon className="w-5 h-5 mr-2 text-white" />
+            {upcomingMeetings.length > 0 ? 'Reschedule Meeting' : 'Schedule Meeting'}
+          </button>
+        )}
       </div>
 
       {/* Scheduling History Table */}
@@ -2798,6 +3784,795 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       )}
       
       <TimelineHistoryButtons client={client} />
+
+      {/* Schedule Meeting Drawer */}
+      {showScheduleDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div
+            className="fixed inset-0 bg-black/30"
+            onClick={() => {
+              setShowScheduleDrawer(false);
+              setScheduleMeetingFormData({
+                date: '',
+                time: '09:00',
+                location: 'Teams',
+                manager: '',
+                helper: '',
+                brief: '',
+                attendance_probability: 'Medium',
+                complexity: 'Simple',
+                car_number: '',
+                calendar: 'active_client',
+              });
+            }}
+          />
+          {/* Panel */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-screen shadow-2xl flex flex-col animate-slideInRight z-50">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+              <h3 className="text-2xl font-bold">Schedule Meeting</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => {
+                setShowScheduleDrawer(false);
+                setScheduleMeetingFormData({
+                  date: '',
+                  time: '09:00',
+                  location: 'Teams',
+                  manager: '',
+                  helper: '',
+                  brief: '',
+                  attendance_probability: 'Medium',
+                  complexity: 'Simple',
+                  car_number: '',
+                  calendar: 'active_client',
+                });
+              }}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+            
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-8 pt-4">
+              <div className="flex flex-col gap-4">
+                {/* Location */}
+                <div>
+                  <label className="block font-semibold mb-1">Location</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={scheduleMeetingFormData.location}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
+                  >
+                    {allMeetingLocations.map((location) => (
+                      <option key={location.id} value={location.name}>
+                        {location.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                {/* Calendar */}
+                <div>
+                  <label className="block font-semibold mb-1">Calendar</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={scheduleMeetingFormData.calendar}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
+                  >
+                    <option value="active_client">Active Client</option>
+                  </select>
+                </div>
+
+                {/* Date */}
+                <div>
+                  <label className="block font-semibold mb-1">Date</label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={scheduleMeetingFormData.date}
+                    onChange={(e) => {
+                      setScheduleMeetingFormData(prev => ({ ...prev, date: e.target.value }));
+                      setMeetingCountsByTime({});
+                    }}
+                    required
+                    min={new Date().toISOString().split('T')[0]}
+                  />
+                </div>
+
+                {/* Time */}
+                <div className="relative" ref={timeDropdownRef}>
+                  <label className="block font-semibold mb-1">Time</label>
+                  <div
+                    className="input input-bordered w-full cursor-pointer flex items-center justify-between"
+                    onClick={() => setShowTimeDropdown(!showTimeDropdown)}
+                  >
+                    <span>{scheduleMeetingFormData.time}</span>
+                    <ChevronDownIcon className="w-4 h-4" />
+                  </div>
+                  {showTimeDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {Array.from({ length: 32 }, (_, i) => {
+                        const hour = Math.floor(i / 2) + 8; // Start from 8:00
+                        const minute = i % 2 === 0 ? '00' : '30';
+                        const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
+                        const count = meetingCountsByTime[timeOption] || 0;
+                        // Determine badge color based on count
+                        const badgeClass = count === 0 
+                          ? 'badge badge-ghost' 
+                          : count <= 2 
+                          ? 'badge badge-success' 
+                          : count <= 5 
+                          ? 'badge badge-warning' 
+                          : 'badge badge-error';
+                        return (
+                          <div
+                            key={timeOption}
+                            className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
+                            onClick={() => {
+                              setScheduleMeetingFormData(prev => ({ ...prev, time: timeOption }));
+                              setShowTimeDropdown(false);
+                            }}
+                          >
+                            <span>{timeOption}</span>
+                            <span className={badgeClass}>{count}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+
+                {/* Manager (Optional) */}
+                <div className="relative" ref={managerDropdownRef}>
+                  <label className="block font-semibold mb-1">Manager (Optional)</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a manager..."
+                    value={scheduleMeetingFormData.manager}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setScheduleMeetingFormData(prev => ({ ...prev, manager: value }));
+                      setManagerSearchTerm(value);
+                      setShowManagerDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setManagerSearchTerm(scheduleMeetingFormData.manager || '');
+                      setShowManagerDropdown(true);
+                    }}
+                    autoComplete="off"
+                  />
+                  {showManagerDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {(() => {
+                        const searchTerm = (managerSearchTerm || scheduleMeetingFormData.manager || '').toLowerCase();
+                        const filteredEmployees = allEmployees.filter(emp => {
+                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                        });
+                        
+                        return filteredEmployees.length > 0 ? (
+                          filteredEmployees.map(emp => {
+                            const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
+                              ? isEmployeeUnavailable(emp.display_name, scheduleMeetingFormData.date, scheduleMeetingFormData.time)
+                              : false;
+                            return (
+                              <div
+                                key={emp.id}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                  isUnavailable
+                                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                    : 'hover:bg-gray-100'
+                                }`}
+                                onClick={() => {
+                                  setScheduleMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
+                                  setManagerSearchTerm('');
+                                  setShowManagerDropdown(false);
+                                }}
+                              >
+                                <span>{emp.display_name}</span>
+                                {isUnavailable && (
+                                  <div className="flex items-center gap-1">
+                                    <ClockIcon className="w-4 h-4" />
+                                    <span className="text-xs">Unavailable</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-4 py-2 text-gray-500 text-center">
+                            No employees found
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Helper (Optional) */}
+                <div className="relative" ref={helperDropdownRef}>
+                  <label className="block font-semibold mb-1">Helper (Optional)</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a helper..."
+                    value={scheduleMeetingFormData.helper}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setScheduleMeetingFormData(prev => ({ ...prev, helper: value }));
+                      setHelperSearchTerm(value);
+                      setShowHelperDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setHelperSearchTerm(scheduleMeetingFormData.helper || '');
+                      setShowHelperDropdown(true);
+                    }}
+                    autoComplete="off"
+                  />
+                  {showHelperDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {(() => {
+                        const searchTerm = (helperSearchTerm || scheduleMeetingFormData.helper || '').toLowerCase();
+                        const filteredEmployees = allEmployees.filter(emp => {
+                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                        });
+                        
+                        return filteredEmployees.length > 0 ? (
+                          filteredEmployees.map(emp => {
+                            const isUnavailable = scheduleMeetingFormData.date && scheduleMeetingFormData.time
+                              ? isEmployeeUnavailable(emp.display_name, scheduleMeetingFormData.date, scheduleMeetingFormData.time)
+                              : false;
+                            return (
+                              <div
+                                key={emp.id}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                  isUnavailable
+                                    ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                    : 'hover:bg-gray-100'
+                                }`}
+                                onClick={() => {
+                                  setScheduleMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
+                                  setHelperSearchTerm('');
+                                  setShowHelperDropdown(false);
+                                }}
+                              >
+                                <span>{emp.display_name}</span>
+                                {isUnavailable && (
+                                  <div className="flex items-center gap-1">
+                                    <ClockIcon className="w-4 h-4" />
+                                    <span className="text-xs">Unavailable</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-4 py-2 text-gray-500 text-center">
+                            No employees found
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
+
+                {/* Meeting Brief (Optional) */}
+                <div>
+                  <label htmlFor="meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
+                  <textarea
+                    id="meeting-brief"
+                    name="meeting-brief"
+                    className="textarea textarea-bordered w-full min-h-[80px]"
+                    value={scheduleMeetingFormData.brief}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, brief: e.target.value }))}
+                    placeholder="Brief description of the meeting topic..."
+                  />
+                </div>
+
+                {/* Meeting Attendance Probability */}
+                <div>
+                  <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={scheduleMeetingFormData.attendance_probability}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                    <option value="Very High">Very High</option>
+                  </select>
+                </div>
+
+                {/* Meeting Complexity */}
+                <div>
+                  <label className="block font-semibold mb-1">Meeting Complexity</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={scheduleMeetingFormData.complexity}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
+                  >
+                    <option value="Simple">Simple</option>
+                    <option value="Complex">Complex</option>
+                  </select>
+                </div>
+
+                {/* Meeting Car Number */}
+                <div>
+                  <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                  <input
+                    id="car-number"
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={scheduleMeetingFormData.car_number}
+                    onChange={(e) => setScheduleMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
+                    placeholder="Enter car number..."
+                  />
+                </div>
+              </div>
+            </div>
+            
+            {/* Fixed Footer */}
+            <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
+              <div className="flex justify-end">
+                <button 
+                  className="btn btn-primary px-8" 
+                  onClick={handleScheduleMeetingFromDrawer}
+                  disabled={!scheduleMeetingFormData.date || !scheduleMeetingFormData.time || isSchedulingMeeting}
+                >
+                  {isSchedulingMeeting ? (
+                    <>
+                      <span className="loading loading-spinner loading-sm"></span>
+                      Creating Meeting...
+                    </>
+                  ) : (
+                    'Create Meeting'
+                  )}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Reschedule Meeting Drawer */}
+      {showRescheduleDrawer && (
+        <div className="fixed inset-0 z-50 flex">
+          {/* Overlay */}
+          <div
+            className="fixed inset-0 bg-black/30"
+            onClick={() => {
+              setShowRescheduleDrawer(false);
+              setMeetingToDelete(null);
+              setRescheduleFormData({
+                date: '',
+                time: '09:00',
+                location: 'Teams',
+                calendar: 'active_client',
+                manager: '',
+                helper: '',
+                brief: '',
+                attendance_probability: 'Medium',
+                complexity: 'Simple',
+                car_number: '',
+              });
+              setRescheduleOption('cancel');
+            }}
+          />
+          {/* Panel */}
+          <div className="ml-auto w-full max-w-md bg-base-100 h-screen shadow-2xl flex flex-col animate-slideInRight z-50">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between p-8 pb-4 border-b border-base-300">
+              <h3 className="text-2xl font-bold">Reschedule Meeting</h3>
+              <button className="btn btn-ghost btn-sm" onClick={() => {
+                setShowRescheduleDrawer(false);
+                setMeetingToDelete(null);
+                setRescheduleFormData({
+                  date: '',
+                  time: '09:00',
+                  location: 'Teams',
+                  calendar: 'active_client',
+                  manager: '',
+                  helper: '',
+                  brief: '',
+                  attendance_probability: 'Medium',
+                  complexity: 'Simple',
+                  car_number: '',
+                });
+                setRescheduleOption('cancel');
+              }}>
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-8 pt-4">
+              <div className="flex flex-col gap-4">
+                {/* Select Meeting */}
+                {rescheduleMeetings.length > 0 && (
+                  <div>
+                    <label className="block font-semibold mb-1">
+                      Select Meeting {rescheduleOption === 'reschedule' ? '(Optional)' : ''}
+                    </label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={meetingToDelete || ''}
+                      onChange={(e) => {
+                        const meetingId = e.target.value ? parseInt(e.target.value) : null;
+                        setMeetingToDelete(meetingId);
+                        // Pre-fill form with selected meeting data
+                        const selectedMeeting = rescheduleMeetings.find(m => m.id === meetingId);
+                        if (selectedMeeting) {
+                          setRescheduleFormData({
+                            date: selectedMeeting.meeting_date || getTomorrowDate(),
+                            time: selectedMeeting.meeting_time ? selectedMeeting.meeting_time.substring(0, 5) : '09:00',
+                            location: selectedMeeting.meeting_location || 'Teams',
+                            calendar: 'active_client',
+                            manager: selectedMeeting.meeting_manager || '',
+                            helper: selectedMeeting.helper || '',
+                            brief: selectedMeeting.meeting_brief || '',
+                            attendance_probability: selectedMeeting.attendance_probability || 'Medium',
+                            complexity: selectedMeeting.complexity || 'Simple',
+                            car_number: selectedMeeting.car_number || '',
+                          });
+                        }
+                      }}
+                      required={rescheduleOption === 'cancel'}
+                    >
+                      <option value="">Select a meeting...</option>
+                      {rescheduleMeetings.map((meeting) => (
+                        <option key={meeting.id} value={meeting.id}>
+                          {meeting.meeting_date} {meeting.meeting_time ? meeting.meeting_time.substring(0, 5) : ''} - {meeting.meeting_location || 'Teams'}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* Reschedule Options */}
+                <div>
+                  <label className="block font-semibold mb-2">Action</label>
+                  <div className="flex gap-3">
+                    <button
+                      type="button"
+                      className={`btn flex-1 ${rescheduleOption === 'cancel' ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => setRescheduleOption('cancel')}
+                    >
+                      Cancel Meeting
+                    </button>
+                    <button
+                      type="button"
+                      className={`btn flex-1 ${rescheduleOption === 'reschedule' ? 'btn-primary' : 'btn-outline'}`}
+                      onClick={() => setRescheduleOption('reschedule')}
+                    >
+                      Reschedule Meeting
+                    </button>
+                  </div>
+                  <p className="text-sm text-gray-500 mt-2">
+                    {rescheduleOption === 'cancel' 
+                      ? 'Cancel the meeting and send cancellation email to client.'
+                      : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
+                  </p>
+                </div>
+
+                {/* Form fields - only show when reschedule option is selected */}
+                {rescheduleOption === 'reschedule' && (
+                  <>
+                    {/* Location */}
+                    <div>
+                      <label className="block font-semibold mb-1">Location</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.location}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                      >
+                        {allMeetingLocations.map((location) => (
+                          <option key={location.id} value={location.name}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Calendar */}
+                    <div>
+                      <label className="block font-semibold mb-1">Calendar</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.calendar}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
+                      >
+                        <option value="active_client">Active Client</option>
+                      </select>
+                    </div>
+
+                    {/* Date */}
+                    <div>
+                      <label className="block font-semibold mb-1">New Date</label>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.date}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
+                        required
+                        min={new Date().toISOString().split('T')[0]}
+                      />
+                    </div>
+
+                    {/* Time */}
+                    <div>
+                      <label className="block font-semibold mb-1">New Time</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.time}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))}
+                        required
+                      >
+                        {Array.from({ length: 32 }, (_, i) => {
+                          const hour = Math.floor(i / 2) + 8; // Start from 8:00
+                          const minute = i % 2 === 0 ? '00' : '30';
+                          const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
+                          return (
+                            <option key={timeOption} value={timeOption}>
+                              {timeOption}
+                            </option>
+                          );
+                        })}
+                      </select>
+                    </div>
+
+                    {/* Manager (Optional) */}
+                    <div className="relative" ref={managerDropdownRef}>
+                      <label className="block font-semibold mb-1">Manager (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a manager..."
+                        value={rescheduleFormData.manager}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setRescheduleFormData((prev: any) => ({ ...prev, manager: value }));
+                          setManagerSearchTerm(value);
+                          setShowManagerDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setManagerSearchTerm(rescheduleFormData.manager || '');
+                          setShowManagerDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showManagerDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const searchTerm = (managerSearchTerm || rescheduleFormData.manager || '').toLowerCase();
+                            const filteredEmployees = allEmployees.filter(emp => {
+                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                            });
+                            
+                            return filteredEmployees.length > 0 ? (
+                              filteredEmployees.map(emp => {
+                                const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
+                                  ? isEmployeeUnavailable(emp.display_name, rescheduleFormData.date, rescheduleFormData.time)
+                                  : false;
+                                return (
+                                  <div
+                                    key={emp.id}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                      isUnavailable
+                                        ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                        : 'hover:bg-gray-100'
+                                    }`}
+                                    onClick={() => {
+                                      setRescheduleFormData((prev: any) => ({ ...prev, manager: emp.display_name }));
+                                      setManagerSearchTerm('');
+                                      setShowManagerDropdown(false);
+                                    }}
+                                  >
+                                    <span>{emp.display_name}</span>
+                                    {isUnavailable && (
+                                      <div className="flex items-center gap-1">
+                                        <ClockIcon className="w-4 h-4" />
+                                        <span className="text-xs">Unavailable</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">
+                                No employees found
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Helper (Optional) */}
+                    <div className="relative" ref={helperDropdownRef}>
+                      <label className="block font-semibold mb-1">Helper (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a helper..."
+                        value={rescheduleFormData.helper}
+                        onChange={(e) => {
+                          const value = e.target.value;
+                          setRescheduleFormData((prev: any) => ({ ...prev, helper: value }));
+                          setHelperSearchTerm(value);
+                          setShowHelperDropdown(true);
+                        }}
+                        onFocus={() => {
+                          setHelperSearchTerm(rescheduleFormData.helper || '');
+                          setShowHelperDropdown(true);
+                        }}
+                        autoComplete="off"
+                      />
+                      {showHelperDropdown && (
+                        <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                          {(() => {
+                            const searchTerm = (helperSearchTerm || rescheduleFormData.helper || '').toLowerCase();
+                            const filteredEmployees = allEmployees.filter(emp => {
+                              return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                            });
+                            
+                            return filteredEmployees.length > 0 ? (
+                              filteredEmployees.map(emp => {
+                                const isUnavailable = rescheduleFormData.date && rescheduleFormData.time
+                                  ? isEmployeeUnavailable(emp.display_name, rescheduleFormData.date, rescheduleFormData.time)
+                                  : false;
+                                return (
+                                  <div
+                                    key={emp.id}
+                                    className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
+                                      isUnavailable
+                                        ? 'bg-red-50 text-red-600 hover:bg-red-100'
+                                        : 'hover:bg-gray-100'
+                                    }`}
+                                    onClick={() => {
+                                      setRescheduleFormData((prev: any) => ({ ...prev, helper: emp.display_name }));
+                                      setHelperSearchTerm('');
+                                      setShowHelperDropdown(false);
+                                    }}
+                                  >
+                                    <span>{emp.display_name}</span>
+                                    {isUnavailable && (
+                                      <div className="flex items-center gap-1">
+                                        <ClockIcon className="w-4 h-4" />
+                                        <span className="text-xs">Unavailable</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })
+                            ) : (
+                              <div className="px-4 py-2 text-gray-500 text-center">
+                                No employees found
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Meeting Brief (Optional) */}
+                    <div>
+                      <label htmlFor="reschedule-meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
+                      <textarea
+                        id="reschedule-meeting-brief"
+                        name="reschedule-meeting-brief"
+                        className="textarea textarea-bordered w-full min-h-[80px]"
+                        value={rescheduleFormData.brief}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, brief: e.target.value }))}
+                        placeholder="Brief description of the meeting topic..."
+                      />
+                    </div>
+
+                    {/* Meeting Attendance Probability */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.attendance_probability}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
+                      >
+                        <option value="Low">Low</option>
+                        <option value="Medium">Medium</option>
+                        <option value="High">High</option>
+                        <option value="Very High">Very High</option>
+                      </select>
+                    </div>
+
+                    {/* Meeting Complexity */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Complexity</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.complexity}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
+                      >
+                        <option value="Simple">Simple</option>
+                        <option value="Complex">Complex</option>
+                      </select>
+                    </div>
+
+                    {/* Meeting Car Number */}
+                    <div>
+                      <label htmlFor="reschedule-car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                      <input
+                        id="reschedule-car-number"
+                        type="text"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.car_number}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
+                        placeholder="Enter car number..."
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* Fixed Footer */}
+            <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
+              <div className="flex justify-end gap-3">
+                <button
+                  className="btn btn-ghost"
+                  onClick={() => {
+                    setShowRescheduleDrawer(false);
+                    setMeetingToDelete(null);
+                    setRescheduleFormData({
+                      date: '',
+                      time: '09:00',
+                      location: 'Teams',
+                      calendar: 'active_client',
+                      manager: '',
+                      helper: '',
+                      brief: '',
+                      attendance_probability: 'Medium',
+                      complexity: 'Simple',
+                      car_number: '',
+                    });
+                    setRescheduleOption('cancel');
+                  }}
+                >
+                  Cancel
+                </button>
+                {rescheduleOption === 'cancel' ? (
+                  <button
+                    className="btn btn-primary px-8"
+                    onClick={handleCancelMeeting}
+                    disabled={!meetingToDelete || isReschedulingMeeting}
+                  >
+                    {isReschedulingMeeting ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        Canceling...
+                      </>
+                    ) : (
+                      'Cancel Meeting'
+                    )}
+                  </button>
+                ) : (
+                  <button
+                    className="btn btn-primary px-8"
+                    onClick={handleRescheduleMeeting}
+                    disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
+                  >
+                    {isReschedulingMeeting ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        Rescheduling...
+                      </>
+                    ) : (
+                      'Reschedule Meeting'
+                    )}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 };

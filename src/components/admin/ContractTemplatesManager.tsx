@@ -104,22 +104,58 @@ const SAMPLE_TEMPLATE = {
 };
 
 const Toolbar = ({ editor }: { editor: any }) => {
+  const [currentFontFamily, setCurrentFontFamily] = useState('Arial');
+  const [currentFontSize, setCurrentFontSize] = useState('16px');
+
+  useEffect(() => {
+    if (!editor) return;
+
+    const updateAttributes = () => {
+      const fontFamilyAttr = editor.getAttributes('fontFamily');
+      const fontSizeAttr = editor.getAttributes('fontSize');
+      
+      if (fontFamilyAttr?.fontFamily) {
+        setCurrentFontFamily(fontFamilyAttr.fontFamily);
+      }
+      if (fontSizeAttr?.fontSize) {
+        setCurrentFontSize(fontSizeAttr.fontSize);
+      }
+    };
+
+    editor.on('selectionUpdate', updateAttributes);
+    editor.on('transaction', updateAttributes);
+    updateAttributes();
+
+    return () => {
+      editor.off('selectionUpdate', updateAttributes);
+      editor.off('transaction', updateAttributes);
+    };
+  }, [editor]);
+
   if (!editor) return null;
   return (
     <div className="flex flex-wrap gap-2 items-center mb-4 p-4 rounded-xl border border-base-300 bg-base-100">
       {/* Font Family */}
       <select
         className="select select-sm select-bordered mr-2 w-32"
-        value={editor.getAttributes('fontFamily').fontFamily || 'Arial'}
-        onChange={e => editor.chain().focus().setFontFamily(e.target.value).run()}
+        value={currentFontFamily}
+        onChange={e => {
+          const value = e.target.value;
+          setCurrentFontFamily(value);
+          editor.chain().focus().setFontFamily(value).run();
+        }}
       >
         {FONT_FAMILIES.map(f => <option key={f} value={f}>{f}</option>)}
       </select>
       {/* Font Size */}
       <select
         className="select select-sm select-bordered mr-2 w-24"
-        value={editor.getAttributes('fontSize').fontSize || '16px'}
-        onChange={e => editor.chain().focus().setFontSize(e.target.value).run()}
+        value={currentFontSize}
+        onChange={e => {
+          const value = e.target.value;
+          setCurrentFontSize(value);
+          editor.chain().focus().setFontSize(value).run();
+        }}
       >
         {FONT_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
       </select>
@@ -136,8 +172,30 @@ const Toolbar = ({ editor }: { editor: any }) => {
       <button className={`btn btn-sm ${editor.isActive({ textAlign: 'center' }) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().setTextAlign('center').run()} title="Align Center"><span className="text-base font-semibold">C</span></button>
       <button className={`btn btn-sm ${editor.isActive({ textAlign: 'right' }) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().setTextAlign('right').run()} title="Align Right"><span className="text-base font-semibold">R</span></button>
       {/* Lists, Blockquote, Headings */}
-      <button className={`btn btn-sm ${editor.isActive('bulletList') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleBulletList().run()} title="Bullet List"><span className="text-base">• List</span></button>
-      <button className={`btn btn-sm ${editor.isActive('orderedList') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleOrderedList().run()} title="Numbered List"><span className="text-base">1. List</span></button>
+      <button 
+        type="button"
+        className={`btn btn-sm ${editor.isActive('bulletList') ? 'btn-primary' : 'btn-ghost'}`} 
+        onClick={() => {
+          if (!editor.isEditable) return;
+          editor.chain().focus().toggleList('bulletList', 'listItem').run();
+        }}
+        disabled={!editor.isEditable || !editor.can().toggleList('bulletList', 'listItem')}
+        title="Bullet List"
+      >
+        <span className="text-base">• List</span>
+      </button>
+      <button 
+        type="button"
+        className={`btn btn-sm ${editor.isActive('orderedList') ? 'btn-primary' : 'btn-ghost'}`} 
+        onClick={() => {
+          if (!editor.isEditable) return;
+          editor.chain().focus().toggleList('orderedList', 'listItem').run();
+        }}
+        disabled={!editor.isEditable || !editor.can().toggleList('orderedList', 'listItem')}
+        title="Numbered List"
+      >
+        <span className="text-base">1. List</span>
+      </button>
       <button className={`btn btn-sm ${editor.isActive('blockquote') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleBlockquote().run()} title="Blockquote"><span className="text-lg">❝</span></button>
       <button className={`btn btn-sm ${editor.isActive('heading', { level: 1 }) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleHeading({ level: 1 }).run()} title="H1"><span className="text-base font-bold">H1</span></button>
       <button className={`btn btn-sm ${editor.isActive('heading', { level: 2 }) ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleHeading({ level: 2 }).run()} title="H2"><span className="text-base font-bold">H2</span></button>
@@ -188,6 +246,7 @@ const ContractTemplatesManager: React.FC = () => {
   const [active, setActive] = useState<boolean>(true);
   const [languages, setLanguages] = useState<any[]>([]);
   const [categories, setCategories] = useState<{ id: string | number; name: string; mainName?: string; label: string }[]>([]);
+  const [mainCategories, setMainCategories] = useState<{ id: string | number; name: string }[]>([]);
   const [isSaving, setIsSaving] = useState(false);
   const [isPreview, setIsPreview] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -552,7 +611,7 @@ const ContractTemplatesManager: React.FC = () => {
     fetchLanguages();
   }, []);
 
-  // Fetch categories
+  // Fetch categories (for backward compatibility - keeping for existing templates)
   useEffect(() => {
     const fetchCategories = async () => {
       try {
@@ -581,6 +640,25 @@ const ContractTemplatesManager: React.FC = () => {
     fetchCategories();
   }, []);
 
+  // Fetch main categories (for new templates)
+  useEffect(() => {
+    const fetchMainCategories = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('misc_maincategory')
+          .select('id, name')
+          .order('name', { ascending: true });
+
+        if (error) throw error;
+        setMainCategories(data || []);
+      } catch (error) {
+        console.error('Error fetching main categories:', error);
+      }
+    };
+
+    fetchMainCategories();
+  }, []);
+
   // Get language name by ID
   const getLanguageName = (langId: string | number | null | undefined): string => {
     if (!langId || !languages.length) return 'Not set';
@@ -589,7 +667,11 @@ const ContractTemplatesManager: React.FC = () => {
   };
 
   const getCategoryLabel = (catId: string | number | null | undefined): string => {
-    if (!catId || !categories.length) return 'Not set';
+    if (!catId) return 'Not set';
+    // First try to find in main categories
+    const mainCategory = mainCategories.find(cat => String(cat.id) === String(catId));
+    if (mainCategory) return mainCategory.name;
+    // Fallback to subcategories for backward compatibility
     const category = categories.find(cat => String(cat.id) === String(catId));
     return category?.label || category?.name || 'Not set';
   };
@@ -604,17 +686,17 @@ const ContractTemplatesManager: React.FC = () => {
       categoryInput: categoryLabel !== 'Not set' ? categoryLabel : '',
       active: quickEditTemplate.active !== undefined ? quickEditTemplate.active : true,
     });
-  }, [quickEditTemplate, categories]);
+  }, [quickEditTemplate, categories, mainCategories]);
 
   const filteredQuickCategories = useMemo(() => {
     const term = (quickEditValues.categoryInput || '').trim().toLowerCase();
     if (!term) {
-      return categories.slice(0, 50);
+      return mainCategories.slice(0, 50);
     }
-    return categories
-      .filter((cat) => cat.label.toLowerCase().includes(term))
+    return mainCategories
+      .filter((cat) => cat.name.toLowerCase().includes(term))
       .slice(0, 50);
-  }, [categories, quickEditValues.categoryInput]);
+  }, [mainCategories, quickEditValues.categoryInput]);
 
   // Filter templates based on search term, language, and active status
   const filteredTemplates = useMemo(() => {
@@ -1409,9 +1491,9 @@ const ContractTemplatesManager: React.FC = () => {
                 onChange={(e) => setFilterCategory(e.target.value || null)}
               >
                 <option value="">All Categories</option>
-                {categories.map(cat => (
+                {mainCategories.map(cat => (
                   <option key={cat.id} value={String(cat.id)}>
-                    {cat.label}
+                    {cat.name}
                   </option>
                 ))}
               </select>
@@ -1728,12 +1810,12 @@ const ContractTemplatesManager: React.FC = () => {
                               setQuickEditValues((prev) => ({
                                 ...prev,
                                 categoryId: String(cat.id),
-                                categoryInput: cat.label,
+                                categoryInput: cat.name,
                               }));
                               setIsQuickCategoryDropdownOpen(false);
                             }}
                           >
-                            {cat.label}
+                            {cat.name}
                           </button>
                         ))}
                       </div>
@@ -1804,9 +1886,9 @@ const ContractTemplatesManager: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-base-100 rounded-xl shadow-lg border border-gray-200 overflow-hidden">
+      <div className="bg-base-100 rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col" style={{ minHeight: 'calc(100vh - 200px)', maxHeight: 'calc(100vh - 200px)' }}>
         {/* Main Editor Area */}
-        <div className="flex flex-col" style={{ minHeight: 'calc(100vh - 200px)', maxHeight: 'calc(100vh - 200px)' }}>
+        <div className="flex flex-col flex-1 min-h-0">
           <div className="flex items-center gap-4 p-4 border-b border-gray-200">
             <input
               className="input input-bordered flex-1 text-lg font-semibold"
@@ -1832,9 +1914,9 @@ const ContractTemplatesManager: React.FC = () => {
               onChange={(e) => setCategoryId(e.target.value || null)}
             >
               <option value="">Select Category...</option>
-              {categories.map(cat => (
+              {mainCategories.map(cat => (
                 <option key={cat.id} value={String(cat.id)}>
-                  {cat.label}
+                  {cat.name}
                 </option>
               ))}
             </select>
@@ -1903,9 +1985,41 @@ const ContractTemplatesManager: React.FC = () => {
           </div>
           {/* Toolbar */}
           {!isPreview && <div className="px-4 pt-4"><Toolbar editor={editor} /></div>}
-          <div className="flex-1 p-6 overflow-y-auto" style={{ minHeight: '600px' }}>
+          <div className="flex-1 border border-base-300 rounded-xl bg-white overflow-hidden flex flex-col" style={{ minHeight: '600px' }}>
           {!isPreview ? (
-            <EditorContent editor={editor} className="prose max-w-full min-h-[800px] border border-base-300 rounded-xl bg-white p-4 text-black" style={{ minHeight: '800px' }} />
+            <>
+              <style>{`
+                .tiptap-editor-container .ProseMirror {
+                  min-height: 100% !important;
+                  height: 100% !important;
+                  padding: 1.5rem;
+                  outline: none;
+                }
+                .tiptap-editor-container {
+                  height: 100%;
+                  display: flex;
+                  flex-direction: column;
+                }
+                .tiptap-editor-container > div {
+                  flex: 1;
+                  display: flex;
+                  flex-direction: column;
+                  min-height: 0;
+                }
+                .tiptap-editor-container .prose {
+                  flex: 1;
+                  display: flex;
+                  flex-direction: column;
+                  min-height: 0;
+                }
+              `}</style>
+              <div className="h-full overflow-y-auto flex-1 tiptap-editor-container">
+                <EditorContent 
+                  editor={editor} 
+                  className="prose max-w-none h-full text-black flex-1" 
+                />
+              </div>
+            </>
           ) : (
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
               {/* Preview Data Editor */}

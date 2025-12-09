@@ -1299,6 +1299,8 @@ const Clients: React.FC<ClientsProps> = ({
 
   // 1. Add state for the rescheduling drawer and meetings list
   const [showRescheduleDrawer, setShowRescheduleDrawer] = useState(false);
+  const [hasScheduledMeetings, setHasScheduledMeetings] = useState(false);
+  const [nextMeetingDate, setNextMeetingDate] = useState<string | null>(null);
   const [rescheduleMeetings, setRescheduleMeetings] = useState<any[]>([]);
   const [rescheduleFormData, setRescheduleFormData] = useState<any>({
     date: getTomorrowDate(), // Default to tomorrow so button is enabled
@@ -1999,6 +2001,46 @@ useEffect(() => {
       toast.error('Failed to update lead.');
     }
   };
+  // Check for scheduled meetings (upcoming, not canceled)
+  useEffect(() => {
+    const checkScheduledMeetings = async () => {
+      if (!selectedClient?.id) {
+        setHasScheduledMeetings(false);
+        setNextMeetingDate(null);
+        return;
+      }
+      
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      const today = new Date().toISOString().split('T')[0];
+      
+      let query = supabase
+        .from('meetings')
+        .select('id, meeting_date, status')
+        .gte('meeting_date', today)
+        .or('status.is.null,status.neq.canceled')
+        .order('meeting_date', { ascending: true });
+      
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        query = query.eq('legacy_lead_id', legacyId);
+      } else {
+        query = query.eq('client_id', selectedClient.id);
+      }
+      
+      const { data, error } = await query.limit(1);
+      
+      if (!error && data && data.length > 0) {
+        setHasScheduledMeetings(true);
+        setNextMeetingDate(data[0].meeting_date);
+      } else {
+        setHasScheduledMeetings(false);
+        setNextMeetingDate(null);
+      }
+    };
+    
+    checkScheduledMeetings();
+  }, [selectedClient?.id]);
+
   // Add useEffect to fetch meetings when reschedule drawer opens
   useEffect(() => {
     const fetchMeetings = async () => {
@@ -2029,6 +2071,38 @@ useEffect(() => {
 
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
+    
+    // Refresh scheduled meetings check
+    const checkScheduledMeetings = async () => {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+      const today = new Date().toISOString().split('T')[0];
+      
+      let query = supabase
+        .from('meetings')
+        .select('id, meeting_date, status')
+        .gte('meeting_date', today)
+        .or('status.is.null,status.neq.canceled')
+        .order('meeting_date', { ascending: true });
+      
+      if (isLegacyLead) {
+        const legacyId = selectedClient.id.toString().replace('legacy_', '');
+        query = query.eq('legacy_lead_id', legacyId);
+      } else {
+        query = query.eq('client_id', selectedClient.id);
+      }
+      
+      const { data, error } = await query.limit(1);
+      
+      if (!error && data && data.length > 0) {
+        setHasScheduledMeetings(true);
+        setNextMeetingDate(data[0].meeting_date);
+      } else {
+        setHasScheduledMeetings(false);
+        setNextMeetingDate(null);
+      }
+    };
+    
+    await checkScheduledMeetings();
     
     // Skip if balance is being updated - refreshClientData will handle it
     if (isBalanceUpdatingRef.current) {
@@ -7129,7 +7203,7 @@ useEffect(() => {
       : null;
   const isStageNumeric = stageNumeric !== null && Number.isFinite(stageNumeric);
   const scheduleMenuLabel =
-    isStageNumeric && stageNumeric >= 40 ? 'Another meeting' : 'Schedule Meeting';
+    isStageNumeric && stageNumeric >= 40 && stageNumeric !== 60 && stageNumeric !== 70 ? 'Another meeting' : 'Schedule Meeting';
 
   const handleScheduleMenuClick = useCallback(
     (event?: React.MouseEvent<HTMLAnchorElement>) => {
@@ -7138,14 +7212,14 @@ useEffect(() => {
       }
 
       // Decide which stage we want AFTER the meeting is successfully created:
-      // - If the current stage is 40+ (already in meeting flow), this is an "Another meeting" action
+      // - If the current stage is 40+ (already in meeting flow) BUT NOT stage 60 (Client signed agreement) or 70 (Payment request sent), this is an "Another meeting" action
       // - Otherwise it's the first "Schedule Meeting"
       const stageNumeric =
         selectedClient?.stage !== null && selectedClient?.stage !== undefined
           ? Number(selectedClient.stage)
           : null;
 
-      if (stageNumeric !== null && Number.isFinite(stageNumeric) && stageNumeric >= 40) {
+      if (stageNumeric !== null && Number.isFinite(stageNumeric) && stageNumeric >= 40 && stageNumeric !== 60 && stageNumeric !== 70) {
         setScheduleStageTarget('another_meeting');
       } else {
         setScheduleStageTarget('meeting_scheduled');
@@ -7197,12 +7271,6 @@ useEffect(() => {
             Payments plan
           </a>
         </li> */}
-        <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
-            <CalendarDaysIcon className="w-5 h-5 text-black" />
-            {scheduleMenuLabel}
-          </a>
-        </li>
         <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('payment_request_sent'); (document.activeElement as HTMLElement)?.blur(); }}>
             <CurrencyDollarIcon className="w-5 h-5 text-black" />
@@ -7283,12 +7351,6 @@ useEffect(() => {
     dropdownItems = (
       <>
         <li>
-          <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
-            <CalendarDaysIcon className="w-5 h-5 text-black" />
-            {scheduleMenuLabel}
-          </a>
-        </li>
-        <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={handlePaymentReceivedNewClient}>
             <CheckCircleIcon className="w-5 h-5 text-green-600" />
             Payment Received - new Client !!!
@@ -7330,12 +7392,15 @@ useEffect(() => {
                 Meeting ReScheduling
               </a>
             </li>
-            <li>
-              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Meeting Ended')}>
-                <CheckCircleIcon className="w-5 h-5 text-black" />
-                Meeting Ended
-              </a>
-            </li>
+            {/* Only show "Meeting Ended" for stage 21 if there are upcoming meetings */}
+            {!(areStagesEquivalent(currentStageName, 'Meeting rescheduling') || (isStageNumeric && stageNumeric === 21)) || hasScheduledMeetings ? (
+              <li>
+                <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Meeting Ended')}>
+                  <CheckCircleIcon className="w-5 h-5 text-black" />
+                  Meeting Ended
+                </a>
+              </li>
+            ) : null}
           </>
         ) : (
           !['Success', 'handler_assigned'].some(stage => areStagesEquivalent(currentStageName, stage)) && (
@@ -8523,6 +8588,35 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       </span>
                     );
                   })()}
+                  {/* Meeting Scheduled Badge */}
+                  {hasScheduledMeetings && nextMeetingDate && (
+                    <button
+                      onClick={() => setActiveTab('meeting')}
+                      className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
+                      style={{
+                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                        color: 'white',
+                        borderColor: '#10b981',
+                        padding: '0.5rem 1rem',
+                        minHeight: '3.5rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.875rem',
+                        lineHeight: '1.25rem',
+                      }}
+                    >
+                      <span className="flex flex-col items-center gap-0.5">
+                        <span className="font-semibold">Meeting Scheduled</span>
+                        <span className="text-xs font-medium opacity-90">
+                          {(() => {
+                            const date = new Date(nextMeetingDate);
+                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                          })()}
+                        </span>
+                      </span>
+                    </button>
+                  )}
                   <div className="bg-red-700 text-white px-3 py-1 rounded-full text-xs font-bold uppercase tracking-wide shadow-lg">
                     Unactivated
                   </div>
@@ -8954,6 +9048,35 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               selectedClient?.stage !== '' && (
                 <div className="flex justify-center items-center gap-2 mb-2 flex-wrap">
                   {getStageBadge(selectedClient.stage, 'mobile')}
+                  {/* Meeting Scheduled Badge */}
+                  {hasScheduledMeetings && nextMeetingDate && (
+                    <button
+                      onClick={() => setActiveTab('meeting')}
+                      className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
+                      style={{
+                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                        color: 'white',
+                        borderColor: '#10b981',
+                        padding: '0.5rem 1rem',
+                        minHeight: '3.5rem',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        fontSize: '0.875rem',
+                        lineHeight: '1.25rem',
+                      }}
+                    >
+                      <span className="flex flex-col items-center gap-0.5">
+                        <span className="font-semibold">Meeting Scheduled</span>
+                        <span className="text-xs font-medium opacity-90">
+                          {(() => {
+                            const date = new Date(nextMeetingDate);
+                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                          })()}
+                        </span>
+                      </span>
+                    </button>
+                  )}
                   {areStagesEquivalent(currentStageName, 'Handler Set') && (
                     <button
                       type="button"
@@ -9426,6 +9549,35 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   selectedClient?.stage !== '' && (
                     <div className="mb-3 flex justify-center items-center gap-3">
                       {getStageBadge(selectedClient.stage, 'desktop')}
+                      {/* Meeting Scheduled Badge */}
+                      {hasScheduledMeetings && nextMeetingDate && (
+                        <button
+                          onClick={() => setActiveTab('meeting')}
+                          className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
+                          style={{
+                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                            color: 'white',
+                            borderColor: '#10b981',
+                            padding: '0.5rem 1rem',
+                            minHeight: '3.5rem',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            fontSize: '0.875rem',
+                            lineHeight: '1.25rem',
+                          }}
+                        >
+                          <span className="flex flex-col items-center gap-0.5">
+                            <span className="font-semibold">Meeting Scheduled</span>
+                            <span className="text-xs font-medium opacity-90">
+                              {(() => {
+                                const date = new Date(nextMeetingDate);
+                                return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                              })()}
+                            </span>
+                          </span>
+                        </button>
+                      )}
                       {areStagesEquivalent(currentStageName, 'Handler Set') && (
                         <button
                           type="button"
@@ -10044,7 +10196,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
                 >
                   <option value="current">Potential Client</option>
-                  <option value="active_client">Active Client</option>
                 </select>
               </div>
 
@@ -12086,7 +12237,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
                   >
                     <option value="current">Potential Client</option>
-                    <option value="active_client">Active Client</option>
                   </select>
                 </div>
 

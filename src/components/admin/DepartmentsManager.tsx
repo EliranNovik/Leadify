@@ -11,41 +11,52 @@ const DepartmentsManager: React.FC = () => {
       placeholder: 'e.g., Legal Department'
     },
     {
-      name: 'is_important',
-      label: 'Important Department',
-      type: 'boolean' as const,
-      required: false
-    },
-    {
-      name: 'fixed_monthly_cost',
-      label: 'Fixed Monthly Cost',
-      type: 'number' as const,
+      name: 'fixed_cost',
+      label: 'Fixed Cost',
+      type: 'text' as const,
       required: false,
       placeholder: 'e.g., 5000'
     },
     {
-      name: 'marginal_cost_percentage',
-      label: 'Marginal Cost %',
-      type: 'number' as const,
+      name: 'marginal_cost',
+      label: 'Marginal Cost',
+      type: 'text' as const,
       required: false,
       placeholder: 'e.g., 15.5'
     },
     {
-      name: 'min_monthly_sales_target',
-      label: 'Min Monthly Sales Target',
-      type: 'number' as const,
+      name: 'min_income',
+      label: 'Min Income',
+      type: 'text' as const,
       required: false,
       placeholder: 'e.g., 10000'
+    },
+    {
+      name: 'important',
+      label: 'Important',
+      type: 'boolean' as const,
+      required: false,
+      hideInAdd: true,
+      hideInEdit: true,
+      prepareValueForForm: (value: any) => {
+        if (value === 't' || value === true) return true;
+        if (value === 'f' || value === false) return false;
+        return false;
+      },
+      prepareValueForSave: (value: any) => {
+        return value === true ? 't' : 'f';
+      }
     }
   ];
 
   return (
     <GenericCRUDManager
-      tableName="departments"
+      tableName="tenant_departement"
       fields={fields}
       title="Department"
       description="Manage company departments and their cost structures"
       pageSize={10}
+      sortColumn="id"
     />
   );
 };
