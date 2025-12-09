@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, ClockIcon, LockClosedIcon, DocumentTextIcon, DocumentIcon, PhotoIcon, FilmIcon, MusicalNoteIcon, MicrophoneIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, ClockIcon, LockClosedIcon, DocumentTextIcon, DocumentIcon, PhotoIcon, FilmIcon, MusicalNoteIcon, MicrophoneIcon, Squares2X2Icon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import EmojiPicker from 'emoji-picker-react';
 import { toast } from 'react-hot-toast';
@@ -114,6 +114,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [isInputFocused, setIsInputFocused] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   
+  // Tools dropdown state
+  const [showDesktopTools, setShowDesktopTools] = useState(false);
+  const [showMobileDropdown, setShowMobileDropdown] = useState(false);
+  const desktopToolsRef = useRef<HTMLDivElement>(null);
+  const mobileToolsRef = useRef<HTMLDivElement>(null);
+  
   // Mobile detection
   useEffect(() => {
     const checkMobile = () => {
@@ -124,22 +130,44 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
-  // Expand textarea on mobile when template or AI content is added
+  // Expand textarea when template or AI content is added (both desktop and mobile)
   useEffect(() => {
-    if (isMobile && textareaRef.current && (selectedTemplate || aiSuggestions.length > 0 || newMessage.length > 100)) {
+    if (textareaRef.current) {
       setTimeout(() => {
         if (textareaRef.current) {
           textareaRef.current.style.height = 'auto';
-          textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+          // Use larger max height when template is present (400px for both, or 300px for mobile without template)
+          // If template is cleared, reset to regular height
+          if (selectedTemplate && selectedTemplate.params === '0') {
+            const maxHeight = 400;
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+          } else if (aiSuggestions.length > 0 || newMessage.length > 100) {
+            const maxHeight = isMobile ? 300 : 200;
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+          } else {
+            // Reset to regular height when template is cleared and no long content
+            const regularHeight = isMobile ? 200 : 200;
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
+          }
         }
       }, 0);
     }
   }, [newMessage, selectedTemplate, aiSuggestions, isMobile]);
 
-  // Handle click outside to reset input focus on mobile
+  // Handle click outside to reset input focus on mobile and close dropdowns
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
+      
+      // Close tools dropdowns
+      if (desktopToolsRef.current && !desktopToolsRef.current.contains(target)) {
+        setShowDesktopTools(false);
+      }
+      if (mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
+        setShowMobileDropdown(false);
+      }
+      
+      // Reset input focus on mobile
       if (isMobile && isInputFocused && textareaRef.current) {
         if (!target.closest('textarea') && !target.closest('form')) {
           setIsInputFocused(false);
@@ -955,6 +983,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
       setShouldAutoScroll(true);
       setNewMessage('');
       setSelectedTemplate(null);
+      
+      // Reset textarea height to regular size after sending
+      if (textareaRef.current) {
+        setTimeout(() => {
+          if (textareaRef.current) {
+            textareaRef.current.style.height = 'auto';
+            const regularHeight = isMobile ? 200 : 200;
+            textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, regularHeight)}px`;
+          }
+        }, 0);
+      }
+      
       // Reset mobile input focus state
       if (isMobile) {
         setIsInputFocused(false);
@@ -1212,7 +1252,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
   return createPortal(
     <div className="fixed inset-0 bg-white z-[9999] overflow-hidden">
-      <div className="h-full flex flex-col">
+      <div className="h-full flex flex-col relative">
         {/* Header */}
         <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
@@ -1268,7 +1308,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Messages - Scrollable */}
-        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={{ WebkitOverflowScrolling: 'touch' }}>
+        <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={{ paddingBottom: isLocked ? '200px' : '120px', WebkitOverflowScrolling: 'touch' }}>
           {messages.length === 0 ? (
             <div className="text-center py-8 text-gray-500">
               <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -1417,23 +1457,40 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         </div>
 
         {/* Input Area */}
-        <div className="flex-none border-t border-gray-200 bg-white" style={{ position: 'sticky', bottom: 0, zIndex: 10 }}>
-          {/* Lock Message */}
+        <div className="absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
+          {/* Lock Message - Above input field */}
           {isLocked && (
-            <div className="px-4 pb-2 pt-2">
-              <div className="flex items-center gap-2 p-3 bg-red-50 border border-red-200 rounded-lg">
-                <LockClosedIcon className="w-5 h-5 text-red-600 flex-shrink-0" />
-                <div className="text-sm text-red-700">
-                  <p className="font-medium">Messaging window expired</p>
-                  <p className="text-xs text-red-600">More than 24 hours have passed. You can only send template messages.</p>
-                </div>
+            <div className="mb-2 pointer-events-auto">
+              <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
+                <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
+                <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
               </div>
+            </div>
+          )}
+
+          {/* Voice Recorder */}
+          {showVoiceRecorder && (
+            <div className="w-full mb-2 pointer-events-auto">
+              <VoiceMessageRecorder
+                onRecorded={(audioBlob) => {
+                  const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                  const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                  const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+                  setSelectedFile(audioFile);
+                  setShowVoiceRecorder(false);
+                  handleSendMedia(audioFile);
+                }}
+                onCancel={() => {
+                  setShowVoiceRecorder(false);
+                }}
+                className="w-full"
+              />
             </div>
           )}
 
           {/* Template Dropdown */}
           {showTemplateSelector && (
-            <div className="px-4 pt-3 pb-2">
+            <div className="mb-2 pointer-events-auto">
               <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-sm font-semibold text-gray-900">Select Template</div>
@@ -1482,12 +1539,12 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           setTemplateSearchTerm('');
                           if (template.params === '0') {
                             setNewMessage(template.content || '');
-                            // Expand textarea on mobile when template is applied
-                            if (isMobile && textareaRef.current) {
+                            if (textareaRef.current) {
                               setTimeout(() => {
                                 if (textareaRef.current) {
                                   textareaRef.current.style.height = 'auto';
-                                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
+                                  const maxHeight = isMobile ? 300 : 400;
+                                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
                                 }
                               }, 0);
                             }
@@ -1505,7 +1562,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
           {/* AI Suggestions Dropdown */}
           {showAISuggestions && (
-            <div className="px-4 pt-3 pb-2">
+            <div className="mb-2 pointer-events-auto">
               <div className="p-3 bg-gray-50 rounded-lg border">
                 <div className="flex items-center justify-between mb-2">
                   <div className="text-sm font-semibold text-gray-900">
@@ -1542,91 +1599,114 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </div>
           )}
 
-          {/* Input Area */}
-          <form onSubmit={handleSendMessage} className={`flex items-center gap-2 ${isMobile ? 'p-3' : 'p-4'}`}>
-            {/* Template Icon Button - Hidden on mobile when input is focused */}
-            {(!isMobile || !isInputFocused) && (
-              <button
-                type="button"
-                onClick={() => setShowTemplateSelector(!showTemplateSelector)}
-                className={`flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all duration-300 ${
-                  selectedTemplate 
-                    ? 'bg-green-500 text-white' 
-                    : isMobile
-                      ? 'bg-white/80 backdrop-blur-md border border-gray-300/50 text-gray-600 hover:bg-gray-100'
-                      : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                } ${isMobile && isInputFocused ? 'opacity-0 pointer-events-none w-0' : 'opacity-100'}`}
-              >
-                <DocumentTextIcon className="w-5 h-5" />
-              </button>
-            )}
-
-            {/* Voice Recorder */}
-            {showVoiceRecorder && (
-              <div className="w-full mb-2">
-                <VoiceMessageRecorder
-                  onRecorded={(audioBlob) => {
-                    // Convert blob to File and set as selectedFile
-                    // Use the MIME type from the recorder (should be audio/ogg if supported)
-                    const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
-                    const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
-                    const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
-                    
-                    // Set as selectedFile so the regular send button can handle it
-                    setSelectedFile(audioFile);
-                    
-                    // Close the recorder UI
-                    setShowVoiceRecorder(false);
-                    
-                    // Automatically send the voice message
-                    handleSendMedia(audioFile);
+          {/* Contact Selector - Show if multiple contacts, no pre-selected contact, and not hidden */}
+          {!hideContactSelector && !propSelectedContact && leadContacts.length > 1 && (
+            <div className="mb-2 px-4 py-2 border-b border-gray-200 bg-gray-50 pointer-events-auto">
+              <div className="flex items-center gap-2">
+                <label className="text-xs font-semibold text-gray-600">Contact:</label>
+                <select
+                  className="select select-bordered select-sm text-xs flex-1"
+                  value={selectedContactId || ''}
+                  onChange={(e) => {
+                    const contactId = e.target.value ? parseInt(e.target.value, 10) : null;
+                    setSelectedContactId(contactId);
                   }}
-                  onCancel={() => {
-                    setShowVoiceRecorder(false);
-                  }}
-                  className="w-full"
-                />
+                >
+                  {leadContacts.map(contact => (
+                    <option key={contact.id} value={contact.id}>
+                      {contact.name} {contact.isMain && '(Main)'} - {contact.phone || contact.mobile || 'No phone'}
+                    </option>
+                  ))}
+                </select>
               </div>
-            )}
+            </div>
+          )}
 
-            {/* File upload button */}
-            <label 
-              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100 cursor-pointer"
-            >
-              <PaperClipIcon className="w-5 h-5" />
-              <input
-                type="file"
-                className="hidden"
-                accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
-                onChange={handleFileSelect}
-                disabled={uploadingMedia || (isLocked && !selectedTemplate)}
-              />
-            </label>
-
-            {/* Voice Message Button */}
-            <button
-              type="button"
-              onClick={() => setShowVoiceRecorder(!showVoiceRecorder)}
-              className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-red-500 hover:bg-red-50"
-              disabled={isLocked && !selectedTemplate}
-              title="Record voice message"
-            >
-              <MicrophoneIcon className="w-5 h-5" />
-            </button>
-
-            {/* Emoji Button */}
-            <div className="relative flex-shrink-0">
-              <button 
-                type="button" 
-                onClick={() => setIsEmojiPickerOpen(!isEmojiPickerOpen)}
-                className="flex-shrink-0 w-10 h-10 rounded-full flex items-center justify-center transition-all bg-white border border-gray-300 text-gray-500 hover:bg-gray-100"
-                disabled={isLocked && !selectedTemplate}
+          {/* Input Field and Buttons */}
+          <div className="flex items-end gap-3 relative pointer-events-auto">
+            {/* Consolidated Tools Button */}
+            <div className="relative" ref={desktopToolsRef}>
+              <button
+                onClick={() => setShowDesktopTools(prev => !prev)}
+                disabled={sending || uploadingMedia}
+                className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
+                style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+                title="Message tools"
               >
-                <FaceSmileIcon className="w-5 h-5" />
+                <Squares2X2Icon className="w-6 h-6" />
               </button>
               
-              {isEmojiPickerOpen && (!isLocked || selectedTemplate) && (
-                <div className="absolute bottom-14 left-0 z-50 emoji-picker-container">
+              {/* Tools Dropdown Menu */}
+              {showDesktopTools && (
+                <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
+                  <button
+                    onClick={() => {
+                      setShowTemplateSelector(!showTemplateSelector);
+                      setShowDesktopTools(false);
+                    }}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"
+                  >
+                    <DocumentTextIcon className="w-5 h-5 text-green-600" />
+                    <span className="text-sm text-gray-700">Template</span>
+                  </button>
+                  <label className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors cursor-pointer">
+                    <PaperClipIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                    <span className="text-sm text-gray-700">Attach File</span>
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept="image/*,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,audio/*,video/*"
+                      onChange={handleFileSelect}
+                      disabled={uploadingMedia || isLocked}
+                    />
+                  </label>
+                  <button
+                    onClick={() => {
+                      setShowVoiceRecorder(!showVoiceRecorder);
+                      setShowDesktopTools(false);
+                    }}
+                    disabled={isLocked}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                  >
+                    <MicrophoneIcon className="w-5 h-5 text-red-600" />
+                    <span className="text-sm text-gray-700">Voice Message</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setIsEmojiPickerOpen(!isEmojiPickerOpen);
+                      setShowDesktopTools(false);
+                    }}
+                    disabled={isLocked}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                  >
+                    <FaceSmileIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                    <span className="text-sm text-gray-700">Add Emoji</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      handleAISuggestions();
+                      setShowDesktopTools(false);
+                    }}
+                    disabled={isLoadingAI || isLocked || !client}
+                    className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors disabled:opacity-50"
+                  >
+                    {isLoadingAI ? (
+                      <div className="loading loading-spinner loading-xs"></div>
+                    ) : (
+                      <svg className="w-5 h-5 text-gray-600" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9.663 17h4.673M12 3v1m6.364 1.636l-.707.707M21 12h-1M4 12H3m3.343-5.657l-.707-.707m2.828 9.9a5 5 0 117.072 0l-.548.547A3.374 3.374 0 0014 18.469V19a2 2 0 11-4 0v-.531c0-.895-.356-1.754-.988-2.386l-.548-.547z" />
+                      </svg>
+                    )}
+                    <span className="text-sm text-gray-700">AI Suggestions</span>
+                  </button>
+                </div>
+              )}
+            </div>
+            
+            <div className="relative">
+              {/* Emoji Picker */}
+              {isEmojiPickerOpen && (
+                <div className="absolute bottom-12 left-0 z-50">
                   <EmojiPicker
                     onEmojiClick={handleEmojiClick}
                     width={350}
@@ -1643,158 +1723,74 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 </div>
               )}
             </div>
-
-            {/* AI Suggestions Button */}
+            
+            <div className="flex-1">
+              <textarea
+                ref={textareaRef}
+                value={newMessage}
+                onChange={(e) => {
+                  setNewMessage(e.target.value);
+                  const textarea = e.target;
+                  textarea.style.height = 'auto';
+                  const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 200;
+                  textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
+                }}
+                onKeyDown={(e) => {
+                  // Let Enter create new lines
+                }}
+                placeholder={
+                  isLocked 
+                    ? (messages.length === 0 
+                        ? "No messages yet - use templates to start conversation"
+                        : "Window expired - use templates")
+                    : selectedFile 
+                      ? "Add a caption..." 
+                      : selectedTemplate 
+                        ? selectedTemplate.params === '1' 
+                          ? `Parameter for: ${selectedTemplate.title}` 
+                          : `Template: ${selectedTemplate.title}`
+                        : "Type a message..."
+                }
+                className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                rows={1}
+                disabled={sending || uploadingMedia || isLocked}
+                style={{ 
+                  backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                  backdropFilter: 'blur(10px)',
+                  boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                  maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px'
+                }}
+              />
+            </div>
+            
             <button
               type="button"
-              onClick={handleAISuggestions}
-              disabled={isLoadingAI || (isLocked && !selectedTemplate) || !client}
-              className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
-                isLoadingAI
-                  ? 'bg-blue-500 text-white'
-                  : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-              } ${(isLocked && !selectedTemplate) || !client ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-              title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
+              onClick={(e) => {
+                e.preventDefault();
+                if (selectedFile) {
+                  handleSendMedia();
+                } else {
+                  const syntheticEvent = {
+                    preventDefault: () => {},
+                    stopPropagation: () => {},
+                    currentTarget: e.currentTarget,
+                    target: e.target,
+                  } as React.FormEvent;
+                  handleSendMessage(syntheticEvent);
+                }
+              }}
+              disabled={(!newMessage.trim() && !selectedTemplate && !selectedFile) || sending || uploadingMedia}
+              className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow disabled:opacity-50"
+              style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
+              title={selectedFile ? 'Send media' : 'Send message'}
             >
-              {isLoadingAI ? (
+              {sending || uploadingMedia ? (
                 <div className="loading loading-spinner loading-sm"></div>
               ) : (
-                'AI'
+                <PaperAirplaneIcon className="w-5 h-5" />
               )}
             </button>
-
-            {/* Selected file preview */}
-            {selectedFile && (
-              <div className="flex items-center gap-2 bg-gray-100 rounded-lg px-3 py-1 border border-gray-300">
-                <span className="text-xs text-gray-700">{selectedFile.name}</span>
-                <button
-                  type="button"
-                  onClick={() => setSelectedFile(null)}
-                  className="text-red-500 hover:text-red-700"
-                >
-                  <XMarkIcon className="w-4 h-4" />
-                </button>
-              </div>
-            )}
-
-            {/* Contact Selector - Show if multiple contacts, no pre-selected contact, and not hidden */}
-            {!hideContactSelector && !propSelectedContact && leadContacts.length > 1 && (
-              <div className="px-4 py-2 border-b border-gray-200 bg-gray-50">
-                <div className="flex items-center gap-2">
-                  <label className="text-xs font-semibold text-gray-600">Contact:</label>
-                  <select
-                    className="select select-bordered select-sm text-xs flex-1"
-                    value={selectedContactId || ''}
-                    onChange={(e) => {
-                      const contactId = e.target.value ? parseInt(e.target.value, 10) : null;
-                      setSelectedContactId(contactId);
-                    }}
-                  >
-                    {leadContacts.map(contact => (
-                      <option key={contact.id} value={contact.id}>
-                        {contact.name} {contact.isMain && '(Main)'} - {contact.phone || contact.mobile || 'No phone'}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              </div>
-            )}
-            {/* Message Input */}
-            <textarea
-              ref={textareaRef}
-              value={newMessage}
-              onChange={(e) => {
-                setNewMessage(e.target.value);
-                const textarea = e.target;
-                textarea.style.height = 'auto';
-                // On mobile, when focused or when template/AI content is added, expand to max height
-                if (isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0)) {
-                  textarea.style.height = `${Math.min(textarea.scrollHeight, 300)}px`;
-                } else {
-                  textarea.style.height = `${Math.min(textarea.scrollHeight, 200)}px`;
-                }
-              }}
-              onFocus={(e) => {
-                if (isMobile) {
-                  setIsInputFocused(true);
-                  // Expand to max height when focused on mobile
-                  e.target.style.height = 'auto';
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 300)}px`;
-                }
-              }}
-              onBlur={(e) => {
-                if (isMobile) {
-                  setIsInputFocused(false);
-                  // Reset to normal height when blurred
-                  e.target.style.height = 'auto';
-                  e.target.style.height = `${Math.min(e.target.scrollHeight, 200)}px`;
-                }
-              }}
-              placeholder={
-                isLocked 
-                  ? (messages.length === 0 
-                      ? "No messages yet - use templates to start conversation"
-                      : "Window expired - use templates")
-                  : selectedFile 
-                    ? "Add a caption..." 
-                    : selectedTemplate 
-                      ? selectedTemplate.params === '1' 
-                        ? `Parameter for: ${selectedTemplate.title}` 
-                        : `Template: ${selectedTemplate.title}`
-                      : "Type a message..."
-              }
-              className={`flex-1 resize-none rounded-2xl transition-all duration-300 ${
-                isMobile
-                  ? `bg-white/80 backdrop-blur-md border border-gray-300/50 ${isInputFocused ? 'flex-[1.2]' : ''}`
-                  : 'textarea textarea-bordered'
-              } ${(isLocked && !selectedTemplate) ? 'bg-gray-100 cursor-not-allowed' : ''}`}
-              disabled={sending || uploadingMedia || (isLocked && !selectedTemplate)}
-              rows={1}
-              style={{ 
-                maxHeight: isMobile && (isInputFocused || selectedTemplate || aiSuggestions.length > 0) ? '300px' : '200px', 
-                minHeight: '40px',
-                paddingTop: '12px', 
-                paddingBottom: '12px', 
-                paddingLeft: '16px', 
-                paddingRight: '16px',
-                transition: 'all 0.3s ease-in-out',
-                direction: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr') : 'ltr',
-                textAlign: newMessage ? (newMessage.match(/[\u0590-\u05FF]/) ? 'right' : 'left') : 'left',
-                fontSize: '15px'
-              }}
-            />
-            
-            {/* Send Button */}
-            {selectedFile ? (
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.preventDefault();
-                  handleSendMedia();
-                }}
-                disabled={uploadingMedia || (isLocked && !selectedTemplate)}
-                className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
-              >
-                {uploadingMedia ? (
-                  <div className="loading loading-spinner loading-sm"></div>
-                ) : (
-                  <PaperAirplaneIcon className="w-5 h-5" />
-                )}
-              </button>
-            ) : (
-              <button
-                type="submit"
-                disabled={(!newMessage.trim() && !selectedTemplate) || sending || (isLocked && !selectedTemplate)}
-                className="flex-shrink-0 w-10 h-10 rounded-full bg-green-500 text-white flex items-center justify-center hover:bg-green-600 transition-colors disabled:opacity-50"
-              >
-                {sending ? (
-                  <div className="loading loading-spinner loading-sm"></div>
-                ) : (
-                  <PaperAirplaneIcon className="w-5 h-5" />
-                )}
-              </button>
-            )}
-          </form>
+          </div>
         </div>
       </div>
     </div>,

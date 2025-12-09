@@ -237,10 +237,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [newMessagesCount, setNewMessagesCount] = useState(0);
   const [showFloatingDate, setShowFloatingDate] = useState(false);
   const [floatingDate, setFloatingDate] = useState<string | null>(null);
+  const [floatingDateOpacity, setFloatingDateOpacity] = useState(0);
   const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const floatingDateTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const hideTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const isScrollingForDateRef = useRef(false);
   const rafRef = useRef<number | null>(null);
   const lastDateRef = useRef<string | null>(null);
+  const opacityRef = useRef(0);
+  const isFadingOutRef = useRef(false);
+  const lastScrollPositionRef = useRef<number>(0);
+  const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
 
   // Helper functions
   const getRoleDisplayName = (role: string): string => {
@@ -434,9 +441,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .or(`lead_number.ilike.%${query}%,name.ilike.%${query}%,email.ilike.%${query}%`)
         .limit(10);
 
-      if (leadsError) console.error('Error searching leads:', leadsError);
-      if (legacyError) console.error('Error searching legacy leads:', legacyError);
-
       // Combine and deduplicate results
       const allLeads = [...(leadsData || []), ...(legacyLeadsData || [])];
       const uniqueLeads = allLeads.filter((lead, index, self) => 
@@ -445,7 +449,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       setLeadSearchResults(uniqueLeads.slice(0, 10));
     } catch (error) {
-      console.error('Error in lead search:', error);
       setLeadSearchResults([]);
     } finally {
       setIsSearchingLeads(false);
@@ -522,7 +525,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       (recorder as any).timer = timer;
       
     } catch (error) {
-      console.error('Error starting voice recording:', error);
       toast.error('Failed to start recording. Please check microphone permissions.');
     }
   };
@@ -557,7 +559,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           p_session_token: voiceSessionToken
         });
       } catch (error) {
-        console.error('Error cancelling voice session:', error);
       }
     }
     
@@ -603,7 +604,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Generate waveform
         waveformData = await generateWaveform(audioBlob);
       } catch (error) {
-        console.warn('Could not calculate audio duration or waveform, using recording duration:', error);
         actualDuration = recordingDuration;
         // Generate a simple fallback waveform
         waveformData = Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
@@ -668,7 +668,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setRecordingStartTime(null);
       
     } catch (error) {
-      console.error('Error uploading voice message:', error);
       toast.error('Failed to send voice message');
     } finally {
       setIsSending(false);
@@ -723,7 +722,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           .insert(receiptsToInsert);
       }
     } catch (error) {
-      console.error('Error marking messages as read:', error);
     }
   };
 
@@ -799,13 +797,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
       );
     } else {
-      // Two blue checkmarks
+      // Two bright green checkmarks
       return (
         <div className="flex items-center -space-x-1">
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#3b82f6' }}>
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#10ff88' }}>
             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
           </svg>
-          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#3b82f6' }}>
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#10ff88' }}>
             <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
           </svg>
         </div>
@@ -842,7 +840,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       
       return filteredData;
     } catch (error) {
-      console.warn('Error generating waveform, using fallback:', error);
       // Return a simple animated waveform as fallback
       return Array(50).fill(0).map(() => Math.random() * 0.5 + 0.3);
     }
@@ -879,12 +876,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (chunksData && chunksData.length > 0) {
         const firstChunk = chunksData[0];
         const chunkDataPreview = (firstChunk.chunk_data || '').toString().substring(0, 100);
-        console.log('First chunk data format:', {
-          type: typeof firstChunk.chunk_data,
-          startsWithX: chunkDataPreview.startsWith('x'),
-          startsWith0x: chunkDataPreview.startsWith('0x'),
-          preview: chunkDataPreview
-        });
       }
 
       if (error) throw error;
@@ -998,14 +989,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   for (let i = 0; i < binaryString.length; i++) {
                     bytes[i] = binaryString.charCodeAt(i);
                   }
-                  console.log('Detected base64-encoded hex data, decoded successfully');
                 } catch (base64Error) {
                   // If base64 decode fails, use the hex bytes as-is
-                  console.warn('Base64 decode of hex data failed, using hex bytes directly');
                 }
               }
             } catch (hexError) {
-              console.error('Hex decode failed for PostgreSQL BYTEA format:', hexError, 'Data preview:', data.substring(0, 100));
               throw new Error(`Failed to decode PostgreSQL BYTEA hex data: ${hexError instanceof Error ? hexError.message : 'Unknown error'}`);
             }
           } else if (has0xPrefix) {
@@ -1014,7 +1002,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               bytes = hexToBytes(data);
             } catch (hexError) {
               // Try base64 as fallback
-              console.warn('Hex decode failed for 0x format, trying base64 for chunk', chunk.chunk_number);
               const base64Data = originalData.replace(/[^A-Za-z0-9+/=]/g, '');
               const padding = base64Data.length % 4;
               const paddedBase64 = padding ? base64Data + '='.repeat(4 - padding) : base64Data;
@@ -1046,7 +1033,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }
             } catch (base64Error) {
               // If base64 fails, try hex as fallback (might be hex without prefix)
-              console.warn('Base64 decode failed, trying hex format for chunk', chunk.chunk_number);
               try {
                 bytes = hexToBytes(originalData);
               } catch (hexError) {
@@ -1057,7 +1043,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           
           return bytes;
         } catch (chunkError) {
-          console.error('Error processing chunk:', chunkError, 'Chunk number:', chunk.chunk_number, 'Data preview:', (chunk.chunk_data || '').toString().substring(0, 100));
           throw new Error(`Failed to process chunk ${chunk.chunk_number}: ${chunkError instanceof Error ? chunkError.message : 'Unknown error'}`);
         }
       });
@@ -1090,16 +1075,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const firstBytes = Array.from(combinedArray.slice(0, 16))
           .map(b => '0x' + b.toString(16).padStart(2, '0'))
           .join(' ');
-        console.log('First bytes of combined audio data:', firstBytes);
       }
       
       if (!hasWebMHeader && combinedArray.length > 0) {
-        console.warn('Audio data does not have WebM header. First bytes:', 
-          Array.from(combinedArray.slice(0, 4)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' '),
-          'Expected: 0x1a 0x45 0xdf 0xa3'
-        );
         // Try with different MIME type - maybe it's not WebM
-        console.warn('Attempting to play with audio/webm type anyway');
       }
 
       // Create blob from combined data
@@ -1119,7 +1098,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Set a timeout to detect if metadata loading fails
       const metadataTimeout = setTimeout(() => {
         if (!audio.readyState || audio.readyState < 2) {
-          console.error('Audio metadata loading timeout. Blob size:', audioBlob.size, 'bytes');
           toast.error('Voice message appears to be corrupted or in an unsupported format');
           setPlayingVoiceId(null);
           setVoiceAudio(null);
@@ -1132,7 +1110,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setPlayingVoiceId(messageId);
         setVoiceAudio(audio);
         audio.play().catch((playError) => {
-          console.error('Error playing audio:', playError);
           toast.error('Failed to play voice message. The audio file may be corrupted.');
           setPlayingVoiceId(null);
           setVoiceAudio(null);
@@ -1166,11 +1143,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       audio.onerror = (e) => {
         clearTimeout(metadataTimeout);
-        console.error('Audio playback error:', e, 'Blob size:', audioBlob.size, 'bytes');
         const errorMessage = audio.error 
           ? `Audio error code: ${audio.error.code} (${audio.error.message || 'Unknown error'})`
           : 'Unknown audio playback error';
-        console.error('Audio error details:', errorMessage);
         toast.error('Failed to play voice message. The audio file may be corrupted or in an unsupported format.');
         setPlayingVoiceId(null);
         setVoiceAudio(null);
@@ -1178,7 +1153,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       };
 
     } catch (error) {
-      console.error('Error playing voice message:', error);
       toast.error('Failed to play voice message');
     }
   };
@@ -1217,7 +1191,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setShowReactionPicker(null);
       setReactingMessageId(null);
     } catch (error) {
-      console.error('Error adding reaction:', error);
       toast.error('Failed to add reaction');
     }
   };
@@ -1244,7 +1217,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         )
       );
     } catch (error) {
-      console.error('Error removing reaction:', error);
       toast.error('Failed to remove reaction');
     }
   };
@@ -1427,7 +1399,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setUnavailabilityReason(null);
       setUnavailabilityTimePeriod(null);
     } catch (error) {
-      console.error('Error checking employee availability:', error);
       setIsEmployeeUnavailable(false);
       setUnavailabilityReason(null);
       setUnavailabilityTimePeriod(null);
@@ -1489,7 +1460,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       setContactAvailabilityMap(availabilityMap);
     } catch (error) {
-      console.error('Error checking contacts availability:', error);
       setContactAvailabilityMap({});
     }
   }, []);
@@ -1553,12 +1523,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             title={`View ${name}'s profile`}
           >
             {renderUserAvatar({
-              userId: avatarKey,
-              name,
-              photoUrl,
-              sizeClass: 'w-12 h-12',
+          userId: avatarKey,
+          name,
+          photoUrl,
+              sizeClass: 'w-14 h-14',
               borderClass: '',
-              textClass: 'text-base',
+          textClass: 'text-lg',
             })}
           </button>
         );
@@ -1602,7 +1572,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           .single();
 
         if (error) {
-          console.error('Error fetching user data:', error);
           return;
         }
 
@@ -1611,30 +1580,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         // Set superuser status (check for true, 'true', or 1)
         const superuserStatus = (userData as any).is_superuser === true || (userData as any).is_superuser === 'true' || (userData as any).is_superuser === 1;
         setIsSuperUser(superuserStatus);
-        console.log('🔐 Superuser status:', {
-          is_superuser: (userData as any).is_superuser,
-          superuserStatus,
-          userData: userData
-        });
-        
         // Set chat background image URL if available
         const backgroundUrl = (userData as any)?.tenants_employee?.chat_background_image_url;
         setChatBackgroundImageUrl(backgroundUrl || null);
         
         // Wait for data to be loaded before connecting WebSocket
-        console.log('✅ User data loaded, initializing WebSocket connection...');
-        
         // Initialize WebSocket connection after user data is set
         if (userData && isOpen) {
           // Set up handlers BEFORE connecting
           // Online status handlers - MUST be set up before connecting
           websocketService.onUserOnline((userId: string) => {
-            console.log('🟢 User came online:', userId);
             const userIdStr = String(userId);
             setOnlineUsers(prev => {
               const newSet = new Set(prev);
               newSet.add(userIdStr);
-              console.log('📊 Online users after add:', Array.from(newSet));
               return newSet;
             });
             // Clear last online time when user comes back online
@@ -1646,12 +1605,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           });
 
           websocketService.onUserOffline((userId: string) => {
-            console.log('🔴 User went offline:', userId);
             const userIdStr = String(userId);
             setOnlineUsers(prev => {
               const newSet = new Set(prev);
               newSet.delete(userIdStr);
-              console.log('📊 Online users after remove:', Array.from(newSet));
               return newSet;
             });
             // Record the time when user went offline
@@ -1698,14 +1655,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           });
 
           websocketService.onConnect(() => {
-            console.log('🔌 WebSocket connected');
             // Add current user to online users when they connect
             if (userData?.id) {
-              console.log('🟢 Adding current user to online users on connect:', userData.id);
               setOnlineUsers(prev => {
                 const newSet = new Set(prev);
                 newSet.add(String(userData.id));
-                console.log('📊 Online users after adding current user:', Array.from(newSet));
                 return newSet;
               });
             }
@@ -1713,21 +1667,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             setTimeout(() => {
               if (allUsers.length > 0 && websocketService.isSocketConnected()) {
                 const userIds = allUsers.map(u => String(u.id));
-                console.log('📊 Requesting online status after WebSocket connect:', userIds.length, 'users');
                 websocketService.requestOnlineStatus(userIds);
               }
             }, 1000);
           });
 
           websocketService.onDisconnect(() => {
-            console.log('🔌 WebSocket disconnected');
           });
 
           // Online status response handler - MUST be set up before connecting
           websocketService.onOnlineStatusResponse((onlineUserIds: string[]) => {
-            console.log('📊 Received online status response in RMQMessagesPage:', onlineUserIds);
             const onlineSet = new Set(onlineUserIds.map(id => String(id)));
-            console.log('📊 Setting online users set:', Array.from(onlineSet));
             setOnlineUsers(onlineSet);
           });
 
@@ -1735,7 +1685,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           websocketService.connect(userData.id);
         }
       } catch (error) {
-        console.error('Error in initializeMessaging:', error);
       }
     };
 
@@ -1764,7 +1713,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('is_active', true);
 
       if (convError) {
-        console.error('Error fetching user conversations:', convError);
         return [];
       }
 
@@ -1821,7 +1769,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .order('last_message_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching conversations:', error);
         return [];
       }
 
@@ -1871,7 +1818,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       return processedConversations;
     } catch (error) {
-      console.error('Error in getUpdatedConversations:', error);
       return [];
     }
   };
@@ -1889,7 +1835,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('is_active', true);
 
       if (convError) {
-        console.error('Error fetching user conversations:', convError);
         toast.error('Failed to load conversations');
         return;
       }
@@ -1948,7 +1893,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .order('last_message_at', { ascending: false });
 
       if (error) {
-        console.error('Error fetching conversations:', error);
         toast.error('Failed to load conversations');
         return;
       }
@@ -2001,7 +1945,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       setConversations(processedConversations);
     } catch (error) {
-      console.error('Error in fetchConversations:', error);
       toast.error('Failed to load conversations');
     }
   }, [currentUser]);
@@ -2058,7 +2001,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .order('sent_at', { ascending: true });
 
       if (error) {
-        console.error('Error fetching messages:', error);
         toast.error('Failed to load messages');
         return;
       }
@@ -2118,7 +2060,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Force scroll to bottom after messages are loaded (works for both desktop and mobile)
       // Use multiple attempts to ensure scroll happens after DOM updates
       setTimeout(() => {
-        scrollToBottom('instant');
+          scrollToBottom('instant');
         setTimeout(() => {
           scrollToBottom('instant');
         }, 200);
@@ -2127,7 +2069,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }, 400);
       }, 100);
     } catch (error) {
-      console.error('Error in fetchMessages:', error);
       toast.error('Failed to load messages');
     }
   }, [currentUser]);
@@ -2136,7 +2077,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const requestOnlineStatusForUsers = useCallback(() => {
     if (allUsers.length > 0 && websocketService.isSocketConnected()) {
       const userIds = allUsers.map(u => String(u.id));
-      console.log('📊 Requesting online status for users:', userIds);
       websocketService.requestOnlineStatus(userIds);
     }
   }, [allUsers]);
@@ -2169,7 +2109,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .order('full_name', { ascending: true });
 
       if (error) {
-        console.error('Error fetching users:', error);
         toast.error('Failed to load contacts');
         return;
       }
@@ -2197,13 +2136,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Request online status for all users if WebSocket is already connected
       if (websocketService.isSocketConnected() && uniqueUsers.length > 0) {
         const userIds = uniqueUsers.map(u => String(u.id));
-        console.log('📊 Requesting online status for users:', userIds);
         websocketService.requestOnlineStatus(userIds);
       } else {
-        console.log('⚠️ WebSocket not connected yet, will request online status when connected');
       }
     } catch (error) {
-      console.error('Error in fetchAllUsers:', error);
       toast.error('Failed to load contacts');
     }
   }, [currentUser]);
@@ -2242,7 +2178,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .upload(fileName, file);
       
       if (error) {
-        console.error('Error uploading file:', error);
         toast.error('Failed to upload file');
         return null;
       }
@@ -2257,7 +2192,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return publicUrl;
       
     } catch (error) {
-      console.error('Error uploading file:', error);
       toast.error('Failed to upload file');
       return null;
     } finally {
@@ -2279,9 +2213,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Generate unique filename
       const fileExt = file.name.split('.').pop();
       const fileName = `chat_bg_${currentUser.employee_id}_${Date.now()}.${fileExt}`;
-      
-      console.log('📤 Uploading chat background image:', { fileName, fileSize: file.size, fileType: file.type });
-      
       // Upload file to Supabase storage
       const { data, error } = await supabase.storage
         .from('My-Profile')
@@ -2292,20 +2223,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         });
       
       if (error) {
-        console.error('Error uploading chat background image:', error);
         toast.error('Failed to upload background image');
         return null;
       }
-      
-      console.log('✅ Upload successful:', data);
-      
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
         .from('My-Profile')
         .getPublicUrl(fileName);
-      
-      console.log('🔗 Public URL generated:', publicUrl);
-      
       // Update database
       const { error: updateError } = await supabase
         .from('tenants_employee')
@@ -2313,7 +2237,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('id', currentUser.employee_id);
       
       if (updateError) {
-        console.error('Error updating chat background URL:', updateError);
         toast.error('Failed to save background image URL');
         return null;
       }
@@ -2324,7 +2247,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       
       return publicUrl;
     } catch (error) {
-      console.error('Error uploading chat background image:', error);
       toast.error('Failed to upload background image');
       return null;
     } finally {
@@ -2374,7 +2296,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('id', currentUser.employee_id);
       
       if (updateError) {
-        console.error('Error resetting chat background:', updateError);
         toast.error('Failed to reset background');
         return;
       }
@@ -2383,7 +2304,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setChatBackgroundImageUrl(null);
       toast.success('Background reset to default');
     } catch (error) {
-      console.error('Error resetting chat background:', error);
       toast.error('Failed to reset background');
     } finally {
       setIsUploadingBackground(false);
@@ -2421,8 +2341,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
-        console.log('📤 Sending attachment via WebSocket to conversation:', selectedConversation.id);
-        
         websocketService.sendMessage(
           selectedConversation.id, 
           file.name, 
@@ -2491,7 +2409,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }),
           });
         } catch (pushError) {
-          console.error('Error sending RMQ push notification:', pushError);
           // Don't throw - this is a background operation
         }
       }
@@ -2520,7 +2437,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
     } catch (error) {
-      console.error('Error sending attachment:', error);
       toast.error('Failed to send attachment');
     } finally {
       setIsSending(false);
@@ -2568,12 +2484,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     try {
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
-        console.log('📤 Sending message via WebSocket to conversation:', selectedConversation.id);
-        console.log('📤 Message content:', newMessage.trim());
-        
         websocketService.sendMessage(selectedConversation.id, newMessage.trim(), 'text');
       } else {
-        console.log('⚠️ WebSocket not connected, message will only be saved to database');
       }
 
       // Also save to database
@@ -2625,7 +2537,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             }),
           });
         } catch (pushError) {
-          console.error('Error sending RMQ push notification:', pushError);
           // Don't throw - this is a background operation
         }
       }
@@ -2675,7 +2586,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
     } catch (error) {
-      console.error('Error sending message:', error);
       toast.error('Failed to send message');
     } finally {
       setIsSending(false);
@@ -2713,7 +2623,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       );
 
       if (error) {
-        console.error('Error creating direct conversation:', error);
         throw error;
       }
 
@@ -2732,7 +2641,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           setActiveTab('chats');
           toast.success('Direct conversation started');
         } else {
-          console.error('🔍 Could not find created conversation, trying again...');
           // Try one more time after a longer delay
           setTimeout(async () => {
             const retryConversations = await getUpdatedConversations();
@@ -2751,7 +2659,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }, 500);
       
     } catch (error) {
-      console.error('Error creating conversation:', error);
       toast.error('Failed to start conversation');
     }
   };
@@ -2776,7 +2683,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('id', selectedConversation.id);
 
       if (error) {
-        console.error('Error deleting group chat:', error);
         toast.error('Failed to delete group chat');
         return;
       }
@@ -2789,7 +2695,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       await fetchConversations();
       
     } catch (error) {
-      console.error('Error deleting group chat:', error);
       toast.error('Failed to delete group chat');
     }
   };
@@ -2804,9 +2709,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         (conv.type === 'group' && (conv.participants?.length || 0) <= 2) || 
         (conv.type === 'direct' && (conv.participants?.length || 0) !== 2)
       );
-      
-      console.log('🗑️ Deleting problematic conversations:', conversationsToDelete.map(c => ({ id: c.id, type: c.type, participants: c.participants?.length || 0 })));
-      
       for (const conv of conversationsToDelete) {
         // Delete conversation (cascade will handle participants and messages)
         const { error } = await supabase
@@ -2815,9 +2717,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           .eq('id', conv.id);
           
         if (error) {
-          console.error('Error deleting conversation:', conv.id, error);
         } else {
-          console.log('✅ Deleted conversation:', conv.id);
         }
       }
       
@@ -2828,7 +2728,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       toast.success(`Deleted ${conversationsToDelete.length} problematic conversations`);
       
     } catch (error) {
-      console.error('Error deleting conversations:', error);
       toast.error('Failed to delete conversations');
     }
   };
@@ -2908,7 +2807,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       toast.success('Group chat created successfully!');
       
     } catch (error) {
-      console.error('Error creating group conversation:', error);
       toast.error('Failed to create group conversation');
     }
   };
@@ -2945,7 +2843,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setMemberSearchQuery('');
       toast.success(`Added ${userIds.length} member(s) to the group`);
     } catch (error: any) {
-      console.error('Error adding members:', error);
       if (error.code === '23505') {
         toast.error('One or more users are already in the group');
       } else {
@@ -2979,7 +2876,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
       toast.success('Member removed from the group');
     } catch (error) {
-      console.error('Error removing member:', error);
       toast.error('Failed to remove member from the group');
     }
   };
@@ -3061,13 +2957,51 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleScroll = useCallback(() => {
     const nearBottom = isNearBottom();
     
+    // Get current scroll position to detect if scrolling has actually stopped
+    let container: HTMLDivElement | null = null;
+    if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
+      container = mobileMessagesContainerRef.current;
+    } else if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
+      container = desktopMessagesContainerRef.current;
+    } else if (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) {
+      container = messagesContainerRef.current;
+    }
+    
+    const currentScrollPosition = container ? container.scrollTop : 0;
+    const scrollPositionChanged = Math.abs(currentScrollPosition - lastScrollPositionRef.current) > 1;
+    lastScrollPositionRef.current = currentScrollPosition;
+    
+    // If we're fading out, completely ignore all scroll events for a period
+    if (isFadingOutRef.current) {
+      return;
+    }
+    
+    // Only process if position actually changed
+    if (!scrollPositionChanged) {
+      return;
+    }
+    
     // Mark that we're scrolling
     isScrollingForDateRef.current = true;
     
-    // Clear any existing timeout
-    if (scrollTimeoutRef.current) {
-      clearTimeout(scrollTimeoutRef.current);
-      scrollTimeoutRef.current = null;
+    // Clear any existing floating date timeout
+    if (floatingDateTimeoutRef.current) {
+      clearTimeout(floatingDateTimeoutRef.current);
+      floatingDateTimeoutRef.current = null;
+    }
+    
+    // Clear scroll position check timeout
+    if (scrollPositionCheckRef.current) {
+      clearTimeout(scrollPositionCheckRef.current);
+      scrollPositionCheckRef.current = null;
+    }
+    
+    // Don't clear hideTimeoutRef if we're fading out - let it complete
+    if (hideTimeoutRef.current && !nearBottom && !isFadingOutRef.current) {
+      clearTimeout(hideTimeoutRef.current);
+      hideTimeoutRef.current = null;
+    } else if (hideTimeoutRef.current && isFadingOutRef.current) {
+      isScrollingForDateRef.current = false;
     }
     
     // If user scrolls to bottom, enable auto-scroll and reset count
@@ -3075,11 +3009,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-      setShowFloatingDate(false);
-      setFloatingDate(null);
-      lastDateRef.current = null;
       isScrollingForDateRef.current = false;
-      // Cancel any pending RAF
+      isFadingOutRef.current = false;
+      if (hideTimeoutRef.current) {
+        clearTimeout(hideTimeoutRef.current);
+        hideTimeoutRef.current = null;
+      }
+      opacityRef.current = 0;
+      setFloatingDateOpacity(0);
+      hideTimeoutRef.current = setTimeout(() => {
+        setShowFloatingDate(false);
+        setFloatingDate(null);
+        lastDateRef.current = null;
+        opacityRef.current = 0;
+        isFadingOutRef.current = false;
+        hideTimeoutRef.current = null;
+      }, 200);
       if (rafRef.current !== null) {
         cancelAnimationFrame(rafRef.current);
         rafRef.current = null;
@@ -3087,9 +3032,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return;
     }
     
-    // If user scrolls up, disable auto-scroll temporarily
-    setShouldAutoScroll(false);
-    setIsUserScrolling(true);
+      // If user scrolls up, disable auto-scroll temporarily
+      setShouldAutoScroll(false);
+      setIsUserScrolling(true);
     
     // Cancel any pending RAF and schedule a new one to batch updates
     if (rafRef.current !== null) {
@@ -3097,8 +3042,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
     
     rafRef.current = requestAnimationFrame(() => {
+      // Don't update date if we're fading out
+      if (isFadingOutRef.current) {
+        rafRef.current = null;
+        return;
+      }
+      
       // Calculate which date is visible at the top when scrolling
-      // Prioritize mobile container if it's visible, then desktop, then fallback
       let container: HTMLDivElement | null = null;
       if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
         container = mobileMessagesContainerRef.current;
@@ -3112,30 +3062,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const containerRect = container.getBoundingClientRect();
         const containerTop = containerRect.top;
         
-        // Find the message closest to the top of the visible scroll area
         let visibleDate: string | null = null;
         let closestDistance = Infinity;
         const messageElements = container.querySelectorAll('[data-message-id]');
         
-        // Check each message element
         for (let i = 0; i < messageElements.length; i++) {
           const element = messageElements[i] as HTMLElement;
           const elementRect = element.getBoundingClientRect();
           
-          // Check if this message is visible in the viewport (partially or fully)
           const isVisible = elementRect.top < containerRect.bottom && elementRect.bottom > containerTop;
           
           if (isVisible) {
-            // Calculate distance from top of container viewport
             const distanceFromTop = elementRect.top - containerTop;
             
-            // Find the message closest to the top (within first 200px of visible area)
             if (distanceFromTop >= -50 && distanceFromTop < 200) {
               const messageId = element.getAttribute('data-message-id');
               if (messageId) {
                 const message = messages.find(m => String(m.id) === messageId);
                 if (message) {
-                  // Prefer messages closer to the top
                   if (distanceFromTop < closestDistance) {
                     visibleDate = message.sent_at;
                     closestDistance = distanceFromTop;
@@ -3146,17 +3090,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }
         }
         
-        // If we found a visible message, use its date
         if (visibleDate) {
-          // Only update state if the date has actually changed
           if (lastDateRef.current !== visibleDate) {
             lastDateRef.current = visibleDate;
             setFloatingDate(visibleDate);
             setShowFloatingDate(true);
+            if (opacityRef.current !== 1 && !isFadingOutRef.current) {
+              opacityRef.current = 1;
+              setFloatingDateOpacity(1);
+            }
+          } else if (opacityRef.current < 0.5 && !isFadingOutRef.current) {
+            opacityRef.current = 1;
+            setFloatingDateOpacity(1);
           }
         } else if (messageElements.length > 0) {
-          // Fallback: use the first visible message's date
-          // Find the first message that's at least partially visible
           for (let i = 0; i < messageElements.length; i++) {
             const element = messageElements[i] as HTMLElement;
             const elementRect = element.getBoundingClientRect();
@@ -3169,6 +3116,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   lastDateRef.current = message.sent_at;
                   setFloatingDate(message.sent_at);
                   setShowFloatingDate(true);
+                  if (opacityRef.current !== 1 && !isFadingOutRef.current) {
+                    opacityRef.current = 1;
+                    setFloatingDateOpacity(1);
+                  }
                   break;
                 }
               }
@@ -3181,17 +3132,52 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     });
     
     // Set timeout to hide floating date after scrolling stops
-    scrollTimeoutRef.current = setTimeout(() => {
-      // When timeout fires, scrolling has stopped - hide the indicator
-      isScrollingForDateRef.current = false;
-      setShowFloatingDate(false);
-      lastDateRef.current = null;
-      // Clear the date after fade out animation
-      setTimeout(() => {
-        setFloatingDate(null);
-      }, 200);
-      scrollTimeoutRef.current = null;
-    }, 300); // Hide after 300ms of no scrolling
+    if (floatingDateTimeoutRef.current) {
+      clearTimeout(floatingDateTimeoutRef.current);
+    }
+    
+    floatingDateTimeoutRef.current = setTimeout(() => {
+      const checkContainer: HTMLDivElement | null = 
+        (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) ? mobileMessagesContainerRef.current :
+        (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) ? desktopMessagesContainerRef.current :
+        (messagesContainerRef.current && messagesContainerRef.current.offsetWidth > 0) ? messagesContainerRef.current : null;
+      
+      const checkScrollPosition = checkContainer ? checkContainer.scrollTop : 0;
+      const positionStillSame = Math.abs(checkScrollPosition - lastScrollPositionRef.current) <= 1;
+      
+      if (positionStillSame && !isFadingOutRef.current) {
+        isScrollingForDateRef.current = false;
+        isFadingOutRef.current = true;
+        
+        if (rafRef.current !== null) {
+          cancelAnimationFrame(rafRef.current);
+          rafRef.current = null;
+        }
+        
+        opacityRef.current = 0;
+        setFloatingDateOpacity(0);
+        
+        if (hideTimeoutRef.current) {
+          clearTimeout(hideTimeoutRef.current);
+        }
+        hideTimeoutRef.current = setTimeout(() => {
+          if (!isScrollingForDateRef.current) {
+            setShowFloatingDate(false);
+            setFloatingDate(null);
+            lastDateRef.current = null;
+            opacityRef.current = 0;
+            isFadingOutRef.current = true;
+            setTimeout(() => {
+              isFadingOutRef.current = false;
+            }, 300);
+          } else {
+            isFadingOutRef.current = false;
+          }
+          hideTimeoutRef.current = null;
+        }, 200);
+      }
+      floatingDateTimeoutRef.current = null;
+    }, 400);
   }, [messages, isNearBottom]);
 
   // Track previous message count to detect new messages
@@ -3215,7 +3201,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       scrollTimeoutRef.current = setTimeout(() => {
         scrollToBottom('smooth');
         // Reset scrolling flag after scroll completes
-        setTimeout(() => {
+              setTimeout(() => {
           isScrollingRef.current = false;
         }, 300);
       }, 100);
@@ -3311,13 +3297,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   useEffect(() => {
     const loadData = async () => {
     if (currentUser) {
-        console.log('📊 Loading conversations and users data...');
         // Load conversations and users in parallel for faster initial load
         await Promise.all([
           fetchConversations(),
           fetchAllUsers()
         ]);
-        console.log('✅ All data loaded successfully');
       }
     };
     
@@ -3330,8 +3314,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Add a small delay to ensure socket is fully ready
       const timeoutId = setTimeout(() => {
         const userIds = allUsers.map(u => String(u.id));
-        console.log('📊 Requesting online status (useEffect):', userIds.length, 'users');
-        console.log('📊 Socket connected check:', websocketService.isSocketConnected());
         websocketService.requestOnlineStatus(userIds);
       }, 500);
       
@@ -3485,8 +3467,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Handle emoji selection
   const handleEmojiClick = (emojiObject: any) => {
     const emoji = emojiObject.emoji;
-    console.log('🎭 Adding emoji to message:', emoji);
-    
     // Add emoji to message
     setNewMessage(prev => prev + emoji);
     resetInputHeights();
@@ -3607,15 +3587,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (!currentUser) return;
 
     const handleWebSocketMessage = async (message: MessageData) => {
-      console.log('📨 WebSocket message received:', message);
-      console.log('📨 Current selected conversation:', selectedConversation?.id);
-      console.log('📨 Message is for conversation:', message.conversation_id);
-      console.log('📨 Message sender:', message.sender_id);
-      
       // Add message if it's for the currently selected conversation
       if (selectedConversation && message.conversation_id === selectedConversation.id) {
-        console.log('📨 Adding message to current conversation');
-        
         // Fetch read receipts for the new message
         let readReceipts: Array<{ user_id: string; read_at: string }> = [];
         if (message.id) {
@@ -3634,7 +3607,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
              m.content === message.content && 
              Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 1000));
           if (exists) {
-            console.log('📨 Message already exists, skipping');
             return prev;
           }
           
@@ -3663,8 +3635,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             enhancedMessage.attachment_type = message.attachment_type;
             enhancedMessage.attachment_size = message.attachment_size;
           }
-          
-          console.log('📨 Adding enhanced message:', enhancedMessage);
           return [...prev, enhancedMessage];
         });
         
@@ -3679,7 +3649,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           await markMessagesAsRead([message.id], selectedConversation.id);
         }
       } else {
-        console.log('📨 Message not for current conversation, updating conversation list only');
       }
       
       // Update conversation preview for all conversations
@@ -3709,14 +3678,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Join conversation room when conversation is selected
   useEffect(() => {
     if (selectedConversation && currentUser) {
-      console.log('🔌 Joining conversation room:', selectedConversation.id);
       websocketService.joinConversation(selectedConversation.id);
       websocketService.markAsRead(selectedConversation.id, currentUser.id);
     }
     
     return () => {
       if (selectedConversation && currentUser) {
-        console.log('🔌 Leaving conversation room:', selectedConversation.id);
         websocketService.leaveConversation(selectedConversation.id);
       }
     };
@@ -3918,7 +3885,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${
@@ -3934,7 +3901,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -3994,14 +3961,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
-                        {renderUserAvatar({
-                          userId: user.id,
-                          name: userName,
-                          photoUrl: userPhoto,
-                          sizeClass: 'w-14 h-14',
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-14 h-14',
                           borderClass: '',
-                          textClass: 'text-base',
-                        })}
+                        textClass: 'text-base',
+                      })}
                         {isUnavailable && (
                           <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-white">
                             <ClockIcon className="w-3 h-3 text-white" />
@@ -4184,7 +4151,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${
@@ -4200,7 +4167,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -4260,14 +4227,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative">
-                        {renderUserAvatar({
-                          userId: user.id,
-                          name: userName,
-                          photoUrl: userPhoto,
-                          sizeClass: 'w-14 h-14',
+                      {renderUserAvatar({
+                        userId: user.id,
+                        name: userName,
+                        photoUrl: userPhoto,
+                        sizeClass: 'w-14 h-14',
                           borderClass: '',
-                          textClass: 'text-base',
-                        })}
+                        textClass: 'text-base',
+                      })}
                         {isUnavailable && (
                           <div className="absolute -top-0.5 -right-0.5 w-5 h-5 bg-red-500 rounded-full flex items-center justify-center border-2 border-white">
                             <ClockIcon className="w-3 h-3 text-white" />
@@ -4426,9 +4393,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {getConversationAvatar(selectedConversation)}
                   <div className="flex-1">
-                    {selectedConversation.type === 'direct' ? (
-                      (() => {
-                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                      {selectedConversation.type === 'direct' ? (
+                        (() => {
+                          const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                         if (otherParticipant?.user) {
                           const employee = otherParticipant.user.tenants_employee;
                           const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
@@ -4437,24 +4404,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
                           const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
                           if (otherUserId && process.env.NODE_ENV === 'development') {
-                            console.log(`🔍 Desktop header: Checking ${otherUserId}, isOnline: ${isOnline}, onlineUsers:`, Array.from(onlineUsers));
                           }
                           
                           return (
                             <>
-                              <div className="flex flex-wrap items-center gap-2 text-gray-900">
+                              <div className="flex flex-wrap items-center gap-3 text-gray-900">
                                 <h2 className="font-semibold">
                                   {getConversationTitle(selectedConversation)}
                                 </h2>
                                 {role && (
-                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold text-white" style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}>
-                                    {role}
-                                  </span>
+                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-gray-700">
+                                    <BriefcaseIcon className="w-4 h-4" style={{ color: '#059669' }} />
+                                    <span>{role}</span>
+                                  </div>
                                 )}
                                 {department && (
-                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold text-white" style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}>
-                                    {department}
-                                  </span>
+                                  <div className="inline-flex items-center gap-1.5 text-base font-medium text-gray-700">
+                                    <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#059669' }} />
+                                    <span>{department}</span>
+                                  </div>
                                 )}
                               </div>
                               {isOnline ? (
@@ -4497,8 +4465,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <p className="text-sm text-gray-700">Direct message</p>
                           </>
                         );
-                      })()
-                    ) : (
+                        })()
+                      ) : (
                       <>
                         <h2 className="font-semibold text-gray-900">
                           {getConversationTitle(selectedConversation)}
@@ -4597,35 +4565,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {showDesktopGroupMembers && (
                     <div className="px-3 pb-3">
-                      <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
-                        <div className="flex gap-4 pb-2 min-w-max">
-                          {selectedConversation.participants.map((participant) => {
-                            const userName = participant.user?.tenants_employee?.display_name || 
-                                           participant.user?.full_name || 
-                                           `User ${participant.user_id?.slice(-4)}`;
-                            const userPhoto = participant.user?.tenants_employee?.photo_url;
-                            const isCurrentUser = participant.user_id === currentUser?.id;
-                            
-                            return (
-                              <div 
-                                key={participant.id} 
-                                onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
-                                className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
-                              >
-                                {renderUserAvatar({
-                                  userId: participant.user_id,
-                                  name: userName,
-                                  photoUrl: userPhoto,
-                                  sizeClass: 'w-14 h-14',
-                                  borderClass: 'border-2 border-gray-200',
-                                  textClass: 'text-sm',
-                                })}
+                  <div className="overflow-x-auto scrollbar-thin scrollbar-thumb-gray-300 scrollbar-track-gray-100">
+                    <div className="flex gap-4 pb-2 min-w-max">
+                      {selectedConversation.participants.map((participant) => {
+                        const userName = participant.user?.tenants_employee?.display_name || 
+                                       participant.user?.full_name || 
+                                       `User ${participant.user_id?.slice(-4)}`;
+                        const userPhoto = participant.user?.tenants_employee?.photo_url;
+                        const isCurrentUser = participant.user_id === currentUser?.id;
+                        
+                        return (
+                          <div 
+                            key={participant.id} 
+                            onClick={() => !isCurrentUser && startDirectConversation(participant.user_id)}
+                            className={`flex flex-col items-center gap-1 flex-shrink-0 ${!isCurrentUser ? 'cursor-pointer hover:opacity-80 transition-opacity' : ''}`}
+                          >
+                            {renderUserAvatar({
+                              userId: participant.user_id,
+                              name: userName,
+                              photoUrl: userPhoto,
+                              sizeClass: 'w-14 h-14',
+                              borderClass: 'border-2 border-gray-200',
+                              textClass: 'text-sm',
+                            })}
                                 <span className="text-xs font-medium text-center max-w-[80px] truncate" style={{ color: '#111827', textShadow: '0 1px 2px rgba(255, 255, 255, 0.9)' }}>{userName}</span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </div>
                     </div>
                   )}
                 </div>
@@ -4650,8 +4618,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               {/* Floating Date Indicator - Desktop */}
               {showFloatingDate && floatingDate && (
                 <div 
-                  className="fixed top-20 left-1/2 -translate-x-1/2 z-50 transition-opacity duration-300 pointer-events-none"
-                  style={{ opacity: showFloatingDate ? 1 : 0 }}
+                  className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
+                  style={{ 
+                    opacity: floatingDateOpacity, 
+                    transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                    willChange: 'opacity'
+                  }}
                 >
                   <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
                     {formatDateSeparator(floatingDate)}
@@ -4667,16 +4639,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               ) : (
                 <AnimatePresence initial={false}>
                   {messages.map((message, index) => {
-                    const isOwn = message.sender_id === currentUser?.id;
-                    const senderName = message.sender?.tenants_employee?.display_name || 
-                                     message.sender?.full_name || 
-                                     'Unknown User';
-                    const senderPhoto = message.sender?.tenants_employee?.photo_url;
+                  const isOwn = message.sender_id === currentUser?.id;
+                  const senderName = message.sender?.tenants_employee?.display_name || 
+                                   message.sender?.full_name || 
+                                   'Unknown User';
+                  const senderPhoto = message.sender?.tenants_employee?.photo_url;
 
                     // Check if we need to show a date separator (removed - using floating indicator instead)
                     const showDateSeparator = false; // Disabled inline separators
 
-                    return (
+                  return (
                       <motion.div
                         key={message.id}
                         initial={{ opacity: 0, y: 20, scale: 0.95 }}
@@ -4741,10 +4713,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   : 'text-white rounded-br-md'
                                 : 'border rounded-bl-md'
                             }`}
-                            style={isOwn && !isEmojiOnly(message.content) 
-                              ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } 
-                              : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
-                            }
+                          style={isOwn && !isEmojiOnly(message.content) 
+                            ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } 
+                            : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
+                          }
                           >
                           {/* Message content */}
                           {message.content && (
@@ -4841,7 +4813,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                                     ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
                                                     : chatBackgroundImageUrl
                                                       ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
-                                                      : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                                 }}
                                               />
                                             );
@@ -4857,7 +4829,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       }}>
                                         {formatVoiceDuration(message.voice_duration)}
                                       </span>
-                                    </div>
+                                  </div>
                                 </div>
                               ) : isImageMessage(message) ? (
                                 // Image preview
@@ -5050,7 +5022,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
                       className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
@@ -5293,15 +5265,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     border: '1px solid rgba(255, 255, 255, 0.3)'
                   }}
                 >
-                  <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
-                  <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
-                  <p className="text-gray-600 mb-6 max-w-md">
-                    Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
-                  </p>
-                  <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
-                    <div className="flex items-center gap-2">
-                      
-                      
+                <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
+                <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
+                <p className="text-gray-600 mb-6 max-w-md">
+                  Pick your <span className="font-semibold" style={{ color: '#3E28CD' }}>Employee</span> that you want to chat with.
+                </p>
+                <div className="flex items-center justify-center gap-4 text-sm text-gray-500">
+                  <div className="flex items-center gap-2">
+                    
+                    
                     </div>
                   </div>
                 </div>
@@ -5337,9 +5309,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <h2 className="font-semibold text-sm text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {getConversationTitle(selectedConversation)}
                   </h2>
-                  {selectedConversation.type === 'direct' ? (
-                    (() => {
-                      const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                    {selectedConversation.type === 'direct' ? (
+                      (() => {
+                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
                       if (otherParticipant?.user) {
                         const employee = otherParticipant.user.tenants_employee;
                         const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
@@ -5347,7 +5319,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
                         const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
                         if (otherUserId && process.env.NODE_ENV === 'development') {
-                          console.log(`🔍 Mobile header: Checking ${otherUserId}, isOnline: ${isOnline}, onlineUsers:`, Array.from(onlineUsers));
                         }
                         
                         return (
@@ -5385,11 +5356,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         );
                       }
                       return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;
-                    })()
-                  ) : (
+                      })()
+                    ) : (
                     <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                       {selectedConversation.participants?.length || 0} members
-                    </p>
+                  </p>
                   )}
                 </div>
                 <div className="flex items-center gap-1">
@@ -5526,8 +5497,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               {/* Floating Date Indicator - Mobile */}
               {showFloatingDate && floatingDate && (
                 <div 
-                  className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] transition-opacity duration-300 pointer-events-none"
-                  style={{ opacity: showFloatingDate ? 1 : 0 }}
+                  className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] pointer-events-none"
+                  style={{ 
+                    opacity: floatingDateOpacity, 
+                    transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                    willChange: 'opacity'
+                  }}
                 >
                   <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
                     {formatDateSeparator(floatingDate)}
@@ -5544,7 +5519,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
                   // Date separators removed - using floating indicator instead
 
-                  return (
+                return (
                     <motion.div
                       key={message.id}
                       initial={{ opacity: 0, y: 20, scale: 0.95 }}
@@ -5598,7 +5573,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               : 'border rounded-bl-md'
                           }`}
                           style={isOwn && !isEmojiOnly(message.content) 
-                            ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } 
+                            ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' } 
                             : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
                           }
                         >
@@ -5697,7 +5672,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                                   ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.4)')
                                                   : chatBackgroundImageUrl
                                                     ? (isActive ? 'white' : 'rgba(255, 255, 255, 0.5)')
-                                                    : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
+                                                  : (isActive ? '#3E28CD' : 'rgba(62, 40, 205, 0.5)')
                                               }}
                                             />
                                           );
@@ -5756,30 +5731,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   </button>
                                 </div>
                               </div>
-                              ) : (
-                                // File attachment
-                                <div className="flex items-center gap-2 p-3">
-                                  <div className={`p-2 rounded ${
+                            ) : (
+                              // File attachment
+                              <div className="flex items-center gap-2 p-3">
+                                <div className={`p-2 rounded ${
                                     isOwn ? 'bg-white/20' : chatBackgroundImageUrl ? 'bg-white/10' : 'bg-gray-200'
-                                  }`}>
-                                    <PaperClipIcon className={`w-4 h-4 ${
+                                }`}>
+                                  <PaperClipIcon className={`w-4 h-4 ${
                                       isOwn ? 'text-white' : chatBackgroundImageUrl ? 'text-white' : 'text-gray-600'
-                                    }`} />
-                                  </div>
-                                  <div className="flex-1 min-w-0">
-                                    <button
-                                      onClick={() => window.open(message.attachment_url, '_blank')}
-                                      className="text-xs font-medium hover:underline truncate block"
-                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
-                                    >
-                                      {message.attachment_name}
-                                    </button>
-                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
-                                      {Math.round((message.attachment_size || 0) / 1024)} KB
-                                    </p>
-                                  </div>
+                                  }`} />
                                 </div>
-                              )}
+                                <div className="flex-1 min-w-0">
+                                  <button
+                                    onClick={() => window.open(message.attachment_url, '_blank')}
+                                    className="text-xs font-medium hover:underline truncate block"
+                                      style={{ color: chatBackgroundImageUrl ? 'white' : 'inherit' }}
+                                  >
+                                    {message.attachment_name}
+                                  </button>
+                                    <p className="text-xs opacity-75" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                    {Math.round((message.attachment_size || 0) / 1024)} KB
+                                  </p>
+                                </div>
+                              </div>
+                            )}
                           </div>
                         )}
                         
@@ -5841,8 +5816,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     </div>
                     </div>
                       </motion.div>
-                    );
-                  })}
+                );
+              })}
                 </AnimatePresence>
               
               {/* New messages indicator when user is scrolled up - Mobile */}
@@ -5897,7 +5872,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
                       className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
-                      style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                      style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />

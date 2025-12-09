@@ -119,7 +119,6 @@ const Dashboard: React.FC = () => {
           .select('name, default_link');
 
         if (error) {
-          console.error('Dashboard: Error fetching meeting locations:', error);
           return;
         }
 
@@ -131,7 +130,6 @@ const Dashboard: React.FC = () => {
         });
         setMeetingLocationLinks(map);
       } catch (err) {
-        console.error('Dashboard: Unexpected error fetching meeting locations:', err);
       }
     };
 
@@ -231,7 +229,6 @@ const Dashboard: React.FC = () => {
         .not('unavailable_times', 'is', null);
 
       if (error) {
-        console.error('Error fetching employees for stats:', error);
         return;
       }
 
@@ -331,7 +328,6 @@ const Dashboard: React.FC = () => {
       setCurrentlyUnavailableCount(currentlyUnavailable);
       setScheduledTimeOffCount(scheduledTimeOff);
     } catch (error) {
-      console.error('Error fetching unavailable employees data:', error);
     } finally {
       setUnavailableEmployeesLoading(false);
     }
@@ -345,8 +341,6 @@ const Dashboard: React.FC = () => {
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
-
-      console.log('🔍 Dashboard - Fetching user data for auth_id:', user.id);
       const { data: userData, error: userDataError } = await supabase
         .from('users')
         .select('id')
@@ -354,7 +348,6 @@ const Dashboard: React.FC = () => {
         .single();
 
       if (userDataError || !userData?.id) {
-        console.error('❌ Dashboard - Error fetching user data:', userDataError);
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
 
@@ -520,7 +513,6 @@ const Dashboard: React.FC = () => {
       
       return result;
     } catch (error) {
-      console.warn('Error fetching follow-up leads data:', error);
       return { newLeads: [], legacyLeads: [], totalCount: 0 };
     }
   };
@@ -575,7 +567,6 @@ const Dashboard: React.FC = () => {
           }
         }
       } catch (error) {
-        console.error('Error fetching user ID:', error);
       }
     };
     fetchUserId();
@@ -623,7 +614,6 @@ const Dashboard: React.FC = () => {
       setEditingFollowUpId(null);
       setEditFollowUpDate('');
     } catch (error: any) {
-      console.error('Error updating follow-up:', error);
       toast.error(`Failed to update follow-up: ${error.message || 'Unknown error'}`);
     }
   };
@@ -662,7 +652,6 @@ const Dashboard: React.FC = () => {
       setEditingFollowUpId(null);
       setEditFollowUpDate('');
     } catch (error: any) {
-      console.error('Error deleting follow-up:', error);
       toast.error(`Failed to delete follow-up: ${error.message || 'Unknown error'}`);
     }
   };
@@ -1160,7 +1149,6 @@ const Dashboard: React.FC = () => {
           setNextHourMeetings([]);
         }
       } catch (e) {
-        console.error('Error fetching meetings:', e);
         setTodayMeetings([]);
         setMeetingsInNextHour(0);
         setNextHourMeetings([]);
@@ -1686,7 +1674,6 @@ const Dashboard: React.FC = () => {
           setNextHourMeetings([]);
         }
       } catch (e) {
-        console.error('Error fetching meetings:', e);
         setTodayMeetings([]);
         setMeetingsInNextHour(0);
         setNextHourMeetings([]);
@@ -1833,8 +1820,6 @@ const Dashboard: React.FC = () => {
           setOverdueFollowups(0);
           return;
         }
-
-        console.log('🔍 Dashboard - Fetching user data for today followups, auth_id:', user.id);
         const { data: userData, error: userDataError } = await supabase
           .from('users')
           .select(`
@@ -1850,13 +1835,6 @@ const Dashboard: React.FC = () => {
           .single();
 
         if (userDataError) {
-          console.error('❌ Dashboard - Error fetching user data for today followups:', userDataError);
-          console.error('❌ Dashboard - User data error details:', {
-            message: userDataError.message,
-            details: userDataError.details,
-            hint: userDataError.hint,
-            code: userDataError.code
-          });
           setOverdueFollowups(0);
           return;
         }
@@ -1906,10 +1884,7 @@ const Dashboard: React.FC = () => {
         
         const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount?.count || 0);
         setOverdueFollowups(totalCount);
-        console.log(`✅ Today's follow-ups count: ${totalCount} (new: ${newLeadsCount.count || 0}, legacy: ${legacyLeadsCount?.count || 0})`);
-        
       } catch (error) {
-        console.warn('Error fetching today followups count:', error);
         setOverdueFollowups(0);
       }
     })();
@@ -1921,7 +1896,6 @@ const Dashboard: React.FC = () => {
         if (!user) return;
 
         // Get user's leads
-        console.log('🔍 Dashboard - Fetching user leads for auth_id:', user.id);
         const { data: userLeads, error: userLeadsError } = await supabase
           .from('users')
           .select('id')
@@ -1929,13 +1903,6 @@ const Dashboard: React.FC = () => {
           .single();
 
         if (userLeadsError) {
-          console.error('❌ Dashboard - Error fetching user leads:', userLeadsError);
-          console.error('❌ Dashboard - User leads error details:', {
-            message: userLeadsError.message,
-            details: userLeadsError.details,
-            hint: userLeadsError.hint,
-            code: userLeadsError.code
-          });
           return;
         }
 
@@ -2040,7 +2007,6 @@ const Dashboard: React.FC = () => {
         setLatestMessages(sortedMessages);
         setNewMessages(sortedMessages.length);
       } catch (error) {
-        console.error('Error fetching messages:', error);
         setLatestMessages(mockMessages);
         setNewMessages(mockMessages.length);
       }
@@ -2064,7 +2030,6 @@ const Dashboard: React.FC = () => {
           setAIActions(0);
         }
       } catch (error) {
-        console.error('Error fetching AI actions count:', error);
         setAIActions(0);
       }
     })();
@@ -2183,7 +2148,6 @@ const Dashboard: React.FC = () => {
           setRealRevenueThisMonth(0);
         }
       } catch (error) {
-        console.error('Error fetching revenue:', error);
         setRealRevenueThisMonth(0);
       } finally {
         setRevenueLoading(false);
@@ -2238,7 +2202,6 @@ const Dashboard: React.FC = () => {
           setTotalLeadsLastMonth(0);
         }
       } catch (error) {
-        console.error('Error fetching lead growth:', error);
         setTotalLeadsThisMonth(0);
         setTotalLeadsLastMonth(0);
       } finally {
@@ -2296,7 +2259,6 @@ const Dashboard: React.FC = () => {
           setMeetingsScheduledThisMonth(0);
         }
       } catch (error) {
-        console.error('Error fetching conversion rate:', error);
         setTotalExistingLeads(0);
         setMeetingsScheduledThisMonth(0);
       } finally {
@@ -2352,7 +2314,6 @@ const Dashboard: React.FC = () => {
           setContractsSignedLastMonth(0);
         }
       } catch (error) {
-        console.error('Error fetching contracts signed:', error);
         setContractsSignedThisMonth(0);
         setContractsSignedLastMonth(0);
       } finally {
@@ -2390,7 +2351,6 @@ const Dashboard: React.FC = () => {
         .single();
 
       if (userError || !userData) {
-        console.error('Error fetching user data:', userError);
         setPerformanceLoading(false);
         return;
       }
@@ -2421,7 +2381,6 @@ const Dashboard: React.FC = () => {
         .gte('date', thirtyDaysAgoStr);
 
       if (contractsError) {
-        console.error('Error fetching contracts signed:', contractsError);
       }
 
       // Process contracts to determine which belong to current user
@@ -2510,7 +2469,6 @@ const Dashboard: React.FC = () => {
       setRealPerformanceData(performanceDataArray);
       setRealTeamAverageData(teamAverageDataArray);
     } catch (error) {
-      console.error('Error fetching performance data:', error);
     } finally {
       setPerformanceLoading(false);
     }
@@ -2525,8 +2483,6 @@ const Dashboard: React.FC = () => {
   const fetchDepartmentPerformance = async () => {
       setDepartmentPerformanceLoading(true);
       try {
-        console.log('🔍 Starting department performance fetch...');
-        
         const now = new Date();
         const today = new Date();
         const thirtyDaysAgo = new Date();
@@ -2536,13 +2492,7 @@ const Dashboard: React.FC = () => {
         const selectedMonthIndex = months.indexOf(selectedMonth);
         const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
         const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-        
-        console.log('📅 Selected month/year:', selectedMonth, selectedYear);
-        console.log('📅 Selected month index:', selectedMonthIndex);
-        console.log('📅 Selected month name for display:', selectedMonthName);
-        
         // Fetch only important departments from tenant_departement
-        console.log('🎯 Fetching important departments from tenant_departement...');
         const { data: allDepartments, error: departmentsError } = await supabase
           .from('tenant_departement')
           .select('id, name, min_income, important')
@@ -2550,36 +2500,23 @@ const Dashboard: React.FC = () => {
           .order('id');
         
         if (departmentsError) {
-          console.error('❌ Error fetching departments:', departmentsError);
           throw departmentsError;
         }
         
         // Extract department IDs and create target mapping
         const departmentIds = allDepartments?.map(dept => dept.id) || [];
         const departmentTargets = allDepartments || [];
-        
-        console.log('📊 All department IDs found:', departmentIds);
-        console.log('🎯 All department targets:', departmentTargets);
-        
         // Log which departments are important
         const importantDepts = departmentTargets.filter(dept => dept.important === 't');
-        console.log('⭐ Important departments:', importantDepts.map(dept => `${dept.id}: ${dept.name} (important: ${dept.important})`));
-        
         // Debug: Log each department with its index
-        console.log('🔍 Department mapping debug:');
         departmentTargets.forEach((dept, index) => {
-          console.log(`  Index ${index}: ID ${dept.id} -> "${dept.name}" (important: ${dept.important})`);
         });
         
         // Set department names for UI display
         const names = departmentTargets.map(dept => dept.name);
         setDepartmentNames(names);
-        console.log('📝 All department names set:', names);
-        
         // Debug: Show the exact mapping of ID -> Name -> Target
-        console.log('🎯 Department mapping for UI:');
         departmentTargets.forEach((dept, index) => {
-          console.log(`  UI Index ${index}: ID ${dept.id} -> "${dept.name}" -> Target: ₪${dept.min_income}`);
         });
         
         // Create target map (department ID -> min_income)
@@ -2587,9 +2524,6 @@ const Dashboard: React.FC = () => {
         departmentTargets?.forEach(dept => {
           targetMap[dept.id] = parseFloat(dept.min_income || '0');
         });
-        
-        console.log('🎯 Target map created:', targetMap);
-        
         // Initialize data structure dynamically based on actual departments
         const newAgreementData = {
           Today: [
@@ -2634,17 +2568,6 @@ const Dashboard: React.FC = () => {
         
         // If we're at the end of the month, Last 30d should cover the entire month
         const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
-        
-        console.log('📅 Date calculation details:');
-        console.log('  - Current date:', now.toDateString());
-        console.log('  - Current month:', now.getMonth() + 1);
-        console.log('  - Days in month:', daysInMonth);
-        console.log('  - Current day:', now.getDate());
-        console.log('  - Is end of month:', isEndOfMonth);
-        console.log('  - Start of month (UTC):', startOfMonthStr);
-        console.log('  - Thirty days ago:', thirtyDaysAgoStr);
-        console.log('  - Effective 30 days ago:', effectiveThirtyDaysAgo);
-        
         // For date comparison, we need to extract just the date part from the record date
         const extractDateFromRecord = (recordDate: string) => {
           // Handle both ISO string format and date-only format
@@ -2653,18 +2576,8 @@ const Dashboard: React.FC = () => {
           }
           return recordDate;
         };
-        
-        console.log('📅 Date ranges calculated:');
-        console.log('  - Today:', todayStr);
-        console.log('  - 30 days ago:', thirtyDaysAgoStr);
-        console.log('  - Start of month:', startOfMonthStr);
-        console.log('  - Current date:', now.toDateString());
-        console.log('  - Current month:', now.getMonth() + 1);
-        console.log('  - Days in current month:', new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate());
-        
         // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
         // Fetch data for Today and Last 30d (always current date range)
-        console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for Today and Last 30d...');
         // Fetch legacy leads stage records with timeout protection
         let stageRecords: any[] = [];
         let stageError: any = null;
@@ -2687,22 +2600,16 @@ const Dashboard: React.FC = () => {
           
           if (result?.error) {
             stageError = result.error;
-            console.error('❌ Error fetching stage records:', stageError);
           } else {
             stageRecords = result?.data || [];
           }
         } catch (err: any) {
           stageError = err;
-          console.error('❌ Timeout or error fetching stage records:', err?.message || err);
         }
         
         if (stageError) {
-          console.warn('⚠️ Continuing without legacy stage records due to error');
           // Don't throw, continue without stage records
         }
-        
-        console.log('✅ Legacy stage records fetched:', stageRecords?.length || 0, 'records');
-        
         // Fetch new leads signed agreements from multiple sources
         // 1. Fetch contracts with signed_at (with timeout protection)
         let contractsData: any[] = [];
@@ -2727,22 +2634,16 @@ const Dashboard: React.FC = () => {
           
           if (result?.error) {
             contractsError = result.error;
-            console.error('❌ Error fetching contracts:', contractsError);
           } else {
             contractsData = result?.data || [];
           }
         } catch (err: any) {
           contractsError = err;
-          console.error('❌ Timeout or error fetching contracts:', err?.message || err);
         }
         
         if (contractsError) {
-          console.warn('⚠️ Continuing without contracts due to error');
           // Don't throw, continue without contracts
         }
-        
-        console.log('✅ Contracts fetched:', contractsData?.length || 0, 'records');
-        
         // 2. Fetch new leads stage records (newlead_id)
         // Add timeout protection and limit to prevent query timeout
         let newLeadStageRecords: any[] = [];
@@ -2766,23 +2667,17 @@ const Dashboard: React.FC = () => {
           
           if (result?.error) {
             newLeadStageError = result.error;
-            console.error('❌ Error fetching new lead stage records:', newLeadStageError);
           } else {
             newLeadStageRecords = result?.data || [];
           }
         } catch (err: any) {
           newLeadStageError = err;
-          console.error('❌ Timeout or error fetching new lead stage records:', err?.message || err);
           // Continue without new lead stages
         }
         
         if (newLeadStageError) {
-          console.warn('⚠️ Continuing without new lead stage records due to error');
           // Don't throw, continue without new lead stages
         }
-        
-        console.log('✅ New lead stage records fetched:', newLeadStageRecords?.length || 0, 'records');
-        
         // 3. Fetch leads with date_signed (with timeout protection)
         let leadsWithDateSigned: any[] = [];
         let dateSignedError: any = null;
@@ -2804,22 +2699,16 @@ const Dashboard: React.FC = () => {
           
           if (result?.error) {
             dateSignedError = result.error;
-            console.error('❌ Error fetching leads with date_signed:', dateSignedError);
           } else {
             leadsWithDateSigned = result?.data || [];
           }
         } catch (err: any) {
           dateSignedError = err;
-          console.error('❌ Timeout or error fetching leads with date_signed:', err?.message || err);
         }
         
         if (dateSignedError) {
-          console.warn('⚠️ Continuing without date_signed leads due to error');
           // Don't throw, continue without date_signed leads
         }
-        
-        console.log('✅ Leads with date_signed fetched:', leadsWithDateSigned?.length || 0, 'records');
-        
         // Combine all new lead IDs from different sources
         const newLeadIdsSet = new Set<string>();
         (contractsData || []).forEach(contract => {
@@ -2833,8 +2722,6 @@ const Dashboard: React.FC = () => {
         });
         
         const newLeadIds = Array.from(newLeadIdsSet);
-        console.log('✅ Combined new lead IDs:', newLeadIds.length, 'unique leads');
-        
         // Fetch new leads data
         let newLeadsData: any[] = [];
         if (newLeadIds.length > 0) {
@@ -2853,11 +2740,9 @@ const Dashboard: React.FC = () => {
             .in('id', newLeadIds);
           
           if (newLeadsError) {
-            console.error('❌ Error fetching new leads data:', newLeadsError);
             // Don't throw, continue without new leads
           } else {
             newLeadsData = newLeads || [];
-            console.log('✅ New leads data fetched:', newLeadsData.length, 'records');
           }
         }
         
@@ -2867,8 +2752,6 @@ const Dashboard: React.FC = () => {
         // Process legacy leads
         if (stageRecords && stageRecords.length > 0) {
           const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          console.log('📋 Fetching legacy leads data for', leadIds.length, 'unique leads...');
-          
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads_lead')
             .select(`
@@ -2884,12 +2767,8 @@ const Dashboard: React.FC = () => {
             .in('id', leadIds);
           
           if (leadsError) {
-            console.error('❌ Error fetching legacy leads data:', leadsError);
             throw leadsError;
           }
-          
-          console.log('✅ Legacy leads data fetched:', leadsData?.length || 0, 'records');
-          
           // Join the legacy data
           const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
           const legacyRecords = stageRecords.map(stageRecord => {
@@ -2969,16 +2848,10 @@ const Dashboard: React.FC = () => {
             });
           }
         });
-        
-        console.log('✅ Joined agreement records created:', agreementRecords.length, 'records (legacy + new)');
-        
-        console.log('✅ Agreement records processed:', agreementRecords?.length || 0, 'records');
         if (agreementRecords && agreementRecords.length > 0) {
-          console.log('📝 Sample agreement record:', agreementRecords[0]);
         }
         
         // Fetch data for selected month (separate query)
-        console.log('📋 Fetching leads_leadstage records (stage 60 - agreement signed) for selected month:', selectedMonthName, selectedYear);
         const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
         
         // Fetch legacy leads stage records for month
@@ -2991,12 +2864,8 @@ const Dashboard: React.FC = () => {
           .lte('date', endOfMonthStr);
         
         if (monthStageError) {
-          console.error('❌ Error fetching month stage records:', monthStageError);
           throw monthStageError;
         }
-        
-        console.log('✅ Month legacy stage records fetched:', monthStageRecords?.length || 0, 'records');
-        
         // Fetch new leads signed agreements for month from multiple sources
         const { data: monthContractsData, error: monthContractsError } = await supabase
           .from('contracts')
@@ -3008,11 +2877,7 @@ const Dashboard: React.FC = () => {
           .lte('signed_at', new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0]);
         
         if (monthContractsError) {
-          console.error('❌ Error fetching month contracts:', monthContractsError);
         }
-        
-        console.log('✅ Month contracts fetched:', monthContractsData?.length || 0, 'records');
-        
         const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
           .from('leads_leadstage')
           .select('id, date, cdate, newlead_id')
@@ -3022,11 +2887,7 @@ const Dashboard: React.FC = () => {
           .lte('cdate', endOfMonthStr);
         
         if (monthNewLeadStageError) {
-          console.error('❌ Error fetching month new lead stage records:', monthNewLeadStageError);
         }
-        
-        console.log('✅ Month new lead stage records fetched:', monthNewLeadStageRecords?.length || 0, 'records');
-        
         const { data: monthLeadsWithDateSigned, error: monthDateSignedError } = await supabase
           .from('leads')
           .select('id, date_signed')
@@ -3035,11 +2896,7 @@ const Dashboard: React.FC = () => {
           .lte('date_signed', endOfMonthStr);
         
         if (monthDateSignedError) {
-          console.error('❌ Error fetching month leads with date_signed:', monthDateSignedError);
         }
-        
-        console.log('✅ Month leads with date_signed fetched:', monthLeadsWithDateSigned?.length || 0, 'records');
-        
         // Combine all new lead IDs for month
         const monthNewLeadIdsSet = new Set<string>();
         (monthContractsData || []).forEach(contract => {
@@ -3053,8 +2910,6 @@ const Dashboard: React.FC = () => {
         });
         
         const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
-        console.log('✅ Combined month new lead IDs:', monthNewLeadIds.length, 'unique leads');
-        
         // Fetch month new leads data
         let monthNewLeadsData: any[] = [];
         if (monthNewLeadIds.length > 0) {
@@ -3073,10 +2928,8 @@ const Dashboard: React.FC = () => {
             .in('id', monthNewLeadIds);
           
           if (monthNewLeadsError) {
-            console.error('❌ Error fetching month new leads data:', monthNewLeadsError);
           } else {
             monthNewLeadsData = monthNewLeads || [];
-            console.log('✅ Month new leads data fetched:', monthNewLeadsData.length, 'records');
           }
         }
         
@@ -3086,8 +2939,6 @@ const Dashboard: React.FC = () => {
         // Process legacy leads for month
         if (monthStageRecords && monthStageRecords.length > 0) {
           const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          console.log('📋 Fetching month legacy leads data for', monthLeadIds.length, 'unique leads...');
-          
           const { data: monthLeadsData, error: monthLeadsError } = await supabase
             .from('leads_lead')
             .select(`
@@ -3103,12 +2954,8 @@ const Dashboard: React.FC = () => {
             .in('id', monthLeadIds);
           
           if (monthLeadsError) {
-            console.error('❌ Error fetching month legacy leads data:', monthLeadsError);
             throw monthLeadsError;
           }
-          
-          console.log('✅ Month legacy leads data fetched:', monthLeadsData?.length || 0, 'records');
-          
           // Join the legacy data
           const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
           const monthLegacyRecords = monthStageRecords.map(stageRecord => {
@@ -3184,12 +3031,7 @@ const Dashboard: React.FC = () => {
             });
           }
         });
-        
-        console.log('✅ Joined month agreement records created:', monthAgreementRecords.length, 'records (legacy + new)');
-        
-        console.log('✅ Month agreement records processed:', monthAgreementRecords?.length || 0, 'records');
         if (monthAgreementRecords && monthAgreementRecords.length > 0) {
-          console.log('📝 Sample month agreement record:', monthAgreementRecords[0]);
         }
         
         if (agreementRecords && agreementRecords.length > 0) {
@@ -3203,14 +3045,12 @@ const Dashboard: React.FC = () => {
           agreementRecords.forEach(record => {
             // Skip if already processed
             if (processedRecordIds.has(record.id)) {
-              console.log(`⚠️ Skipping duplicate record: leadId=${record.id}`);
               return;
             }
             processedRecordIds.add(record.id);
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for record: leadId=${record.lead_id || record.newlead_id}`);
               return;
             }
             
@@ -3226,23 +3066,8 @@ const Dashboard: React.FC = () => {
             const recordDate = record.date;
             
             // Debug currency conversion
-            console.log(`🔍 Dashboard Agreement Signed - Lead ${record.lead_id}:`, {
-              originalAmount: amount,
-              currencyId: lead.currency_id,
-              convertedAmount: amountInNIS,
-              conversionRate: amount > 0 ? amountInNIS / amount : 1
-            });
-            
             // Log non-NIS currencies for verification
             if (lead.currency_id && lead.currency_id !== 1) {
-              console.log(`🌍 Non-NIS Currency Found - Lead ${record.lead_id}:`, {
-                currencyId: lead.currency_id,
-                originalAmount: amount,
-                convertedAmount: amountInNIS,
-                currencyType: lead.currency_id === 2 ? 'USD' : 
-                             lead.currency_id === 3 ? 'EUR' : 
-                             lead.currency_id === 4 ? 'GBP' : 'Unknown'
-              });
             }
             
             // Get department ID from the JOIN
@@ -3250,9 +3075,6 @@ const Dashboard: React.FC = () => {
             if (lead.misc_category?.misc_maincategory?.department_id) {
               departmentId = lead.misc_category.misc_maincategory.department_id;
             }
-            
-            console.log(`📊 Processing record: leadId=${record.lead_id}, departmentId=${departmentId}, amount=${amount}, amountInNIS=${amountInNIS}, date=${recordDate}`);
-            
             if (departmentId && departmentIds.includes(departmentId)) {
               processedCount++;
               
@@ -3261,16 +3083,11 @@ const Dashboard: React.FC = () => {
               
               // For current month, use the department index directly (no General column)
               const monthDeptIndex = departmentIds.indexOf(departmentId);
-              
-              console.log(`📍 Department mapping: deptId=${departmentId}, deptIndex=${deptIndex}, monthDeptIndex=${monthDeptIndex}`);
-              console.log(`📍 Department names: deptId=${departmentId} -> ${scoreboardCategories[deptIndex]} (Last 30d), ${scoreboardCategories[monthDeptIndex + 1]} (${selectedMonthName})`);
-              
               // Extract date part for comparison
               const recordDateOnly = extractDateFromRecord(recordDate);
               
               // Check if it's today
               if (recordDateOnly === todayStr) {
-                console.log(`✅ Today match: ${recordDateOnly} === ${todayStr}`);
                 newAgreementData.Today[deptIndex].count++;
                 newAgreementData.Today[deptIndex].amount += amountInNIS; // Use NIS amount
                 newAgreementData.Today[0].count++; // General
@@ -3279,11 +3096,8 @@ const Dashboard: React.FC = () => {
               
               // Check if it's in last 30 days (or entire month if at end of month)
               if (recordDateOnly >= effectiveThirtyDaysAgo) {
-                console.log(`✅ Last 30d match: ${recordDateOnly} >= ${effectiveThirtyDaysAgo}`);
-                console.log(`  📊 Before: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
                 newAgreementData["Last 30d"][deptIndex].count++;
                 newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
-                console.log(`  📊 After: Last 30d[${deptIndex}] = count:${newAgreementData["Last 30d"][deptIndex].count}, amount:${newAgreementData["Last 30d"][deptIndex].amount}`);
                 newAgreementData["Last 30d"][0].count++; // General
                 newAgreementData["Last 30d"][0].amount += amountInNIS; // Use NIS amount
               }
@@ -3291,16 +3105,10 @@ const Dashboard: React.FC = () => {
               // Note: Month data will be processed separately from monthStageRecords
               
               // Debug: Show why dates might be different
-              console.log(`🔍 Date comparison debug: recordDate=${recordDateOnly}, effectiveThirtyDaysAgo=${effectiveThirtyDaysAgo}, startOfMonth=${startOfMonthStr}`);
-              console.log(`🔍 Last 30d condition: ${recordDateOnly} >= ${effectiveThirtyDaysAgo} = ${recordDateOnly >= effectiveThirtyDaysAgo}`);
-              console.log(`🔍 Selected month condition: ${recordDateOnly} >= ${startOfMonthStr} = ${recordDateOnly >= startOfMonthStr}`);
             } else {
               skippedCount++;
-              console.log(`⏭️ Skipped record: leadId=${record.lead_id}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
             }
           });
-          
-          console.log(`📈 Processing summary: ${processedCount} processed, ${skippedCount} skipped`);
         }
         
         // Process month data separately
@@ -3314,14 +3122,12 @@ const Dashboard: React.FC = () => {
           monthAgreementRecords.forEach(record => {
             // Skip if already processed
             if (processedMonthRecordIds.has(record.id)) {
-              console.log(`⚠️ Skipping duplicate month record: leadId=${record.id}`);
               return;
             }
             processedMonthRecordIds.add(record.id);
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for month record: leadId=${record.lead_id || record.newlead_id}`);
               return;
             }
             
@@ -3341,57 +3147,31 @@ const Dashboard: React.FC = () => {
             if (lead.misc_category?.misc_maincategory?.department_id) {
               departmentId = lead.misc_category.misc_maincategory.department_id;
             }
-            
-            console.log(`📊 Processing month record: leadId=${record.lead_id}, departmentId=${departmentId}, amount=${amount}, amountInNIS=${amountInNIS}, date=${recordDate}`);
-            console.log(`🔍 Department ID ${departmentId} in departmentIds? ${departmentIds.includes(departmentId)}`);
-            console.log(`🔍 Available department IDs: [${departmentIds.join(', ')}]`);
-            
             if (departmentId && departmentIds.includes(departmentId)) {
               monthProcessedCount++;
               
               // For current month, use the department index directly (no General column)
               const monthDeptIndex = departmentIds.indexOf(departmentId);
-              
-              console.log(`📍 Month department mapping: deptId=${departmentId}, monthDeptIndex=${monthDeptIndex}`);
-              console.log(`📍 Month department name: deptId=${departmentId} -> ${scoreboardCategories[monthDeptIndex + 1]} (${selectedMonthName})`);
-              console.log(`📍 Available scoreboardCategories: [${scoreboardCategories.join(', ')}]`);
-              
               // Extract date part for comparison
               const recordDateOnly = extractDateFromRecord(recordDate);
               
               // Check if it's in selected month
               if (recordDateOnly >= startOfMonthStr) {
-                console.log(`✅ Selected month match: ${recordDateOnly} >= ${startOfMonthStr}`);
-                console.log(`  📊 Before: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
                 newAgreementData[selectedMonthName][monthDeptIndex].count++;
                 newAgreementData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
-                console.log(`  📊 After: ${selectedMonthName}[${monthDeptIndex}] = count:${newAgreementData[selectedMonthName][monthDeptIndex].count}, amount:${newAgreementData[selectedMonthName][monthDeptIndex].amount}`);
               }
             } else {
               monthSkippedCount++;
-              console.log(`⏭️ Skipped month record: leadId=${record.lead_id}, departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
             }
           });
-          
-          console.log(`📈 Month processing summary: ${monthProcessedCount} processed, ${monthSkippedCount} skipped`);
         }
         
         // Calculate totals for each time period
-        console.log('🧮 Calculating totals...');
-        
         // Debug: Show the raw data before calculating totals
-        console.log('🔍 Raw data before totals:');
-        console.log('  Today:', newAgreementData.Today.map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
-        console.log('  Last 30d:', newAgreementData["Last 30d"].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
-        console.log(`  ${selectedMonthName}:`, newAgreementData[selectedMonthName].map((item, idx) => `[${idx}]: count=${item.count}, amount=${item.amount}`));
-        
         // Calculate dynamic totals based on actual number of departments
         const numDepartments = departmentTargets.length;
         const totalIndexToday = numDepartments + 1; // General + departments + Total
         const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-        
-        console.log(`🧮 Total calculation: ${numDepartments} departments, totalIndexToday=${totalIndexToday}, totalIndexMonth=${totalIndexMonth}`);
-        
         // Today totals (sum of departments, excluding General and Total)
         const todayTotalCount = newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
         const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
@@ -3420,13 +3200,6 @@ const Dashboard: React.FC = () => {
         };
         
         // Debug: Show the calculated totals
-        console.log('🔍 Calculated totals:');
-        console.log('  Today Total:', { count: todayTotalCount, amount: todayTotalAmount });
-        console.log('  Last 30d Total:', { count: last30TotalCount, amount: last30TotalAmount });
-        console.log(`  ${selectedMonthName} Total:`, { count: monthTotalCount, amount: monthTotalAmount });
-        
-        console.log('📊 Final agreement data:', newAgreementData);
-        
         // Log currency distribution summary
         const currencyDistribution = {
           NIS: 0,
@@ -3435,31 +3208,13 @@ const Dashboard: React.FC = () => {
           GBP: 0,
           Unknown: 0
         };
-        
-        console.log('🔍 Debugging Agreement Records for Currency Distribution:');
-        console.log('📊 Total agreement records:', agreementRecords.length);
-        console.log('📊 Total month agreement records:', monthAgreementRecords?.length || 0);
-        
         // Combine all records that were processed
         const allProcessedRecords = [...(agreementRecords || []), ...(monthAgreementRecords || [])];
-        console.log('📊 Total all processed records:', allProcessedRecords.length);
-        
         if (allProcessedRecords.length > 0) {
-          console.log('📊 Sample processed record structure:', allProcessedRecords[0]);
-          console.log('📊 Sample lead structure:', allProcessedRecords[0]?.leads_lead);
-          console.log('📊 Sample currency_id:', allProcessedRecords[0]?.leads_lead?.currency_id);
-          
           // Check first 5 records for currency data
           for (let i = 0; i < Math.min(5, allProcessedRecords.length); i++) {
             const record = allProcessedRecords[i];
             const lead = record.leads_lead;
-            console.log(`🔍 Record ${i} currency check:`, {
-              leadId: lead?.id,
-              hasLead: !!lead,
-              currencyId: lead?.currency_id,
-              total: lead?.total,
-              allLeadFields: lead ? Object.keys(lead) : 'no lead'
-            });
           }
         }
         
@@ -3474,22 +3229,14 @@ const Dashboard: React.FC = () => {
               default: currencyDistribution.Unknown++; break;
             }
           } else if (index < 5) { // Log first 5 records that don't have currency
-            console.log(`🔍 Record ${index} missing currency:`, {
-              hasLead: !!lead,
-              currencyId: lead?.currency_id,
-              leadId: lead?.id
-            });
           }
         });
-        
-        console.log('🌍 Currency Distribution in Agreement Signed Data:', currencyDistribution);
         setAgreementData(newAgreementData);
         
         // Fetch daily chart data for the last 30 days
         await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
         
       } catch (error) {
-        console.error('❌ Error fetching department performance:', error);
       } finally {
         setDepartmentPerformanceLoading(false);
       }
@@ -3503,8 +3250,6 @@ const Dashboard: React.FC = () => {
     toDate: string
   ) => {
     try {
-      console.log('📊 Fetching daily chart data from', fromDate, 'to', toDate);
-      
       // Fetch stage records for the date range
       const { data: stageRecords, error: stageError } = await supabase
         .from('leads_leadstage')
@@ -3514,12 +3259,10 @@ const Dashboard: React.FC = () => {
         .lte('date', toDate);
       
       if (stageError) {
-        console.error('❌ Error fetching stage records for chart:', stageError);
         return;
       }
       
       if (!stageRecords || stageRecords.length === 0) {
-        console.log('📊 No stage records found for chart data');
         setDepartmentChartData({});
         return;
       }
@@ -3532,7 +3275,6 @@ const Dashboard: React.FC = () => {
         .in('id', leadIds);
       
       if (leadsError) {
-        console.error('❌ Error fetching leads for chart:', leadsError);
         return;
       }
       
@@ -3618,21 +3360,15 @@ const Dashboard: React.FC = () => {
       });
       
       setDepartmentChartData(finalChartData);
-      console.log('✅ Chart data fetched:', Object.keys(finalChartData).length, 'categories');
-      
     } catch (error) {
-      console.error('❌ Error fetching department chart data:', error);
       setDepartmentChartData({});
     }
   };
 
   // Fetch invoiced data using the same logic as agreement data
   const fetchInvoicedData = async () => {
-    console.log('🚀 fetchInvoicedData function called!');
     setInvoicedDataLoading(true);
     try {
-      console.log('🔍 Starting invoiced data fetch...');
-      
       const now = new Date();
       const today = new Date();
       const thirtyDaysAgo = new Date();
@@ -3642,11 +3378,7 @@ const Dashboard: React.FC = () => {
       const selectedMonthIndex = months.indexOf(selectedMonth);
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-      
-      console.log('📅 Fetching invoiced data for:', selectedMonth, selectedYear);
-      
         // Fetch only important departments (same as agreement data)
-        console.log('🎯 Fetching important departments for invoiced data...');
         const { data: allDepartments, error: departmentsError } = await supabase
           .from('tenant_departement')
           .select('id, name, min_income, important')
@@ -3654,25 +3386,17 @@ const Dashboard: React.FC = () => {
           .order('id');
       
       if (departmentsError) {
-        console.error('❌ Error fetching departments for invoiced data:', departmentsError);
         throw departmentsError;
       }
       
       // Extract department IDs and create target mapping
       const departmentIds = allDepartments?.map(dept => dept.id) || [];
       const departmentTargets = allDepartments || [];
-      
-      console.log('📊 Important department IDs for invoiced data:', departmentIds);
-      console.log('🎯 Using same departments as agreement data for consistency...');
-      
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
       departmentTargets?.forEach(dept => {
         targetMap[dept.id] = parseFloat(dept.min_income || '0');
       });
-      
-      console.log('🎯 Target map created (invoiced):', targetMap);
-      
       // Calculate date ranges
       const todayStr = today.toISOString().split('T')[0];
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
@@ -3683,15 +3407,6 @@ const Dashboard: React.FC = () => {
       const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
       const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
       const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
-      
-      console.log('📅 Invoiced data date ranges:');
-      console.log('  - Today:', todayStr);
-      console.log('  - 30 days ago:', thirtyDaysAgoStr);
-      console.log('  - Start of month:', startOfMonthStr);
-      console.log('  - Current date object:', new Date());
-      console.log('  - Selected month/year:', selectedMonthIndex, selectedYear);
-      console.log('  - Effective 30 days ago:', effectiveThirtyDaysAgo);
-      
       // Initialize invoiced data structure
       const newInvoicedData = {
         Today: [
@@ -3724,35 +3439,22 @@ const Dashboard: React.FC = () => {
       
       // FIXED APPROACH: Use correct table - proformainvoice
       // Fetch invoice records first
-      console.log('📋 Fetching proformainvoice records for Today and Last 30d...');
-      console.log('🔍 Query parameters: cdate >=', thirtyDaysAgoStr, ', cdate <=', todayStr);
-      console.log('🔍 Available department IDs for invoiced data: [', departmentIds.join(', '), ']');
-      
       // First, let's test without date filters to see if we get any records
-      console.log('🧪 Testing invoice query without date filters...');
       const { data: testRecords, error: testError } = await supabase
         .from('proformainvoice')
         .select('id, lead_id, sub_total, cdate, currency_id')
         .limit(5);
       
       if (testError) {
-        console.error('❌ Error in test query:', testError);
       } else {
-        console.log('🧪 Test query results (no date filter):', testRecords?.length || 0, 'records');
         if (testRecords && testRecords.length > 0) {
-          console.log('🧪 Sample test record:', testRecords[0]);
-          console.log('🧪 All test record dates:', testRecords.map(r => r.cdate));
         } else {
-          console.log('🧪 No test records found - this might be the issue!');
         }
       }
       
       // NOTE: We fetch all invoice data, but filter it properly:
       // Today = actual today, Last 30d = actual last 30 days (like agreement signed table), Month = selected month
       const expandedStartDate = '2025-04-01'; // Start from April 2025 where data exists
-      console.log('🔧 Using expanded date range to fetch all invoice data:', expandedStartDate, 'to', todayStr);
-      console.log('📝 Note: Today=actual today, Last 30d=actual last 30 days, Month=selected month');
-      
       // Fetch legacy invoice records from proformainvoice table (only legacy leads)
       const { data: invoiceRecords, error: invoiceError } = await supabase
         .from('proformainvoice')
@@ -3761,14 +3463,9 @@ const Dashboard: React.FC = () => {
         .lte('cdate', todayStr);
       
       if (invoiceError) {
-        console.error('❌ Error fetching invoice records:', invoiceError);
         throw invoiceError;
       }
-      
-      console.log('✅ Legacy invoice records fetched:', invoiceRecords?.length || 0, 'records');
-      
       // Fetch new leads invoiced data from payment_plans table (payment plans with proforma data)
-      console.log('📋 Fetching new leads invoiced data from payment_plans table...');
       const { data: newLeadsPaymentPlans, error: paymentPlansError } = await supabase
         .from('payment_plans')
         .select('id, lead_id, value, value_vat, currency, date, proforma, cdate, updated_at')
@@ -3777,11 +3474,8 @@ const Dashboard: React.FC = () => {
         .not('proforma', 'eq', '{}');
       
       if (paymentPlansError) {
-        console.error('❌ Error fetching payment plans with proforma:', paymentPlansError);
         // Don't throw - continue without new leads invoiced data
       } else {
-        console.log('✅ Payment plans with proforma fetched:', newLeadsPaymentPlans?.length || 0, 'records');
-        
         // Filter payment plans by date range and extract invoice date from proforma JSON
         if (newLeadsPaymentPlans && newLeadsPaymentPlans.length > 0) {
           const filteredNewLeadInvoices = newLeadsPaymentPlans
@@ -3826,23 +3520,16 @@ const Dashboard: React.FC = () => {
               return null;
             })
             .filter(record => record !== null);
-          
-          console.log('✅ Filtered new leads invoice records:', filteredNewLeadInvoices.length, 'records');
-          
           // Combine legacy and new invoice records
           invoiceRecords.push(...filteredNewLeadInvoices as any[]);
-          console.log('✅ Combined invoice records (legacy + new):', invoiceRecords.length, 'records');
         }
       }
       if (invoiceRecords && invoiceRecords.length > 0) {
         const dates = invoiceRecords.map(r => r.cdate).sort();
-        console.log('📅 Invoice record date range:', dates[0], 'to', dates[dates.length - 1]);
-        console.log('📅 Sample invoice dates:', dates.slice(0, 5));
       }
       
       // Debug: Check if there are any invoice records at all (without date filter)
       if (invoiceRecords?.length === 0) {
-        console.log('🔍 No invoice records found for date range. Checking all invoice records...');
         const { data: allInvoiceRecords, error: allInvoiceError } = await supabase
           .from('proformainvoice')
           .select('id, lead_id, sub_total, cdate, currency_id')
@@ -3850,22 +3537,7 @@ const Dashboard: React.FC = () => {
           .limit(10);
         
         if (allInvoiceError) {
-          console.error('❌ Error fetching all invoice records:', allInvoiceError);
         } else {
-          console.log('📊 Recent invoice records (last 10):', allInvoiceRecords?.map(record => ({
-            id: record.id,
-            lead_id: record.lead_id,
-            sub_total: record.sub_total,
-            cdate: record.cdate
-          })));
-          console.log('🔍 Date range we\'re querying for:', {
-            thirtyDaysAgo: thirtyDaysAgoStr,
-            today: todayStr,
-            startOfMonth: startOfMonthStr,
-            currentDate: new Date().toISOString().split('T')[0],
-            selectedMonth: selectedMonthName,
-            selectedYear: selectedYear
-          });
         }
       }
       
@@ -3878,10 +3550,7 @@ const Dashboard: React.FC = () => {
       // Fetch leads data separately if we have invoice records
       let processedInvoiceRecords: any[] = [];
       if (invoiceRecords && invoiceRecords.length > 0) {
-        console.log('🚀 ENTERING invoice records processing block with', invoiceRecords.length, 'records');
         const leadIds = [...new Set(invoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
-        console.log('📋 Fetching leads data for', leadIds.length, 'unique leads...');
-        
         // Separate UUIDs (new leads) from numeric IDs (legacy leads)
         const uuidIds: string[] = [];
         const numericIds: number[] = [];
@@ -3897,9 +3566,6 @@ const Dashboard: React.FC = () => {
             }
           }
         });
-        
-        console.log(`📋 Separated lead IDs: ${uuidIds.length} UUIDs (new leads), ${numericIds.length} numeric IDs (legacy leads)`);
-        
         // Fetch legacy leads from leads_lead table (only numeric IDs)
         let legacyLeadsData: any[] = [];
         if (numericIds.length > 0) {
@@ -3918,12 +3584,10 @@ const Dashboard: React.FC = () => {
             .in('id', numericIds);
           
           if (legacyLeadsError) {
-            console.error('❌ Error fetching legacy leads data for invoices:', legacyLeadsError);
             throw legacyLeadsError;
           }
           
           legacyLeadsData = data || [];
-          console.log('✅ Legacy leads data fetched for invoices:', legacyLeadsData.length, 'records');
         }
         
         // Fetch new leads from leads table (only UUIDs)
@@ -3944,12 +3608,10 @@ const Dashboard: React.FC = () => {
             .in('id', uuidIds);
           
           if (newLeadsError) {
-            console.error('❌ Error fetching new leads data for invoices:', newLeadsError);
             throw newLeadsError;
           }
           
           newLeadsData = data || [];
-          console.log('✅ New leads data fetched for invoices:', newLeadsData.length, 'records');
         }
         
         // Join the data - combine both legacy and new leads
@@ -3983,17 +3645,8 @@ const Dashboard: React.FC = () => {
             isNewLead: recordIsNewLead || (!!lead && isUUID(leadIdStr))
           };
         }).filter(record => record.leads_lead !== null);
-        
-        console.log('✅ All joined invoice records created:', allJoinedRecords.length, 'records (legacy + new)');
-        
         // Debug: Check the variables we're using for filtering
-        console.log('🔍 Debug variables for filtering:');
-        console.log('  - todayStr:', todayStr);
-        console.log('  - effectiveThirtyDaysAgo:', effectiveThirtyDaysAgo);
-        console.log('  - Sample record date:', allJoinedRecords[0]?.cdate);
-        
         // Now filter by actual date ranges for Today and Last 30d
-        console.log('🔄 Starting date filtering...');
         let todayRecords: any[] = [];
         let last30dRecords: any[] = [];
         
@@ -4009,36 +3662,16 @@ const Dashboard: React.FC = () => {
             const recordDate = record.cdate;
             return recordDate >= effectiveThirtyDaysAgo && recordDate <= todayStr;
           });
-          
-          console.log('✅ Date filtering completed successfully');
         } catch (error) {
-          console.error('❌ Error in date filtering:', error);
         }
-        
-        console.log('📅 Filtered records:');
-        console.log('  - Today records:', todayRecords.length);
-        console.log('  - Last 30d records:', last30dRecords.length);
-        console.log('  - Date range used:', effectiveThirtyDaysAgo, 'to', todayStr);
-        console.log('  - Sample today record:', todayRecords[0]);
-        console.log('  - Sample last30d record:', last30dRecords[0]);
-        
         // Process both Today and Last 30d records separately
         const processRecords = (records: any[], period: string) => {
-          console.log(`🔄 Processing ${period} records:`, records.length, 'records');
-          
           records.forEach((record, index) => {
             if (index < 5) { // Only log first 5 records to avoid spam
-              console.log(`📊 Processing ${period} invoice record ${index + 1}:`, {
-                id: record.id,
-                lead_id: record.lead_id,
-                sub_total: record.sub_total,
-                cdate: record.cdate
-              });
             }
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for ${period} invoice record: leadId=${record.lead_id}`);
               return;
             }
             
@@ -4047,23 +3680,8 @@ const Dashboard: React.FC = () => {
             const recordDate = record.cdate;
             
             // Debug currency conversion
-            console.log(`🔍 Dashboard Invoiced - Record ${record.id}:`, {
-              originalAmount: amount,
-              currencyId: record.currency_id,
-              convertedAmount: amountInNIS,
-              conversionRate: amount > 0 ? amountInNIS / amount : 1
-            });
-            
             // Log non-NIS currencies for verification
             if (record.currency_id && record.currency_id !== 1) {
-              console.log(`🌍 Non-NIS Invoice Currency Found - Record ${record.id}:`, {
-                currencyId: record.currency_id,
-                originalAmount: amount,
-                convertedAmount: amountInNIS,
-                currencyType: record.currency_id === 2 ? 'USD' : 
-                             record.currency_id === 3 ? 'EUR' : 
-                             record.currency_id === 4 ? 'GBP' : 'Unknown'
-              });
             }
             
             // Get department ID from the JOIN
@@ -4073,13 +3691,10 @@ const Dashboard: React.FC = () => {
             }
             
             if (index < 5) { // Only log first 5 records
-              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
-              console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
             }
             
             if (departmentId && departmentIds.includes(departmentId)) {
               if (index < 5) {
-                console.log(`  ✅ Valid ${period} record - processing...`);
               }
               
               // For Today and Last 30d, use the department index + 1 (to skip General)
@@ -4088,53 +3703,33 @@ const Dashboard: React.FC = () => {
               // Extract date part for comparison
               const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
               
-              if (index < 5) {
-                console.log(`  📅 Date comparison: ${recordDateOnly} vs Today: ${todayStr}, Last30: ${effectiveThirtyDaysAgo}`);
-              }
-              
               // Add to Today data if it's today
               if (recordDateOnly === todayStr) {
                 newInvoicedData["Today"][deptIndex].count += 1;
                 newInvoicedData["Today"][deptIndex].amount += amountInNIS; // Use NIS amount
-                if (index < 5) console.log(`  ✅ Added to Today data: deptIndex=${deptIndex}, amount=${amountInNIS}`);
               }
               
               // Add to Last 30d data if it's within the actual last 30 days (like agreement signed table)
               if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= todayStr) {
                 newInvoicedData["Last 30d"][deptIndex].count += 1;
                 newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
-                if (index < 5) console.log(`  ✅ Added to Last 30d data: deptIndex=${deptIndex}, amount=${amountInNIS}`);
               }
             }
           });
         };
         
         // Process both Today and Last 30d records
-        console.log('🚀 About to process records...');
         processRecords(todayRecords, 'Today');
         processRecords(last30dRecords, 'Last 30d');
-        console.log('✅ Finished processing records');
-        
         // Debug: Show the data after processing
-        console.log('📊 Data after processing:');
-        console.log('  - Today data:', newInvoicedData["Today"].map((item, index) => `[${index}]: count=${item.count}, amount=${item.amount}, expected=${item.expected}`));
-        console.log('  - Last 30d data:', newInvoicedData["Last 30d"].map((item, index) => `[${index}]: count=${item.count}, amount=${item.amount}, expected=${item.expected}`));
-        
         // Use all joined records for processing (not just Last 30d filtered)
         processedInvoiceRecords = allJoinedRecords; // Use all records for the main processing
-        console.log('✅ COMPLETED invoice records processing block');
-        console.log('🔍 processedInvoiceRecords length:', processedInvoiceRecords.length);
-        console.log('🔍 last30dRecords length:', last30dRecords.length);
       } else {
-        console.log('❌ NOT ENTERING invoice records processing block - no records or error');
         processedInvoiceRecords = []; // Set empty array if no records
       }
       
       // Fetch data for selected month (separate query)
-      console.log('📋 Fetching invoice records for selected month:', selectedMonthName, selectedYear);
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
-      console.log('🔍 Month query date range:', startOfMonthStr, 'to', endOfMonthStr);
-      
       // Fetch legacy invoice records for month
       const { data: monthLegacyInvoiceRecords, error: monthInvoiceError } = await supabase
         .from('proformainvoice')
@@ -4143,12 +3738,8 @@ const Dashboard: React.FC = () => {
         .lte('cdate', endOfMonthStr);
       
       if (monthInvoiceError) {
-        console.error('❌ Error fetching month legacy invoice records:', monthInvoiceError);
         throw monthInvoiceError;
       }
-      
-      console.log('✅ Month legacy invoice records fetched:', monthLegacyInvoiceRecords?.length || 0, 'records');
-      
       // Fetch new leads invoiced data for month from payment_plans
       const { data: monthNewLeadsPaymentPlans, error: monthPaymentPlansError } = await supabase
         .from('payment_plans')
@@ -4158,7 +3749,6 @@ const Dashboard: React.FC = () => {
         .not('proforma', 'eq', '{}');
       
       if (monthPaymentPlansError) {
-        console.error('❌ Error fetching month payment plans with proforma:', monthPaymentPlansError);
         // Don't throw - continue without new leads invoiced data
       }
       
@@ -4219,8 +3809,6 @@ const Dashboard: React.FC = () => {
             });
           }
         });
-        
-        console.log('✅ Month new leads invoice records created:', monthNewLeadInvoiceRecords.length, 'records');
       }
       
       // Combine legacy and new month invoice records
@@ -4228,15 +3816,10 @@ const Dashboard: React.FC = () => {
         ...(monthLegacyInvoiceRecords || []).map(record => ({ ...record, isNewLead: false })),
         ...monthNewLeadInvoiceRecords,
       ];
-      
-      console.log('✅ Combined month invoice records (legacy + new):', monthInvoiceRecords.length, 'records');
-      
       // Fetch leads data separately for month if we have invoice records
       let processedMonthInvoiceRecords: any[] = [];
       if (monthInvoiceRecords && monthInvoiceRecords.length > 0) {
         const monthLeadIds = [...new Set(monthInvoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
-        console.log('📋 Fetching month leads data for', monthLeadIds.length, 'unique leads...');
-        
         // Separate UUIDs (new leads) from numeric IDs (legacy leads)
         const monthUuidIds: string[] = [];
         const monthNumericIds: number[] = [];
@@ -4252,9 +3835,6 @@ const Dashboard: React.FC = () => {
             }
           }
         });
-        
-        console.log(`📋 Separated month lead IDs: ${monthUuidIds.length} UUIDs (new leads), ${monthNumericIds.length} numeric IDs (legacy leads)`);
-        
         // Fetch legacy leads from leads_lead table (only numeric IDs)
         let monthLegacyLeadsData: any[] = [];
         if (monthNumericIds.length > 0) {
@@ -4273,12 +3853,10 @@ const Dashboard: React.FC = () => {
             .in('id', monthNumericIds);
           
           if (monthLegacyLeadsError) {
-            console.error('❌ Error fetching month legacy leads data for invoices:', monthLegacyLeadsError);
             throw monthLegacyLeadsError;
           }
           
           monthLegacyLeadsData = data || [];
-          console.log('✅ Month legacy leads data fetched for invoices:', monthLegacyLeadsData.length, 'records');
         }
         
         // Fetch new leads from leads table (only UUIDs)
@@ -4299,12 +3877,10 @@ const Dashboard: React.FC = () => {
             .in('id', monthUuidIds);
           
           if (monthNewLeadsError) {
-            console.error('❌ Error fetching month new leads data for invoices:', monthNewLeadsError);
             throw monthNewLeadsError;
           }
           
           monthNewLeadsData = data || [];
-          console.log('✅ Month new leads data fetched for invoices:', monthNewLeadsData.length, 'records');
         }
         
         // Join the data - combine both legacy and new leads
@@ -4338,39 +3914,17 @@ const Dashboard: React.FC = () => {
             isNewLead
           };
         }).filter(record => record.leads_lead !== null);
-        
-        console.log('✅ Joined month invoice records created:', processedMonthInvoiceRecords.length, 'records (legacy + new)');
       }
-      
-      console.log('🔍 Checking main processing condition:', {
-        hasProcessedRecords: !!processedInvoiceRecords,
-        recordsLength: processedInvoiceRecords?.length || 0,
-        hasProcessedMonthRecords: !!processedMonthInvoiceRecords,
-        monthRecordsLength: processedMonthInvoiceRecords?.length || 0
-      });
-      
       if (processedInvoiceRecords && processedInvoiceRecords.length > 0) {
-        console.log('🚀 ENTERING main invoice processing block with', processedInvoiceRecords.length, 'records');
         // Process all invoice records
         let processedCount = 0;
         let skippedCount = 0;
-        
-        console.log('🔄 Processing invoice records...');
-        console.log('🔍 Department IDs to check:', departmentIds);
-        
         processedInvoiceRecords.forEach((record, index) => {
           if (index < 5) { // Only log first 5 records to avoid spam
-            console.log(`📊 Processing invoice record ${index + 1}:`, {
-              id: record.id,
-              lead_id: record.lead_id,
-              sub_total: record.sub_total,
-              cdate: record.cdate
-            });
           }
           
           const lead = record.leads_lead as any;
           if (!lead) {
-            console.log(`⚠️ No lead data for invoice record: leadId=${record.lead_id}`);
             return;
           }
           
@@ -4387,19 +3941,15 @@ const Dashboard: React.FC = () => {
           }
           
           if (index < 5 && record.isNewLead) {
-            console.log(`  🔍 New lead invoice record: leadId=${record.lead_id}, amount=${amount}, departmentId=${departmentId}`);
           }
           
           if (index < 5) { // Only log first 5 records
-            console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId}`);
-            console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
           }
           
           if (departmentId && departmentIds.includes(departmentId)) {
             processedCount++;
             
             if (index < 5) {
-              console.log(`  ✅ Valid record - processing...`);
             }
             
             // For Today and Last 30d, use the department index + 1 (to skip General)
@@ -4412,7 +3962,6 @@ const Dashboard: React.FC = () => {
             const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
             
             if (index < 5) {
-              console.log(`  📅 Date comparison: ${recordDateOnly} vs Today: ${todayStr}, Last30: ${effectiveThirtyDaysAgo}, Month: ${startOfMonthStr}`);
             }
             
             // Check if it's today
@@ -4435,22 +3984,11 @@ const Dashboard: React.FC = () => {
           } else {
             skippedCount++;
             if (index < 5) {
-              console.log(`  ⏭️ Skipped: departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
             }
           }
         });
-        
-        console.log(`📈 Invoiced processing summary: ${processedCount} processed, ${skippedCount} skipped`);
-        
         // Process month invoice data separately
-        console.log('🔍 Checking month processing condition:', {
-          hasProcessedMonthRecords: !!processedMonthInvoiceRecords,
-          monthRecordsLength: processedMonthInvoiceRecords?.length || 0,
-          selectedMonth: selectedMonthName
-        });
-        
         if (processedMonthInvoiceRecords && processedMonthInvoiceRecords.length > 0) {
-          console.log('🚀 ENTERING month invoice processing block with', processedMonthInvoiceRecords.length, 'records');
           let monthProcessedCount = 0;
           let monthSkippedCount = 0;
           
@@ -4460,14 +3998,12 @@ const Dashboard: React.FC = () => {
           processedMonthInvoiceRecords.forEach((record, index) => {
             // Skip if already processed
             if (processedMonthRecordIds.has(record.id)) {
-              console.log(`⚠️ Skipping duplicate month invoice record: id=${record.id}`);
               return;
             }
             processedMonthRecordIds.add(record.id);
             
             const lead = record.leads_lead as any;
             if (!lead) {
-              console.log(`⚠️ No lead data for month invoice record: leadId=${record.lead_id}`);
               return;
             }
             
@@ -4484,22 +4020,12 @@ const Dashboard: React.FC = () => {
             }
             
             if (index < 5) { // Only log first 5 records
-              console.log(`📊 Processing month invoice record ${index + 1}:`, {
-                id: record.id,
-                lead_id: record.lead_id,
-                sub_total: record.sub_total,
-                cdate: record.cdate,
-                isNewLead: record.isNewLead
-              });
-              console.log(`  🔍 Lead ${record.lead_id} -> Department ${departmentId} (${record.isNewLead ? 'NEW' : 'LEGACY'})`);
-              console.log(`  💰 Amount: ${amount}, Date: ${recordDate}`);
             }
             
             if (departmentId && departmentIds.includes(departmentId)) {
               monthProcessedCount++;
               
               if (index < 5) {
-                console.log(`  ✅ Valid month invoice record - processing...`);
               }
               
               // For current month, use the department index directly (no General column)
@@ -4509,7 +4035,6 @@ const Dashboard: React.FC = () => {
               const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
               
               if (index < 5) {
-                console.log(`  📅 Date comparison: ${recordDateOnly} vs Month: ${startOfMonthStr}`);
               }
               
               // Check if it's in selected month
@@ -4520,14 +4045,10 @@ const Dashboard: React.FC = () => {
             } else {
               monthSkippedCount++;
               if (index < 5) {
-                console.log(`  ⏭️ Skipped month invoice: departmentId=${departmentId}, validDept=${departmentIds.includes(departmentId)}`);
               }
             }
           });
-          
-          console.log(`📈 Month invoice processing summary: ${monthProcessedCount} processed, ${monthSkippedCount} skipped`);
         } else {
-          console.log('❌ NOT ENTERING month invoice processing block - no processed month records');
         }
         
         // Calculate totals and round amounts up
@@ -4535,9 +4056,6 @@ const Dashboard: React.FC = () => {
         const numDepartments = departmentTargets.length;
         const totalIndexToday = numDepartments + 1; // General + departments + Total
         const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-        
-        console.log(`🧮 Invoiced total calculation: ${numDepartments} departments, totalIndexToday=${totalIndexToday}, totalIndexMonth=${totalIndexMonth}`);
-        
         // Today totals (sum of departments, excluding General and Total)
         const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
         const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
@@ -4552,9 +4070,6 @@ const Dashboard: React.FC = () => {
         const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
         const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
         newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
-        
-        console.log('📊 Final invoiced data:', newInvoicedData);
-        
         // Log currency distribution summary for invoiced data
         const invoiceCurrencyDistribution = {
           NIS: 0,
@@ -4577,27 +4092,12 @@ const Dashboard: React.FC = () => {
             }
           }
         });
-        
-        console.log('🌍 Currency Distribution in Invoiced Data:', invoiceCurrencyDistribution);
-        console.log('📊 Final invoiced data structure:');
-        console.log('  - Today:', newInvoicedData["Today"]);
-        console.log('  - Last 30d:', newInvoicedData["Last 30d"]);
-        console.log('  - Selected month:', newInvoicedData[selectedMonthName]);
         setInvoicedData(newInvoicedData);
       } else {
-        console.log('❌ NOT ENTERING main invoice processing block - no processed records');
-        console.log('🔍 This means no data will be processed for Today, Last 30d, or month-specific calculations');
       }
       
     } catch (error: any) {
-      console.error('❌ Error fetching invoiced data:', error);
-      console.error('❌ Error details:', {
-        message: error?.message || 'Unknown error',
-        stack: error?.stack || 'No stack trace',
-        name: error?.name || 'Unknown error type'
-      });
     } finally {
-      console.log('🏁 fetchInvoicedData function completed');
       setInvoicedDataLoading(false);
     }
   };
@@ -4682,7 +4182,6 @@ const Dashboard: React.FC = () => {
 
   // Add useEffect to refetch data when month/year changes
   useEffect(() => {
-    console.log('🔄 useEffect triggered - fetching data for:', selectedMonth, selectedYear);
     fetchDepartmentPerformance();
     fetchInvoicedData();
   }, [selectedMonth, selectedYear]);
@@ -5297,7 +4796,6 @@ const Dashboard: React.FC = () => {
           .order('date', { ascending: false });
 
         if (contractsError) {
-          console.error('Error fetching contracts:', contractsError);
           setRealSignedLeads([]);
           setRealLeadsLoading(false);
           return;
@@ -5529,7 +5027,6 @@ const Dashboard: React.FC = () => {
 
         setRealSignedLeads(signedLeadsWithDate);
       } catch (error) {
-        console.error('Error fetching signed leads:', error);
         setRealSignedLeads([]);
       } finally {
         setRealLeadsLoading(false);
@@ -5546,15 +5043,10 @@ const Dashboard: React.FC = () => {
         setTodayFollowUpsLoading(true);
         try {
           const { newLeads, legacyLeads } = await fetchFollowUpLeadsData('today', true);
-          console.log('📊 Today follow-ups - Raw data:', { newLeads: newLeads.length, legacyLeads: legacyLeads.length });
-          console.log('📊 Sample legacy lead:', legacyLeads[0]);
           const combinedLeads = [...newLeads, ...legacyLeads];
-          console.log('📊 Combined leads before processing:', combinedLeads.length);
           const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
-          console.log('📊 Processed leads after processing:', processedLeads.length);
           setTodayFollowUps(processedLeads);
         } catch (error) {
-          console.warn('Error fetching today follow-ups:', error);
           setTodayFollowUps([]);
         } finally {
           setTodayFollowUpsLoading(false);
@@ -5567,7 +5059,6 @@ const Dashboard: React.FC = () => {
           const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
           setTomorrowFollowUps(processedLeads);
         } catch (error) {
-          console.warn('Error fetching tomorrow follow-ups:', error);
           setTomorrowFollowUps([]);
         } finally {
           setTomorrowFollowUpsLoading(false);
@@ -5581,7 +5072,6 @@ const Dashboard: React.FC = () => {
           const processedLeads = await processOverdueLeadsForDisplay(combinedLeads);
           setRealOverdueLeads(processedLeads);
         } catch (error) {
-          console.warn('Error fetching overdue leads for display:', error);
           setRealOverdueLeads([]);
         } finally {
           setOverdueLeadsLoading(false);
@@ -5604,7 +5094,6 @@ const Dashboard: React.FC = () => {
       setAllOverdueLeads(processedLeads);
       setShowAllOverdueLeads(true);
     } catch (error) {
-      console.warn('Error loading all overdue leads:', error);
     } finally {
       setLoadingMoreLeads(false);
     }
@@ -5613,9 +5102,6 @@ const Dashboard: React.FC = () => {
   // Helper function to process overdue leads for display
   const processOverdueLeadsForDisplay = async (leadsData: any[], processAll = false) => {
     try {
-      console.log('Processing leads data:', leadsData.length, 'leads');
-      console.log('Sample lead data:', leadsData.slice(0, 2));
-      
       // Separate new and legacy leads based on table structure
       // New leads come from 'leads' table and have lead_number field (string)
       // Legacy leads come from 'leads_lead' table and don't have lead_number, or have any role ID fields
@@ -5643,11 +5129,6 @@ const Dashboard: React.FC = () => {
         const isLegacyId = typeof lead.id === 'number' || lead.id?.toString().startsWith('legacy_');
         return (!lead.lead_number && isLegacyId) || hasRoleField || isLegacyId;
       });
-      
-      console.log('New leads:', newLeads.length, 'Legacy leads:', legacyLeads.length);
-      console.log('Sample legacy leads:', legacyLeads.slice(0, 2));
-      console.log('Sample new leads:', newLeads.slice(0, 2));
-
       // Fetch stage names for new leads
       let newLeadStageIds: number[] = [];
       if (newLeads.length > 0) {
@@ -5748,9 +5229,6 @@ const Dashboard: React.FC = () => {
         }
         return true; // Valid lead_number
       });
-      
-      console.log(`Filtered out ${newLeads.length - validNewLeads.length} deleted leads (without valid lead_number)`);
-      
       const processedNewLeads = validNewLeads.map(lead => {
         // Resolve expert name - check if expert is a numeric ID or a text name
         let expertName = 'Not assigned';
@@ -5812,9 +5290,6 @@ const Dashboard: React.FC = () => {
           ...limitedLegacyLeads.map(lead => lead.meeting_manager_id).filter(Boolean)
         ])];
         const categoryIds = [...new Set(limitedLegacyLeads.map(lead => lead.category_id).filter(Boolean))];
-
-        console.log('Fetching related data for:', { stageIds, employeeIds, categoryIds });
-
         // Fetch all related data in parallel for better performance
         const [stageResult, employeeResult, categoryResult] = await Promise.allSettled([
           stageIds.length > 0 ? supabase.from('lead_stages').select('id, name').in('id', stageIds) : Promise.resolve({ data: [] }),
@@ -5906,11 +5381,8 @@ const Dashboard: React.FC = () => {
           if (!b.next_followup) return -1;
           return new Date(a.next_followup).getTime() - new Date(b.next_followup).getTime();
         });
-
-      console.log('Final processed leads:', allLeads.length);
       return allLeads;
     } catch (error) {
-      console.warn('Error processing overdue leads for display:', error);
       return [];
     }
   };
