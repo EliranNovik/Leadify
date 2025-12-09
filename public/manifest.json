@@ -10,49 +10,49 @@
   "scope": "/",
   "icons": [
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "72x72",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "96x96",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "128x128",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "144x144",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "152x152",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "192x192",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "384x384",
       "type": "image/png",
       "purpose": "any maskable"
     },
     {
-      "src": "/rmq-logo.png",
+      "src": "/RMQ_LOGO.png",
       "sizes": "512x512",
       "type": "image/png",
       "purpose": "any maskable"
@@ -66,28 +66,28 @@
       "short_name": "Dashboard",
       "description": "View your dashboard",
       "url": "/dashboard",
-      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/RMQ_LOGO.png", "sizes": "96x96" }]
     },
     {
       "name": "New Lead",
       "short_name": "New Lead",
       "description": "Create a new lead",
       "url": "/create",
-      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/RMQ_LOGO.png", "sizes": "96x96" }]
     },
     {
       "name": "Calendar",
       "short_name": "Calendar",
       "description": "View your calendar",
       "url": "/calendar",
-      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/RMQ_LOGO.png", "sizes": "96x96" }]
     },
     {
       "name": "Clients",
       "short_name": "Clients",
       "description": "View all clients",
       "url": "/clients",
-      "icons": [{ "src": "/rmq-logo.png", "sizes": "96x96" }]
+      "icons": [{ "src": "/RMQ_LOGO.png", "sizes": "96x96" }]
     }
   ],
   "share_target": {

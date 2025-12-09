@@ -128,13 +128,16 @@ const LoginPage: React.FC = () => {
 
   return (
     <div className="min-h-screen w-full flex relative overflow-hidden">
+      {/* Gradient background for entire page */}
+      <div className="absolute inset-0 w-full h-full bg-gradient-to-br from-[#0b1e3d] via-[#0f4c75] to-[#06b6d4] z-0" />
+      
       {/* Only render login UI if not showing welcome animation */}
       {!showSuccessAnim && (
         <>
           {/* Full width login box */}
-          <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 bg-white pt-48">
+          <div className="w-full flex flex-col justify-start items-center min-h-screen relative z-10 pt-16 md:pt-20">
       {/* Header bar - Mobile */}
-      <div className="md:hidden absolute top-0 left-0 right-0 z-30" style={{ backgroundColor: '#3B18BC' }}>
+      <div className="md:hidden absolute top-0 left-0 right-0 z-30">
         <div className="flex items-center justify-between py-4 px-6">
           {/* Hamburger Menu Button */}
           <button
@@ -159,14 +162,14 @@ const LoginPage: React.FC = () => {
         
         {/* Mobile Menu Overlay */}
         {isMenuOpen && (
-          <div className="absolute top-full left-0 right-0 shadow-lg z-40" style={{ backgroundColor: '#3B18BC' }}>
+          <div className="absolute top-full left-0 right-0 shadow-lg z-40 bg-white/10 backdrop-blur-md">
             <div className="py-2">
               <button
                 onClick={() => {
                   navigate('/about');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
               >
                 About Us
               </button>
@@ -175,7 +178,7 @@ const LoginPage: React.FC = () => {
                   navigate('/contact');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
               >
                 Contact
               </button>
@@ -184,7 +187,7 @@ const LoginPage: React.FC = () => {
                   navigate('/how-it-works');
                   setIsMenuOpen(false);
                 }}
-                className="w-full text-left px-6 py-3 text-white hover:bg-purple-800 transition-colors duration-200"
+                className="w-full text-left px-6 py-3 text-white hover:bg-white/20 transition-colors duration-200"
               >
                 How It Works
               </button>
@@ -194,7 +197,7 @@ const LoginPage: React.FC = () => {
       </div>
       
       {/* Desktop Header */}
-      <div className="hidden md:block absolute top-0 left-0 right-0 z-30" style={{ backgroundColor: '#3B18BC' }}>
+      <div className="hidden md:block absolute top-0 left-0 right-0 z-30">
         <div className="flex items-center justify-between py-4 px-8">
           {/* Brand */}
           <div className="flex items-center gap-3">
@@ -227,19 +230,19 @@ const LoginPage: React.FC = () => {
         </div>
       </div>
             {/* Logo above login form */}
-            <div className="mb-0 md:mb-1 flex flex-col items-center">
-              <img src="/rmq-logo.png" alt="RMQ 2.0" className="w-64 h-64 md:w-72 md:h-72 object-contain" />
+            <div className="mb-4 md:mb-6 flex flex-col items-center">
+              <img src="/RMQ_LOGO.png" alt="RMQ 2.0" className="w-56 h-56 md:w-64 md:h-64 object-contain" />
             </div>
             
             {/* Login box */}
             <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] pt-0 pb-12 px-6 md:pt-2 md:px-0">
             <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
               <div className="w-full mt-0 md:mt-2">
-                  <label className="block font-semibold mb-1 text-gray-800 text-left">Email</label>
+                  <label className="block font-semibold mb-1 text-white text-left">Email</label>
                 <div className="relative">
                   <input
                     type="email"
-                      className="input input-bordered w-full pl-10 bg-white text-gray-900 placeholder-gray-400 border-gray-300 focus:border-primary"
+                      className="input input-bordered w-full pl-10 bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
                     placeholder="you@email.com"
                     value={email}
                     onChange={e => setEmail(e.target.value)}
@@ -251,10 +254,10 @@ const LoginPage: React.FC = () => {
                 </div>
               </div>
               <div className="w-full">
-                  <label className="block font-semibold mb-1 text-gray-800 text-left">Password</label>
+                  <label className="block font-semibold mb-1 text-white text-left">Password</label>
                 <input
                   type="password"
-                    className="input input-bordered w-full bg-white text-gray-900 placeholder-gray-400 border-gray-300 focus:border-primary"
+                    className="input input-bordered w-full bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
                   placeholder="Password"
                   value={password}
                   onChange={e => setPassword(e.target.value)}
@@ -263,7 +266,7 @@ const LoginPage: React.FC = () => {
               </div>
               <button
                 type="submit"
-                  className="btn bg-primary text-white border-none w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform"
+                  className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                 disabled={loading}
               >
                 {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
@@ -272,7 +275,7 @@ const LoginPage: React.FC = () => {
               <div className="relative group w-full">
                 <button
                   type="button"
-                    className="btn btn-outline border-primary text-primary hover:bg-primary/10 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
                     onClick={handleMagicLink}
                     disabled={magicLinkLoading || !email}
                 >
@@ -419,7 +422,7 @@ const LoginPage: React.FC = () => {
             </div>
             {/* Copyright at bottom left */}
             <div className="absolute left-0 right-0 bottom-0 z-20 pb-6 flex justify-center w-full">
-              <span className="text-gray-500 text-lg font-semibold drop-shadow-lg text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
+              <span className="text-white/80 text-lg font-semibold drop-shadow-lg text-center w-full">© Rainmaker Queen 2.0 {new Date().getFullYear()}</span>
             </div>
           </div>
         </>

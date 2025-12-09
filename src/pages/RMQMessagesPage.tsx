@@ -24,7 +24,8 @@ import {
   StopIcon,
   Squares2X2Icon,
   ChevronDownIcon,
-  ChevronUpIcon
+  ChevronUpIcon,
+  PhotoIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 
@@ -96,6 +97,11 @@ interface Message {
   voice_duration?: number;
   voice_waveform?: any;
   is_voice_message?: boolean;
+  delivery_status?: string;
+  read_receipts?: Array<{
+    user_id: string;
+    read_at: string;
+  }>;
 }
 
 interface MessagingModalProps {
@@ -126,6 +132,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [selectedUsers, setSelectedUsers] = useState<string[]>([]);
   const [newGroupTitle, setNewGroupTitle] = useState('');
   const [newGroupDescription, setNewGroupDescription] = useState('');
+  
+  // Chat background image state
+  const [chatBackgroundImageUrl, setChatBackgroundImageUrl] = useState<string | null>(null);
+  const [isUploadingBackground, setIsUploadingBackground] = useState(false);
+  const backgroundImageInputRef = useRef<HTMLInputElement>(null);
   
   // File attachment state
   const [isUploadingFile, setIsUploadingFile] = useState(false);
@@ -633,6 +644,131 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const mins = Math.floor(seconds / 60);
     const secs = Math.floor(seconds % 60);
     return `${mins}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  // Mark messages as read for current user (when viewing conversation)
+  const markMessagesAsRead = async (messageIds: number[], conversationId: number) => {
+    if (!currentUser || messageIds.length === 0) return;
+
+    try {
+      // For each message, check if we need to create read receipts
+      // This marks that the current user has read these messages
+      const receiptsToInsert = [];
+      
+      for (const messageId of messageIds) {
+        // Check if read receipt already exists
+        const { data: existingReceipt } = await supabase
+          .from('message_read_receipts')
+          .select('id')
+          .eq('message_id', messageId)
+          .eq('user_id', currentUser.id)
+          .maybeSingle();
+
+        // Only create if it doesn't exist
+        if (!existingReceipt) {
+          receiptsToInsert.push({
+            message_id: messageId,
+            user_id: currentUser.id,
+            read_at: new Date().toISOString()
+          });
+        }
+      }
+
+      // Batch insert all new read receipts
+      if (receiptsToInsert.length > 0) {
+        await supabase
+          .from('message_read_receipts')
+          .insert(receiptsToInsert);
+      }
+    } catch (error) {
+      console.error('Error marking messages as read:', error);
+    }
+  };
+
+  // Get read receipt status for a message (WhatsApp-style)
+  const getReadReceiptStatus = (message: Message): 'sent' | 'delivered' | 'read' => {
+    if (!currentUser || !selectedConversation) return 'sent';
+    
+    // Only show read receipts for messages sent by current user
+    if (message.sender_id !== currentUser.id) return 'sent';
+
+    // For direct conversations
+    if (selectedConversation.type === 'direct') {
+      const otherParticipant = selectedConversation.participants?.find(
+        p => p.user_id !== currentUser.id
+      );
+      
+      if (!otherParticipant) return 'sent';
+      
+      // Check if the other participant has read this message
+      const hasRead = message.read_receipts?.some(
+        rr => rr.user_id === otherParticipant.user_id
+      );
+      
+      return hasRead ? 'read' : 'delivered';
+    }
+
+    // For group conversations
+    if (selectedConversation.type === 'group') {
+      const otherParticipants = selectedConversation.participants?.filter(
+        p => p.user_id !== currentUser.id && p.is_active
+      ) || [];
+      
+      if (otherParticipants.length === 0) return 'sent';
+      
+      // Check if all participants have read
+      const readCount = message.read_receipts?.filter(rr =>
+        otherParticipants.some(p => p.user_id === rr.user_id)
+      ).length || 0;
+      
+      if (readCount === otherParticipants.length) {
+        return 'read';
+      } else if (readCount > 0) {
+        return 'delivered';
+      }
+      
+      return 'delivered'; // Assume delivered when sent
+    }
+
+    return 'sent';
+  };
+
+  // Render read receipt checkmarks (WhatsApp-style)
+  const renderReadReceipts = (message: Message) => {
+    const status = getReadReceiptStatus(message);
+    
+    if (status === 'sent') {
+      // One white checkmark
+      return (
+        <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+          <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+        </svg>
+      );
+    } else if (status === 'delivered') {
+      // Two white checkmarks
+      return (
+        <div className="flex items-center -space-x-1">
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(255, 255, 255, 0.7)' }}>
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+        </div>
+      );
+    } else {
+      // Two green checkmarks
+      return (
+        <div className="flex items-center -space-x-1">
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+          <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+            <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+          </svg>
+        </div>
+      );
+    }
   };
 
   // Generate waveform data from audio blob (similar to WhatsApp)
@@ -1227,6 +1363,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               bonuses_role,
               department_id,
               photo_url,
+              chat_background_image_url,
               tenant_departement!tenants_employee_department_id_fkey(
                 name
               )
@@ -1241,6 +1378,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
 
         setCurrentUser(userData as unknown as User);
+        
+        // Set chat background image URL if available
+        const backgroundUrl = (userData as any)?.tenants_employee?.chat_background_image_url;
+        setChatBackgroundImageUrl(backgroundUrl || null);
         
         // Wait for data to be loaded before connecting WebSocket
         console.log('✅ User data loaded, initializing WebSocket connection...');
@@ -1546,6 +1687,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           voice_duration,
           voice_waveform,
           is_voice_message,
+          delivery_status,
           sender:users!sender_id(
             id,
             full_name,
@@ -1579,7 +1721,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return;
       }
 
-      setMessages((messagesData || []) as unknown as Message[]);
+      // Fetch read receipts for all messages
+      if (messagesData && messagesData.length > 0 && currentUser) {
+        const messageIds = messagesData.map(m => m.id);
+        const { data: readReceiptsData } = await supabase
+          .from('message_read_receipts')
+          .select('message_id, user_id, read_at')
+          .in('message_id', messageIds);
+
+        // Attach read receipts to messages
+        const messagesWithReceipts = messagesData.map((msg: any) => ({
+          ...msg,
+          read_receipts: readReceiptsData?.filter(rr => rr.message_id === msg.id) || []
+        }));
+
+        setMessages(messagesWithReceipts as unknown as Message[]);
+        
+        // Mark messages as read for current user when viewing conversation
+        await markMessagesAsRead(messageIds, conversationId);
+      } else {
+        setMessages((messagesData || []) as unknown as Message[]);
+      }
       
       // Mark conversation as read
       if (currentUser) {
@@ -1752,6 +1914,130 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
+  // Upload chat background image
+  const uploadChatBackgroundImage = async (file: File): Promise<string | null> => {
+    if (!currentUser?.employee_id) {
+      toast.error('Unable to upload: Employee ID not found');
+      return null;
+    }
+
+    try {
+      setIsUploadingBackground(true);
+      
+      // Generate unique filename
+      const fileExt = file.name.split('.').pop();
+      const fileName = `chat_bg_${currentUser.employee_id}_${Date.now()}.${fileExt}`;
+      
+      console.log('📤 Uploading chat background image:', { fileName, fileSize: file.size, fileType: file.type });
+      
+      // Upload file to Supabase storage
+      const { data, error } = await supabase.storage
+        .from('My-Profile')
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type
+        });
+      
+      if (error) {
+        console.error('Error uploading chat background image:', error);
+        toast.error('Failed to upload background image');
+        return null;
+      }
+      
+      console.log('✅ Upload successful:', data);
+      
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('My-Profile')
+        .getPublicUrl(fileName);
+      
+      console.log('🔗 Public URL generated:', publicUrl);
+      
+      // Update database
+      const { error: updateError } = await supabase
+        .from('tenants_employee')
+        .update({ chat_background_image_url: publicUrl })
+        .eq('id', currentUser.employee_id);
+      
+      if (updateError) {
+        console.error('Error updating chat background URL:', updateError);
+        toast.error('Failed to save background image URL');
+        return null;
+      }
+      
+      // Update local state
+      setChatBackgroundImageUrl(publicUrl);
+      toast.success('Background image uploaded successfully');
+      
+      return publicUrl;
+    } catch (error) {
+      console.error('Error uploading chat background image:', error);
+      toast.error('Failed to upload background image');
+      return null;
+    } finally {
+      setIsUploadingBackground(false);
+    }
+  };
+
+  // Handle background image input change
+  const handleBackgroundImageInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    
+    // Validate file type
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please upload an image file');
+      return;
+    }
+    
+    // Validate file size (max 10MB)
+    if (file.size > 10 * 1024 * 1024) {
+      toast.error('Image size must be less than 10MB');
+      return;
+    }
+    
+    await uploadChatBackgroundImage(file);
+    
+    // Reset input
+    if (backgroundImageInputRef.current) {
+      backgroundImageInputRef.current.value = '';
+    }
+  };
+
+  // Reset background to default (white)
+  const resetBackgroundToDefault = async () => {
+    if (!currentUser?.employee_id) {
+      toast.error('Unable to reset: Employee ID not found');
+      return;
+    }
+
+    try {
+      setIsUploadingBackground(true);
+      
+      // Update database to set chat_background_image_url to null
+      const { error: updateError } = await supabase
+        .from('tenants_employee')
+        .update({ chat_background_image_url: null })
+        .eq('id', currentUser.employee_id);
+      
+      if (updateError) {
+        console.error('Error resetting chat background:', updateError);
+        toast.error('Failed to reset background');
+        return;
+      }
+      
+      // Update local state
+      setChatBackgroundImageUrl(null);
+      toast.success('Background reset to default');
+    } catch (error) {
+      console.error('Error resetting chat background:', error);
+      toast.error('Failed to reset background');
+    } finally {
+      setIsUploadingBackground(false);
+    }
+  };
+
   // Handle file input change
   const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -1890,6 +2176,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   // Send message
+  const handleMessageKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      if (newMessage.trim() && !isSending) {
+        sendMessage();
+      }
+    }
+    // Shift+Enter will allow default behavior (new line)
+  };
+
   const sendMessage = async () => {
     if (!selectedConversation || !currentUser || !newMessage.trim()) return;
     
@@ -1985,6 +2281,22 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
       );
+      }
+
+      // Refresh read receipts for the new message after a short delay
+      if (messageData.id) {
+        setTimeout(async () => {
+          const { data: receipts } = await supabase
+            .from('message_read_receipts')
+            .select('user_id, read_at')
+            .eq('message_id', messageData.id);
+          
+          setMessages(prev => prev.map(msg => 
+            msg.id === messageData.id 
+              ? { ...msg, read_receipts: receipts || [] }
+              : msg
+          ));
+        }, 500);
       }
 
     } catch (error) {
@@ -2676,7 +2988,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   useEffect(() => {
     if (!currentUser) return;
 
-    const handleWebSocketMessage = (message: MessageData) => {
+    const handleWebSocketMessage = async (message: MessageData) => {
       console.log('📨 WebSocket message received:', message);
       console.log('📨 Current selected conversation:', selectedConversation?.id);
       console.log('📨 Message is for conversation:', message.conversation_id);
@@ -2685,6 +2997,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Add message if it's for the currently selected conversation
       if (selectedConversation && message.conversation_id === selectedConversation.id) {
         console.log('📨 Adding message to current conversation');
+        
+        // Fetch read receipts for the new message
+        let readReceipts: Array<{ user_id: string; read_at: string }> = [];
+        if (message.id) {
+          const { data: receipts } = await supabase
+            .from('message_read_receipts')
+            .select('user_id, read_at')
+            .eq('message_id', message.id);
+          readReceipts = receipts || [];
+        }
+        
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
           const exists = prev.some(m => m.id === message.id || 
@@ -2698,7 +3021,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           }
           
           // Enhance WebSocket message with real user data from conversation participants
-          const enhancedMessage = { ...message } as unknown as Message;
+          const enhancedMessage = { 
+            ...message,
+            read_receipts: readReceipts,
+            delivery_status: 'sent'
+          } as unknown as Message;
           
           // Find the sender in the conversation participants to get real user data
           const senderParticipant = selectedConversation.participants.find(p => p.user_id === message.sender_id);
@@ -2722,6 +3049,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           console.log('📨 Adding enhanced message:', enhancedMessage);
           return [...prev, enhancedMessage];
         });
+        
+        // Mark message as read if current user is viewing the conversation
+        if (message.id && message.sender_id !== currentUser.id) {
+          await markMessagesAsRead([message.id], selectedConversation.id);
+        }
       } else {
         console.log('📨 Message not for current conversation, updating conversation list only');
       }
@@ -2766,6 +3098,52 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     };
   }, [selectedConversation?.id, currentUser?.id]); // Only depend on IDs to prevent constant re-joining
 
+  // Periodically refresh read receipts for messages in current conversation
+  useEffect(() => {
+    if (!selectedConversation || !currentUser || messages.length === 0) return;
+
+    const refreshReadReceipts = async () => {
+      const messageIds = messages
+        .filter(msg => msg.sender_id === currentUser.id) // Only refresh for own messages
+        .map(msg => msg.id);
+      
+      if (messageIds.length === 0) return;
+
+      const { data: receipts } = await supabase
+        .from('message_read_receipts')
+        .select('message_id, user_id, read_at')
+        .in('message_id', messageIds);
+
+      if (receipts) {
+        // Group receipts by message_id
+        const receiptsByMessage = receipts.reduce((acc: any, receipt: any) => {
+          if (!acc[receipt.message_id]) {
+            acc[receipt.message_id] = [];
+          }
+          acc[receipt.message_id].push({
+            user_id: receipt.user_id,
+            read_at: receipt.read_at
+          });
+          return acc;
+        }, {});
+
+        // Update messages with new read receipts
+        setMessages(prev => prev.map(msg => ({
+          ...msg,
+          read_receipts: receiptsByMessage[msg.id] || msg.read_receipts || []
+        })));
+      }
+    };
+
+    // Refresh immediately
+    refreshReadReceipts();
+
+    // Refresh every 3 seconds
+    const interval = setInterval(refreshReadReceipts, 3000);
+
+    return () => clearInterval(interval);
+  }, [selectedConversation?.id, currentUser?.id, messages.length]);
+
   // Typing indicators removed - no cleanup needed
 
   // Filter conversations and users based on search and active tab
@@ -2797,6 +3175,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             user,
             lastMessageAt: null as string | null,
             lastMessagePreview: '',
+            lastMessageId: null as number | null,
+            lastMessageReadStatus: null as 'sent' | 'delivered' | 'read' | null,
+            unreadCount: 0,
           };
         }
 
@@ -2806,10 +3187,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           conv.participants?.some(p => p.user_id === user.id)
         );
 
+        // Find the last message in this conversation that was sent by current user
+        // Sort messages by sent_at descending and find the first one sent by current user
+        const lastOwnMessage = messages
+          .filter(msg => 
+            msg.conversation_id === directConversation?.id &&
+            msg.sender_id === currentUser.id &&
+            !msg.is_deleted
+          )
+          .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime())[0];
+
+        let lastMessageReadStatus: 'sent' | 'delivered' | 'read' | null = null;
+        if (lastOwnMessage && directConversation) {
+          // Check read status for the last message
+          const otherParticipant = directConversation.participants?.find(
+            p => p.user_id !== currentUser.id
+          );
+          
+          if (otherParticipant) {
+            const hasRead = lastOwnMessage.read_receipts?.some(
+              rr => rr.user_id === otherParticipant.user_id
+            );
+            lastMessageReadStatus = hasRead ? 'read' : 'delivered';
+          } else {
+            lastMessageReadStatus = 'sent';
+          }
+        }
+
         return {
           user,
           lastMessageAt: directConversation?.last_message_at || null,
           lastMessagePreview: directConversation?.last_message_preview || '',
+          lastMessageId: lastOwnMessage?.id || null,
+          lastMessageReadStatus,
+          unreadCount: directConversation?.unread_count || 0,
         };
       })
       .sort((a, b) => {
@@ -2823,7 +3234,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         const bName = (b.user.tenants_employee?.display_name || b.user.full_name || '').toLowerCase();
         return aName.localeCompare(bName);
       });
-  }, [filteredUsers, conversations, currentUser]);
+  }, [filteredUsers, conversations, currentUser, messages]);
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
@@ -2852,7 +3263,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-white border-r border-gray-200 flex-col shadow-lg">
         {/* Header */}
-        <div className="p-6 border-b border-gray-200 bg-white">
+        <div className="p-6 border-b border-gray-200/50" style={{ backgroundColor: 'transparent' }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {activeTab === 'groups' && (
@@ -2864,7 +3275,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <PlusIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
                 </button>
               )}
-              <ChatBubbleLeftRightIcon className="w-6 h-6" style={{ color: '#3E28CD' }} />
+              <img src="/RMQ_LOGO.png" alt="RMQ" className="w-20 h-20 object-contain" />
               <div>
                 <h1 className="text-xl font-bold text-gray-900">RMQ Messages</h1>
                 <p className="text-gray-500 text-sm">Internal Communications</p>
@@ -2937,7 +3348,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview }) => {
+              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
                   ? rawDisplayName.trim() 
@@ -2984,13 +3395,45 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
                           </span>
                         </div>
-                        <p className="text-sm text-gray-600 truncate mt-1">
-                          {lastMessagePreview || 'No messages yet'}
-                        </p>
+                        <div className="flex items-center gap-1 mt-1">
+                          <p className="text-sm text-gray-600 truncate flex-1">
+                            {lastMessagePreview || 'No messages yet'}
+                          </p>
+                          {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
+                            <div className="flex-shrink-0">
+                              {lastMessageReadStatus === 'read' ? (
+                                <div className="flex items-center -space-x-1">
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              ) : (
+                                <div className="flex items-center -space-x-1">
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       
-                      <div className="text-gray-400">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      <div className="flex items-center gap-1">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-400" />
+                        {unreadCount > 0 ? (
+                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400 font-medium">0</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -3054,7 +3497,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Mobile Sidebar */}
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-white flex flex-col`}>
         {/* Mobile Header */}
-        <div className="p-4 border-b border-gray-200 bg-white">
+        <div className="p-4 border-b border-gray-200/50" style={{ backgroundColor: 'transparent' }}>
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {activeTab === 'groups' && (
@@ -3066,7 +3509,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     <PlusIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                   </button>
                 )}
-                <ChatBubbleLeftRightIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                <img src="/RMQ_LOGO.png" alt="RMQ" className="w-20 h-20 object-contain" />
                 <div>
                   <h1 className="text-lg font-bold text-gray-900">Messages</h1>
                   <p className="text-gray-500 text-xs">Internal Communications</p>
@@ -3148,7 +3591,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <p className="text-sm">Try adjusting your search</p>
               </div>
             ) : (
-              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview }) => {
+              contactsWithLastMessage.map(({ user, lastMessageAt, lastMessagePreview, lastMessageReadStatus, unreadCount }) => {
                 const rawDisplayName = user.tenants_employee?.display_name || user.full_name;
                 const userName = (rawDisplayName && rawDisplayName.trim().length > 1) 
                   ? rawDisplayName.trim() 
@@ -3195,13 +3638,45 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             {lastMessageAt ? formatMessageTime(lastMessageAt) : ''}
                           </span>
                         </div>
-                        <p className="text-xs text-gray-600 truncate mt-1">
-                          {lastMessagePreview || 'No messages yet'}
-                        </p>
+                        <div className="flex items-center gap-1 mt-1">
+                          <p className="text-xs text-gray-600 truncate flex-1">
+                            {lastMessagePreview || 'No messages yet'}
+                          </p>
+                          {lastMessageReadStatus && lastMessageReadStatus !== 'sent' && (
+                            <div className="flex-shrink-0">
+                              {lastMessageReadStatus === 'read' ? (
+                                <div className="flex items-center -space-x-1">
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: '#4ade80' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              ) : (
+                                <div className="flex items-center -space-x-1">
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                  <svg className="w-3 h-3" fill="currentColor" viewBox="0 0 20 20" style={{ color: 'rgba(156, 163, 175, 0.7)' }}>
+                                    <path fillRule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clipRule="evenodd" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
                       </div>
                       
-                      <div className="text-gray-400">
-                        <ChatBubbleLeftRightIcon className="w-5 h-5" />
+                      <div className="flex items-center gap-1">
+                        <ChatBubbleLeftRightIcon className="w-5 h-5 text-gray-400" />
+                        {unreadCount > 0 ? (
+                          <div className="w-6 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold" style={{ backgroundColor: '#3E28CD' }}>
+                            {unreadCount > 99 ? '99+' : unreadCount}
+                          </div>
+                        ) : (
+                          <span className="text-xs text-gray-400 font-medium">0</span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -3260,11 +3735,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Chat Area - Desktop Only */}
-      <div className="hidden lg:flex flex-1 flex-col bg-white">
+      <div className="hidden lg:flex flex-1 flex-col bg-white relative">
         {selectedConversation ? (
           <>
             {/* Chat Header */}
-            <div className="p-4 border-b border-gray-200 bg-white shadow-sm">
+            <div className="p-4 border-b border-white/10 flex-none" style={{ backgroundColor: 'transparent' }}>
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center gap-3">
                   <button
@@ -3296,6 +3771,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
+                  {/* Background Image Upload Button */}
+                  <button
+                    onClick={() => backgroundImageInputRef.current?.click()}
+                    disabled={isUploadingBackground}
+                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    title="Upload chat background image"
+                  >
+                    {isUploadingBackground ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PhotoIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                  {chatBackgroundImageUrl && (
+                    <button
+                      onClick={resetBackgroundToDefault}
+                      disabled={isUploadingBackground}
+                      className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                      title="Reset to default white background"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  )}
+                  <input
+                    ref={backgroundImageInputRef}
+                    type="file"
+                    accept="image/*"
+                    onChange={handleBackgroundImageInputChange}
+                    className="hidden"
+                  />
                   {/* Add/Remove Member Buttons for Group Chats */}
                   {selectedConversation.type === 'group' && (
                     <>
@@ -3365,7 +3870,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div 
               ref={desktopMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white"
+              className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 relative"
+              style={{
+                backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : 'white',
+                backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
+                backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
+                backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
+                backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
+              }}
             >
               {messages.length === 0 ? (
                 <div className="text-center py-12">
@@ -3621,12 +4134,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           )}
                           
                           {/* Timestamp inside message bubble */}
-                          <div className={`flex items-center justify-end mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                          <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                             <span className={`text-xs ${
                               isOwn ? 'text-white/70' : 'text-gray-500'
                             }`}>
                               {formatMessageTime(message.sent_at)}
                             </span>
+                            {isOwn && renderReadReceipts(message)}
                           </div>
                           </div>
                           
@@ -3703,23 +4217,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Message Input - Desktop Only */}
-            <div className="hidden lg:block p-4 border-t border-gray-200 bg-white">
-              <div className="flex items-end gap-3 relative">
+            <div className="hidden lg:block absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
+              <div className="flex items-end gap-3 relative pointer-events-auto">
                 {/* Consolidated Tools Button */}
                 <div className="relative" ref={desktopToolsRef}>
                   {!isRecording ? (
                     <button
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
-                      className="btn btn-ghost btn-circle btn-md text-gray-500 disabled:opacity-50"
-                      onMouseEnter={(e) => e.currentTarget.style.color = '#3E28CD'}
-                      onMouseLeave={(e) => e.currentTarget.style.color = ''}
+                      className="btn btn-circle w-12 h-12 text-gray-500 disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow border border-white/30 hover:border-white/50"
+                      style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}
+                      onMouseEnter={(e) => {
+                        e.currentTarget.style.color = '#3E28CD';
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.9)';
+                      }}
+                      onMouseLeave={(e) => {
+                        e.currentTarget.style.color = '';
+                        e.currentTarget.style.backgroundColor = 'rgba(255, 255, 255, 0.8)';
+                      }}
                       title="Message tools"
                     >
                       <Squares2X2Icon className="w-6 h-6" />
                     </button>
                   ) : (
-                    <div className="flex items-center gap-2">
+                    <div className="flex items-center gap-2 rounded-full px-3 py-2 shadow-lg border border-white/30" style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}>
                       <button
                         onClick={stopVoiceRecording}
                         className="btn btn-circle btn-sm bg-red-500 hover:bg-red-600 text-white"
@@ -3882,20 +4403,30 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     ref={messageInputRef}
                     value={newMessage}
                     onChange={handleMessageInputChange}
+                    onKeyDown={handleMessageKeyDown}
                     placeholder="Type a message..."
-                    className="textarea textarea-bordered w-full resize-none min-h-[44px] max-h-32"
+                    className="textarea w-full resize-none min-h-[44px] max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                     rows={1}
                     disabled={isSending}
+                    style={{ 
+                      backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                      backdropFilter: 'blur(10px)',
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' 
+                    }}
                   />
                 </div>
                 
                 <button
-                  onClick={sendMessage}
-                  disabled={!newMessage.trim() || isSending}
-                  className="btn btn-primary btn-circle w-12 h-12"
+                  onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
+                  disabled={isSending}
+                  className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow"
+                  style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                  title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
                 >
                   {isSending ? (
                     <div className="loading loading-spinner loading-sm"></div>
+                  ) : !newMessage.trim() ? (
+                    <MicrophoneIcon className="w-5 h-5" />
                   ) : (
                     <PaperAirplaneIcon className="w-5 h-5" />
                   )}
@@ -3906,7 +4437,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         ) : (
           <>
             {/* Chat Header - No Conversation Selected */}
-            <div className="p-4 border-b border-gray-200 bg-white shadow-sm">
+            <div className="p-4 border-b border-white/10" style={{ backgroundColor: 'transparent' }}>
               <div className="flex items-center justify-end">
                 <button 
                   onClick={onClose}
@@ -3917,8 +4448,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
               </div>
             </div>
-            <div className="flex-1 flex items-center justify-center bg-white">
-              <div className="text-center">
+            <div 
+              className="flex-1 flex items-center justify-center relative"
+              style={{
+                backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : 'white',
+                backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
+                backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
+                backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
+                backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
+              }}
+            >
+              <div className="text-center relative z-10">
                 <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-6" style={{ color: '#3E28CD' }} />
                 <h3 className="text-xl font-bold text-gray-900 mb-2">Welcome to RMQ Messages</h3>
                 <p className="text-gray-600 mb-6 max-w-md">
@@ -3937,11 +4478,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       </div>
 
       {/* Mobile Full Screen Chat */}
-      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white fixed inset-0 z-40 overflow-hidden`}>
+      <div className={`lg:hidden ${!showMobileConversations && selectedConversation ? 'flex' : 'hidden'} flex-col w-full bg-white fixed inset-0 z-40 overflow-hidden relative`}>
         {selectedConversation && (
           <>
             {/* Mobile Chat Header */}
-            <div className="p-4 border-b border-gray-200 bg-white flex-none z-10">
+            <div className="p-4 border-b border-white/10 flex-none z-10" style={{ backgroundColor: 'transparent' }}>
               <div className="flex items-center gap-3 mb-3">
                 <button
                   onClick={() => setShowMobileConversations(true)}
@@ -3971,6 +4512,29 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </p>
                 </div>
                 <div className="flex items-center gap-1">
+                  {/* Background Image Upload Button - Mobile */}
+                  <button
+                    onClick={() => backgroundImageInputRef.current?.click()}
+                    disabled={isUploadingBackground}
+                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    title="Upload chat background image"
+                  >
+                    {isUploadingBackground ? (
+                      <div className="loading loading-spinner loading-sm"></div>
+                    ) : (
+                      <PhotoIcon className="w-5 h-5" />
+                    )}
+                  </button>
+                  {chatBackgroundImageUrl && (
+                    <button
+                      onClick={resetBackgroundToDefault}
+                      disabled={isUploadingBackground}
+                      className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                      title="Reset to default white background"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  )}
                   {/* Add/Remove Member Buttons for Group Chats - Mobile */}
                   {selectedConversation.type === 'group' && (
                     <>
@@ -4057,8 +4621,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div 
               ref={mobileMessagesContainerRef}
               onScroll={handleScroll}
-              className="flex-1 overflow-y-auto p-4 space-y-4 bg-white min-h-0 overscroll-contain"
-              style={{ WebkitOverflowScrolling: 'touch' }}
+              className="flex-1 overflow-y-auto p-4 pb-24 space-y-4 min-h-0 overscroll-contain relative"
+              style={{ 
+                WebkitOverflowScrolling: 'touch',
+                backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : 'white',
+                backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
+                backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
+                backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
+                backgroundAttachment: chatBackgroundImageUrl ? 'fixed' : 'scroll'
+              }}
             >
               {                messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
@@ -4305,12 +4877,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         )}
                         
                         {/* Timestamp inside message bubble - Mobile */}
-                        <div className={`flex items-center justify-end mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                        <div className={`flex items-center gap-1 mt-1 pt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                           <span className={`text-xs ${
                             isOwn ? 'text-white/70' : 'text-gray-500'
                           }`}>
                             {formatMessageTime(message.sent_at)}
                           </span>
+                          {isOwn && renderReadReceipts(message)}
                         </div>
                         </div>
                         
@@ -4368,16 +4941,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             </div>
 
             {/* Mobile Message Input - Mobile Only */}
-            <div className="lg:hidden p-3 border-t border-gray-200 bg-white flex-none z-10" style={{ position: 'sticky', bottom: 0 }}>
-              <div className="relative space-y-2">
+            <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-30 pointer-events-none">
+              <div className="relative space-y-2 pointer-events-auto">
                 <div className="flex items-center gap-2">
                   <div className="relative" ref={mobileToolsRef}>
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
-                      className="btn btn-circle btn-sm bg-white border border-gray-200 text-gray-600 hover:bg-gray-50"
+                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow border border-white/30 hover:border-white/50"
+                      style={{ backgroundColor: 'rgba(255, 255, 255, 0.8)', backdropFilter: 'blur(10px)' }}
                       title="Message tools"
                     >
-                      <Squares2X2Icon className="w-5 h-5" />
+                      <Squares2X2Icon className="w-6 h-6" />
                     </button>
                     {showMobileTools && (
                       <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100">
@@ -4420,21 +4994,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       ref={mobileMessageInputRef}
                       value={newMessage}
                       onChange={handleMessageInputChange}
+                      onKeyDown={handleMessageKeyDown}
                       placeholder="Type a message..."
-                      className="textarea textarea-bordered w-full resize-none text-sm min-h-[36px] max-h-40"
+                      className="textarea w-full resize-none text-sm min-h-[36px] max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
                       disabled={isSending}
-                      style={{ lineHeight: '1.4' }}
+                      style={{ 
+                        lineHeight: '1.4', 
+                        backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                        backdropFilter: 'blur(10px)',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' 
+                      }}
                     />
                   </div>
                   
                   <button
-                    onClick={sendMessage}
-                    disabled={!newMessage.trim() || isSending}
-                    className="btn btn-primary btn-circle w-12 h-12"
+                    onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
+                    disabled={isSending}
+                    className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow"
+                    style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                    title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
                   >
                     {isSending ? (
                       <div className="loading loading-spinner loading-sm"></div>
+                    ) : !newMessage.trim() ? (
+                      <MicrophoneIcon className="w-5 h-5" />
                     ) : (
                       <PaperAirplaneIcon className="w-5 h-5" />
                     )}
