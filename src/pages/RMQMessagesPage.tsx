@@ -176,6 +176,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [unavailabilityReason, setUnavailabilityReason] = useState<string | null>(null);
   const [unavailabilityTimePeriod, setUnavailabilityTimePeriod] = useState<string | null>(null);
   
+  // Online status state
+  const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
+  
   // Contact availability map (for sidebar)
   const [contactAvailabilityMap, setContactAvailabilityMap] = useState<{ [key: string]: boolean }>({});
   const [isSearchingLeads, setIsSearchingLeads] = useState(false);
@@ -1512,9 +1515,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               userId: avatarKey,
               name,
               photoUrl,
-              sizeClass: 'w-16 h-16',
+              sizeClass: 'w-12 h-12',
               borderClass: '',
-              textClass: 'text-lg',
+              textClass: 'text-base',
             })}
           </button>
         );
@@ -1572,15 +1575,64 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         
         // Initialize WebSocket connection after user data is set
         if (userData && isOpen) {
-          websocketService.connect(userData.id);
+          // Set up handlers BEFORE connecting
+          // Online status handlers - MUST be set up before connecting
+          websocketService.onUserOnline((userId: string) => {
+            console.log('🟢 User came online:', userId);
+            setOnlineUsers(prev => {
+              const newSet = new Set(prev);
+              newSet.add(String(userId));
+              console.log('📊 Online users after add:', Array.from(newSet));
+              return newSet;
+            });
+          });
+
+          websocketService.onUserOffline((userId: string) => {
+            console.log('🔴 User went offline:', userId);
+            setOnlineUsers(prev => {
+              const newSet = new Set(prev);
+              newSet.delete(String(userId));
+              console.log('📊 Online users after remove:', Array.from(newSet));
+              return newSet;
+            });
+          });
 
           websocketService.onConnect(() => {
             console.log('🔌 WebSocket connected');
+            // Add current user to online users when they connect
+            if (userData?.id) {
+              console.log('🟢 Adding current user to online users on connect:', userData.id);
+              setOnlineUsers(prev => {
+                const newSet = new Set(prev);
+                newSet.add(String(userData.id));
+                console.log('📊 Online users after adding current user:', Array.from(newSet));
+                return newSet;
+              });
+            }
+            // Request online status for all contacts after connection is established
+            setTimeout(() => {
+              if (allUsers.length > 0 && websocketService.isSocketConnected()) {
+                const userIds = allUsers.map(u => String(u.id));
+                console.log('📊 Requesting online status after WebSocket connect:', userIds.length, 'users');
+                websocketService.requestOnlineStatus(userIds);
+              }
+            }, 1000);
           });
 
           websocketService.onDisconnect(() => {
             console.log('🔌 WebSocket disconnected');
           });
+
+          // Online status response handler - MUST be set up before connecting
+          websocketService.onOnlineStatusResponse((onlineUserIds: string[]) => {
+            console.log('📊 Received online status response in RMQMessagesPage:', onlineUserIds);
+            const onlineSet = new Set(onlineUserIds.map(id => String(id)));
+            console.log('📊 Setting online users set:', Array.from(onlineSet));
+            setOnlineUsers(onlineSet);
+          });
+
+          // Now connect after handlers are set up
+          websocketService.connect(userData.id);
         }
       } catch (error) {
         console.error('Error in initializeMessaging:', error);
@@ -1970,6 +2022,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, [currentUser]);
 
+  // Helper function to request online status for all users
+  const requestOnlineStatusForUsers = useCallback(() => {
+    if (allUsers.length > 0 && websocketService.isSocketConnected()) {
+      const userIds = allUsers.map(u => String(u.id));
+      console.log('📊 Requesting online status for users:', userIds);
+      websocketService.requestOnlineStatus(userIds);
+    }
+  }, [allUsers]);
+
   // Fetch all users for contacts
   const fetchAllUsers = useCallback(async () => {
     if (!currentUser) return;
@@ -2022,6 +2083,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       });
 
       setAllUsers(uniqueUsers as unknown as User[]);
+      
+      // Request online status for all users if WebSocket is already connected
+      if (websocketService.isSocketConnected() && uniqueUsers.length > 0) {
+        const userIds = uniqueUsers.map(u => String(u.id));
+        console.log('📊 Requesting online status for users:', userIds);
+        websocketService.requestOnlineStatus(userIds);
+      } else {
+        console.log('⚠️ WebSocket not connected yet, will request online status when connected');
+      }
     } catch (error) {
       console.error('Error in fetchAllUsers:', error);
       toast.error('Failed to load contacts');
@@ -2971,6 +3041,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     loadData();
   }, [currentUser, fetchConversations, fetchAllUsers]);
 
+  // Request online status when both WebSocket is connected and users are loaded
+  useEffect(() => {
+    if (isOpen && websocketService.isSocketConnected() && allUsers.length > 0) {
+      // Add a small delay to ensure socket is fully ready
+      const timeoutId = setTimeout(() => {
+        const userIds = allUsers.map(u => String(u.id));
+        console.log('📊 Requesting online status (useEffect):', userIds.length, 'users');
+        console.log('📊 Socket connected check:', websocketService.isSocketConnected());
+        websocketService.requestOnlineStatus(userIds);
+      }, 500);
+      
+      return () => clearTimeout(timeoutId);
+    }
+  }, [isOpen, allUsers.length]);
+
   // Select initial conversation when modal opens
   useEffect(() => {
     if (isOpen && initialConversationId && conversations.length > 0) {
@@ -3463,7 +3548,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-white border-r border-gray-200 flex-col shadow-lg">
         {/* Header */}
-        <div className="p-6 border-b border-gray-200 bg-white">
+        <div className="p-6 bg-white">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
               {activeTab === 'groups' && (
@@ -3485,7 +3570,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Tabs - Modern Style */}
-        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 my-3">
+        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 mt-3 mb-0">
           <button
             onClick={() => setActiveTab('chats')}
             className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
@@ -3525,7 +3610,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Search */}
-        <div className="p-4 border-b border-gray-200 bg-white">
+        <div className="px-4 pt-1 pb-2 border-b border-gray-200 bg-white">
           <div className="relative">
             <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -3559,6 +3644,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
+                const isOnline = onlineUsers.has(String(user.id));
 
                 return (
                   <div
@@ -3581,14 +3667,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <ClockIcon className="w-3 h-3 text-white" />
                           </div>
                         )}
+                        {!isUnavailable && isOnline && (
+                          <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
+                            <span className="w-2 h-2 bg-white rounded-full"></span>
+                          </div>
+                        )}
                       </div>
                     
                       <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 truncate">
+                        <div className="font-semibold text-gray-900 truncate flex items-center gap-2 flex-wrap">
                           {userName || `User ${user.id.slice(-4)}`}
                           {!hasCompleteInfo && (
-                            <span className="ml-2 text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
+                            <span className="text-xs text-orange-500 bg-orange-100 px-2 py-1 rounded-full">
                               Incomplete Profile
+                            </span>
+                          )}
+                          {isOnline ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
+                              </span>
+                              Online
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
+                              </span>
+                              Offline
                             </span>
                           )}
                         </div>
@@ -3705,7 +3812,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Mobile Sidebar */}
       <div className={`lg:hidden ${showMobileConversations ? 'block' : 'hidden'} w-full bg-white flex flex-col`}>
         {/* Mobile Header */}
-        <div className="p-4 border-b border-gray-200 bg-white">
+        <div className="p-4 bg-white">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
                 {activeTab === 'groups' && (
@@ -3736,7 +3843,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Mobile Tabs */}
-        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 my-3">
+        <div className="flex gap-2 p-2 bg-white rounded-lg mx-4 mt-3 mb-0">
           <button
             onClick={() => setActiveTab('chats')}
             className={`flex-1 py-2.5 px-4 font-medium text-sm transition-all rounded-md ${
@@ -3776,7 +3883,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
 
         {/* Mobile Search */}
-        <div className="p-4 border-b border-gray-200 bg-white">
+        <div className="px-4 pt-1 pb-2 border-b border-gray-200 bg-white">
           <div className="relative">
             <MagnifyingGlassIcon className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
             <input
@@ -3810,6 +3917,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 const userPhoto = user.tenants_employee?.photo_url;
                 const hasCompleteInfo = user.tenants_employee && user.tenants_employee.display_name;
                 const isUnavailable = contactAvailabilityMap[user.tenants_employee?.display_name || ''] || false;
+                const isOnline = onlineUsers.has(String(user.id));
 
                 return (
                   <div
@@ -3832,14 +3940,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <ClockIcon className="w-3 h-3 text-white" />
                           </div>
                         )}
+                        {!isUnavailable && isOnline && (
+                          <div className="absolute bottom-0 right-0 w-4 h-4 bg-green-500 rounded-full border-2 border-white flex items-center justify-center">
+                            <span className="w-2 h-2 bg-white rounded-full"></span>
+                          </div>
+                        )}
                       </div>
                     
                       <div className="flex-1 min-w-0">
-                        <div className="font-semibold text-gray-900 truncate">
+                        <div className="font-semibold text-gray-900 truncate flex items-center gap-2 flex-wrap">
                           {userName || `User ${user.id.slice(-4)}`}
                           {!hasCompleteInfo && (
-                            <span className="ml-1 text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
+                            <span className="text-xs text-orange-500 bg-orange-100 px-1 py-0.5 rounded">
                               Incomplete
+                            </span>
+                          )}
+                          {isOnline ? (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-green-100 text-green-700 border border-green-200">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
+                              </span>
+                              Online
+                            </span>
+                          ) : (
+                            <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium bg-gray-100 text-gray-600 border border-gray-200">
+                              <span className="relative flex h-1.5 w-1.5">
+                                <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
+                              </span>
+                              Offline
                             </span>
                           )}
                         </div>
@@ -3956,11 +4085,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Chat Header */}
             <div 
-              className="p-4 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
+              className="p-4 border-b border-gray-200 bg-white absolute top-0 left-0 right-0 z-20"
               style={{ 
-                backgroundColor: 'rgba(255, 255, 255, 0.6)',
-                backdropFilter: 'blur(10px)',
-                WebkitBackdropFilter: 'blur(10px)',
                 boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
               }}
             >
@@ -3974,9 +4100,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </button>
                   {getConversationAvatar(selectedConversation)}
                   <div className="flex-1">
-                    <h2 className="font-semibold text-gray-900" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                      {getConversationTitle(selectedConversation)}
-                    </h2>
                     {selectedConversation.type === 'direct' ? (
                       (() => {
                         const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
@@ -3985,37 +4108,74 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
                           const department = employee?.tenant_departement?.name || '';
                           
+                          const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
+                          const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
+                          if (otherUserId && process.env.NODE_ENV === 'development') {
+                            console.log(`🔍 Desktop header: Checking ${otherUserId}, isOnline: ${isOnline}, onlineUsers:`, Array.from(onlineUsers));
+                          }
+                          
                           return (
-                            <div className="flex flex-wrap items-center gap-3 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                              {role && (
-                                <div className="flex items-center gap-1.5">
-                                  <BriefcaseIcon className="w-4 h-4" style={{ color: '#10b981' }} />
-                                  <span>{role}</span>
+                            <>
+                              <div className="flex flex-wrap items-center gap-2 text-gray-900">
+                                <h2 className="font-semibold">
+                                  {getConversationTitle(selectedConversation)}
+                                </h2>
+                                {role && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold text-white" style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}>
+                                    {role}
+                                  </span>
+                                )}
+                                {department && (
+                                  <span className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-semibold text-white" style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}>
+                                    {department}
+                                  </span>
+                                )}
+                              </div>
+                              {isOnline ? (
+                                <div className="flex items-center gap-1.5 mt-1">
+                                  <span className="relative flex h-2 w-2">
+                                    <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
+                                  </span>
+                                  <span className="text-xs font-medium text-green-600">Online</span>
                                 </div>
-                              )}
-                              {department && (
-                                <div className="flex items-center gap-1.5">
-                                  <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#10b981' }} />
-                                  <span>{department}</span>
+                              ) : (
+                                <div className="flex items-center gap-1.5 mt-1">
+                                  <span className="relative flex h-2 w-2">
+                                    <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
+                                  </span>
+                                  <span className="text-xs font-medium text-gray-500">Offline</span>
                                 </div>
                               )}
                               {isEmployeeUnavailable && (
-                                <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
+                                <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full mt-1 w-fit" title={unavailabilityReason || 'Currently unavailable'}>
                                   <ClockIcon className="w-4 h-4 text-orange-600" />
                                   <span className="text-sm font-medium text-orange-700">
                                     Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
                                   </span>
                                 </div>
                               )}
-                            </div>
+                            </>
                           );
                         }
-                        return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;
+                        return (
+                          <>
+                            <h2 className="font-semibold text-gray-900">
+                              {getConversationTitle(selectedConversation)}
+                            </h2>
+                            <p className="text-sm text-gray-700">Direct message</p>
+                          </>
+                        );
                       })()
                     ) : (
-                      <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                        {selectedConversation.participants?.length || 0} members
-                      </p>
+                      <>
+                        <h2 className="font-semibold text-gray-900">
+                          {getConversationTitle(selectedConversation)}
+                        </h2>
+                        <p className="text-sm text-gray-700">
+                          {selectedConversation.participants?.length || 0} members
+                        </p>
+                      </>
                     )}
                   </div>
                 </div>
@@ -4777,24 +4937,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         const employee = otherParticipant.user.tenants_employee;
                         const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
                         const department = employee?.tenant_departement?.name || '';
+                        const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
+                        const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
+                        if (otherUserId && process.env.NODE_ENV === 'development') {
+                          console.log(`🔍 Mobile header: Checking ${otherUserId}, isOnline: ${isOnline}, onlineUsers:`, Array.from(onlineUsers));
+                        }
                         
                         return (
-                          <div className="flex flex-wrap items-center gap-2 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                            {role && (
-                              <div className="flex items-center gap-1.5">
-                                <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#10b981' }} />
-                                <span className="truncate">{role}</span>
-                              </div>
-                            )}
-                            {isEmployeeUnavailable && (
-                              <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
-                                <ClockIcon className="w-4 h-4 flex-shrink-0 text-orange-600" />
-                                <span className="text-sm font-medium text-orange-700 truncate">
-                                  Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
+                          <>
+                            <div className="flex flex-wrap items-center gap-2 text-base text-gray-600 mt-1" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                              {role && (
+                                <div className="flex items-center gap-1.5">
+                                  <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#10b981' }} />
+                                  <span className="truncate">{role}</span>
+                                </div>
+                              )}
+                              {isEmployeeUnavailable && (
+                                <div className="flex items-center gap-1.5 px-2 py-1 bg-orange-100 rounded-full" title={unavailabilityReason || 'Currently unavailable'}>
+                                  <ClockIcon className="w-4 h-4 flex-shrink-0 text-orange-600" />
+                                  <span className="text-sm font-medium text-orange-700 truncate">
+                                    Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
+                                  </span>
+                                </div>
+                              )}
+                            </div>
+                            {isOnline ? (
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="relative flex h-2 w-2">
+                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-green-500"></span>
                                 </span>
+                                <span className="text-xs font-medium text-green-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Online</span>
+                              </div>
+                            ) : (
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="relative flex h-2 w-2">
+                                  <span className="relative inline-flex rounded-full h-2 w-2 bg-gray-400"></span>
+                                </span>
+                                <span className="text-xs font-medium text-gray-500" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Offline</span>
                               </div>
                             )}
-                          </div>
+                          </>
                         );
                       }
                       return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;

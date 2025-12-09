@@ -27,6 +27,10 @@ io.on("connection", (socket) => {
     activeUsers.set(socket.id, userId);
     socket.userId = userId;
     console.log(`User ${userId} joined with socket ${socket.id}`);
+    
+    // Emit user_online event to all clients (including the connecting user)
+    io.emit("user_online", String(userId));
+    console.log(`🟢 Emitted user_online for user ${userId}`);
   });
 
   // Join conversation room
@@ -118,11 +122,49 @@ io.on("connection", (socket) => {
     if (userId) {
       activeUsers.delete(socket.id);
       
+      // Emit user_offline event to all clients
+      io.emit("user_offline", String(userId));
+      console.log(`🔴 Emitted user_offline for user ${userId} - Reason: ${reason}`);
+      
       // Typing indicators removed - no cleanup needed
       console.log(`User ${userId} disconnected - Reason: ${reason}`);
     } else {
       console.log(`Socket ${socket.id} disconnected - Reason: ${reason}`);
     }
+  });
+
+  // Handle request for online status
+  socket.on("request_online_status", (data) => {
+    const { user_ids } = data;
+    if (!Array.isArray(user_ids)) {
+      console.log('❌ Invalid request_online_status data:', data);
+      return;
+    }
+    
+    console.log(`📊 Received online status request for ${user_ids.length} users`);
+    console.log(`📊 Currently active users:`, Array.from(activeUsers.values()));
+    
+    // Get all currently online user IDs (convert to strings for consistency)
+    const onlineUserIds = new Set();
+    const requestedUserIdsStr = user_ids.map(id => String(id));
+    
+    activeUsers.forEach((userId) => {
+      const userIdStr = String(userId);
+      if (requestedUserIdsStr.includes(userIdStr)) {
+        onlineUserIds.add(userIdStr);
+        console.log(`✅ User ${userIdStr} is online`);
+      }
+    });
+    
+    const response = {
+      online_users: Array.from(onlineUserIds)
+    };
+    
+    console.log(`📊 Sending online status response: ${onlineUserIds.size} users online`);
+    console.log(`📊 Online users:`, Array.from(onlineUserIds));
+    
+    // Send back the online status for requested users
+    socket.emit("online_status_response", response);
   });
 
   // Handle connection errors

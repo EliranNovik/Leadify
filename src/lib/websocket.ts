@@ -55,6 +55,9 @@ class WebSocketService {
   private onConversationUpdateHandler: ((update: ConversationUpdateData) => void) | null = null;
   private onConnectHandler: (() => void) | null = null;
   private onDisconnectHandler: (() => void) | null = null;
+  private onUserOnlineHandler: ((userId: string) => void) | null = null;
+  private onUserOfflineHandler: ((userId: string) => void) | null = null;
+  private onOnlineStatusResponseHandler: ((onlineUsers: string[]) => void) | null = null;
 
   connect(userId: string): void {
     if (this.socket?.connected) {
@@ -94,6 +97,8 @@ class WebSocketService {
       if (userId) {
         this.socket?.emit('join', userId);
         console.log('👤 Sent join event for user:', userId);
+        // Also emit user_online for the current user
+        this.socket?.emit('user_online', String(userId));
       }
       
       this.onConnectHandler?.();
@@ -162,16 +167,43 @@ class WebSocketService {
     });
 
     this.socket.on('user_online', (userId: string) => {
-      console.log('🟢 User came online:', userId);
+      console.log('🟢 user_online event received:', userId);
+      console.log('🟢 Handler exists:', !!this.onUserOnlineHandler);
+      this.onUserOnlineHandler?.(userId);
     });
 
     this.socket.on('user_offline', (userId: string) => {
-      console.log('🔴 User went offline:', userId);
+      console.log('🔴 user_offline event received:', userId);
+      console.log('🔴 Handler exists:', !!this.onUserOfflineHandler);
+      this.onUserOfflineHandler?.(userId);
     });
 
     // Message sent confirmation
     this.socket.on('message_sent', (message: MessageData) => {
       console.log('✅ Message sent confirmation:', message);
+    });
+
+    // Online status response - set up listener immediately
+    this.socket.on('online_status_response', (data: any) => {
+      console.log('📊 Received online_status_response event:', data);
+      console.log('📊 Data type:', typeof data);
+      console.log('📊 Data keys:', data ? Object.keys(data) : 'null');
+      if (data && Array.isArray(data.online_users)) {
+        console.log('📊 Online users from response:', data.online_users);
+        this.onOnlineStatusResponseHandler?.(data.online_users);
+      } else if (data && data.online_users) {
+        console.log('📊 Online users from response (non-array):', data.online_users);
+        this.onOnlineStatusResponseHandler?.(data.online_users);
+      } else {
+        console.error('❌ Invalid online_status_response data:', data);
+      }
+    });
+    
+    // Debug: Listen for ALL events to see what's coming through
+    this.socket.onAny((eventName, ...args) => {
+      if (eventName === 'user_online' || eventName === 'user_offline' || eventName === 'online_status_response') {
+        console.log(`📡 Socket event received: ${eventName}`, args);
+      }
     });
   }
 
@@ -261,6 +293,41 @@ class WebSocketService {
 
   onDisconnect(handler: () => void): void {
     this.onDisconnectHandler = handler;
+  }
+
+  onUserOnline(handler: (userId: string) => void): void {
+    this.onUserOnlineHandler = handler;
+  }
+
+  onUserOffline(handler: (userId: string) => void): void {
+    this.onUserOfflineHandler = handler;
+  }
+
+  onOnlineStatusResponse(handler: (onlineUsers: string[]) => void): void {
+    this.onOnlineStatusResponseHandler = handler;
+  }
+
+  // Request online status for specific users
+  requestOnlineStatus(userIds: string[]): void {
+    console.log('📤 requestOnlineStatus called with:', userIds.length, 'users');
+    console.log('📤 Socket exists:', !!this.socket);
+    console.log('📤 Socket connected:', this.socket?.connected);
+    console.log('📤 isConnected flag:', this.isConnected);
+    
+    if (!this.socket) {
+      console.error('❌ Cannot request online status: Socket is null');
+      return;
+    }
+    
+    if (!this.socket.connected) {
+      console.error('❌ Cannot request online status: WebSocket not connected');
+      console.error('❌ Socket state:', this.socket.connected ? 'connected' : 'disconnected');
+      return;
+    }
+    
+    console.log('📤 Emitting request_online_status with user_ids:', userIds);
+    this.socket.emit('request_online_status', { user_ids: userIds });
+    console.log('📤 request_online_status event emitted successfully');
   }
 
   // Utility methods

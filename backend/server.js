@@ -57,6 +57,10 @@ io.on("connection", (socket) => {
     activeUsers.set(socket.id, userId);
     socket.userId = userId;
     console.log(`👤 User ${userId} joined with socket ${socket.id}`);
+    
+    // Emit user_online event to all clients (including the connecting user)
+    io.emit("user_online", String(userId));
+    console.log(`🟢 Emitted user_online for user ${userId}`);
   });
 
   // Join conversation room
@@ -123,11 +127,40 @@ io.on("connection", (socket) => {
     console.log(`✅ User ${user_id} marked conversation ${conversation_id} as read`);
   });
 
+  // Request online status handler
+  socket.on("request_online_status", (data) => {
+    const { user_ids } = data;
+    if (!Array.isArray(user_ids)) {
+      console.error('❌ Invalid request_online_status data:', data);
+      return;
+    }
+    
+    const onlineUserIds = new Set();
+    activeUsers.forEach((userId) => {
+      const userIdStr = String(userId);
+      if (user_ids.map(id => String(id)).includes(userIdStr)) {
+        onlineUserIds.add(userIdStr);
+      }
+    });
+    
+    console.log(`📊 Received online status request for ${user_ids.length} users`);
+    console.log(`📊 Currently active users: ${Array.from(activeUsers.values())}`);
+    console.log(`📊 Sending online status response: ${onlineUserIds.size} users online`);
+    
+    socket.emit("online_status_response", {
+      online_users: Array.from(onlineUserIds)
+    });
+  });
+
   socket.on("disconnect", (reason) => {
     const userId = activeUsers.get(socket.id);
     if (userId) {
       activeUsers.delete(socket.id);
       console.log(`👋 User ${userId} disconnected - Reason: ${reason}`);
+      
+      // Emit user_offline event to all clients
+      io.emit("user_offline", String(userId));
+      console.log(`🔴 Emitted user_offline for user ${userId}`);
     } else {
       console.log(`🔌 Socket ${socket.id} disconnected - Reason: ${reason}`);
     }
