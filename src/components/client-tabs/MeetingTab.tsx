@@ -21,8 +21,10 @@ import {
   ArrowPathIcon,
   PencilIcon,
 } from '@heroicons/react/24/outline';
+import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
 import { fetchLeadContacts, ContactInfo } from '../../lib/contactHelpers';
+import { buildApiUrl } from '../../lib/api';
 import { useMsal } from '@azure/msal-react';
 import { InteractionRequiredAuthError } from '@azure/msal-browser';
 import { loginRequest } from '../../msalConfig';
@@ -155,6 +157,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [selectedMeetingForNotify, setSelectedMeetingForNotify] = useState<Meeting | null>(null);
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  
+  // WhatsApp notify modal state
+  const [showWhatsAppNotifyModal, setShowWhatsAppNotifyModal] = useState(false);
+  const [selectedMeetingForWhatsAppNotify, setSelectedMeetingForWhatsAppNotify] = useState<Meeting | null>(null);
+  const [whatsAppContacts, setWhatsAppContacts] = useState<ContactInfo[]>([]);
+  const [loadingWhatsAppContacts, setLoadingWhatsAppContacts] = useState(false);
+  const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en'>('he');
+  const [reminderTemplates, setReminderTemplates] = useState<Array<{ id: number; language: string; content: string; name: string; params?: string; param_mapping?: any }>>([]);
+  const [sendingWhatsAppMeetingId, setSendingWhatsAppMeetingId] = useState<number | null>(null);
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
@@ -221,8 +232,26 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     };
 
+    const fetchReminderTemplates = async () => {
+      // Fetch reminder templates by exact name "reminder_of_a_meeting" and language
+      const { data, error } = await supabase
+        .from('whatsapp_templates_v2')
+        .select('id, name, language, content, params, param_mapping')
+        .eq('name', 'reminder_of_a_meeting')
+        .in('language', ['he', 'en'])
+        .eq('active', true);
+      
+      if (!error && data) {
+        console.log('📱 Fetched reminder templates:', data);
+        setReminderTemplates(data);
+      } else {
+        console.error('Error fetching reminder templates:', error);
+      }
+    };
+
     fetchEmployees();
     fetchMeetingLocations();
+    fetchReminderTemplates();
   }, []);
 
   const fetchMeetings = async () => {
@@ -702,6 +731,363 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       toast.error('Failed to load contacts');
     } finally {
       setLoadingContacts(false);
+    }
+  };
+
+  const handleWhatsAppNotifyClick = async (meeting: Meeting) => {
+    setSelectedMeetingForWhatsAppNotify(meeting);
+    setLoadingWhatsAppContacts(true);
+    try {
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const normalizedLeadId = isLegacyLead 
+        ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+        : client.id;
+      
+      const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
+      console.log('📱 WhatsApp Notify - Fetched contacts (before dedup):', fetchedContacts.length, fetchedContacts);
+      
+      // Deduplicate contacts - only remove exact duplicates within the contact list
+      const uniqueContacts: ContactInfo[] = [];
+      const seenContactKeys = new Set<string>();
+
+      // Helper to normalize contact info for comparison
+      const normalizeContactInfo = (c: Partial<ContactInfo>) => {
+        const normalizePhone = (phone: string | null | undefined) => phone?.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '') || '';
+        return {
+          name: (c.name || '').toLowerCase().trim(),
+          email: (c.email || '').toLowerCase().trim(),
+          phone: normalizePhone(c.phone || c.mobile), // Use phone or mobile, whichever is available
+        };
+      };
+
+      // Helper to check if two contacts are exact duplicates
+      const contactsMatch = (c1: ContactInfo, c2: ContactInfo): boolean => {
+        const n1 = normalizeContactInfo(c1);
+        const n2 = normalizeContactInfo(c2);
+        
+        // Match if same email (and email is not empty)
+        if (n1.email && n2.email && n1.email === n2.email) {
+          return true;
+        }
+        
+        // Match if same phone (and phone is not empty)
+        if (n1.phone && n2.phone && n1.phone === n2.phone) {
+          return true;
+        }
+        
+        // Match if same name AND (same email OR same phone)
+        if (n1.name && n2.name && n1.name === n2.name) {
+          if ((n1.email && n2.email && n1.email === n2.email) ||
+              (n1.phone && n2.phone && n1.phone === n2.phone)) {
+            return true;
+          }
+        }
+        
+        return false;
+      };
+
+      // Add fetched contacts, deduplicating only exact duplicates
+      fetchedContacts.forEach((contact) => {
+        const normalized = normalizeContactInfo(contact);
+        const contactKey = `${normalized.email}_${normalized.phone}_${normalized.name}`;
+        
+        // Check if we've already seen a contact with the same key
+        if (seenContactKeys.has(contactKey)) {
+          return; // Skip duplicate
+        }
+        
+        // Check if this contact is a duplicate of any existing contact
+        const isDuplicate = uniqueContacts.some(existing => contactsMatch(existing, contact));
+        if (isDuplicate) {
+          return; // Skip duplicate
+        }
+        
+        // Add the contact
+        seenContactKeys.add(contactKey);
+        uniqueContacts.push(contact);
+      });
+
+      // If no contacts were found from DB, add a fallback contact based on the lead's primary info
+      if (uniqueContacts.length === 0 && (client.phone || client.mobile)) {
+        const fallbackContact: ContactInfo = {
+          id: -1, // Use -1 as a temporary ID for fallback contact
+          name: client.name || 'Client',
+          email: client.email || null,
+          phone: client.phone || null,
+          mobile: client.mobile || null,
+          country_id: null,
+          isMain: true,
+        };
+        uniqueContacts.push(fallbackContact);
+      }
+
+      console.log('📱 WhatsApp Notify - Deduplicated contacts:', uniqueContacts.length, uniqueContacts);
+      setWhatsAppContacts(uniqueContacts);
+      setShowWhatsAppNotifyModal(true);
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      toast.error('Failed to load contacts');
+    } finally {
+      setLoadingWhatsAppContacts(false);
+    }
+  };
+
+  const handleSendWhatsAppReminder = async (meeting: Meeting, phoneNumbers?: string | string[]) => {
+    if (!selectedMeetingForWhatsAppNotify) return;
+    
+    setSendingWhatsAppMeetingId(meeting.id);
+    setShowWhatsAppNotifyModal(false);
+    
+    try {
+      // Get the selected template based on language - match by name "reminder_of_a_meeting" and language
+      const targetLanguage = selectedLanguage === 'he' ? 'he' : 'en';
+      const selectedTemplate = reminderTemplates.find(t => 
+        t.name === 'reminder_of_a_meeting' && t.language === targetLanguage
+      );
+
+      if (!selectedTemplate) {
+        console.error('📱 Template not found:', { 
+          selectedLanguage, 
+          targetLanguage, 
+          availableTemplates: reminderTemplates.map(t => ({ id: t.id, name: t.name, language: t.language }))
+        });
+        toast.error(`Reminder template not found for ${selectedLanguage === 'he' ? 'Hebrew' : 'English'}. Please ensure templates with name "reminder_of_a_meeting" and language "${targetLanguage}" exist in the database.`);
+        return;
+      }
+      
+      console.log('📱 Selected template:', { id: selectedTemplate.id, name: selectedTemplate.name, language: selectedTemplate.language });
+
+      // Get current user's full name
+      const { data: { user } } = await supabase.auth.getUser();
+      let senderName = 'You';
+      if (user?.id) {
+        const { data: userRow, error: userLookupError } = await supabase
+          .from('users')
+          .select(`
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              display_name
+            )
+          `)
+          .eq('auth_id', user.id)
+          .single();
+        if (!userLookupError && userRow) {
+          const employee = Array.isArray(userRow.tenants_employee) ? userRow.tenants_employee[0] : userRow.tenants_employee;
+          senderName = employee?.display_name || userRow.full_name || 'You';
+        }
+      }
+
+      // Format meeting date
+      const formatDate = (dateStr: string): string => {
+        const [year, month, day] = dateStr.split('-');
+        return `${day}/${month}/${year}`;
+      };
+      const formattedDate = formatDate(meeting.date);
+      const formattedTime = meeting.time ? meeting.time.substring(0, 5) : '';
+
+      // Get location name
+      const locationName = getMeetingLocationName(meeting.location);
+
+      // Determine phone numbers to send to
+      const phoneNumbersToSend = phoneNumbers 
+        ? (Array.isArray(phoneNumbers) ? phoneNumbers : [phoneNumbers])
+        : [];
+
+      if (phoneNumbersToSend.length === 0) {
+        toast.error('No phone numbers selected');
+        return;
+      }
+
+      // Send WhatsApp message to each phone number
+      const sendPromises = phoneNumbersToSend.map(async (phoneNumber) => {
+        if (!phoneNumber || phoneNumber.trim() === '') {
+          return { success: false, phoneNumber, error: 'Invalid phone number' };
+        }
+
+        // Find contact for this phone number to get contact_id
+        const contact = whatsAppContacts.find(c => 
+          (c.phone && c.phone.trim() === phoneNumber.trim()) || 
+          (c.mobile && c.mobile.trim() === phoneNumber.trim())
+        );
+
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const normalizedLeadId = isLegacyLead 
+          ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+          : client.id;
+
+        // Generate template parameters - same approach as SchedulerWhatsAppModal
+        let templateParameters: Array<{ type: string; text: string }> = [];
+        const paramCount = Number(selectedTemplate.params) || 0;
+        
+        if (paramCount > 0) {
+          try {
+            console.log('🔍 Getting template param definitions...');
+            const { getTemplateParamDefinitions, generateParamsFromDefinitions } = await import('../../lib/whatsappTemplateParamMapping');
+            const { generateTemplateParameters } = await import('../../lib/whatsappTemplateParams');
+            
+            const paramDefinitions = await getTemplateParamDefinitions(selectedTemplate.id, selectedTemplate.name);
+            
+            // Create a client object with meeting data for parameter generation
+            const currentMeeting = meeting;
+            const formatDate = (dateStr: string): string => {
+              const [year, month, day] = dateStr.split('-');
+              return `${day}/${month}/${year}`;
+            };
+            const formattedDate = formatDate(currentMeeting.date);
+            const formattedTime = currentMeeting.time ? currentMeeting.time.substring(0, 5) : '';
+            const meetingLink = getValidTeamsLink(currentMeeting.link) || '';
+            
+            const clientForParams = {
+              ...client,
+              meeting_date: formattedDate,
+              meeting_time: formattedTime,
+              meeting_location: locationName,
+              meeting_link: meetingLink,
+            };
+            
+            if (paramDefinitions.length > 0) {
+              console.log('✅ Using template-specific param definitions');
+              templateParameters = await generateParamsFromDefinitions(paramDefinitions, clientForParams, contact?.id || null);
+            } else {
+              console.log('⚠️ No specific param definitions, using generic generation');
+              templateParameters = await generateTemplateParameters(paramCount, clientForParams, contact?.id || null);
+            }
+            
+            // Override with meeting-specific data
+            // Note: mobile_number, phone_number, and email should use logged-in user's data (handled by helper functions)
+            // Only override meeting-specific parameters
+            if (paramDefinitions.length > 0) {
+              paramDefinitions.forEach((param: any, index: number) => {
+                if (templateParameters[index]) {
+                  let paramValue = templateParameters[index].text || '';
+                  
+                  switch (param.type) {
+                    case 'meeting_date':
+                      paramValue = formattedDate || '';
+                      break;
+                    case 'meeting_time':
+                      paramValue = formattedTime || '';
+                      break;
+                    case 'meeting_location':
+                      paramValue = locationName || '';
+                      break;
+                    case 'meeting_link':
+                      paramValue = meetingLink || '';
+                      break;
+                    // mobile_number, phone_number, and email are handled by helper functions
+                    // which correctly fetch the logged-in user's data from tenants_employee table
+                    default:
+                      // Keep the generated value (includes mobile_number, phone_number, email from helper functions)
+                      paramValue = templateParameters[index].text || '';
+                  }
+                  
+                  templateParameters[index].text = paramValue.trim();
+                }
+              });
+            }
+            
+            // Ensure we have exactly the right number of parameters
+            while (templateParameters.length < paramCount) {
+              templateParameters.push({ type: 'text', text: '' });
+            }
+            
+            // Backend will handle empty parameter replacement with 'N/A'
+            // Just ensure all parameters are strings (not null/undefined)
+            templateParameters = templateParameters.map((param) => ({
+              type: 'text',
+              text: (param.text || '').trim()
+            }));
+            
+            if (templateParameters && templateParameters.length > 0) {
+              console.log(`✅ Template with ${paramCount} param(s) - auto-filled parameters:`, templateParameters);
+            } else {
+              console.error('❌ Failed to generate template parameters');
+              toast.error('Failed to generate template parameters. Please try again.');
+              setSendingWhatsAppMeetingId(null);
+              return;
+            }
+          } catch (error) {
+            console.error('❌ Error generating template parameters:', error);
+            toast.error(`Error generating template parameters: ${error instanceof Error ? error.message : 'Unknown error'}`);
+            setSendingWhatsAppMeetingId(null);
+            return;
+          }
+        }
+
+        // Generate filled template content for display (backend requires message field for templates with params)
+        let filledContent = selectedTemplate.content || '';
+        if (templateParameters && templateParameters.length > 0) {
+          templateParameters.forEach((param, index) => {
+            if (param && param.text) {
+              filledContent = filledContent.replace(new RegExp(`\\{\\{${index + 1}\\}\\}`, 'g'), param.text);
+            }
+          });
+        }
+
+        const messagePayload: any = {
+          leadId: normalizedLeadId,
+          phoneNumber: phoneNumber.trim(),
+          sender_name: senderName,
+          isTemplate: true,
+          templateId: selectedTemplate.id,
+          templateName: selectedTemplate.name,
+          templateLanguage: selectedTemplate.language || targetLanguage, // Use exact language from template: 'he' or 'en'
+          contactId: contact?.id || null,
+        };
+
+        // Backend requires message field when template has parameters
+        if (paramCount > 0) {
+          messagePayload.templateParameters = templateParameters;
+          messagePayload.message = filledContent || 'Template sent';
+          console.log(`✅ Template with ${paramCount} param(s) - filled content:`, filledContent);
+        } else {
+          // Template with no parameters
+          messagePayload.message = selectedTemplate.content || 'Template sent';
+        }
+
+        const response = await fetch(buildApiUrl('/api/whatsapp/send-message'), {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(messagePayload),
+        });
+
+        const result = await response.json();
+
+        if (!response.ok) {
+          let errorMessage = '';
+          if (result.code === 'RE_ENGAGEMENT_REQUIRED') {
+            errorMessage = '⚠️ WhatsApp 24-Hour Rule: You can only send template messages after 24 hours of customer inactivity.';
+          } else {
+            errorMessage = result.error || 'Failed to send WhatsApp message';
+          }
+          return { success: false, phoneNumber, error: errorMessage };
+        }
+
+        return { success: true, phoneNumber };
+      });
+
+      const results = await Promise.all(sendPromises);
+      const successCount = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && r.success).length;
+      const failureCount = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).length;
+
+      if (successCount > 0) {
+        toast.success(`WhatsApp reminder sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
+      }
+      if (failureCount > 0) {
+        const errors = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).map(r => r.error || 'Unknown error').join(', ');
+        toast.error(`Failed to send to ${failureCount} contact${failureCount !== 1 ? 's' : ''}: ${errors}`);
+      }
+
+      if (onClientUpdate) await onClientUpdate();
+      await fetchMeetings();
+    } catch (error) {
+      console.error('Error sending WhatsApp reminder:', error);
+      toast.error('Failed to send WhatsApp reminder');
+    } finally {
+      setSendingWhatsAppMeetingId(null);
     }
   };
 
@@ -1470,22 +1856,40 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <PencilIcon className="w-4 h-4" />
               </button>
               {!past && (
-                <button
-                  className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white notify-btn-disabled"
-                  onClick={() => {
-                    if (sendingEmailMeetingId !== meeting.id) {
-                      handleNotifyClick(meeting);
-                    }
-                  }}
-                  disabled={sendingEmailMeetingId === meeting.id}
-                  title="Notify Client"
-                >
-                  {sendingEmailMeetingId === meeting.id ? (
-                    <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
-                  ) : (
-                    <EnvelopeIcon className="w-4 h-4" />
-                  )}
-                </button>
+                <>
+                  <button
+                    className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white notify-btn-disabled"
+                    onClick={() => {
+                      if (sendingEmailMeetingId !== meeting.id) {
+                        handleNotifyClick(meeting);
+                      }
+                    }}
+                    disabled={sendingEmailMeetingId === meeting.id}
+                    title="Notify Client via Email"
+                  >
+                    {sendingEmailMeetingId === meeting.id ? (
+                      <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                    ) : (
+                      <EnvelopeIcon className="w-4 h-4" />
+                    )}
+                  </button>
+                  <button
+                    className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
+                    onClick={() => {
+                      if (sendingWhatsAppMeetingId !== meeting.id) {
+                        handleWhatsAppNotifyClick(meeting);
+                      }
+                    }}
+                    disabled={sendingWhatsAppMeetingId === meeting.id}
+                    title="Send WhatsApp Reminder"
+                  >
+                    {sendingWhatsAppMeetingId === meeting.id ? (
+                      <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                    ) : (
+                      <FaWhatsapp className="w-4 h-4 text-green-600" />
+                    )}
+                  </button>
+                </>
               )}
               {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
                 <button
@@ -2192,6 +2596,172 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       <p>No email addresses found</p>
                     </div>
                   )}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* WhatsApp Notify Modal */}
+      {showWhatsAppNotifyModal && selectedMeetingForWhatsAppNotify && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowWhatsAppNotifyModal(false)}>
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
+            <div className="p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-semibold text-gray-900">Send WhatsApp Reminder</h3>
+                <button
+                  onClick={() => setShowWhatsAppNotifyModal(false)}
+                  className="text-gray-400 hover:text-gray-600"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              
+              {/* Language Selection */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Language</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedLanguage('he')}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
+                      selectedLanguage === 'he'
+                        ? 'bg-green-600 text-white border-green-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    Hebrew
+                  </button>
+                  <button
+                    onClick={() => setSelectedLanguage('en')}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
+                      selectedLanguage === 'en'
+                        ? 'bg-green-600 text-white border-green-600'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    English
+                  </button>
+                </div>
+              </div>
+              
+              {loadingWhatsAppContacts ? (
+                <div className="flex justify-center items-center py-8">
+                  <span className="loading loading-spinner loading-md"></span>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {/* Helper function to check if contact has valid phone */}
+                  {(() => {
+                    const contactsWithPhone = whatsAppContacts.filter(c => {
+                      const phone = c.phone?.trim();
+                      const mobile = c.mobile?.trim();
+                      return (phone && phone !== '' && phone !== '---') || (mobile && mobile !== '' && mobile !== '---');
+                    });
+                    
+                    return (
+                      <>
+                        {/* WhatsApp All Option */}
+                        {contactsWithPhone.length > 1 && (
+                          <button
+                            onClick={() => {
+                              // Send to all contacts at once
+                              const allPhones = contactsWithPhone
+                                .map(c => {
+                                  const phone = c.phone?.trim();
+                                  const mobile = c.mobile?.trim();
+                                  return (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
+                                })
+                                .filter(Boolean) as string[];
+                              
+                              if (allPhones.length === 0) {
+                                toast.error('No phone numbers found for contacts');
+                                return;
+                              }
+                              
+                              handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, allPhones);
+                            }}
+                            className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
+                          >
+                            <div className="flex items-center gap-3">
+                              <FaWhatsapp className="w-5 h-5 text-green-600" />
+                              <div>
+                                <div className="font-medium text-gray-900">Send to All Contacts</div>
+                                <div className="text-sm text-gray-500">
+                                  {contactsWithPhone.length} contact{contactsWithPhone.length !== 1 ? 's' : ''} with phone
+                                </div>
+                              </div>
+                            </div>
+                          </button>
+                        )}
+                        
+                        {/* Individual Contacts */}
+                        {contactsWithPhone.map((contact) => {
+                          const phone = contact.phone?.trim();
+                          const mobile = contact.mobile?.trim();
+                          const phoneNumber = (phone && phone !== '' && phone !== '---') ? phone : (mobile && mobile !== '' && mobile !== '---') ? mobile : null;
+                          
+                          if (!phoneNumber) return null;
+                          
+                          return (
+                            <button
+                              key={contact.id}
+                              onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, phoneNumber)}
+                              className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
+                            >
+                              <div className="flex items-center gap-3">
+                                <UserCircleIcon className="w-5 h-5 text-green-600" />
+                                <div className="flex-1">
+                                  <div className="font-medium text-gray-900">
+                                    {contact.name || '---'}
+                                    {contact.isMain && (
+                                      <span className="ml-2 text-xs bg-green-100 text-green-700 px-2 py-0.5 rounded">Main</span>
+                                    )}
+                                  </div>
+                                  <div className="text-sm text-gray-500">{phoneNumber}</div>
+                                </div>
+                              </div>
+                            </button>
+                          );
+                        })}
+                        
+                        {/* Client Phone (fallback) */}
+                        {(() => {
+                          const clientPhone = client.phone?.trim();
+                          const clientMobile = client.mobile?.trim();
+                          const hasClientPhone = (clientPhone && clientPhone !== '' && clientPhone !== '---') || (clientMobile && clientMobile !== '' && clientMobile !== '---');
+                          
+                          if (hasClientPhone && contactsWithPhone.length === 0) {
+                            const clientPhoneNumber = (clientPhone && clientPhone !== '' && clientPhone !== '---') ? clientPhone : (clientMobile && clientMobile !== '' && clientMobile !== '---') ? clientMobile : null;
+                            if (clientPhoneNumber) {
+                              return (
+                                <button
+                                  onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, clientPhoneNumber)}
+                                  className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
+                                >
+                                  <div className="flex items-center gap-3">
+                                    <FaWhatsapp className="w-5 h-5 text-green-600" />
+                                    <div>
+                                      <div className="font-medium text-gray-900">{client.name}</div>
+                                      <div className="text-sm text-gray-500">{clientPhoneNumber}</div>
+                                    </div>
+                                  </div>
+                                </button>
+                              );
+                            }
+                          }
+                          return null;
+                        })()}
+                        
+                        {contactsWithPhone.length === 0 && !(client.phone?.trim() && client.phone.trim() !== '' && client.phone.trim() !== '---') && !(client.mobile?.trim() && client.mobile.trim() !== '' && client.mobile.trim() !== '---') && (
+                          <div className="text-center py-8 text-gray-500">
+                            <FaWhatsapp className="w-12 h-12 mx-auto text-gray-300 mb-3" />
+                            <p>No phone numbers found</p>
+                          </div>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
               )}
             </div>

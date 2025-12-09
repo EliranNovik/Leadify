@@ -591,6 +591,9 @@ const AppContentInner: React.FC = () => {
                   leadType={(selectedClient as any)._tempLeadType || 'new'}
                   leadName={selectedClient.name}
                   leadNumber={selectedClient.lead_number}
+                  leadEmail={selectedClient.email}
+                  leadPhone={selectedClient.phone}
+                  leadMobile={selectedClient.mobile}
                   mode={contactSelectorMode}
                   onContactSelected={(contact, leadId, leadType) => {
                     setSelectedContactForThread({ contact, leadId, leadType });

@@ -713,7 +713,7 @@ const AdminPage: React.FC = () => {
   if (!isSuperUser) {
     return (
       <div className="min-h-screen bg-base-100 w-full overflow-y-auto">
-        <div className="max-w-6xl mx-auto px-4 py-8">
+        <div className="w-full max-w-[95%] mx-auto px-4 py-8">
           {/* Welcome Section */}
           <div className="text-center py-8 mb-12">
             <h1 className="text-4xl md:text-4xl lg:text-5xl font-bold mb-4 leading-tight" style={{ color: '#4218CC' }}>
@@ -771,7 +771,7 @@ const AdminPage: React.FC = () => {
 
           {/* Content Area for selected items */}
           {selected.tab !== null && selected.sub !== null && (
-            <div className="bg-base-100 rounded-xl shadow p-4 md:p-8 min-h-[200px] mt-8">
+            <div className="w-full mt-8">
               {(() => {
                 const miscTab = ADMIN_TABS.findIndex(tab => tab.label === 'Misc');
                 const selectedTab = ADMIN_TABS[selected.tab];

@@ -1995,15 +1995,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         supabase
           .from('leads')
           .select('id, scheduler')
-          .in('stage', schedulerFilters)
-          .or('scheduler.is.null,scheduler.eq.'),
+          .in('stage', schedulerFilters),
       ]);
 
       if (createdResult.error) {
         console.error('Error fetching created leads for header count:', createdResult.error);
+        // Don't throw, just log and continue with empty data
       }
       if (schedulerResult.error) {
         console.error('Error fetching scheduler leads for header count:', schedulerResult.error);
+        // Don't throw, just log and continue with empty data
       }
 
       const createdIds = (createdResult.data || []).map(lead => lead.id);

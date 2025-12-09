@@ -14,6 +14,9 @@ interface ContactSelectorModalProps {
   leadType: 'legacy' | 'new';
   leadName?: string;
   leadNumber?: string;
+  leadEmail?: string | null;
+  leadPhone?: string | null;
+  leadMobile?: string | null;
   mode: 'email' | 'whatsapp';
   onContactSelected: (contact: ContactInfo, leadId: string | number, leadType: 'legacy' | 'new') => void;
 }
@@ -25,11 +28,52 @@ const ContactSelectorModal: React.FC<ContactSelectorModalProps> = ({
   leadType,
   leadName,
   leadNumber,
+  leadEmail,
+  leadPhone,
+  leadMobile,
   mode,
   onContactSelected,
 }) => {
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [loading, setLoading] = useState(true);
+
+  // Helper function to normalize contact info for comparison
+  const normalizeContactInfo = (contact: ContactInfo | { name?: string; email?: string | null; phone?: string | null; mobile?: string | null }) => {
+    const normalizeEmail = (email: string | null | undefined) => email?.toLowerCase().trim() || '';
+    const normalizePhone = (phone: string | null | undefined) => phone?.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '') || '';
+    
+    return {
+      name: (contact.name || '').toLowerCase().trim(),
+      email: normalizeEmail(contact.email),
+      phone: normalizePhone(contact.phone || contact.mobile),
+    };
+  };
+
+  // Helper function to check if two contacts match (same person)
+  const contactsMatch = (contact1: ContactInfo | { name?: string; email?: string | null; phone?: string | null; mobile?: string | null }, contact2: ContactInfo | { name?: string; email?: string | null; phone?: string | null; mobile?: string | null }): boolean => {
+    const norm1 = normalizeContactInfo(contact1);
+    const norm2 = normalizeContactInfo(contact2);
+    
+    // Match if same email (and email is not empty)
+    if (norm1.email && norm2.email && norm1.email === norm2.email) {
+      return true;
+    }
+    
+    // Match if same phone (and phone is not empty)
+    if (norm1.phone && norm2.phone && norm1.phone === norm2.phone) {
+      return true;
+    }
+    
+    // Match if same name AND (same email OR same phone)
+    if (norm1.name && norm2.name && norm1.name === norm2.name) {
+      if ((norm1.email && norm2.email && norm1.email === norm2.email) ||
+          (norm1.phone && norm2.phone && norm1.phone === norm2.phone)) {
+        return true;
+      }
+    }
+    
+    return false;
+  };
 
   useEffect(() => {
     if (!isOpen) {
@@ -47,17 +91,86 @@ const ContactSelectorModal: React.FC<ContactSelectorModalProps> = ({
           : leadId;
 
         const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacy);
-        setContacts(fetchedContacts);
+        
+        // Create fallback contact from lead info if no contacts found
+        let processedContacts = [...fetchedContacts];
+        
+        const mainLeadInfo = {
+          name: leadName || '',
+          email: leadEmail || null,
+          phone: leadPhone || null,
+          mobile: leadMobile || null,
+        };
+        
+        if (processedContacts.length === 0) {
+          // Create a fallback contact from the lead's information only if no contacts exist
+          const fallbackContact: ContactInfo = {
+            id: -1, // Use -1 as a temporary ID for fallback contact
+            name: leadName || 'Client',
+            email: leadEmail || null,
+            phone: leadPhone || null,
+            mobile: leadMobile || null,
+            country_id: null,
+            isMain: true,
+          };
+          processedContacts = [fallbackContact];
+        } else {
+          // Deduplicate contacts based on matching info
+          const uniqueContacts: ContactInfo[] = [];
+          const seenContactKeys = new Set<string>();
+          
+          processedContacts.forEach((contact) => {
+            // Create a unique key for this contact based on email, phone, and name
+            const normalized = normalizeContactInfo(contact);
+            const contactKey = `${normalized.email}_${normalized.phone}_${normalized.name}`;
+            
+            // Check if this contact matches the main lead
+            const matchesMainLead = contactsMatch(contact, mainLeadInfo);
+            
+            // Check if we've already seen a contact with the same key
+            if (seenContactKeys.has(contactKey)) {
+              // Skip duplicate
+              return;
+            }
+            
+            // Check if this contact is a duplicate of any existing contact
+            const isDuplicate = uniqueContacts.some(existing => contactsMatch(existing, contact));
+            if (isDuplicate) {
+              // Skip duplicate
+              return;
+            }
+            
+            // If contact matches main lead, we still add it (it's the contact entry)
+            // The main lead info is just used for comparison, not added separately
+            seenContactKeys.add(contactKey);
+            uniqueContacts.push(contact);
+          });
+          
+          processedContacts = uniqueContacts;
+        }
+        
+        setContacts(processedContacts);
       } catch (error) {
         console.error('Error loading contacts:', error);
         toast.error('Failed to load contacts');
+        // On error, create fallback contact
+        const fallbackContact: ContactInfo = {
+          id: -1,
+          name: leadName || 'Client',
+          email: leadEmail || null,
+          phone: leadPhone || null,
+          mobile: leadMobile || null,
+          country_id: null,
+          isMain: true,
+        };
+        setContacts([fallbackContact]);
       } finally {
         setLoading(false);
       }
     };
 
     loadContacts();
-  }, [isOpen, leadId, leadType]);
+  }, [isOpen, leadId, leadType, leadName, leadEmail, leadPhone, leadMobile]);
 
   const handleContactClick = (contact: ContactInfo) => {
     const normalizedLeadId = leadType === 'legacy' 

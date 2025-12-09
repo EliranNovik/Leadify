@@ -118,10 +118,10 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   const getEligibleStatus = () => {
     // For new leads, 'eligible' is a boolean
-    // For legacy leads, 'eligibile' is stored as 'yes' or 'no'
+    // For legacy leads, 'eligibile' is stored as 'true'/'false' strings (TEXT column)
     if (isLegacy) {
       const eligibile = getFieldValue(client, 'eligibile');
-      return eligibile === 'yes' || eligibile === true;
+      return eligibile === 'true' || eligibile === true;
     }
     return getFieldValue(client, 'eligible') === true || getFieldValue(client, 'eligible') === 'true';
   };
@@ -310,9 +310,14 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   }, [client?.id]);
 
   // Update eligible status when client changes
+  // Only update if we're not currently toggling (to prevent race condition)
+  const [isTogglingEligible, setIsTogglingEligible] = useState(false);
+  
   useEffect(() => {
-    setEligible(getEligibleStatus());
-  }, [client]);
+    if (!isTogglingEligible) {
+      setEligible(getEligibleStatus());
+    }
+  }, [client, isTogglingEligible]);
 
   // State to hold current user's display name
   const [currentUserName, setCurrentUserName] = useState<string>('Unknown');
@@ -429,32 +434,96 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   const handleEligibleToggle = async (newEligible: boolean) => {
+    setIsTogglingEligible(true);
+    
     try {
+      console.log('🔍 handleEligibleToggle - Starting:', {
+        isLegacy,
+        clientId: client.id,
+        newEligible,
+        currentEligible: eligible
+      });
+
+      // Optimistically update the UI first
+      setEligible(newEligible);
+
       const tableName = isLegacy ? 'leads_lead' : 'leads';
       const idField = isLegacy ? 'id' : 'id';
+      
+      // Extract legacy ID - use string format like handleProbabilityChange does
       const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
       
-      // For legacy leads, convert boolean to 'yes'/'no', for new leads use boolean
+      console.log('🔍 handleEligibleToggle - Extracted ID:', {
+        original: client.id,
+        extracted: clientId,
+        type: typeof clientId
+      });
+      
+      // For legacy leads, convert boolean to 'true'/'false' strings (TEXT column)
+      // For new leads, use boolean
       const updateData = isLegacy 
-        ? { eligibile: (newEligible ? 'yes' : 'no') } 
+        ? { eligibile: (newEligible ? 'true' : 'false') } 
         : { eligible: newEligible };
 
-      const { error } = await supabase
+      console.log('🔍 handleEligibleToggle - Update query:', {
+        tableName,
+        idField,
+        clientId,
+        updateData
+      });
+
+      // Try with string ID first (like handleProbabilityChange)
+      let result = await supabase
         .from(tableName)
         .update(updateData)
-        .eq(idField, clientId);
+        .eq(idField, clientId)
+        .select();
       
-      if (error) throw error;
+      // If that fails and it's a legacy lead, try with number format
+      if (result.error && isLegacy) {
+        console.log('⚠️ handleEligibleToggle - String ID failed, trying number format');
+        const numericId = parseInt(clientId, 10);
+        result = await supabase
+          .from(tableName)
+          .update(updateData)
+          .eq(idField, numericId)
+          .select();
+      }
       
-      setEligible(newEligible);
+      console.log('🔍 handleEligibleToggle - Update result:', { data: result.data, error: result.error });
+      
+      if (result.error) {
+        console.error('❌ Error updating eligible status:', result.error);
+        // Revert optimistic update on error
+        setEligible(!newEligible);
+        alert(`Failed to update eligible status: ${result.error.message || result.error.code || 'Unknown error'}`);
+        return;
+      }
+      
+      if (!result.data || result.data.length === 0) {
+        console.warn('⚠️ handleEligibleToggle - No rows updated');
+        // Revert optimistic update
+        setEligible(!newEligible);
+        alert('No rows were updated. Please check the lead ID.');
+        return;
+      }
+      
+      console.log('✅ handleEligibleToggle - Successfully updated:', result.data);
       
       // Refresh client data in parent component
       if (onClientUpdate) {
         await onClientUpdate();
       }
-    } catch (error) {
-      console.error('Error updating eligible status:', error);
-      alert('Failed to update eligible status');
+    } catch (error: any) {
+      console.error('❌ Error updating eligible status:', error);
+      // Revert optimistic update on error
+      setEligible(!newEligible);
+      alert(`Failed to update eligible status: ${error?.message || 'Unknown error'}`);
+    } finally {
+      // Allow useEffect to sync state after a short delay
+      setTimeout(() => {
+        setIsTogglingEligible(false);
+      }, 500);
     }
   };
 

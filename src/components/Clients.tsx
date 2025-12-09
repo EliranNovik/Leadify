@@ -2065,6 +2065,7 @@ useEffect(() => {
             special_notes,
             next_followup,
             probability,
+            eligibile,
               source_id,
             category,
             category_id,

@@ -214,7 +214,9 @@ const EmailTemplatesManager: React.FC = () => {
       name: 'active',
       label: 'Active',
       type: 'boolean' as const,
-      hideInEdit: true // Hide in edit mode since there's a toggle in the table
+      hideInAdd: true, // Hide in add mode - will default to active
+      hideInEdit: true, // Hide in edit mode since there's a toggle in the table
+      defaultValue: true // Default to active (true) when creating new templates - will be converted to 't' on save
     },
     {
       name: 'category_id',

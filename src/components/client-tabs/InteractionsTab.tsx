@@ -4887,6 +4887,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           leadType={isLegacyLead ? 'legacy' : 'new'}
           leadName={client.name}
           leadNumber={client.lead_number}
+          leadEmail={client.email}
+          leadPhone={client.phone}
+          leadMobile={client.mobile}
           mode="whatsapp"
           onContactSelected={(contact, leadId, leadType) => {
             console.log('📞 Contact selected for WhatsApp:', { contact, leadId, leadType });
@@ -4919,6 +4922,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           leadType={isLegacyLead ? 'legacy' : 'new'}
           leadName={client.name}
           leadNumber={client.lead_number}
+          leadEmail={client.email}
+          leadPhone={client.phone}
+          leadMobile={client.mobile}
           mode="email"
           onContactSelected={(contact, leadId, leadType) => {
             setSelectedContactForEmail({ contact, leadId, leadType });

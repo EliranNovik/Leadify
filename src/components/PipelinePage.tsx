@@ -1024,6 +1024,7 @@ const PipelinePage: React.FC = () => {
               
               newLeadsQuery = newLeadsQuery
                 .eq('eligible', true)
+                .not('eligible', 'is', null) // Explicitly exclude null values
                 .is('unactivated_at', null) // Only active leads (unactivated_at IS NULL)
                 .in('stage', allowedStageIds);
             }
@@ -1088,7 +1089,9 @@ const PipelinePage: React.FC = () => {
             
             // For scheduler pipeline, filter by eligible; for closer, no eligible filter
             if (pipelineMode === 'scheduler') {
-              newLeadsQuery = newLeadsQuery.eq('eligible', true);
+              newLeadsQuery = newLeadsQuery
+                .eq('eligible', true)
+                .not('eligible', 'is', null); // Explicitly exclude null values
             }
             
             // Only show active leads (unactivated_at IS NULL) - apply to both scheduler and closer
@@ -1298,8 +1301,10 @@ const PipelinePage: React.FC = () => {
             legacyLeadsQuery = legacyLeadsQuery.in('stage', allowedLegacyStageIds);
           } else {
             // Legacy leads use 'true'/'false' strings for eligibile field, not 'yes'/'no'
+            // IMPORTANT: Must explicitly exclude null values and only get 'true'
             legacyLeadsQuery = legacyLeadsQuery
               .eq('eligibile', 'true') // Only fetch eligible legacy leads for scheduler
+              .not('eligibile', 'is', null) // Explicitly exclude null values
               .in('stage', allowedLegacyStageIds);
           }
           
@@ -1545,8 +1550,10 @@ const PipelinePage: React.FC = () => {
           // Legacy leads: status 0 = Active, status 10 = Not active
           const eligibleLegacyLeads = pipelineMode === 'scheduler'
             ? (legacyLeadsData || []).filter((lead: any) => {
-                const eligibileValue = String(lead.eligibile || '').toLowerCase().trim();
-                // eligibile is a TEXT column, so check for string 'true' (case-insensitive)
+                // Strict check: eligibile must be exactly 'true' (case-insensitive after trimming)
+                const eligibileValue = lead.eligibile === null || lead.eligibile === undefined 
+                  ? '' 
+                  : String(lead.eligibile).toLowerCase().trim();
                 const isEligible = eligibileValue === 'true';
                 const isActive = lead.status === 0; // Status 0 = Active
                 const isCorrectScheduler = currentUserEmployeeId ? Number(lead.meeting_scheduler_id) === Number(currentUserEmployeeId) : true;
@@ -1554,8 +1561,9 @@ const PipelinePage: React.FC = () => {
                 const isCorrectStage = allowedLegacyStageIds.includes(stageNum);
                 const shouldInclude = isEligible && isActive && isCorrectScheduler && isCorrectStage;
                 
-                if (!shouldInclude && Number(currentUserEmployeeId) === 54) {
-                  console.log('🔍 EMPLOYEE_ID_54 DEBUG - Filtering out legacy lead:', {
+                // Log all filtered leads for debugging (not just employee 54)
+                if (!shouldInclude) {
+                  console.log('🔍 Pipeline Debug - Filtering out legacy lead:', {
                     id: lead.id,
                     name: lead.name,
                     meeting_scheduler_id: lead.meeting_scheduler_id,
@@ -1570,7 +1578,7 @@ const PipelinePage: React.FC = () => {
                     isActive,
                     isCorrectScheduler,
                     isCorrectStage,
-                    reason: !isEligible ? 'not eligible (eligibile !== "true")' : !isActive ? 'not active (status !== 0)' : !isCorrectScheduler ? 'wrong scheduler' : 'wrong stage'
+                    reason: !isEligible ? `not eligible (eligibile="${lead.eligibile}" !== "true")` : !isActive ? 'not active (status !== 0)' : !isCorrectScheduler ? 'wrong scheduler' : 'wrong stage'
                   });
                 }
                 return shouldInclude;
@@ -1641,12 +1649,14 @@ const PipelinePage: React.FC = () => {
               latest_interaction: lead.latest_interaction,
               lead_type: 'legacy' as const,
               // Legacy specific fields
+              meeting_scheduler_id: lead.meeting_scheduler_id, // Preserve scheduler ID for filtering
               meeting_manager_id: lead.meeting_scheduler_id, // Use meeting_scheduler_id as manager
               meeting_lawyer_id: null,
               category_id: lead.category_id, // Preserve the original category_id
               total: lead.total,
               meeting_total_currency_id: null,
               expert_id: lead.closer_id,
+              closer_id: lead.closer_id, // Preserve closer_id for closer pipeline filtering
               language_id: lead.language_id || null,
               language: null, // Legacy leads use language_id
               country_id: null, // Legacy leads don't have country_id directly, would need to fetch via contacts
@@ -2043,7 +2053,12 @@ const PipelinePage: React.FC = () => {
   // Calculate summary statistics (using real data from database)
   const summaryStats = useMemo(() => {
     // Count total leads in pipeline (excluding signed agreements)
-    const displayedLeads = filteredLeads;
+    // Use sortedLeads to match exactly what's displayed (sortedLeads is just filteredLeads sorted)
+    // sortedLeads already includes all filters:
+    // - Database filters: eligible/eligibile, active status, scheduler/closer assignment, stage
+    // - UI filters: search, date, country, language, etc.
+    // - Sorting
+    const displayedLeads = sortedLeads;
     const pipelineLeads = displayedLeads.filter(lead => !isSignedAgreementLead(lead));
     const totalLeads = pipelineLeads.length;
 
@@ -2066,7 +2081,7 @@ const PipelinePage: React.FC = () => {
       topWorker,
       topWorkerCount
     };
-  }, [filteredLeads, pipelineMode, realSummaryStats]);
+  }, [sortedLeads, pipelineMode, realSummaryStats]);
 
   const handleRowSelect = (leadId: string | number) => {
     setSelectedRowId(leadId);
@@ -5145,6 +5160,9 @@ const PipelinePage: React.FC = () => {
               <tr>
                 <th className="py-3 px-2 text-center w-10"></th>
                 <th className="py-3 px-2 text-left">Lead</th>
+                <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('follow_up')}>
+                  Follow Up {sortColumn === 'follow_up' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
+                </th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('stage')}>
                   Stage {sortColumn === 'stage' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
@@ -5155,24 +5173,21 @@ const PipelinePage: React.FC = () => {
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('probability')}>
                   Probability {sortColumn === 'probability' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
-                <th className="py-3 px-2 text-center">Tags</th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('total_applicants')}>
                   Total Applicants {sortColumn === 'total_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('potential_applicants')}>
                   Potential Applicants {sortColumn === 'potential_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
-                <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('follow_up')}>
-                  Follow Up {sortColumn === 'follow_up' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
-                </th>
                 <th className="py-3 px-2 text-center">Country</th>
-                <th className="py-3 px-2 text-center rounded-r-xl">Language</th>
+                <th className="py-3 px-2 text-center">Language</th>
+                <th className="py-3 px-2 text-center rounded-r-xl">Tags</th>
               </tr>
             </thead>
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={12} className="text-center py-12">
+                  <td colSpan={13} className="text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5182,7 +5197,7 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={12} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={13} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
@@ -5224,6 +5239,14 @@ const PipelinePage: React.FC = () => {
                         <span className="font-semibold text-base-content truncate">{lead.name}</span>
                       </div>
                     </td>
+                    {/* Follow Up */}
+                    <td className="px-2 py-3 md:py-4 text-center truncate">
+                      {lead.next_followup ? (
+                        <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
+                          {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
+                        </span>
+                      ) : 'N/A'}
+                    </td>
                     {/* Stage */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className="text-xs sm:text-sm text-gray-700">
@@ -5244,37 +5267,10 @@ const PipelinePage: React.FC = () => {
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className={`font-bold ${(lead.probability ?? 0) >= 80 ? 'text-green-600' : (lead.probability ?? 0) >= 60 ? 'text-yellow-600' : (lead.probability ?? 0) >= 40 ? 'text-orange-600' : 'text-red-600'}`}>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</span>
                     </td>
-                    {/* Tags */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">
-                      {lead.tags && lead.tags.length > 0 ? (
-                        <div className="flex flex-wrap gap-1 justify-center">
-                          {lead.tags.slice(0, 2).map((tag, idx) => (
-                            <span key={idx} className="badge badge-outline badge-primary text-xs font-semibold">
-                              {tag}
-                            </span>
-                          ))}
-                          {lead.tags.length > 2 && (
-                            <span className="badge badge-outline badge-ghost text-xs font-semibold">
-                              +{lead.tags.length - 2}
-                            </span>
-                          )}
-                        </div>
-                      ) : (
-                        <span className="text-base-content/40 text-xs">—</span>
-                      )}
-                    </td>
                     {/* Total Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
                     {/* Potential Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? 'N/A'}</td>
-                    {/* Follow Up */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">
-                      {lead.next_followup ? (
-                        <span className={`px-2 py-1 rounded font-semibold ${getFollowUpColor(lead.next_followup)}`}>
-                          {format(parseISO(lead.next_followup), 'dd/MM/yyyy')}
-                        </span>
-                      ) : 'N/A'}
-                    </td>
                     {/* Country */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <div className="flex items-center justify-center gap-1">
@@ -5292,7 +5288,7 @@ const PipelinePage: React.FC = () => {
                       </div>
                     </td>
                     {/* Language */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate rounded-r-xl">
+                    <td className="px-2 py-3 md:py-4 text-center truncate">
                       <span className="text-xs sm:text-sm text-gray-700">
                         {(() => {
                           const langName = getLanguageName(lead.language_id, lead.language);
@@ -5310,11 +5306,30 @@ const PipelinePage: React.FC = () => {
                         })()}
                       </span>
                     </td>
+                    {/* Tags */}
+                    <td className="px-2 py-3 md:py-4 text-center truncate rounded-r-xl">
+                      {lead.tags && lead.tags.length > 0 ? (
+                        <div className="flex flex-wrap gap-1 justify-center">
+                          {lead.tags.slice(0, 2).map((tag, idx) => (
+                            <span key={idx} className="badge badge-outline badge-primary text-xs font-semibold">
+                              {tag}
+                            </span>
+                          ))}
+                          {lead.tags.length > 2 && (
+                            <span className="badge badge-outline badge-ghost text-xs font-semibold">
+                              +{lead.tags.length - 2}
+                            </span>
+                          )}
+                        </div>
+                      ) : (
+                        <span className="text-base-content/40 text-xs">—</span>
+                      )}
+                    </td>
                   </tr>
                   {/* Collapsible Content Row */}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={12} className="px-4 py-4 bg-white border-b-2 border-gray-200">
+                      <td colSpan={13} className="px-4 py-4 bg-white border-b-2 border-gray-200">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           {/* Comments */}
                           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">
