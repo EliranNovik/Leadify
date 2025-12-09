@@ -223,6 +223,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Auto-scroll state
   const [isUserScrolling, setIsUserScrolling] = useState(false);
   const [shouldAutoScroll, setShouldAutoScroll] = useState(true);
+  const [newMessagesCount, setNewMessagesCount] = useState(0);
 
   // Helper functions
   const getRoleDisplayName = (role: string): string => {
@@ -1954,33 +1955,15 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setIsUserScrolling(false);
       
       // Force scroll to bottom after messages are loaded (works for both desktop and mobile)
-      const attemptScroll = () => {
-        // Find the visible container (desktop or mobile)
-        let container: HTMLDivElement | null = null;
-        
-        if (desktopMessagesContainerRef.current && desktopMessagesContainerRef.current.offsetWidth > 0) {
-          container = desktopMessagesContainerRef.current;
-        } else if (mobileMessagesContainerRef.current && mobileMessagesContainerRef.current.offsetWidth > 0) {
-          container = mobileMessagesContainerRef.current;
-        }
-        
-        if (container) {
-          container.scrollTop = container.scrollHeight;
+      if (!isScrollingRef.current) {
+        isScrollingRef.current = true;
+        setTimeout(() => {
           scrollToBottom('instant');
-        }
-      };
-      
-      // Try multiple times to catch when container becomes visible
-      setTimeout(attemptScroll, 0);
-      setTimeout(attemptScroll, 50);
-      setTimeout(attemptScroll, 100);
-      setTimeout(attemptScroll, 200);
-      
-      // Also try after render completes
-      requestAnimationFrame(() => {
-        setTimeout(attemptScroll, 100);
-        setTimeout(attemptScroll, 300);
-      });
+          setTimeout(() => {
+            isScrollingRef.current = false;
+          }, 100);
+        }, 100);
+      }
     } catch (error) {
       console.error('Error in fetchMessages:', error);
       toast.error('Failed to load messages');
@@ -2366,8 +2349,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   // Send message
   const handleMessageKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Check if mobile (window width < 1024px for lg breakpoint)
+    const isMobile = typeof window !== 'undefined' && window.innerWidth < 1024;
+    
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
+      // On mobile, only allow new line, don't send message
+      if (isMobile) {
+        return;
+      }
+      // On desktop, send message on Enter
       if (newMessage.trim() && !isSending) {
         sendMessage();
       }
@@ -2837,10 +2828,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const handleScroll = useCallback(() => {
     const nearBottom = isNearBottom();
     
-    // If user scrolls to bottom, enable auto-scroll
+    // If user scrolls to bottom, enable auto-scroll and reset count
     if (nearBottom) {
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
+      setNewMessagesCount(0);
     } else {
       // If user scrolls up, disable auto-scroll temporarily
       setShouldAutoScroll(false);
@@ -2848,32 +2840,47 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   }, []);
 
+  // Track previous message count to detect new messages
+  const prevMessageCountRef = useRef(0);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const isScrollingRef = useRef(false);
+
   // Auto-scroll to bottom when new messages arrive (only if should auto-scroll)
   useEffect(() => {
-    if (shouldAutoScroll && messages.length > 0 && selectedConversation) {
-      // Use requestAnimationFrame to ensure DOM is updated
-      requestAnimationFrame(() => {
-        // Check if container is visible before scrolling
-        if (messagesContainerRef.current) {
-          const container = messagesContainerRef.current;
-          const isVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
-          if (isVisible) {
-            scrollToBottom('smooth');
-          } else {
-            // If not visible, try again after a short delay
-            setTimeout(() => {
-              if (messagesContainerRef.current) {
-                const retryContainer = messagesContainerRef.current;
-                const retryVisible = retryContainer.offsetWidth > 0 && retryContainer.offsetHeight > 0;
-                if (retryVisible) {
-                  scrollToBottom('smooth');
-                }
-              }
-            }, 100);
-          }
-        }
-      });
+    // Clear any pending scroll attempts
+    if (scrollTimeoutRef.current) {
+      clearTimeout(scrollTimeoutRef.current);
+      scrollTimeoutRef.current = null;
     }
+
+    if (shouldAutoScroll && messages.length > 0 && selectedConversation && !isScrollingRef.current) {
+      // Reset new messages count when auto-scrolling
+      setNewMessagesCount(0);
+      
+      // Use a single controlled scroll attempt after DOM updates
+      isScrollingRef.current = true;
+      scrollTimeoutRef.current = setTimeout(() => {
+        scrollToBottom('smooth');
+        // Reset scrolling flag after scroll completes
+        setTimeout(() => {
+          isScrollingRef.current = false;
+        }, 300);
+      }, 100);
+    } else if (!shouldAutoScroll && messages.length > prevMessageCountRef.current && selectedConversation) {
+      // User is scrolled up and new messages arrived - increment count
+      const newCount = messages.length - prevMessageCountRef.current;
+      setNewMessagesCount(prev => prev + newCount);
+    }
+    
+    // Update previous message count
+    prevMessageCountRef.current = messages.length;
+
+    // Cleanup timeout on unmount
+    return () => {
+      if (scrollTimeoutRef.current) {
+        clearTimeout(scrollTimeoutRef.current);
+      }
+    };
   }, [messages.length, shouldAutoScroll, selectedConversation?.id]);
 
   // Scroll to bottom when conversation is first selected or changes
@@ -2882,46 +2889,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Reset auto-scroll state when conversation changes
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
+      setNewMessagesCount(0);
+      prevMessageCountRef.current = 0;
       
       // Wait for messages to load and DOM to render, then scroll
-      const scrollAfterLoad = () => {
-        if (messagesContainerRef.current) {
-          const container = messagesContainerRef.current;
-          
-          // Check if container is visible before scrolling
-          const isVisible = container.offsetWidth > 0 && container.offsetHeight > 0;
-          
-          if (isVisible) {
-            // Try multiple times to ensure it works
-            container.scrollTop = container.scrollHeight;
-            
-            // Also try after a delay
-            setTimeout(() => {
-              if (messagesContainerRef.current) {
-                const delayedContainer = messagesContainerRef.current;
-                const delayedVisible = delayedContainer.offsetWidth > 0 && delayedContainer.offsetHeight > 0;
-                if (delayedVisible) {
-                  delayedContainer.scrollTop = delayedContainer.scrollHeight;
-                }
-              }
-              scrollToBottom('instant');
-            }, 100);
-            
-            // One more attempt after render
-            requestAnimationFrame(() => {
-              setTimeout(() => {
-                scrollToBottom('instant');
-              }, 200);
-            });
-          }
-        }
-      };
-      
-      // Try immediately and after delays with multiple attempts
-      scrollAfterLoad();
-      setTimeout(scrollAfterLoad, 50);
-      setTimeout(scrollAfterLoad, 200);
-      setTimeout(scrollAfterLoad, 400);
+      if (!isScrollingRef.current) {
+        isScrollingRef.current = true;
+        setTimeout(() => {
+          scrollToBottom('instant');
+          setTimeout(() => {
+            isScrollingRef.current = false;
+          }, 100);
+        }, 100);
+      }
     }
   }, [selectedConversation?.id]);
 
@@ -3264,6 +3244,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           return [...prev, enhancedMessage];
         });
         
+        // Scroll to bottom when new message arrives
+        setTimeout(() => {
+          setShouldAutoScroll(true);
+          scrollToBottom('smooth');
+        }, 100);
+        
         // Mark message as read if current user is viewing the conversation
         if (message.id && message.sender_id !== currentUser.id) {
           await markMessagesAsRead([message.id], selectedConversation.id);
@@ -3507,7 +3493,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'chats' ? { backgroundColor: '#3E28CD' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${
@@ -3523,7 +3509,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'groups' ? { backgroundColor: '#3E28CD' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -3758,7 +3744,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'chats' ? { backgroundColor: '#3E28CD' } : {}}
+            style={activeTab === 'chats' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
           >
             Chats
             <span className={`ml-2 text-xs ${
@@ -3774,7 +3760,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 ? 'text-white shadow-md'
                 : 'text-gray-600 hover:text-gray-900 hover:bg-white/50'
             }`}
-            style={activeTab === 'groups' ? { backgroundColor: '#3E28CD' } : {}}
+            style={activeTab === 'groups' ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } : {}}
           >
             Groups
             {filteredGroupConversations.length > 0 && (
@@ -4003,13 +3989,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             <div className="flex flex-wrap items-center gap-3 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                               {role && (
                                 <div className="flex items-center gap-1.5">
-                                  <BriefcaseIcon className="w-4 h-4" style={{ color: '#3E17C3' }} />
+                                  <BriefcaseIcon className="w-4 h-4" style={{ color: '#10b981' }} />
                                   <span>{role}</span>
                                 </div>
                               )}
                               {department && (
                                 <div className="flex items-center gap-1.5">
-                                  <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#3E17C3' }} />
+                                  <BuildingOfficeIcon className="w-4 h-4" style={{ color: '#10b981' }} />
                                   <span>{department}</span>
                                 </div>
                               )}
@@ -4167,7 +4153,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       {/* Date Separator */}
                       {showDateSeparator && (
                         <div className="flex items-center justify-center my-4">
-                          <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
+                          <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-md" style={{ backgroundColor: '#3E17C3' }}>
                             {formatDateSeparator(message.sent_at)}
                           </div>
                         </div>
@@ -4214,7 +4200,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 : 'border rounded-bl-md'
                             }`}
                             style={isOwn && !isEmojiOnly(message.content) 
-                              ? { backgroundColor: '#3e2bcd' } 
+                              ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } 
                               : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
                             }
                           >
@@ -4285,7 +4271,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       </svg>
                                     )}
                                   </button>
-                                  <div className="flex-1">
+                                  <div className="flex-1"></div>
                                     <div className="flex items-center gap-2">
                                       {/* Waveform visualization */}
                                       <div className="flex-1 flex items-end gap-0.5 h-8 px-1">
@@ -4330,7 +4316,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                         {formatVoiceDuration(message.voice_duration)}
                                       </span>
                                     </div>
-                                  </div>
                                 </div>
                               ) : isImageMessage(message) ? (
                                 // Image preview
@@ -4470,11 +4455,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <button
                     onClick={() => {
                       setShouldAutoScroll(true);
+                      setNewMessagesCount(0);
                       scrollToBottom('smooth');
                     }}
-                    className="bg-green-500 hover:bg-green-600 text-white rounded-full p-3 shadow-lg transition-colors"
-                    title="New messages - click to scroll down"
+                    className="text-white rounded-full p-3 shadow-lg transition-all relative"
+                    style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}
+                    onMouseEnter={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(to bottom right, #059669, #0d9488)';
+                    }}
+                    onMouseLeave={(e) => {
+                      e.currentTarget.style.background = 'linear-gradient(to bottom right, #10b981, #14b8a6)';
+                    }}
+                    title={newMessagesCount > 0 ? `${newMessagesCount} new message${newMessagesCount > 1 ? 's' : ''} - click to scroll down` : "New messages - click to scroll down"}
                   >
+                    {newMessagesCount > 0 && (
+                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow-lg">
+                        {newMessagesCount > 99 ? '99+' : newMessagesCount}
+                      </span>
+                    )}
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                     </svg>
@@ -4784,14 +4782,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           <div className="flex flex-wrap items-center gap-2 text-base text-gray-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                             {role && (
                               <div className="flex items-center gap-1.5">
-                                <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#3E17C3' }} />
+                                <BriefcaseIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#10b981' }} />
                                 <span className="truncate">{role}</span>
-                              </div>
-                            )}
-                            {department && (
-                              <div className="flex items-center gap-1.5">
-                                <BuildingOfficeIcon className="w-4 h-4 flex-shrink-0" style={{ color: '#3E17C3' }} />
-                                <span className="truncate">{department}</span>
                               </div>
                             )}
                             {isEmployeeUnavailable && (
@@ -4951,7 +4943,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     {/* Date Separator */}
                     {showDateSeparator && (
                       <div className="flex items-center justify-center my-4">
-                        <div className="bg-green-500 text-white px-3 py-1 rounded-full text-sm font-medium shadow-md">
+                        <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-md" style={{ backgroundColor: '#3E17C3' }}>
                           {formatDateSeparator(message.sent_at)}
                         </div>
                       </div>
@@ -4997,7 +4989,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               : 'border rounded-bl-md'
                           }`}
                           style={isOwn && !isEmojiOnly(message.content) 
-                            ? { backgroundColor: '#3e2bcd' } 
+                            ? { background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' } 
                             : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
                           }
                         >
