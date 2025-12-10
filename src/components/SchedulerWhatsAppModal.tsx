@@ -1602,6 +1602,45 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
         {/* Input Area */}
         <div className="absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
+          {/* AI Suggestions Dropdown - Above everything */}
+          {showAISuggestions && (
+            <div className="mb-2 pointer-events-auto">
+              <div className="p-3 bg-gray-50 rounded-lg border shadow-lg max-h-[50vh] overflow-y-auto">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="text-sm font-semibold text-gray-900">
+                    {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAISuggestions(false);
+                      setAiSuggestions([]);
+                    }}
+                    className="btn btn-ghost btn-xs"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <div className="space-y-2">
+                  {isLoadingAI ? (
+                    <div className="text-center text-gray-500 py-4">
+                      <div className="loading loading-spinner loading-sm"></div>
+                      <span className="ml-2">Getting AI suggestions...</span>
+                    </div>
+                  ) : (
+                    <div 
+                      className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                      onClick={() => applyAISuggestion(aiSuggestions[0])}
+                    >
+                      <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+          
           {/* Lock Message - Above input field */}
           {isLocked && (
             <div className="mb-2 pointer-events-auto">
@@ -1799,44 +1838,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </div>
           )}
 
-          {/* AI Suggestions Dropdown */}
-          {showAISuggestions && (
-            <div className="mb-2 pointer-events-auto">
-              <div className="p-3 bg-gray-50 rounded-lg border">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="text-sm font-semibold text-gray-900">
-                    {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAISuggestions(false);
-                      setAiSuggestions([]);
-                    }}
-                    className="btn btn-ghost btn-xs"
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
-                </div>
-                
-                <div className="space-y-2">
-                  {isLoadingAI ? (
-                    <div className="text-center text-gray-500 py-4">
-                      <div className="loading loading-spinner loading-sm"></div>
-                      <span className="ml-2">Getting AI suggestions...</span>
-                    </div>
-                  ) : (
-                    <div 
-                      className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                      onClick={() => applyAISuggestion(aiSuggestions[0])}
-                    >
-                      <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
 
           {/* Contact Selector - Show if multiple contacts, no pre-selected contact, and not hidden */}
           {!hideContactSelector && !propSelectedContact && leadContacts.length > 1 && (
@@ -1881,7 +1882,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               
               {/* Tools Dropdown Menu */}
               {showDesktopTools && (
-                <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
+                <div className="absolute bottom-full left-0 mb-2 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
                   <button
                     onClick={(e) => {
                       e.preventDefault();
@@ -1952,7 +1953,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             <div className="relative">
               {/* Emoji Picker */}
               {isEmojiPickerOpen && (
-                <div className="absolute bottom-12 left-0 z-50">
+                <div className="absolute bottom-full left-0 mb-2 z-50">
                   <EmojiPicker
                     onEmojiClick={handleEmojiClick}
                     width={350}

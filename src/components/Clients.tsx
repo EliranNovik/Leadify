@@ -925,8 +925,10 @@ const Clients: React.FC<ClientsProps> = ({
 
   // --- Mobile Tabs Carousel State ---
   const mobileTabsRef = useRef<HTMLDivElement>(null);
+  const desktopTabsRef = useRef<HTMLDivElement>(null);
   const [canScrollRight, setCanScrollRight] = useState(false);
   const [canScrollLeft, setCanScrollLeft] = useState(false);
+  const [isTabsScrollable, setIsTabsScrollable] = useState(false);
   // Remove tabScales and wave zoom effect
   // ---
 
@@ -1203,6 +1205,52 @@ const Clients: React.FC<ClientsProps> = ({
 
     fetchSuperuserStatus();
   }, []);
+
+  // Check if desktop tabs are scrollable
+  useEffect(() => {
+    const checkDesktopTabsScroll = () => {
+      const el = desktopTabsRef.current;
+      if (!el) {
+        setIsTabsScrollable(false);
+        return;
+      }
+      
+      const hasScroll = el.scrollWidth > el.clientWidth;
+      setIsTabsScrollable(hasScroll);
+    };
+
+    // Initial check
+    const timeoutId = setTimeout(checkDesktopTabsScroll, 200);
+    
+    const el = desktopTabsRef.current;
+    if (el) {
+      // Enable mouse wheel scrolling
+      el.addEventListener('wheel', (e) => {
+        if (e.deltaY !== 0) {
+          e.preventDefault();
+          el.scrollLeft += e.deltaY;
+        }
+      }, { passive: false });
+      
+      window.addEventListener('resize', checkDesktopTabsScroll);
+      
+      // Observe for size changes
+      const observer = new ResizeObserver(() => {
+        setTimeout(checkDesktopTabsScroll, 100);
+      });
+      observer.observe(el);
+      
+      return () => {
+        clearTimeout(timeoutId);
+        window.removeEventListener('resize', checkDesktopTabsScroll);
+        observer.disconnect();
+      };
+    }
+    
+    return () => {
+      clearTimeout(timeoutId);
+    };
+  }, [selectedClient]); // Re-check scrollability when client changes (which affects tabs)
 
   // Check if mobile tabs can scroll
   useEffect(() => {
@@ -9682,8 +9730,207 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
           <div className="w-full">
             {/* Desktop version */}
-            <div className="flex items-center px-4 py-4 gap-4">
-              <div className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide">
+            <div className="flex flex-col px-4 py-4 gap-4">
+              {/* Stages and Actions buttons - move above tabs when scrollable */}
+              {isTabsScrollable && (
+                <div className="flex items-center gap-3 flex-shrink-0 justify-end">
+                  <div className="dropdown">
+                    <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm saira-regular" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                      <span>Stages</span>
+                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
+                      {dropdownItems}
+                    </ul>
+                  </div>
+                  
+                  {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                    <div className="flex flex-col items-start gap-1">
+                      <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
+                      <div ref={successStageHandlerContainerRef} className="relative w-64">
+                        <input
+                          type="text"
+                          className="input input-bordered w-full"
+                          placeholder="Not assigned"
+                          value={successStageHandlerSearch}
+                          onChange={e => {
+                            setSuccessStageHandlerSearch(e.target.value);
+                            setShowSuccessStageHandlerDropdown(true);
+                          }}
+                          onFocus={() => {
+                            setShowSuccessStageHandlerDropdown(true);
+                            setFilteredSuccessStageHandlerOptions(handlerOptions);
+                          }}
+                          autoComplete="off"
+                          disabled={isUpdatingSuccessStageHandler}
+                        />
+                        {showSuccessStageHandlerDropdown && (
+                          <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                            <button
+                              type="button"
+                              className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                              onClick={() => {
+                                setSuccessStageHandlerSearch('');
+                                setShowSuccessStageHandlerDropdown(false);
+                                setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                void assignSuccessStageHandler(null);
+                              }}
+                              disabled={isUpdatingSuccessStageHandler}
+                            >
+                              ---------
+                            </button>
+                            {filteredSuccessStageHandlerOptions.length > 0 ? (
+                              filteredSuccessStageHandlerOptions.map(option => (
+                                <button
+                                  type="button"
+                                  key={option.id}
+                                  className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                  onClick={() => {
+                                    setSuccessStageHandlerSearch(option.label);
+                                    setShowSuccessStageHandlerDropdown(false);
+                                    setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                    void assignSuccessStageHandler(option);
+                                  }}
+                                  disabled={isUpdatingSuccessStageHandler}
+                                >
+                                  {option.label}
+                                </button>
+                              ))
+                            ) : (
+                              <div className="px-4 py-3 text-sm text-base-content/60">
+                                No handlers found
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                    <div className="relative" data-assign-dropdown="true">
+                      <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-56"
+                        placeholder="---"
+                        value={schedulerSearchTerm}
+                        onChange={e => {
+                          setSchedulerSearchTerm(e.target.value);
+                          setShowSchedulerDropdown(true);
+                        }}
+                        onFocus={() => setShowSchedulerDropdown(true)}
+                      />
+                      {showSchedulerDropdown && (
+                        <div className="absolute z-[60] mt-1 max-h-60 w-56 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                          <button
+                            type="button"
+                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                            onClick={() => {
+                              setSchedulerSearchTerm('');
+                              setShowSchedulerDropdown(false);
+                              updateScheduler('');
+                            }}
+                          >
+                            ---------
+                          </button>
+                          {filteredSchedulerOptions.length > 0 ? (
+                            filteredSchedulerOptions.map(option => (
+                              <button
+                                type="button"
+                                key={option}
+                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                onClick={() => {
+                                  setSchedulerSearchTerm(option);
+                                  setShowSchedulerDropdown(false);
+                                  updateScheduler(option);
+                                }}
+                              >
+                                {option}
+                              </button>
+                            ))
+                          ) : (
+                            <div className="px-4 py-3 text-sm text-base-content/60">
+                              No schedulers found
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  
+                  <div className="dropdown dropdown-end">
+                    <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                      <span>Actions</span>
+                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
+                    </label>
+                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
+                      {(() => {
+                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                        const isUnactivated = isLegacy
+                          ? (selectedClient?.status === 10)
+                          : (selectedClient?.status === 'inactive');
+                        return isUnactivated;
+                      })() ? (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                      ) : (
+                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                      )}
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                          onClick={async () => {
+                            if (!selectedClient?.id) return;
+                            
+                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                            const leadId = isLegacyLead 
+                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                              : selectedClient.id;
+                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                            if (isInHighlightsState) {
+                              await removeFromHighlights(leadId, isLegacyLead);
+                            } else {
+                              await addToHighlights(leadId, leadNumber, isLegacyLead);
+                            }
+                            
+                            (document.activeElement as HTMLElement | null)?.blur();
+                          }}
+                        >
+                          {isInHighlightsState ? (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Remove from Highlights</span>
+                            </>
+                          ) : (
+                            <>
+                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                              <span className="font-medium">Add to Highlights</span>
+                            </>
+                          )}
+                        </a>
+                      </li>
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                          onClick={() => {
+                            openEditLeadDrawer();
+                            (document.activeElement as HTMLElement | null)?.blur();
+                          }}
+                        >
+                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                          <span className="font-medium">Edit lead</span>
+                        </a>
+                      </li>
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                    </ul>
+                  </div>
+                </div>
+              )}
+              
+              <div className="flex items-center gap-4">
+                <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide" style={{ scrollBehavior: 'smooth' }}>
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
@@ -9710,10 +9957,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     )}
                   </button>
                 ))}
-              </div>
+                </div>
               
-              {/* Stages and Actions buttons - moved closer to tabs */}
-              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Stages and Actions buttons - next to tabs when not scrollable */}
+                {!isTabsScrollable && (
+                  <div className="flex items-center gap-3 flex-shrink-0">
                 <div className="dropdown">
                   <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm saira-regular" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                     <span>Stages</span>
@@ -9905,6 +10153,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
                   </ul>
                 </div>
+              </div>
+              )}
               </div>
             </div>
           </div>
