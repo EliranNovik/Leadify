@@ -39,29 +39,23 @@ const TemplateOptionCard: React.FC<TemplateOptionCardProps> = ({
           </span>
         </div>
 
-        {/* Right side: Title, params, and content */}
+        {/* Right side: Title, params badge, and content */}
         <div className="flex-1 min-w-0">
-          {/* Title */}
-          <div className="font-semibold text-gray-900 text-sm mb-2">
-            {template.title || template.name360 || 'Untitled'}
-          </div>
-
-          {/* Params indicator */}
-          <div className="mb-2">
-            {hasParams ? (
-              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-700">
+          {/* Title with Parameters Badge on the right */}
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div className="font-semibold text-gray-900 text-sm">
+              {template.title || template.name360 || 'Untitled'}
+            </div>
+            {hasParams && (
+              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-orange-100 text-orange-700 flex-shrink-0">
                 {template.params} Parameter{Number(template.params) !== 1 ? 's' : ''}
-              </span>
-            ) : (
-              <span className="inline-flex items-center px-2 py-1 rounded-md text-xs font-medium bg-gray-100 text-gray-600">
-                No Parameters
               </span>
             )}
           </div>
 
           {/* Content */}
           {template.content && template.content.trim() && (
-            <div className="text-sm text-gray-600 line-clamp-3 mt-2 whitespace-pre-wrap">
+            <div className="text-sm text-gray-600 line-clamp-6 mt-2 whitespace-pre-wrap">
               {template.content}
             </div>
           )}

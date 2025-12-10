@@ -71,7 +71,9 @@ const PublicMessagesManager: React.FC = () => {
       type: 'boolean' as const,
       required: false,
       defaultValue: true,
-      hideInEdit: true // Hide in edit mode since there's a toggle in the table
+      hideInAdd: true, // Hide in add form
+      hideInEdit: true, // Hide in edit form
+      prepareValueForSave: () => true // Always set to true when saving
     }
   ];
 
@@ -83,6 +85,7 @@ const PublicMessagesManager: React.FC = () => {
       description="Manage public messages displayed to users"
       pageSize={20}
       sortColumn="created_at"
+      skipIdAssignment={true} // Skip ID assignment for UUID table
     />
   );
 };

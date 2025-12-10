@@ -410,7 +410,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const renderMessageStatus = (status?: string) => {
     if (!status) return null;
     
-    const baseClasses = "w-4 h-4";
+    const baseClasses = "w-7 h-7";
     
     switch (status) {
       case 'sent':
@@ -428,10 +428,21 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         );
       case 'read':
         return (
-          <svg className={`${baseClasses} text-blue-500`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#4ade80' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
+        );
+      case 'failed':
+        return (
+          <div className="flex items-center gap-1.5">
+            <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <span className="text-xs text-red-600 font-medium">Failed</span>
+          </div>
         );
       default:
         return null;
@@ -1468,7 +1479,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 <React.Fragment key={message.id || index}>
                   {showDateSeparator && (
                     <div className="flex justify-center my-4">
-                      <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
+                      <div className="text-sm font-medium px-3 py-1.5 rounded-full text-black" style={{ backgroundColor: '#4ade80' }}>
                         {formatDateSeparator(message.sent_at)}
                       </div>
                     </div>
@@ -1490,9 +1501,16 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         message.direction === 'out'
                           ? isEmojiOnly(message.message)
                             ? 'bg-white text-gray-900'
-                            : 'bg-green-600 text-white'
+                            : 'text-white'
                           : 'bg-white text-gray-900 border border-gray-200'
                       }`}
+                      style={message.direction === 'out' && !isEmojiOnly(message.message) 
+                        ? { 
+                            background: 'linear-gradient(to bottom right, #059669, #0d9488)',
+                            borderColor: 'transparent'
+                          }
+                        : undefined
+                      }
                     >
                       {message.message_type === 'text' && (
                         <p 
@@ -1677,29 +1695,37 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               ref={templateSelectorRef} 
               className="pointer-events-auto fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto"
             >
-              <div className="p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg">
-                <div className="flex items-center justify-between mb-3">
-                  <div className="text-sm font-semibold text-gray-900">Select Template</div>
-                  <button
-                    type="button"
-                    onClick={() => setShowTemplateSelector(false)}
-                    className="btn btn-ghost btn-xs"
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
+              <div className="bg-white rounded-t-2xl border-t border-x border-gray-200 shadow-2xl overflow-hidden">
+                {/* Header with gradient background */}
+                <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <FaWhatsapp className="w-5 h-5 text-white" />
+                      <h3 className="text-base font-bold text-white">Select Template</h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(false)}
+                      className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
                 </div>
                 
-                <div className="mb-3">
-                  <input
-                    type="text"
-                    placeholder="Search templates..."
-                    value={templateSearchTerm}
-                    onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
-                  />
-                </div>
-                
-                <div className="space-y-3 max-h-[calc(60vh-120px)] overflow-y-auto">
+                {/* Content */}
+                <div className="p-4">
+                  <div className="mb-4">
+                    <input
+                      type="text"
+                      placeholder="Search templates..."
+                      value={templateSearchTerm}
+                      onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                    />
+                  </div>
+                  
+                  <div className="space-y-3 max-h-[calc(60vh-120px)] overflow-y-auto">
                   {isLoadingTemplates ? (
                     <div className="text-center text-gray-500 py-4">
                       <div className="loading loading-spinner loading-sm"></div>
@@ -1741,6 +1767,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       />
                     ))
                   )}
+                  </div>
                 </div>
               </div>
             </div>
@@ -1749,29 +1776,37 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           {/* Template Dropdown - Desktop */}
           {showTemplateSelector && !isMobile && (
             <div ref={templateSelectorRef} className="pointer-events-auto mb-2 relative z-40">
-              <div className="p-6 bg-white rounded-lg border border-gray-200 shadow-lg min-w-[600px] max-w-[800px]">
-                <div className="flex items-center justify-between mb-4">
-                  <div className="text-base font-semibold text-gray-900">Select Template</div>
-                  <button
-                    type="button"
-                    onClick={() => setShowTemplateSelector(false)}
-                    className="btn btn-ghost btn-xs"
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px]">
+                {/* Header with gradient background */}
+                <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                      <FaWhatsapp className="w-6 h-6 text-white" />
+                      <h3 className="text-lg font-bold text-white">Select Template</h3>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setShowTemplateSelector(false)}
+                      className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  </div>
                 </div>
                 
-                <div className="mb-4">
-                  <input
-                    type="text"
-                    placeholder="Search templates..."
-                    value={templateSearchTerm}
-                    onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
-                  />
-                </div>
-                
-                <div className={`space-y-3 ${isMobile ? 'max-h-[calc(60vh-120px)] overflow-y-auto' : 'max-h-[500px] overflow-y-auto'}`}>
+                {/* Content */}
+                <div className="p-6">
+                  <div className="mb-5">
+                    <input
+                      type="text"
+                      placeholder="Search templates..."
+                      value={templateSearchTerm}
+                      onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                    />
+                  </div>
+                  
+                  <div className={`space-y-3 ${isMobile ? 'max-h-[calc(60vh-120px)] overflow-y-auto' : 'max-h-[500px] overflow-y-auto'}`}>
                   {isLoadingTemplates ? (
                     <div className="text-center text-gray-500 py-4">
                       <div className="loading loading-spinner loading-sm"></div>
@@ -1813,6 +1848,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                       />
                     ))
                   )}
+                  </div>
                 </div>
               </div>
             </div>

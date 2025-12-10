@@ -32,7 +32,7 @@ const WhatsAppAvatar: React.FC<WhatsAppAvatarProps> = ({
   const initials = getInitials(name);
 
   return (
-    <div className={`${sizeClasses[size]} ${className} rounded-full flex items-center justify-center overflow-hidden flex-shrink-0 bg-gradient-to-br from-green-400 to-green-600 text-white font-semibold shadow-sm`}>
+    <div className={`${sizeClasses[size]} ${className} rounded-full flex items-center justify-center overflow-hidden flex-shrink-0 text-white font-semibold shadow-sm`} style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
       {profilePictureUrl ? (
         <img
           src={profilePictureUrl}

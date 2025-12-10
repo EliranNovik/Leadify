@@ -480,10 +480,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         );
       case 'read':
         return (
-          <svg className={`${baseClasses} text-black`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 12l4 4L11 8" />
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l4 4L17 8" />
+          <svg className="w-8 h-8" fill="none" viewBox="0 0 24 24" stroke="currentColor" style={{ color: '#4ade80' }}>
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M3 12l4 4L11 8" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M9 12l4 4L17 8" />
           </svg>
+        );
+      case 'failed':
+        return (
+          <div className="flex items-center gap-1.5">
+            <div className="w-5 h-5 rounded-full bg-red-500 flex items-center justify-center flex-shrink-0">
+              <svg className="w-3 h-3 text-white" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12" />
+              </svg>
+            </div>
+            <span className="text-xs text-red-600 font-medium">Failed</span>
+          </div>
         );
       default:
         return null;
@@ -1627,6 +1638,30 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     }
   }, [messages]);
 
+  // Calculate time left for 24-hour window
+  const calculateTimeLeft = (lastMessageTime: string) => {
+    const lastMessage = new Date(lastMessageTime);
+    const now = new Date();
+    const diffMs = now.getTime() - lastMessage.getTime();
+    const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
+    
+    if (hoursLeft <= 0) {
+      setIsLocked(true);
+      setTimeLeft('Locked');
+      return;
+    }
+    
+    setIsLocked(false);
+    const hours = Math.floor(hoursLeft);
+    const minutes = Math.floor((hoursLeft - hours) * 60);
+    
+    if (hours > 0) {
+      setTimeLeft(`${hours}h ${minutes}m`);
+    } else {
+      setTimeLeft(`${minutes}m`);
+    }
+  };
+
   // Update timer for 24-hour window
   useEffect(() => {
     if (!selectedClient) {
@@ -1670,7 +1705,43 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('');
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
+
+  // Helper function to normalize language codes (en and en_US both become 'en')
+  const normalizeLanguage = (lang: string | undefined | null): string => {
+    if (!lang) return 'en';
+    const normalized = lang.toLowerCase();
+    if (normalized === 'en_us' || normalized === 'en') return 'en';
+    return normalized;
+  };
+
+  // Helper function to get display name for language
+  const getLanguageDisplayName = (lang: string): string => {
+    const normalized = normalizeLanguage(lang);
+    const langMap: { [key: string]: string } = {
+      'en': 'English',
+      'he': 'Hebrew',
+      'fr': 'French',
+      'ar': 'Arabic',
+      'ru': 'Russian',
+      'es': 'Spanish',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'zh': 'Chinese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'tr': 'Turkish',
+      'pl': 'Polish',
+      'nl': 'Dutch',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'no': 'Norwegian',
+      'fi': 'Finnish',
+    };
+    return langMap[normalized] || lang.toUpperCase();
+  };
   
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
@@ -2976,30 +3047,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return date.toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   };
 
-  // Calculate time left in 24-hour window
-  const calculateTimeLeft = (lastMessageTime: string) => {
-    const lastMessage = new Date(lastMessageTime);
-    const now = new Date();
-    const diffMs = now.getTime() - lastMessage.getTime();
-    const hoursLeft = 24 - (diffMs / (1000 * 60 * 60));
-    
-    if (hoursLeft <= 0) {
-      setIsLocked(true);
-      setTimeLeft('Locked');
-      return;
-    }
-    
-    setIsLocked(false);
-    const hours = Math.floor(hoursLeft);
-    const minutes = Math.floor((hoursLeft - hours) * 60);
-    
-    if (hours > 0) {
-      setTimeLeft(`${hours}h ${minutes}m`);
-    } else {
-      setTimeLeft(`${minutes}m`);
-    }
-  };
-
   // Check if a client is locked (24 hours passed since last message)
   const isClientLocked = (lastMessageTime: string) => {
     const lastMessage = new Date(lastMessageTime);
@@ -3188,9 +3235,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
         </div>
 
-        <div className="flex-1 flex" style={{ overflow: 'visible' }}>
+        <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Left Panel - Client List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 ${isMobile && showChat ? 'hidden' : ''}`}>
             {/* Filter Toggle and Search Bar */}
             <div className={`${isMobile
                 ? 'sticky top-0 z-10 bg-white transition-all duration-300 ' +
@@ -3205,22 +3252,22 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   <button
                     type="button"
                     onClick={() => setShowMyContactsOnly(false)}
-                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                      !showMyContactsOnly
-                        ? 'bg-green-600 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${!showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    style={!showMyContactsOnly 
+                      ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                      : undefined
+                    }
                   >
                     All Contacts
                   </button>
                   <button
                     type="button"
                     onClick={() => setShowMyContactsOnly(true)}
-                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                      showMyContactsOnly
-                        ? 'bg-green-600 text-white shadow-sm'
-                        : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${showMyContactsOnly ? 'text-white shadow-sm' : 'bg-gray-100 text-gray-700 hover:bg-gray-200'}`}
+                    style={showMyContactsOnly 
+                      ? { background: 'linear-gradient(to bottom right, #059669, #0d9488)' }
+                      : undefined
+                    }
                   >
                     My Contacts
                   </button>
@@ -3404,10 +3451,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               {client.isContact ? `Contact • ${client.lead_number}` : client.lead_number}
                             </p>
                             {lastMessage && (
-                              <p className="text-sm md:text-sm text-gray-600 truncate mt-1">
-                                {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
-                                {lastMessage.message}
-                              </p>
+                              <div className="flex items-center gap-1 mt-1">
+                                <p className="text-sm md:text-sm text-gray-600 truncate flex-1">
+                                  {lastMessage.direction === 'out' ? `${lastMessage.sender_name}: ` : ''}
+                                  {lastMessage.message}
+                                </p>
+                                {lastMessage.direction === 'out' && lastMessage.whatsapp_status && (
+                                  <span className="inline-block align-middle flex-shrink-0" style={{ transform: 'scale(0.75)' }}>
+                                    {renderMessageStatus(lastMessage.whatsapp_status)}
+                                  </span>
+                                )}
+                              </div>
                             )}
                           </div>
                         </div>
@@ -3423,7 +3477,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   onClick={() => setIsNewMessageModalOpen(true)}
                   className="flex items-center gap-3 w-full"
                 >
-                  <div className="btn btn-circle w-12 h-12 bg-green-600 hover:bg-green-700 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0">
+                  <div className="btn btn-circle w-12 h-12 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
                   <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
                   </svg>
@@ -3435,7 +3489,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           </div>
 
           {/* Right Panel - Chat */}
-          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'visible', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { position: 'relative', overflow: 'visible' }}>
+          <div className={`${isMobile ? 'w-full' : 'flex-1'} flex flex-col bg-white min-h-0 relative ${isMobile && !showChat ? 'hidden' : ''}`} style={isMobile ? { height: '100vh', overflow: 'hidden', position: 'fixed', top: 0, left: 0, right: 0, zIndex: 40 } : { overflow: 'hidden' }}>
             {selectedClient ? (
               <>
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
@@ -3451,8 +3505,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </svg>
                       </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0 mr-2" style={{ maxWidth: 'calc(100% - 200px)' }}>
-                      <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative flex-shrink-0">
-                        <span className="text-green-600 font-semibold text-sm">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
+                        <span className="text-white font-semibold text-sm">
                           {selectedClient.name.charAt(0).toUpperCase()}
                         </span>
                         {(isLocked || messages.length === 0) && (
@@ -3534,7 +3588,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 )}
 
             {/* Messages - Scrollable */}
-            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'visible' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'visible' }}>
+            <div ref={chatMessagesRef} onScroll={handleChatMessagesScroll} className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0 overscroll-contain relative" style={isMobile ? { flex: '1 1 auto', paddingBottom: showTemplateSelector ? '300px' : (isLocked ? '280px' : '200px'), WebkitOverflowScrolling: 'touch', overflowX: 'visible' } : { paddingBottom: isLocked ? '200px' : '120px', overflowX: 'visible' }}>
               {messages.length === 0 ? (
                 <div className="text-center py-8 text-gray-500">
                   <FaWhatsapp className="w-12 h-12 mx-auto mb-4 text-gray-300" />
@@ -3559,7 +3613,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {/* Date Separator */}
                       {showDateSeparator && (
                         <div className="flex justify-center my-4">
-                          <div className="bg-gray-100 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full">
+                          <div className="text-sm font-medium px-3 py-1.5 rounded-full text-black" style={{ backgroundColor: '#4ade80' }}>
                             {formatDateSeparator(message.sent_at)}
                           </div>
                         </div>
@@ -3584,10 +3638,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           message.direction === 'out'
                             ? isEmojiOnly(message.message)
                               ? 'bg-white text-gray-900'
-                              : 'bg-green-600 text-white'
+                              : 'text-white'
                             : 'bg-white text-gray-900 border border-gray-200'
                         }`}
-                        style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}
+                        style={message.direction === 'out' && !isEmojiOnly(message.message) 
+                          ? { 
+                              wordBreak: 'break-word', 
+                              overflowWrap: 'break-word',
+                              background: 'linear-gradient(to bottom right, #059669, #0d9488)',
+                              borderColor: 'transparent'
+                            }
+                          : { wordBreak: 'break-word', overflowWrap: 'break-word' }
+                        }
                       >
                       {/* Edit input or message content */}
                       {editingMessage === message.id ? (
@@ -4060,6 +4122,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       ref={textareaRef}
                       value={newMessage}
                       onChange={(e) => {
+                        if (selectedTemplate) return; // Prevent changes when template is selected
                         setNewMessage(e.target.value);
                         const textarea = e.target;
                         textarea.style.height = 'auto';
@@ -4068,6 +4131,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
                       }}
                       onKeyDown={(e) => {
+                        if (selectedTemplate) return; // Prevent changes when template is selected
                         // Let Enter create new lines
                       }}
                       placeholder={
@@ -4085,12 +4149,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       }
                       className="textarea w-full resize-none min-h-[44px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
+                      readOnly={!!selectedTemplate}
                       disabled={sending || uploadingMedia || isLocked}
                       style={{ 
-                        backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                        backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)', 
                         backdropFilter: 'blur(10px)',
                         boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                        maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px'
+                        maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '128px',
+                        cursor: selectedTemplate ? 'not-allowed' : 'text'
                       }}
                     />
                   </div>
@@ -4123,6 +4189,160 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     )}
                   </button>
                 </div>
+                
+                {/* Template Dropdown - Desktop */}
+                {showTemplateSelector && (
+                  <div ref={templateSelectorRef} className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]" style={{ overflow: 'visible' }}>
+                    {/* Lock Message - Above template modal when open */}
+                    {isLocked && (
+                      <div className="mb-2 pointer-events-auto">
+                        <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
+                          <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
+                          <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
+                        </div>
+                      </div>
+                    )}
+                    <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px]">
+                      {/* Header with gradient background */}
+                      <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-3">
+                            <FaWhatsapp className="w-6 h-6 text-white" />
+                            <h3 className="text-lg font-bold text-white">Select Template</h3>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => setShowTemplateSelector(false)}
+                            className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-2"
+                          >
+                            <XMarkIcon className="w-5 h-5" />
+                          </button>
+                        </div>
+                      </div>
+                      
+                      {/* Content */}
+                      <div className="p-6">
+                        <div className="mb-5 flex gap-3">
+                          <input
+                            type="text"
+                            placeholder="Search templates..."
+                            value={templateSearchTerm}
+                            onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                            className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                          />
+                          <select
+                            value={selectedLanguage}
+                            onChange={(e) => setSelectedLanguage(e.target.value)}
+                            className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
+                          >
+                            <option value="">All Languages</option>
+                            {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                              .sort()
+                              .map(lang => (
+                                <option key={lang} value={lang}>
+                                  {getLanguageDisplayName(lang)}
+                                </option>
+                              ))}
+                          </select>
+                        </div>
+                        
+                        <div className="max-h-[500px] overflow-y-auto space-y-3">
+                        {isLoadingTemplates ? (
+                          <div className="text-center text-gray-500 py-4">
+                            <div className="loading loading-spinner loading-sm"></div>
+                            <span className="ml-2">Loading templates...</span>
+                          </div>
+                        ) : (() => {
+                          let filtered = filterTemplates(templates, templateSearchTerm);
+                          if (selectedLanguage) {
+                            filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                          }
+                          return filtered;
+                        })().length === 0 ? (
+                          <div className="text-center text-gray-500 py-4 text-sm">
+                            {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                          </div>
+                        ) : (() => {
+                          let filtered = filterTemplates(templates, templateSearchTerm);
+                          if (selectedLanguage) {
+                            filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                          }
+                          return filtered;
+                        })().map((template) => (
+                          <TemplateOptionCard
+                            key={template.id}
+                            template={template}
+                            isSelected={selectedTemplate?.id === template.id}
+                            onClick={() => {
+                              if (template.active !== 't') {
+                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
+                                return;
+                              }
+                              setSelectedTemplate(template);
+                              setShowTemplateSelector(false);
+                              setTemplateSearchTerm('');
+                              setSelectedLanguage('');
+                              // Always set template content in input field
+                              setNewMessage(template.content || '');
+                              
+                              // Expand textarea for desktop when template is inserted
+                              if (textareaRef.current) {
+                                setTimeout(() => {
+                                  if (textareaRef.current) {
+                                    textareaRef.current.style.height = 'auto';
+                                    const maxHeight = 400; // Desktop max height
+                                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                  }
+                                }, 0);
+                              }
+                            }}
+                          />
+                        ))
+                        }
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+                
+                {/* AI Suggestions Dropdown - Desktop */}
+                {showAISuggestions && (
+                  <div className="absolute bottom-full left-0 right-0 mb-2 px-4 pointer-events-auto z-[9999]" style={{ overflow: 'visible' }}>
+                    <div className="p-3 bg-gray-50 rounded-lg border shadow-lg max-h-[50vh] overflow-y-auto">
+                      <div className="flex items-center justify-between mb-2">
+                        <div className="text-sm font-semibold text-gray-900">
+                          {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setShowAISuggestions(false);
+                            setAiSuggestions([]);
+                          }}
+                          className="btn btn-ghost btn-xs"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
+                      </div>
+                      
+                      <div className="space-y-2">
+                        {isLoadingAI ? (
+                          <div className="text-center text-gray-500 py-4">
+                            <div className="loading loading-spinner loading-sm"></div>
+                            <span className="ml-2">Getting AI suggestions...</span>
+                          </div>
+                        ) : (
+                          <div 
+                            className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
+                            onClick={() => applyAISuggestion(aiSuggestions[0])}
+                          >
+                            <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -4250,6 +4470,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         ref={textareaRef}
                         value={newMessage}
                         onChange={(e) => {
+                          if (selectedTemplate) return; // Prevent changes when template is selected
                           setNewMessage(e.target.value);
                           const textarea = e.target;
                           textarea.style.height = 'auto';
@@ -4258,6 +4479,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           textarea.style.height = `${Math.min(textarea.scrollHeight, maxHeight)}px`;
                         }}
                         onFocus={(e) => {
+                          if (selectedTemplate) return; // Prevent focus changes when template is selected
                           setIsInputFocused(true);
                           e.target.style.height = 'auto';
                           const maxHeight = selectedTemplate && selectedTemplate.params === '0' ? 400 : 300;
@@ -4270,6 +4492,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           e.target.style.height = `${Math.min(e.target.scrollHeight, maxHeight)}px`;
                         }}
                         onKeyDown={(e) => {
+                          if (selectedTemplate) return; // Prevent changes when template is selected
                           // Let Enter create new lines
                         }}
                         placeholder={
@@ -4287,13 +4510,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         }
                         className="textarea w-full resize-none text-sm min-h-[36px] border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                         rows={1}
+                        readOnly={!!selectedTemplate}
                         disabled={sending || uploadingMedia || isLocked}
                         style={{ 
                           lineHeight: '1.4', 
-                          backgroundColor: 'rgba(255, 255, 255, 0.8)', 
+                          backgroundColor: selectedTemplate ? 'rgba(240, 240, 240, 0.9)' : 'rgba(255, 255, 255, 0.8)', 
                           backdropFilter: 'blur(10px)',
                           boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
-                          maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px'
+                          maxHeight: selectedTemplate && selectedTemplate.params === '0' ? '400px' : '160px',
+                          cursor: selectedTemplate ? 'not-allowed' : 'text'
                         }}
                       />
                     </div>
@@ -4355,193 +4580,108 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 ref={templateSelectorRef}
                 className="fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto pointer-events-auto"
               >
-                <div className="p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg">
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="text-sm font-semibold text-gray-900">Select Template</div>
-                    <button
-                      type="button"
-                      onClick={() => setShowTemplateSelector(false)}
-                      className="btn btn-ghost btn-xs"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                  
-                  {/* Search Input */}
-                  <div className="mb-3">
-                    <input
-                      type="text"
-                      placeholder="Search templates..."
-                      value={templateSearchTerm}
-                      onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                      className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
-                    />
-                  </div>
-                  
-                  {/* Templates List */}
-                  <div className="space-y-3 max-h-[40vh] overflow-y-auto">
-                    {isLoadingTemplates ? (
-                      <div className="text-center text-gray-500 py-4">
-                        <div className="loading loading-spinner loading-sm"></div>
-                        <span className="ml-2">Loading...</span>
+                <div className="bg-white rounded-t-2xl border-t border-x border-gray-200 shadow-2xl overflow-hidden">
+                  {/* Header with gradient background */}
+                  <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <FaWhatsapp className="w-5 h-5 text-white" />
+                        <h3 className="text-base font-bold text-white">Select Template</h3>
                       </div>
-                    ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                      <div className="text-center text-gray-500 py-4 text-sm">
-                        {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                      </div>
-                    ) : (
-                      filterTemplates(templates, templateSearchTerm).map((template) => (
-                        <TemplateOptionCard
-                          key={template.id}
-                          template={template}
-                          isSelected={selectedTemplate?.id === template.id}
-                          onClick={() => {
-                            if (template.active !== 't') {
-                              toast.error('Template pending approval');
-                              return;
-                            }
-                            setSelectedTemplate(template);
-                            setShowTemplateSelector(false);
-                            setTemplateSearchTerm('');
-                            if (template.params === '0') {
-                              setNewMessage(template.content || '');
-                              // Expand textarea on mobile when template is applied
-                              if (isMobile && textareaRef.current) {
-                                setTimeout(() => {
-                                  if (textareaRef.current) {
-                                    textareaRef.current.style.height = 'auto';
-                                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
-                                  }
-                                }, 0);
-                              }
-                            } else {
-                              setNewMessage('');
-                            }
-                          }}
-                        />
-                      ))
-                    )}
-                  </div>
-                  </div>
-                </div>
-              )}
-              
-            {/* AI Suggestions Dropdown - Desktop */}
-            {showAISuggestions && !isMobile && (
-              <div className="absolute bottom-full left-0 right-0 mb-2 px-4 pointer-events-auto z-50">
-                <div className="p-3 bg-gray-50 rounded-lg border shadow-lg max-h-[50vh] overflow-y-auto">
-                  <div className={`${isMobile ? 'flex items-center justify-between mb-2' : 'p-3 bg-gray-50 rounded-lg border'}`}>
-                    <div className="text-sm font-semibold text-gray-900">
-                      {newMessage.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setShowAISuggestions(false);
-                        setAiSuggestions([]);
-                      }}
-                      className="btn btn-ghost btn-xs"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                  
-                  <div className="space-y-2">
-                    {isLoadingAI ? (
-                      <div className="text-center text-gray-500 py-4">
-                        <div className="loading loading-spinner loading-sm"></div>
-                        <span className="ml-2">Getting AI suggestions...</span>
-                      </div>
-                    ) : (
-                      <div 
-                        className="w-full p-4 rounded-lg border border-gray-200 bg-gray-50 cursor-pointer hover:bg-gray-100 transition-colors"
-                        onClick={() => applyAISuggestion(aiSuggestions[0])}
-                      >
-                        <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
-                      </div>
-                    )}
-                  </div>
-                  </div>
-                </div>
-              )}
-
-            {/* Legacy Input Area - Keeping for template dropdowns and voice recorder */}
-            <div 
-              className={`flex-none transition-all duration-200 ${
-                isMobile ? 'hidden' : ''
-              }`}
-            >
-              
-              {/* Template Dropdown - Desktop */}
-              {!isMobile && showTemplateSelector && (
-                <div className="px-4 pt-3 pb-2">
-                  {/* Lock Message - Above template modal when open */}
-                  {isLocked && (
-                    <div className="mb-2 pointer-events-auto">
-                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
-                        <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
-                        <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
-                      </div>
-                    </div>
-                  )}
-                  <div className="p-6 bg-white rounded-lg border border-gray-200 shadow-lg min-w-[600px] max-w-[800px]">
-                    <div className="flex items-center justify-between mb-4">
-                      <div className="text-base font-semibold text-gray-900">Select Template</div>
                       <button
                         type="button"
                         onClick={() => setShowTemplateSelector(false)}
-                        className="btn btn-ghost btn-xs"
+                        className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5"
                       >
                         <XMarkIcon className="w-4 h-4" />
                       </button>
                     </div>
-                    
-                    <div className="mb-4">
+                  </div>
+                  
+                  {/* Content */}
+                  <div className="p-4">
+                    {/* Search Input */}
+                    <div className="mb-4 flex gap-2">
                       <input
                         type="text"
                         placeholder="Search templates..."
                         value={templateSearchTerm}
                         onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                        className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
                       />
+                      <select
+                        value={selectedLanguage}
+                        onChange={(e) => setSelectedLanguage(e.target.value)}
+                        className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
+                      >
+                        <option value="">All</option>
+                        {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                          .sort()
+                          .map(lang => (
+                            <option key={lang} value={lang}>
+                              {getLanguageDisplayName(lang)}
+                            </option>
+                          ))}
+                      </select>
                     </div>
                     
-                    <div className="max-h-[500px] overflow-y-auto space-y-3">
-                      {isLoadingTemplates ? (
-                        <div className="text-center text-gray-500 py-4">
-                          <div className="loading loading-spinner loading-sm"></div>
-                          <span className="ml-2">Loading templates...</span>
-                        </div>
-                      ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                        <div className="text-center text-gray-500 py-4 text-sm">
-                          {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                        </div>
-                      ) : (
-                        filterTemplates(templates, templateSearchTerm).map((template) => (
-                          <TemplateOptionCard
-                            key={template.id}
-                            template={template}
-                            isSelected={selectedTemplate?.id === template.id}
-                            onClick={() => {
-                              if (template.active !== 't') {
-                                toast.error('This template is pending approval and cannot be used yet. Please wait for Meta to approve it or select an active template.');
-                                return;
+                    {/* Templates List */}
+                    <div className="space-y-3 max-h-[40vh] overflow-y-auto">
+                    {isLoadingTemplates ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Loading...</span>
+                      </div>
+                    ) : (() => {
+                      let filtered = filterTemplates(templates, templateSearchTerm);
+                      if (selectedLanguage) {
+                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                      }
+                      return filtered;
+                    })().length === 0 ? (
+                      <div className="text-center text-gray-500 py-4 text-sm">
+                        {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                      </div>
+                    ) : (() => {
+                      let filtered = filterTemplates(templates, templateSearchTerm);
+                      if (selectedLanguage) {
+                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                      }
+                      return filtered;
+                    })().map((template) => (
+                      <TemplateOptionCard
+                        key={template.id}
+                        template={template}
+                        isSelected={selectedTemplate?.id === template.id}
+                        onClick={() => {
+                          if (template.active !== 't') {
+                            toast.error('Template pending approval');
+                            return;
+                          }
+                          setSelectedTemplate(template);
+                          setShowTemplateSelector(false);
+                          setTemplateSearchTerm('');
+                          setSelectedLanguage('');
+                          // Always set template content in input field
+                          setNewMessage(template.content || '');
+                          
+                          // Expand textarea on mobile when template is applied
+                          if (isMobile && textareaRef.current) {
+                            setTimeout(() => {
+                              if (textareaRef.current) {
+                                textareaRef.current.style.height = 'auto';
+                                textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, 300)}px`;
                               }
-                              setSelectedTemplate(template);
-                              setShowTemplateSelector(false);
-                              setTemplateSearchTerm('');
-                              if (template.params === '0') {
-                                setNewMessage(template.content || '');
-                              } else {
-                                setNewMessage('');
-                              }
-                            }}
-                          />
-                        ))
-                      )}
+                            }, 0);
+                          }
+                        }}
+                      />
+                    ))
+                    }
                     </div>
                   </div>
                 </div>
+              </div>
               )}
               
 
@@ -4580,7 +4720,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     </button>
                   </div>
                 )}
-            </div>
           </>
         ) : (
           /* No client selected */
@@ -4591,7 +4730,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               <p className="text-sm">Select a client to start chatting</p>
             </div>
           </div>
-            )}
+        )}
           </div>
         </div>
       </div>
@@ -4834,8 +4973,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200"
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center flex-shrink-0">
-                            <span className="font-semibold text-green-700">
+                          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
+                            <span className="font-semibold text-white">
                               {displayName.charAt(0).toUpperCase()}
                             </span>
                           </div>
