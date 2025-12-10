@@ -119,6 +119,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [showMobileDropdown, setShowMobileDropdown] = useState(false);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
+  const templateSelectorRef = useRef<HTMLDivElement>(null);
   
   // Mobile detection
   useEffect(() => {
@@ -159,12 +160,25 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       
+      // Don't close if clicking inside template selector
+      if (templateSelectorRef.current && templateSelectorRef.current.contains(target)) {
+        return;
+      }
+      
       // Close tools dropdowns
       if (desktopToolsRef.current && !desktopToolsRef.current.contains(target)) {
         setShowDesktopTools(false);
       }
       if (mobileToolsRef.current && !mobileToolsRef.current.contains(target)) {
         setShowMobileDropdown(false);
+      }
+      
+      // Close template selector if clicking outside
+      if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
+        // Don't close if clicking on the template button itself
+        if (!target.closest('button') || !target.closest('button')?.textContent?.includes('Template')) {
+          setShowTemplateSelector(false);
+        }
       }
       
       // Reset input focus on mobile
@@ -180,7 +194,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isMobile, isInputFocused]);
+  }, [isMobile, isInputFocused, showTemplateSelector]);
 
   // Fetch current user
   useEffect(() => {
@@ -628,9 +642,149 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
           selectedContactId,
           contactId
         });
+        
         if (isLegacyLead) {
           const legacyId = parseInt(client.id.replace('legacy_', ''));
-          query = query.eq('legacy_id', legacyId);
+          
+          // For legacy leads, fetch from leads_leadinteractions table
+          const { data: interactions, error: interactionsError } = await supabase
+            .from('leads_leadinteractions')
+            .select('*')
+            .eq('lead_id', legacyId)
+            .eq('kind', 'w') // 'w' for WhatsApp
+            .order('cdate', { ascending: true });
+          
+          if (interactionsError) {
+            console.error('Error fetching legacy interactions:', interactionsError);
+            // Fallback to whatsapp_messages if leads_leadinteractions fails
+            query = query.eq('legacy_id', legacyId);
+            const { data, error } = await query.order('sent_at', { ascending: true });
+            if (error) {
+              console.error('Error fetching messages:', error);
+              return;
+            }
+            const processedMessages = (data || []).map(processTemplateMessage);
+            if (!isPolling) {
+              setMessages(processedMessages);
+            } else {
+              setMessages(prevMessages => {
+                const hasChanges = processedMessages.length !== prevMessages.length ||
+                  processedMessages.some((newMsg, index) => {
+                    const prevMsg = prevMessages[index];
+                    return !prevMsg || 
+                           newMsg.id !== prevMsg.id || 
+                           newMsg.message !== prevMsg.message ||
+                           newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                  });
+                
+                if (hasChanges) {
+                  return processedMessages;
+                }
+                return prevMessages;
+              });
+            }
+            return;
+          }
+          
+          // Fetch employee display names for creator_ids
+          const creatorIds = [...new Set((interactions || [])
+            .map((interaction: any) => interaction.creator_id)
+            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id !== null && id !== undefined)
+            .map((id: any) => Number(id))
+            .filter((id: number) => !isNaN(id))
+          )];
+          
+          let employeeNameMap: Record<number, string> = {};
+          if (creatorIds.length > 0) {
+            const { data: employees, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', creatorIds);
+            
+            if (!employeeError && employees) {
+              employeeNameMap = employees.reduce((acc, emp) => {
+                acc[emp.id] = emp.display_name;
+                return acc;
+              }, {} as Record<number, string>);
+            }
+          }
+          
+          // Transform legacy interactions to WhatsAppMessage format
+          const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
+            // Combine date and time to create sent_at
+            const dateStr = interaction.date || '';
+            const timeStr = interaction.time || '';
+            let sentAt = new Date().toISOString();
+            
+            if (dateStr && timeStr) {
+              try {
+                // Try to parse date and time
+                const [year, month, day] = dateStr.split('-');
+                const [hours, minutes, seconds] = timeStr.split(':');
+                if (year && month && day && hours && minutes) {
+                  sentAt = new Date(
+                    parseInt(year),
+                    parseInt(month) - 1,
+                    parseInt(day),
+                    parseInt(hours),
+                    parseInt(minutes),
+                    seconds ? parseInt(seconds) : 0
+                  ).toISOString();
+                }
+              } catch (e) {
+                // Fallback to cdate if available
+                sentAt = interaction.cdate || new Date().toISOString();
+              }
+            } else if (interaction.cdate) {
+              sentAt = interaction.cdate;
+            }
+            
+            // Get sender name from creator_id
+            let senderName = 'Unknown';
+            if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
+              const creatorId = Number(interaction.creator_id);
+              if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
+                senderName = employeeNameMap[creatorId];
+              } else if (!isNaN(creatorId)) {
+                senderName = `Employee ${creatorId}`;
+              }
+            }
+            
+            return {
+              id: interaction.id,
+              lead_id: client.id, // Keep the legacy_ prefix for consistency
+              sender_name: senderName,
+              direction: interaction.direction === 'i' ? 'in' : 'out',
+              message: interaction.content || interaction.description || '',
+              sent_at: sentAt,
+              status: 'sent',
+              message_type: 'text',
+              whatsapp_status: 'sent',
+            };
+          });
+          
+          const processedMessages = transformedMessages.map(processTemplateMessage);
+          
+          if (!isPolling) {
+            setMessages(processedMessages);
+          } else {
+            setMessages(prevMessages => {
+              const hasChanges = processedMessages.length !== prevMessages.length ||
+                processedMessages.some((newMsg, index) => {
+                  const prevMsg = prevMessages[index];
+                  return !prevMsg || 
+                         newMsg.id !== prevMsg.id || 
+                         newMsg.message !== prevMsg.message ||
+                         newMsg.whatsapp_status !== prevMsg.whatsapp_status;
+                });
+              
+              if (hasChanges) {
+                return processedMessages;
+              }
+              return prevMessages;
+            });
+          }
+          return;
         } else {
           query = query.eq('lead_id', client.id);
         }
@@ -1257,10 +1411,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         <div className="flex-none flex items-center justify-between p-4 md:p-6 border-b border-gray-200">
           <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
             <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900">WhatsApp</h2>
             {client && (
               <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-                <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
                 {clientLocked && (
                   <div className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5">
                     <LockClosedIcon className="w-2 h-2 text-white" />
@@ -1270,11 +1422,6 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   <span className="text-sm md:text-lg font-semibold text-gray-900 truncate">
                     {displayName}
                   </span>
-                  {activeContact && (
-                    <span className="text-xs text-gray-500 px-2 py-0.5 bg-blue-100 rounded-full">
-                      Contact
-                    </span>
-                  )}
                   <span className="text-xs md:text-sm text-gray-500 font-mono flex-shrink-0">
                     ({client.lead_number})
                   </span>
@@ -1284,10 +1431,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
                   }`}>
                     {isLocked ? (
-                      <>
-                        <LockClosedIcon className="w-4 h-4" />
-                        <span>Locked</span>
-                      </>
+                      <LockClosedIcon className="w-4 h-4" />
                     ) : (
                       <>
                         <ClockIcon className="w-4 h-4" />
@@ -1488,10 +1632,13 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             </div>
           )}
 
-          {/* Template Dropdown */}
-          {showTemplateSelector && (
-            <div className="mb-2 pointer-events-auto">
-              <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
+          {/* Template Dropdown - Mobile */}
+          {showTemplateSelector && isMobile && (
+            <div 
+              ref={templateSelectorRef} 
+              className="pointer-events-auto fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto"
+            >
+              <div className="p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg">
                 <div className="flex items-center justify-between mb-3">
                   <div className="text-sm font-semibold text-gray-900">Select Template</div>
                   <button
@@ -1513,7 +1660,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   />
                 </div>
                 
-                <div className="max-h-64 overflow-y-auto space-y-3">
+                <div className="space-y-3 max-h-[calc(60vh-120px)] overflow-y-auto">
                   {isLoadingTemplates ? (
                     <div className="text-center text-gray-500 py-4">
                       <div className="loading loading-spinner loading-sm"></div>
@@ -1557,6 +1704,98 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                   )}
                 </div>
               </div>
+            </div>
+          )}
+
+          {/* Template Dropdown - Desktop */}
+          {showTemplateSelector && !isMobile && (
+            <div ref={templateSelectorRef} className="pointer-events-auto mb-2 relative z-40">
+              <div className="p-6 bg-white rounded-lg border border-gray-200 shadow-lg min-w-[600px] max-w-[800px]">
+                <div className="flex items-center justify-between mb-4">
+                  <div className="text-base font-semibold text-gray-900">Select Template</div>
+                  <button
+                    type="button"
+                    onClick={() => setShowTemplateSelector(false)}
+                    className="btn btn-ghost btn-xs"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                </div>
+                
+                <div className="mb-4">
+                  <input
+                    type="text"
+                    placeholder="Search templates..."
+                    value={templateSearchTerm}
+                    onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                    className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-transparent bg-white"
+                  />
+                </div>
+                
+                <div className={`space-y-3 ${isMobile ? 'max-h-[calc(60vh-120px)] overflow-y-auto' : 'max-h-[500px] overflow-y-auto'}`}>
+                  {isLoadingTemplates ? (
+                    <div className="text-center text-gray-500 py-4">
+                      <div className="loading loading-spinner loading-sm"></div>
+                      <span className="ml-2">Loading templates...</span>
+                    </div>
+                  ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
+                    <div className="text-center text-gray-500 py-4 text-sm">
+                      {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
+                    </div>
+                  ) : (
+                    filterTemplates(templates, templateSearchTerm).map((template) => (
+                      <TemplateOptionCard
+                        key={template.id}
+                        template={template}
+                        isSelected={selectedTemplate?.id === template.id}
+                        onClick={() => {
+                          if (template.active !== 't') {
+                            toast.error('Template pending approval');
+                            return;
+                          }
+                          setSelectedTemplate(template);
+                          setShowTemplateSelector(false);
+                          setTemplateSearchTerm('');
+                          if (template.params === '0') {
+                            setNewMessage(template.content || '');
+                            if (textareaRef.current) {
+                              setTimeout(() => {
+                                if (textareaRef.current) {
+                                  textareaRef.current.style.height = 'auto';
+                                  const maxHeight = isMobile ? 300 : 400;
+                                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                }
+                              }, 0);
+                            }
+                          } else {
+                            setNewMessage('');
+                          }
+                        }}
+                      />
+                    ))
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Voice Recorder */}
+          {showVoiceRecorder && (
+            <div className="w-full mb-2 pointer-events-auto">
+              <VoiceMessageRecorder
+                onRecorded={(audioBlob) => {
+                  const mimeType = audioBlob.type || 'audio/webm;codecs=opus';
+                  const extension = mimeType.includes('ogg') ? 'ogg' : 'webm';
+                  const audioFile = new File([audioBlob], `voice_${Date.now()}.${extension}`, { type: mimeType });
+                  setSelectedFile(audioFile);
+                  setShowVoiceRecorder(false);
+                  handleSendMedia(audioFile);
+                }}
+                onCancel={() => {
+                  setShowVoiceRecorder(false);
+                }}
+                className="w-full"
+              />
             </div>
           )}
 
@@ -1627,7 +1866,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             {/* Consolidated Tools Button */}
             <div className="relative" ref={desktopToolsRef}>
               <button
-                onClick={() => setShowDesktopTools(prev => !prev)}
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setShowDesktopTools(prev => !prev);
+                }}
                 disabled={sending || uploadingMedia}
                 className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
                 style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
@@ -1640,8 +1883,11 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
               {showDesktopTools && (
                 <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[180px]">
                   <button
-                    onClick={() => {
-                      setShowTemplateSelector(!showTemplateSelector);
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      console.log('Template button clicked, opening template selector');
+                      setShowTemplateSelector(true);
                       setShowDesktopTools(false);
                     }}
                     className="w-full flex items-center gap-3 px-4 py-3 hover:bg-gray-50 text-left transition-colors"

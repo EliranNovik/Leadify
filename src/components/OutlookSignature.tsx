@@ -292,40 +292,118 @@ const OutlookSignature: React.FC = () => {
     const htmlData = clipboardData.getData('text/html');
     const textData = clipboardData.getData('text/plain');
     
-    if (htmlData) {
+    if (htmlData && editorRef.current) {
       // Clean the pasted HTML
       const cleanedHtml = cleanOutlookSignature(htmlData);
       
       // Insert the cleaned HTML
-      if (editorRef.current) {
-        const selection = window.getSelection();
-        if (selection && selection.rangeCount > 0) {
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        try {
           const range = selection.getRangeAt(0);
+          
+          // Ensure the range is within the editor
+          if (!editorRef.current.contains(range.commonAncestorContainer)) {
+            // If selection is outside editor, move to end of editor
+            const newRange = document.createRange();
+            newRange.selectNodeContents(editorRef.current);
+            newRange.collapse(false); // Collapse to end
+            range.setStart(newRange.startContainer, newRange.startOffset);
+            range.setEnd(newRange.endContainer, newRange.endOffset);
+          }
+          
           range.deleteContents();
           
+          // Create a temporary container to parse the HTML
           const tempDiv = document.createElement('div');
           tempDiv.innerHTML = cleanedHtml;
           
+          // Create fragment and move nodes
           const fragment = document.createDocumentFragment();
           while (tempDiv.firstChild) {
             fragment.appendChild(tempDiv.firstChild);
           }
           
+          // Insert the fragment
           range.insertNode(fragment);
-          range.setStartAfter(fragment.lastChild || fragment);
-          range.setEndAfter(fragment.lastChild || fragment);
+          
+          // After insertion, position cursor at the end of inserted content
+          // Use a simpler approach: collapse range to end of editor content
+          // This avoids issues with finding nodes in the fragment
+          const endRange = document.createRange();
+          endRange.selectNodeContents(editorRef.current);
+          endRange.collapse(false); // Collapse to end
+          
           selection.removeAllRanges();
-          selection.addRange(range);
+          selection.addRange(endRange);
+        } catch (error) {
+          // Fallback: if insertion fails, use innerHTML approach
+          console.warn('Error inserting paste content with range, using fallback:', error);
+          try {
+            const selection = window.getSelection();
+            if (selection && selection.rangeCount > 0) {
+              const range = selection.getRangeAt(0);
+              
+              if (editorRef.current.contains(range.commonAncestorContainer)) {
+                // Get current content
+                const currentContent = editorRef.current.innerHTML;
+                const beforeCursor = currentContent.substring(0, 0); // Simplified
+                
+                // Insert cleaned HTML
+                editorRef.current.innerHTML = currentContent + cleanedHtml;
+                
+                // Position cursor at end
+                const endRange = document.createRange();
+                endRange.selectNodeContents(editorRef.current);
+                endRange.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(endRange);
+              } else {
+                // Just append to end
+                editorRef.current.innerHTML = editorRef.current.innerHTML + cleanedHtml;
+                const endRange = document.createRange();
+                endRange.selectNodeContents(editorRef.current);
+                endRange.collapse(false);
+                selection.removeAllRanges();
+                selection.addRange(endRange);
+              }
+            }
+          } catch (fallbackError) {
+            console.error('Fallback paste insertion also failed:', fallbackError);
+            // Last resort: just append to innerHTML
+            editorRef.current.innerHTML = editorRef.current.innerHTML + cleanedHtml;
+          }
         }
-        
-        setTempSignature(editorRef.current.innerHTML);
       }
-    } else if (textData) {
+      
+      // Update the signature state
+      setTempSignature(editorRef.current.innerHTML);
+    } else if (textData && editorRef.current) {
       // Insert plain text
-      document.execCommand('insertText', false, textData);
-      if (editorRef.current) {
-        setTempSignature(editorRef.current.innerHTML);
+      const selection = window.getSelection();
+      if (selection && selection.rangeCount > 0) {
+        try {
+          const range = selection.getRangeAt(0);
+          
+          // Ensure the range is within the editor
+          if (!editorRef.current.contains(range.commonAncestorContainer)) {
+            const newRange = document.createRange();
+            newRange.selectNodeContents(editorRef.current);
+            newRange.collapse(false);
+            range.setStart(newRange.startContainer, newRange.startOffset);
+            range.setEnd(newRange.endContainer, newRange.endOffset);
+          }
+          
+          // Use insertText command for plain text
+          document.execCommand('insertText', false, textData);
+        } catch (error) {
+          console.warn('Error inserting text:', error);
+          // Fallback: append to innerHTML
+          editorRef.current.innerHTML = editorRef.current.innerHTML + textData;
+        }
       }
+      
+      setTempSignature(editorRef.current.innerHTML);
     }
   };
 

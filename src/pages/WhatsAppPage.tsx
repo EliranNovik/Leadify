@@ -1279,6 +1279,29 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             return;
           }
           
+          // Fetch employee display names for creator_ids
+          const creatorIds = [...new Set((interactions || [])
+            .map((interaction: any) => interaction.creator_id)
+            .filter((id: any) => id && id !== '\\N' && id !== 'EMPTY' && id !== null && id !== undefined)
+            .map((id: any) => Number(id))
+            .filter((id: number) => !isNaN(id))
+          )];
+          
+          let employeeNameMap: Record<number, string> = {};
+          if (creatorIds.length > 0) {
+            const { data: employees, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', creatorIds);
+            
+            if (!employeeError && employees) {
+              employeeNameMap = employees.reduce((acc, emp) => {
+                acc[emp.id] = emp.display_name;
+                return acc;
+              }, {} as Record<number, string>);
+            }
+          }
+          
           // Transform legacy interactions to WhatsAppMessage format
           const transformedMessages: WhatsAppMessage[] = (interactions || []).map((interaction: any) => {
             // Combine date and time to create sent_at
@@ -1309,10 +1332,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               sentAt = interaction.cdate;
             }
             
+            // Get sender name from creator_id
+            let senderName = 'Unknown';
+            if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
+              const creatorId = Number(interaction.creator_id);
+              if (!isNaN(creatorId) && employeeNameMap[creatorId]) {
+                senderName = employeeNameMap[creatorId];
+              } else if (!isNaN(creatorId)) {
+                senderName = `Employee ${creatorId}`;
+              }
+            }
+            
             return {
               id: interaction.id,
               lead_id: selectedClient.id, // Keep the legacy_ prefix for consistency
-              sender_name: interaction.employee_id ? `Employee ${interaction.employee_id}` : 'Unknown',
+              sender_name: senderName,
               direction: interaction.direction === 'i' ? 'in' : 'out',
               message: interaction.content || interaction.description || '',
               sent_at: sentAt,
@@ -1654,6 +1688,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const [showDesktopTools, setShowDesktopTools] = useState(false);
   const desktopToolsRef = useRef<HTMLDivElement>(null);
   const mobileToolsRef = useRef<HTMLDivElement>(null);
+  const templateSelectorRef = useRef<HTMLDivElement>(null);
 
   const filteredTemplates = filterTemplates(templates, templateSearchTerm);
 
@@ -1726,6 +1761,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const handleClickOutside = (event: MouseEvent) => {
       const target = event.target as HTMLElement;
       
+      // Don't close if clicking inside template selector
+      if (templateSelectorRef.current && templateSelectorRef.current.contains(target)) {
+        return;
+      }
+      
       if (isEmojiPickerOpen) {
         if (!target.closest('.emoji-picker-container') && !target.closest('button[type="button"]')) {
           setIsEmojiPickerOpen(false);
@@ -1744,6 +1784,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
       }
       
+      // Close template selector if clicking outside
+      if (showTemplateSelector && templateSelectorRef.current && !templateSelectorRef.current.contains(target)) {
+        // Don't close if clicking on the template button itself
+        if (!target.closest('button') || !target.closest('button')?.textContent?.includes('Template')) {
+          setShowTemplateSelector(false);
+        }
+      }
+      
       // Reset input focus on mobile when clicking outside the input area
       if (isMobile && isInputFocused && textareaRef.current) {
         if (!target.closest('textarea') && !target.closest('form')) {
@@ -1757,7 +1805,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, isMobile, isInputFocused]);
+  }, [isEmojiPickerOpen, showMobileDropdown, showDesktopTools, isMobile, isInputFocused, showTemplateSelector]);
 
   // Handle search input changes - now only filters fetched clients (no API calls)
   // Removed the searchLeads API call - search now only filters through existing clients
@@ -2966,8 +3014,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       <div className="h-full flex flex-col overflow-hidden" style={{ height: '100vh', maxHeight: '100vh' }}>
         {/* Header */}
         <div className={`flex items-center justify-between p-4 md:p-6 border-b border-gray-200 ${isMobile && isContactsHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'} ${isMobile && showChat ? 'hidden' : ''}`}>
-          <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
-            <div className="relative">
+          <div className="flex items-center min-w-0 flex-1">
+            <div className="relative flex-shrink-0 mr-4">
               <FaWhatsapp className="w-6 h-6 md:w-8 md:h-8 text-green-600 flex-shrink-0" />
               {totalUnreadCount > 0 && (
                 <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
@@ -2975,18 +3023,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 </span>
               )}
             </div>
-            <h2 className="text-lg md:text-2xl font-bold text-gray-900 flex-shrink-0">WhatsApp</h2>
             {selectedClient && (
               <div className="hidden md:flex items-center gap-4 min-w-0 flex-1 overflow-hidden">
                 <div className="flex items-center gap-3 min-w-0">
-                  <div className="relative">
-                    <div className="w-3 h-3 bg-green-500 rounded-full animate-pulse flex-shrink-0"></div>
-                    {(isLocked || messages.length === 0) && (
-                      <div className="absolute -top-1 -right-1 bg-red-500 rounded-full p-0.5">
-                        <LockClosedIcon className="w-2 h-2 text-white" />
-                      </div>
-                    )}
-                  </div>
                   <div className="flex items-center gap-2 min-w-0">
                     <span className="text-lg font-semibold text-gray-900 truncate">
                       {selectedClient.name}
@@ -3000,10 +3039,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
                     }`}>
                       {isLocked ? (
-                        <>
-                          <LockClosedIcon className="w-4 h-4" />
-                          <span>Locked</span>
-                        </>
+                        <LockClosedIcon className="w-4 h-4" />
                       ) : (
                         <>
                           <ClockIcon className="w-4 h-4" />
@@ -3385,12 +3421,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               <div className="flex-none p-3 border-t border-gray-200 bg-white">
                 <button
                   onClick={() => setIsNewMessageModalOpen(true)}
-                  className="w-full btn btn-sm flex items-center justify-center gap-2 bg-green-600 hover:bg-green-700 text-white border-none"
+                  className="flex items-center gap-3 w-full"
                 >
-                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
-                  </svg>
-                  <span>New Message</span>
+                  <div className="btn btn-circle w-12 h-12 bg-green-600 hover:bg-green-700 text-white border-none shadow-lg hover:shadow-xl transition-shadow flex-shrink-0">
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" />
+                    </svg>
+                  </div>
+                  <span className="text-sm font-medium text-gray-700">New Message</span>
                 </button>
               </div>
             </div>
@@ -3412,7 +3450,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
                         </svg>
                       </button>
-                    <div className="flex items-center gap-2 flex-1 min-w-0 mr-3" style={{ maxWidth: 'calc(100% - 100px)' }}>
+                    <div className="flex items-center gap-2 flex-1 min-w-0 mr-2" style={{ maxWidth: 'calc(100% - 200px)' }}>
                       <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center relative flex-shrink-0">
                         <span className="text-green-600 font-semibold text-sm">
                           {selectedClient.name.charAt(0).toUpperCase()}
@@ -3435,12 +3473,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     {timeLeft && (
                       <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
                         isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                      }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                      }`} style={{ flexShrink: 0, whiteSpace: 'nowrap', marginRight: '8px' }}>
                         {isLocked ? (
-                          <>
-                            <LockClosedIcon className="w-4 h-4" />
-                            <span>Locked</span>
-                          </>
+                          <LockClosedIcon className="w-4 h-4" />
                         ) : (
                           <>
                             <ClockIcon className="w-4 h-4" />
@@ -3448,6 +3483,51 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           </>
                         )}
                       </div>
+                    )}
+                    {/* View Client Button - Mobile */}
+                    {selectedClient && (
+                      <button
+                        onClick={() => {
+                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+                          let leadIdentifier: string | null = null;
+                          
+                          if (isLegacyLead) {
+                            const clientId = selectedClient.id.toString().replace('legacy_', '');
+                            if (clientId && clientId !== 'null' && clientId !== 'undefined') {
+                              if (clientId.includes('/')) {
+                                leadIdentifier = clientId;
+                              } else if (/^\d+$/.test(clientId)) {
+                                leadIdentifier = clientId;
+                              }
+                            }
+                            if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
+                              leadIdentifier = selectedClient.lead_number;
+                            }
+                          } else {
+                            leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
+                          }
+                          
+                          if (!leadIdentifier) {
+                            console.error('Cannot navigate: No valid lead identifier found', selectedClient);
+                            return;
+                          }
+                          
+                          const encodedIdentifier = encodeURIComponent(leadIdentifier);
+                          
+                          if (onClose) {
+                            onClose();
+                          }
+                          
+                          setTimeout(() => {
+                            navigate(`/clients/${encodedIdentifier}`, { replace: true });
+                          }, 100);
+                        }}
+                        className="btn btn-primary btn-sm gap-1 flex-shrink-0 mr-2"
+                        title="View Client Page"
+                      >
+                        <UserIcon className="w-4 h-4" />
+                        <span className="hidden sm:inline text-xs">View</span>
+                      </button>
                     )}
                     </div>
                   </div>
@@ -3865,8 +3945,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {/* Message Input - Desktop Only */}
             {!isMobile && (
               <div className="absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
-                {/* Lock Message - Above input field */}
-                {isLocked && (
+                {/* Lock Message - Above input field (or above template modal when open) */}
+                {isLocked && !showTemplateSelector && (
                   <div className="mb-2 pointer-events-auto">
                     <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
                       <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
@@ -4072,8 +4152,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {showMobileDropdown && (
                         <div className="absolute bottom-12 left-0 z-50 bg-white border border-gray-200 rounded-xl shadow-xl w-64 divide-y divide-gray-100">
                           <button
-                            onClick={() => {
-                              setShowTemplateSelector(!showTemplateSelector);
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              setShowTemplateSelector(true);
                               setShowMobileDropdown(false);
                             }}
                             className="w-full text-left px-4 py-3 text-sm hover:bg-gray-50 flex items-center gap-2"
@@ -4228,15 +4310,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               </div>
             )}
 
-            {/* Legacy Input Area - Keeping for template/AI dropdowns and voice recorder */}
-            <div 
-              className={`flex-none transition-all duration-200 ${
-                isMobile ? 'hidden' : ''
-              }`}
-            >
-              {/* Template Dropdown - Above input on mobile */}
-              {showTemplateSelector && isMobile && (
-                <div className="absolute bottom-full left-0 right-0 mb-2 p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
+            {/* Template Dropdown - Mobile (rendered outside hidden container) */}
+            {showTemplateSelector && isMobile && (
+              <div 
+                ref={templateSelectorRef}
+                className="fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto pointer-events-auto"
+              >
+                <div className="p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg">
                   <div className="flex items-center justify-between mb-3">
                     <div className="text-sm font-semibold text-gray-900">Select Template</div>
                     <button
@@ -4304,7 +4384,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     )}
                   </div>
                 </div>
-              )}
+              </div>
+            )}
+
+            {/* Legacy Input Area - Keeping for template/AI dropdowns and voice recorder */}
+            <div 
+              className={`flex-none transition-all duration-200 ${
+                isMobile ? 'hidden' : ''
+              }`}
+            >
               
               {/* AI Suggestions Dropdown */}
               {showAISuggestions && (
@@ -4346,9 +4434,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               {/* Template Dropdown - Desktop */}
               {!isMobile && showTemplateSelector && (
                 <div className="px-4 pt-3 pb-2">
-                  <div className="p-4 bg-white rounded-lg border border-gray-200 shadow-sm">
-                    <div className="flex items-center justify-between mb-3">
-                      <div className="text-sm font-semibold text-gray-900">Select Template</div>
+                  {/* Lock Message - Above template modal when open */}
+                  {isLocked && (
+                    <div className="mb-2 pointer-events-auto">
+                      <div className="flex items-center gap-1.5 px-3 py-1.5 bg-red-50 border border-red-200 rounded-lg shadow-md whitespace-nowrap w-fit">
+                        <LockClosedIcon className="w-4 h-4 text-red-600 flex-shrink-0" />
+                        <span className="text-xs font-medium text-red-700">24-Hours rule - use templates</span>
+                      </div>
+                    </div>
+                  )}
+                  <div className="p-6 bg-white rounded-lg border border-gray-200 shadow-lg min-w-[600px] max-w-[800px]">
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="text-base font-semibold text-gray-900">Select Template</div>
                       <button
                         type="button"
                         onClick={() => setShowTemplateSelector(false)}
@@ -4358,17 +4455,17 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       </button>
                     </div>
                     
-                    <div className="mb-3">
+                    <div className="mb-4">
                       <input
                         type="text"
                         placeholder="Search templates..."
                         value={templateSearchTerm}
                         onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                        className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
+                        className="w-full px-4 py-2.5 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
                       />
                     </div>
                     
-                    <div className="max-h-64 overflow-y-auto space-y-3">
+                    <div className="max-h-[500px] overflow-y-auto space-y-3">
                       {isLoadingTemplates ? (
                         <div className="text-center text-gray-500 py-4">
                           <div className="loading loading-spinner loading-sm"></div>

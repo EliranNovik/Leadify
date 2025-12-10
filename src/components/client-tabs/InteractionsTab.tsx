@@ -4166,14 +4166,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   >
                     {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
                   </button>
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-primary"
-                    onClick={handleMailboxConnect}
-                    disabled={isMailboxLoading || !userId}
-                  >
-                    {mailboxStatus.connected ? 'Reconnect mailbox' : 'Connect mailbox'}
-                  </button>
+                  {!mailboxStatus.connected && (
+                    <button
+                      type="button"
+                      className="btn btn-sm btn-primary"
+                      onClick={handleMailboxConnect}
+                      disabled={isMailboxLoading || !userId}
+                    >
+                      Connect mailbox
+                    </button>
+                  )}
                   <button
                     onClick={() => setIsEmailModalOpen(false)}
                     className="btn btn-ghost btn-circle"

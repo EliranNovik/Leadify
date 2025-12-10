@@ -1717,6 +1717,13 @@ const PipelinePage: React.FC = () => {
     fetchLanguages();
   }, []);
 
+  // Ensure drawer NEVER opens when document modal is open
+  useEffect(() => {
+    if (isDocumentModalOpen) {
+      setDrawerOpen(false);
+    }
+  }, [isDocumentModalOpen]);
+
   // Fetch additional data for edit lead drawer
   useEffect(() => {
     const fetchEditLeadData = async () => {
@@ -5936,7 +5943,7 @@ const PipelinePage: React.FC = () => {
       )}
       
       {/* Drawer for lead summary */}
-      {drawerOpen && selectedLead && !isDocumentModalOpen && (
+      {drawerOpen && selectedLead && !isDocumentModalOpen && !contactDrawerOpen && !showEditLeadDrawer && (
         <div className="fixed inset-0 z-50 flex">
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30 transition-opacity duration-300" onClick={closeDrawer} />
@@ -6325,20 +6332,18 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
       )}
-      {/* Document Modal Drawer (right) */}
-      {isDocumentModalOpen && selectedLead && (
-        <div className="fixed inset-0 z-[9999] flex">
-          <div className="fixed inset-0 bg-black/30 transition-opacity duration-300" onClick={() => { setIsDocumentModalOpen(false); }} />
-          <div className="ml-auto w-full max-w-2xl bg-white h-full shadow-2xl p-0 flex flex-col animate-slideInRight z-[10000] rounded-l-2xl border-l-4 border-primary relative" style={{ boxShadow: '0 0 40px 0 rgba(0,0,0,0.2)' }}>
-            <DocumentModal
-              isOpen={isDocumentModalOpen}
-              onClose={() => { setIsDocumentModalOpen(false); }}
-              leadNumber={selectedLead.lead_number || ''}
-              clientName={selectedLead.name || ''}
-              onDocumentCountChange={setDocumentCount}
-            />
-          </div>
-        </div>
+      {/* Document Modal */}
+      {selectedLead && (
+        <DocumentModal
+          isOpen={isDocumentModalOpen}
+          onClose={() => {
+            setIsDocumentModalOpen(false);
+            setSelectedLead(null);
+          }}
+          leadNumber={selectedLead.lead_number || ''}
+          clientName={selectedLead.name || ''}
+          onDocumentCountChange={setDocumentCount}
+        />
       )}
       {/* Email Thread Modal (copied from InteractionsTab) */}
       {isEmailModalOpen && selectedLead && createPortal(
