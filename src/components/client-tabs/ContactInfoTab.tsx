@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Fragment, useMemo } from 'react';
+import React, { useState, useEffect, Fragment, useMemo, useRef } from 'react';
 import { ClientTabProps } from '../../types/client';
 import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
@@ -289,13 +289,47 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // Add state for currencies from database
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
 
-  // Add country codes data from database
-  const [countryCodes, setCountryCodes] = useState<Array<{ code: string; country: string; name: string }>>([
-    { code: '+972', country: 'IL', name: 'Israel' } // Default fallback
+  // Add country codes data from database (matching CreateNewLead structure)
+  const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([
+    { id: 0, name: 'Israel', phone_code: '+972', iso_code: 'IL' } // Default fallback
   ]);
+  
+  // State for country code search (for main contact mobile)
+  const [mainContactMobileCodeSearchTerm, setMainContactMobileCodeSearchTerm] = useState<string>('');
+  const [showMainContactMobileCodeDropdown, setShowMainContactMobileCodeDropdown] = useState<boolean>(false);
+  const mainContactMobileCodeInputRef = useRef<HTMLDivElement>(null);
+  const [selectedMainContactMobileCode, setSelectedMainContactMobileCode] = useState<string>('+972');
+  
+  // State for country code search (for main contact phone)
+  const [mainContactPhoneCodeSearchTerm, setMainContactPhoneCodeSearchTerm] = useState<string>('');
+  const [showMainContactPhoneCodeDropdown, setShowMainContactPhoneCodeDropdown] = useState<boolean>(false);
+  const mainContactPhoneCodeInputRef = useRef<HTMLDivElement>(null);
+  const [selectedMainContactPhoneCode, setSelectedMainContactPhoneCode] = useState<string>('+972');
+  
+  // State for country code search (for regular contacts mobile - keyed by contact ID)
+  const [contactMobileCodeSearchTerms, setContactMobileCodeSearchTerms] = useState<{ [key: number]: string }>({});
+  const [showContactMobileCodeDropdowns, setShowContactMobileCodeDropdowns] = useState<{ [key: number]: boolean }>({});
+  const contactMobileCodeInputRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
+  const [selectedContactMobileCodes, setSelectedContactMobileCodes] = useState<{ [key: number]: string }>({});
+  
+  // State for country code search (for regular contacts phone - keyed by contact ID)
+  const [contactPhoneCodeSearchTerms, setContactPhoneCodeSearchTerms] = useState<{ [key: number]: string }>({});
+  const [showContactPhoneCodeDropdowns, setShowContactPhoneCodeDropdowns] = useState<{ [key: number]: boolean }>({});
+  const contactPhoneCodeInputRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
+  const [selectedContactPhoneCodes, setSelectedContactPhoneCodes] = useState<{ [key: number]: string }>({});
 
   // Add state for countries from database (for country dropdown)
   const [countries, setCountries] = useState<Array<{ id: number; name: string; iso_code: string | null }>>([]);
+  
+  // State for country search (for main contact)
+  const [mainContactCountrySearchTerm, setMainContactCountrySearchTerm] = useState<string>('');
+  const [showMainContactCountryDropdown, setShowMainContactCountryDropdown] = useState<boolean>(false);
+  const mainContactCountryInputRef = useRef<HTMLDivElement>(null);
+  
+  // State for country search (for regular contacts - keyed by contact ID)
+  const [contactCountrySearchTerms, setContactCountrySearchTerms] = useState<{ [key: number]: string }>({});
+  const [showContactCountryDropdowns, setShowContactCountryDropdowns] = useState<{ [key: number]: boolean }>({});
+  const contactCountryInputRefs = useRef<{ [key: number]: HTMLDivElement | null }>({});
 
   // TipTap editor setup for legacy contract editing
   const editor = useEditor({
@@ -492,11 +526,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const trimmed = fullNumber.trim();
     
     // Find matching country code
-    const matchedCode = countryCodes.find(code => trimmed.startsWith(code.code));
+    const matchedCode = countryOptions.find(country => trimmed.startsWith(country.phone_code));
     if (matchedCode) {
       return {
-        countryCode: matchedCode.code,
-        number: trimmed.substring(matchedCode.code.length)
+        countryCode: matchedCode.phone_code,
+        number: trimmed.substring(matchedCode.phone_code.length)
       };
     }
     
@@ -744,15 +778,87 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .order('name', { ascending: true });
 
         if (!countriesError && countriesData) {
-          setCountryCodes(
-            countriesData
-              .filter(country => country?.phone_code && country?.name)
+          // Process countries: normalize phone codes, filter out NULL phone_code, and remove duplicates
+          const processedCountries = countriesData
+            .filter(country => country?.phone_code && country?.phone_code !== '\\N' && country?.phone_code !== null && country?.name)
               .map(country => ({
-                code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
-                country: country.iso_code || '',
-                name: country.name
-              }))
+              id: country.id,
+              name: country.name,
+              phone_code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
+              iso_code: country.iso_code || ''
+            }));
+
+          // Remove duplicates by phone_code, keeping the first occurrence
+          const uniqueCountriesMap = new Map<string, { id: number; name: string; phone_code: string; iso_code: string }>();
+          processedCountries.forEach(country => {
+            if (!uniqueCountriesMap.has(country.phone_code)) {
+              uniqueCountriesMap.set(country.phone_code, country);
+            }
+          });
+
+          // Ensure USA is included (check by name or iso_code)
+          const usaCountry = processedCountries.find(
+            c => c.name.toLowerCase().includes('united states') || 
+                 c.name.toLowerCase() === 'usa' || 
+                 c.name.toLowerCase() === 'us' ||
+                 c.iso_code === 'US' ||
+                 c.iso_code === 'USA'
           );
+          
+          if (usaCountry && !uniqueCountriesMap.has(usaCountry.phone_code)) {
+            uniqueCountriesMap.set(usaCountry.phone_code, usaCountry);
+          } else if (!usaCountry) {
+            // If USA not found, add it manually
+            uniqueCountriesMap.set('+1', {
+              id: 0,
+              name: 'United States',
+              phone_code: '+1',
+              iso_code: 'US'
+            });
+          }
+
+          // Convert map to array and sort by phone code (matching CreateNewLead sorting)
+          const uniqueCountries = Array.from(uniqueCountriesMap.values())
+            .sort((a, b) => {
+              // Sort ID 234 first (highest priority)
+              if (a.id === 234 && b.id !== 234) return -1;
+              if (b.id === 234 && a.id !== 234) return 1;
+              // Sort ID 249 second
+              if (a.id === 249 && b.id !== 249 && b.id !== 234) return -1;
+              if (b.id === 249 && a.id !== 249 && a.id !== 234) return 1;
+              // Sort ID 110 third
+              if (a.id === 110 && b.id !== 110 && b.id !== 234 && b.id !== 249) return -1;
+              if (b.id === 110 && a.id !== 110 && a.id !== 234 && a.id !== 249) return 1;
+              // Then sort USA (+1) next
+              if (a.phone_code === '+1') return -1;
+              if (b.phone_code === '+1') return 1;
+              // Then sort UK (+44) and South Africa (+27) after USA
+              const isUK = a.name.toLowerCase().includes('united kingdom') || 
+                          a.name.toLowerCase() === 'uk' || 
+                          a.iso_code === 'GB' || 
+                          a.iso_code === 'UK' ||
+                          a.phone_code === '+44';
+              const isSouthAfrica = a.name.toLowerCase().includes('south africa') || 
+                                   a.iso_code === 'ZA' ||
+                                   a.phone_code === '+27';
+              const isBUK = b.name.toLowerCase().includes('united kingdom') || 
+                           b.name.toLowerCase() === 'uk' || 
+                           b.iso_code === 'GB' || 
+                           b.iso_code === 'UK' ||
+                           b.phone_code === '+44';
+              const isBSouthAfrica = b.name.toLowerCase().includes('south africa') || 
+                                    b.iso_code === 'ZA' ||
+                                    b.phone_code === '+27';
+              
+              if (isUK && !isBUK) return -1;
+              if (isBUK && !isUK) return 1;
+              if (isSouthAfrica && !isBSouthAfrica) return -1;
+              if (isBSouthAfrica && !isSouthAfrica) return 1;
+              // Then sort by phone code
+              return a.phone_code.localeCompare(b.phone_code);
+            });
+
+          setCountryOptions(uniqueCountries);
         }
       } catch (error) {
         console.error('Error fetching country codes:', error);
@@ -768,15 +874,51 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .order('name', { ascending: true });
 
         if (!countriesError && countriesData) {
-          setCountries(
-            countriesData
+          const processedCountries = countriesData
               .filter(country => country?.name)
               .map(country => ({
                 id: country.id,
                 name: country.name,
                 iso_code: country.iso_code || null
-              }))
+            }));
+
+          // Ensure United States is included - check if it exists
+          const hasUnitedStates = processedCountries.some(
+            c => c.name.toLowerCase().includes('united states') || 
+                 c.name.toLowerCase() === 'usa' || 
+                 c.name.toLowerCase() === 'us' ||
+                 c.iso_code === 'US' ||
+                 c.iso_code === 'USA'
           );
+
+          // If United States doesn't exist, try to find it in countryCodes (which includes phone_code filter)
+          if (!hasUnitedStates) {
+            // Fetch countries with phone_code to find USA
+            const { data: countriesWithPhoneCode } = await supabase
+              .from('misc_country')
+              .select('id, name, iso_code')
+              .not('phone_code', 'is', null)
+              .order('order', { ascending: true })
+              .order('name', { ascending: true });
+            
+            const usaFromPhoneCode = countriesWithPhoneCode?.find(
+              c => c.name.toLowerCase().includes('united states') || 
+                   c.name.toLowerCase() === 'usa' || 
+                   c.name.toLowerCase() === 'us' ||
+                   c.iso_code === 'US' ||
+                   c.iso_code === 'USA'
+            );
+            
+            if (usaFromPhoneCode) {
+              processedCountries.push({
+                id: usaFromPhoneCode.id,
+                name: usaFromPhoneCode.name,
+                iso_code: usaFromPhoneCode.iso_code || 'US'
+              });
+            }
+          }
+
+          setCountries(processedCountries.sort((a, b) => a.name.localeCompare(b.name)));
         }
       } catch (error) {
         console.error('Error fetching countries:', error);
@@ -1549,7 +1691,221 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       country_id: mainContact?.country_id || null
     });
     setIsEditingMainContact(false);
+    // Reset country search term
+    const countryName = mainContact?.country_id ? countries.find(c => c.id === mainContact.country_id)?.name || '' : '';
+    setMainContactCountrySearchTerm(countryName);
+    setShowMainContactCountryDropdown(false);
   };
+
+  // Filter country options based on search term (for main contact)
+  const filteredMainContactCountryOptions = countries.filter(country => {
+    const searchTerm = mainContactCountrySearchTerm.toLowerCase();
+    const countryName = country.name.toLowerCase();
+    const isoCode = (country.iso_code || '').toLowerCase();
+    
+    // Check if search term matches country name or ISO code
+    if (countryName.includes(searchTerm) || isoCode.includes(searchTerm)) {
+      return true;
+    }
+    
+    // Special handling for United States aliases
+    const isUnitedStates = countryName.includes('united states') || 
+                          countryName === 'usa' || 
+                          isoCode === 'us' || 
+                          isoCode === 'usa';
+    if (isUnitedStates) {
+      return searchTerm === 'usa' || 
+             searchTerm === 'us' || 
+             searchTerm === 'america' || 
+             searchTerm.includes('united states');
+    }
+    
+    return false;
+  });
+
+  // Filter country options for a specific contact
+  const getFilteredContactCountryOptions = (contactId: number) => {
+    const searchTerm = (contactCountrySearchTerms[contactId] || '').toLowerCase();
+    return countries.filter(country => {
+      const countryName = country.name.toLowerCase();
+      const isoCode = (country.iso_code || '').toLowerCase();
+      
+      // Check if search term matches country name or ISO code
+      if (countryName.includes(searchTerm) || isoCode.includes(searchTerm)) {
+        return true;
+      }
+      
+      // Special handling for United States aliases
+      const isUnitedStates = countryName.includes('united states') || 
+                            countryName === 'usa' || 
+                            isoCode === 'us' || 
+                            isoCode === 'usa';
+      if (isUnitedStates) {
+        return searchTerm === 'usa' || 
+               searchTerm === 'us' || 
+               searchTerm === 'america' || 
+               searchTerm.includes('united states');
+      }
+      
+      return false;
+    });
+  };
+
+  // Handle country select for main contact
+  const handleMainContactCountrySelect = (countryId: number, countryName: string) => {
+    setEditedMainContact({ ...editedMainContact, country_id: countryId });
+    setMainContactCountrySearchTerm(countryName);
+    setShowMainContactCountryDropdown(false);
+  };
+
+  // Handle country select for regular contact
+  const handleContactCountrySelect = (contactId: number, countryId: number, countryName: string) => {
+    setContacts(contacts.map(c => 
+      c.id === contactId ? { ...c, country_id: countryId } : c
+    ));
+    setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contactId]: countryName });
+    setShowContactCountryDropdowns({ ...showContactCountryDropdowns, [contactId]: false });
+  };
+
+  // Filter country code options based on search term
+  const getFilteredCountryCodeOptions = (searchTerm: string) => {
+    return countryOptions.filter(country => {
+      const searchLower = searchTerm.toLowerCase();
+      const phoneCode = country.phone_code.toLowerCase();
+      const countryName = country.name.toLowerCase();
+      
+      // Direct matches
+      if (phoneCode.includes(searchLower) || countryName.includes(searchLower)) {
+        return true;
+      }
+      
+      // Special handling for USA/United States/America
+      const usaSearchTerms = ['usa', 'us', 'america', 'united states'];
+      const isUSASearch = usaSearchTerms.some(term => searchLower.includes(term) || term.includes(searchLower));
+      
+      if (isUSASearch) {
+        return countryName.includes('united states') || 
+               countryName.includes('america') ||
+               countryName === 'usa' || 
+               countryName === 'us' ||
+               country.iso_code === 'US' ||
+               country.iso_code === 'USA' ||
+               phoneCode === '+1';
+      }
+      
+      return false;
+    });
+  };
+
+  // Click outside handler for country dropdowns
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (mainContactCountryInputRef.current && !mainContactCountryInputRef.current.contains(event.target as Node)) {
+        setShowMainContactCountryDropdown(false);
+      }
+      
+      if (mainContactMobileCodeInputRef.current && !mainContactMobileCodeInputRef.current.contains(event.target as Node)) {
+        setShowMainContactMobileCodeDropdown(false);
+        setMainContactMobileCodeSearchTerm('');
+      }
+      
+      if (mainContactPhoneCodeInputRef.current && !mainContactPhoneCodeInputRef.current.contains(event.target as Node)) {
+        setShowMainContactPhoneCodeDropdown(false);
+        setMainContactPhoneCodeSearchTerm('');
+      }
+      
+      // Check all contact country dropdowns
+      Object.keys(contactCountryInputRefs.current).forEach(contactIdStr => {
+        const contactId = parseInt(contactIdStr, 10);
+        const ref = contactCountryInputRefs.current[contactId];
+        if (ref && !ref.contains(event.target as Node)) {
+          setShowContactCountryDropdowns(prev => ({ ...prev, [contactId]: false }));
+        }
+      });
+      
+      // Check all contact mobile code dropdowns
+      Object.keys(contactMobileCodeInputRefs.current).forEach(contactIdStr => {
+        const contactId = parseInt(contactIdStr, 10);
+        const ref = contactMobileCodeInputRefs.current[contactId];
+        if (ref && !ref.contains(event.target as Node)) {
+          setShowContactMobileCodeDropdowns(prev => ({ ...prev, [contactId]: false }));
+          setContactMobileCodeSearchTerms(prev => ({ ...prev, [contactId]: '' }));
+        }
+      });
+      
+      // Check all contact phone code dropdowns
+      Object.keys(contactPhoneCodeInputRefs.current).forEach(contactIdStr => {
+        const contactId = parseInt(contactIdStr, 10);
+        const ref = contactPhoneCodeInputRefs.current[contactId];
+        if (ref && !ref.contains(event.target as Node)) {
+          setShowContactPhoneCodeDropdowns(prev => ({ ...prev, [contactId]: false }));
+          setContactPhoneCodeSearchTerms(prev => ({ ...prev, [contactId]: '' }));
+        }
+      });
+    };
+
+    const hasAnyDropdownOpen = showMainContactCountryDropdown || 
+      showMainContactMobileCodeDropdown ||
+      showMainContactPhoneCodeDropdown ||
+      Object.values(showContactCountryDropdowns).some(open => open) ||
+      Object.values(showContactMobileCodeDropdowns).some(open => open) ||
+      Object.values(showContactPhoneCodeDropdowns).some(open => open);
+
+    if (hasAnyDropdownOpen) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showMainContactCountryDropdown, showMainContactMobileCodeDropdown, showMainContactPhoneCodeDropdown, showContactCountryDropdowns, showContactMobileCodeDropdowns, showContactPhoneCodeDropdowns]);
+
+  // Sync country search term when editing main contact starts
+  useEffect(() => {
+    if (isEditingMainContact) {
+      const countryName = editedMainContact.country_id 
+        ? countries.find(c => c.id === editedMainContact.country_id)?.name || '' 
+        : '';
+      setMainContactCountrySearchTerm(countryName);
+    }
+  }, [isEditingMainContact, editedMainContact.country_id, countries]);
+
+  // Sync country search term when editing a contact starts
+  useEffect(() => {
+    contacts.forEach(contact => {
+      if (contact.isEditing && !contactCountrySearchTerms[contact.id]) {
+        const countryName = contact.country_id 
+          ? countries.find(c => c.id === contact.country_id)?.name || '' 
+          : '';
+        setContactCountrySearchTerms(prev => ({ ...prev, [contact.id]: countryName }));
+      }
+    });
+  }, [contacts, countries]);
+
+  // Sync country code search terms when editing main contact starts
+  useEffect(() => {
+    if (isEditingMainContact) {
+      const mobileCode = parsePhoneNumber(editedMainContact.mobile).countryCode;
+      const phoneCode = parsePhoneNumber(editedMainContact.phone).countryCode;
+      setSelectedMainContactMobileCode(mobileCode);
+      setSelectedMainContactPhoneCode(phoneCode);
+      setMainContactMobileCodeSearchTerm('');
+      setMainContactPhoneCodeSearchTerm('');
+    }
+  }, [isEditingMainContact]);
+
+  // Sync country code search terms when editing a contact starts
+  useEffect(() => {
+    contacts.forEach(contact => {
+      if (contact.isEditing) {
+        const mobileCode = parsePhoneNumber(contact.mobile).countryCode;
+        const phoneCode = parsePhoneNumber(contact.phone).countryCode;
+        if (!selectedContactMobileCodes[contact.id]) {
+          setSelectedContactMobileCodes(prev => ({ ...prev, [contact.id]: mobileCode }));
+          setSelectedContactPhoneCodes(prev => ({ ...prev, [contact.id]: phoneCode }));
+          setContactMobileCodeSearchTerms(prev => ({ ...prev, [contact.id]: '' }));
+          setContactPhoneCodeSearchTerms(prev => ({ ...prev, [contact.id]: '' }));
+        }
+      }
+    });
+  }, [contacts]);
 
   const handleCancelContact = (contact: ContactEntry) => {
     // Check if this is a newly created contact (temporary ID from Date.now())
@@ -2649,7 +3005,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               return (
                 <div
                   key={contact.id}
-                  className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden"
+                  className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-visible"
                 >
                   {/* Header */}
                   <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 rounded-tr-2xl rounded-br-2xl shadow-sm">
@@ -2695,8 +3051,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                   };
                                   setEditedMainContact(editedData);
                                   setIsEditingMainContact(true);
+                                  // Sync country search term
+                                  const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
+                                  setMainContactCountrySearchTerm(countryName);
                                 } else {
                                   setContacts(contacts.map(c => c.id === contact.id ? { ...c, isEditing: true } : c));
+                                  // Sync country search term for this contact
+                                  const countryName = contact.country_id ? countries.find(c => c.id === contact.country_id)?.name || '' : '';
+                                  setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: countryName });
                                 }
                               }}
                               title="Edit contact"
@@ -2782,26 +3144,51 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
-                              <select
-                                className="select select-bordered w-40"
-                                value={parsePhoneNumber(editedMainContact.mobile).countryCode}
-                                onChange={(e) => {
-                                  const currentMobile = editedMainContact.mobile || '';
-                                  const currentParsed = parsePhoneNumber(currentMobile);
-                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                                  console.log('Changing mobile country code:', e.target.value, 'current mobile:', currentMobile, 'new number:', newNumber);
-                                  setEditedMainContact({
-                                    ...editedMainContact,
-                                    mobile: newNumber
-                                  });
-                                }}
-                              >
-                                {countryCodes.map((code) => (
-                                  <option key={`${code.code}-${code.country}`} value={code.code}>
-                                    {code.code} {code.name}
-                                  </option>
-                                ))}
-                              </select>
+                              <div className="relative w-40" ref={mainContactMobileCodeInputRef}>
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-full"
+                                  value={mainContactMobileCodeSearchTerm}
+                                  onChange={(e) => {
+                                    setMainContactMobileCodeSearchTerm(e.target.value);
+                                    setShowMainContactMobileCodeDropdown(true);
+                                  }}
+                                  onFocus={() => {
+                                    setShowMainContactMobileCodeDropdown(true);
+                                    setMainContactMobileCodeSearchTerm('');
+                                  }}
+                                  placeholder={selectedMainContactMobileCode || '+972'}
+                                />
+                                {showMainContactMobileCodeDropdown && getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).length > 0 && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                    {getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).map(country => (
+                                      <button
+                                        key={`${country.phone_code}-${country.id}`}
+                                        type="button"
+                                        className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                        onClick={() => {
+                                          setSelectedMainContactMobileCode(country.phone_code);
+                                          setMainContactMobileCodeSearchTerm(country.phone_code);
+                                          setShowMainContactMobileCodeDropdown(false);
+                                          const currentParsed = parsePhoneNumber(editedMainContact.mobile);
+                                          const newNumber = currentParsed.number ? formatPhoneNumber(country.phone_code, currentParsed.number) : country.phone_code;
+                                          setEditedMainContact({
+                                            ...editedMainContact,
+                                            mobile: newNumber
+                                          });
+                                        }}
+                                      >
+                                        {country.phone_code} {country.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {showMainContactMobileCodeDropdown && getFilteredCountryCodeOptions(mainContactMobileCodeSearchTerm).length === 0 && mainContactMobileCodeSearchTerm && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                    No country codes found
+                                  </div>
+                                )}
+                              </div>
                               <input
                                 type="tel"
                                 placeholder="Enter mobile"
@@ -2818,26 +3205,60 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </div>
                           ) : contact.isEditing ? (
                             <div className="flex gap-2">
-                              <select
-                                className="select select-bordered w-40"
-                                value={parsePhoneNumber(contact.mobile).countryCode}
-                                onChange={(e) => {
-                                  const currentMobile = contact.mobile || '';
-                                  const currentParsed = parsePhoneNumber(currentMobile);
-                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                                  console.log('Changing mobile country code for contact:', e.target.value, 'current mobile:', currentMobile, 'new number:', newNumber);
-                                  setContacts(contacts.map(c => c.id === contact.id ? {
-                                    ...c,
-                                    mobile: newNumber
-                                  } : c));
+                              <div 
+                                className="relative w-40"
+                                ref={(el) => {
+                                  if (el) {
+                                    contactMobileCodeInputRefs.current[contact.id] = el;
+                                  } else {
+                                    delete contactMobileCodeInputRefs.current[contact.id];
+                                  }
                                 }}
                               >
-                                {countryCodes.map((code) => (
-                                  <option key={`${code.code}-${code.country}`} value={code.code}>
-                                    {code.code} {code.name}
-                                  </option>
-                                ))}
-                              </select>
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-full"
+                                  value={contactMobileCodeSearchTerms[contact.id] || ''}
+                                  onChange={(e) => {
+                                    setContactMobileCodeSearchTerms({ ...contactMobileCodeSearchTerms, [contact.id]: e.target.value });
+                                    setShowContactMobileCodeDropdowns({ ...showContactMobileCodeDropdowns, [contact.id]: true });
+                                  }}
+                                  onFocus={() => {
+                                    setShowContactMobileCodeDropdowns({ ...showContactMobileCodeDropdowns, [contact.id]: true });
+                                    setContactMobileCodeSearchTerms({ ...contactMobileCodeSearchTerms, [contact.id]: '' });
+                                  }}
+                                  placeholder={selectedContactMobileCodes[contact.id] || parsePhoneNumber(contact.mobile).countryCode || '+972'}
+                                />
+                                {showContactMobileCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').length > 0 && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                    {getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').map(country => (
+                                      <button
+                                        key={`${country.phone_code}-${country.id}`}
+                                        type="button"
+                                        className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                        onClick={() => {
+                                          setSelectedContactMobileCodes({ ...selectedContactMobileCodes, [contact.id]: country.phone_code });
+                                          setContactMobileCodeSearchTerms({ ...contactMobileCodeSearchTerms, [contact.id]: country.phone_code });
+                                          setShowContactMobileCodeDropdowns({ ...showContactMobileCodeDropdowns, [contact.id]: false });
+                                          const currentParsed = parsePhoneNumber(contact.mobile);
+                                          const newNumber = currentParsed.number ? formatPhoneNumber(country.phone_code, currentParsed.number) : country.phone_code;
+                                          setContacts(contacts.map(c => c.id === contact.id ? {
+                                            ...c,
+                                            mobile: newNumber
+                                          } : c));
+                                        }}
+                                      >
+                                        {country.phone_code} {country.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {showContactMobileCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactMobileCodeSearchTerms[contact.id] || '').length === 0 && contactMobileCodeSearchTerms[contact.id] && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                    No country codes found
+                                  </div>
+                                )}
+                              </div>
                               <input
                                 type="tel"
                                 placeholder="Enter mobile"
@@ -2867,26 +3288,51 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
-                              <select
-                                className="select select-bordered w-24"
-                                value={parsePhoneNumber(editedMainContact.phone).countryCode}
-                                onChange={(e) => {
-                                  const currentPhone = editedMainContact.phone || '';
-                                  const currentParsed = parsePhoneNumber(currentPhone);
-                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                                  console.log('Changing phone country code:', e.target.value, 'current phone:', currentPhone, 'new number:', newNumber);
-                                  setEditedMainContact({
-                                    ...editedMainContact,
-                                    phone: newNumber
-                                  });
-                                }}
-                              >
-                                {countryCodes.map((code) => (
-                                  <option key={`${code.code}-${code.country}`} value={code.code}>
-                                    {code.code}
-                                  </option>
-                                ))}
-                              </select>
+                              <div className="relative w-40" ref={mainContactPhoneCodeInputRef}>
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-full"
+                                  value={mainContactPhoneCodeSearchTerm}
+                                  onChange={(e) => {
+                                    setMainContactPhoneCodeSearchTerm(e.target.value);
+                                    setShowMainContactPhoneCodeDropdown(true);
+                                  }}
+                                  onFocus={() => {
+                                    setShowMainContactPhoneCodeDropdown(true);
+                                    setMainContactPhoneCodeSearchTerm('');
+                                  }}
+                                  placeholder={selectedMainContactPhoneCode || '+972'}
+                                />
+                                {showMainContactPhoneCodeDropdown && getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).length > 0 && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                    {getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).map(country => (
+                                      <button
+                                        key={`${country.phone_code}-${country.id}`}
+                                        type="button"
+                                        className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                        onClick={() => {
+                                          setSelectedMainContactPhoneCode(country.phone_code);
+                                          setMainContactPhoneCodeSearchTerm(country.phone_code);
+                                          setShowMainContactPhoneCodeDropdown(false);
+                                          const currentParsed = parsePhoneNumber(editedMainContact.phone);
+                                          const newNumber = currentParsed.number ? formatPhoneNumber(country.phone_code, currentParsed.number) : country.phone_code;
+                                          setEditedMainContact({
+                                            ...editedMainContact,
+                                            phone: newNumber
+                                          });
+                                        }}
+                                      >
+                                        {country.phone_code} {country.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {showMainContactPhoneCodeDropdown && getFilteredCountryCodeOptions(mainContactPhoneCodeSearchTerm).length === 0 && mainContactPhoneCodeSearchTerm && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                    No country codes found
+                                  </div>
+                                )}
+                              </div>
                               <input
                                 type="tel"
                                 placeholder="Enter phone"
@@ -2903,26 +3349,60 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             </div>
                           ) : contact.isEditing ? (
                             <div className="flex gap-2">
-                              <select
-                                className="select select-bordered w-40"
-                                value={parsePhoneNumber(contact.phone).countryCode}
-                                onChange={(e) => {
-                                  const currentPhone = contact.phone || '';
-                                  const currentParsed = parsePhoneNumber(currentPhone);
-                                  const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                                  console.log('Changing phone country code for contact:', e.target.value, 'current phone:', currentPhone, 'new number:', newNumber);
-                                  setContacts(contacts.map(c => c.id === contact.id ? {
-                                    ...c,
-                                    phone: newNumber
-                                  } : c));
+                              <div 
+                                className="relative w-40"
+                                ref={(el) => {
+                                  if (el) {
+                                    contactPhoneCodeInputRefs.current[contact.id] = el;
+                                  } else {
+                                    delete contactPhoneCodeInputRefs.current[contact.id];
+                                  }
                                 }}
                               >
-                                {countryCodes.map((code) => (
-                                  <option key={`${code.code}-${code.country}`} value={code.code}>
-                                    {code.code} {code.name}
-                                  </option>
-                                ))}
-                              </select>
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-full"
+                                  value={contactPhoneCodeSearchTerms[contact.id] || ''}
+                                  onChange={(e) => {
+                                    setContactPhoneCodeSearchTerms({ ...contactPhoneCodeSearchTerms, [contact.id]: e.target.value });
+                                    setShowContactPhoneCodeDropdowns({ ...showContactPhoneCodeDropdowns, [contact.id]: true });
+                                  }}
+                                  onFocus={() => {
+                                    setShowContactPhoneCodeDropdowns({ ...showContactPhoneCodeDropdowns, [contact.id]: true });
+                                    setContactPhoneCodeSearchTerms({ ...contactPhoneCodeSearchTerms, [contact.id]: '' });
+                                  }}
+                                  placeholder={selectedContactPhoneCodes[contact.id] || parsePhoneNumber(contact.phone).countryCode || '+972'}
+                                />
+                                {showContactPhoneCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').length > 0 && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                    {getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').map(country => (
+                                      <button
+                                        key={`${country.phone_code}-${country.id}`}
+                                        type="button"
+                                        className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                        onClick={() => {
+                                          setSelectedContactPhoneCodes({ ...selectedContactPhoneCodes, [contact.id]: country.phone_code });
+                                          setContactPhoneCodeSearchTerms({ ...contactPhoneCodeSearchTerms, [contact.id]: country.phone_code });
+                                          setShowContactPhoneCodeDropdowns({ ...showContactPhoneCodeDropdowns, [contact.id]: false });
+                                          const currentParsed = parsePhoneNumber(contact.phone);
+                                          const newNumber = currentParsed.number ? formatPhoneNumber(country.phone_code, currentParsed.number) : country.phone_code;
+                                          setContacts(contacts.map(c => c.id === contact.id ? {
+                                            ...c,
+                                            phone: newNumber
+                                          } : c));
+                                        }}
+                                      >
+                                        {country.phone_code} {country.name}
+                                      </button>
+                                    ))}
+                                  </div>
+                                )}
+                                {showContactPhoneCodeDropdowns[contact.id] && getFilteredCountryCodeOptions(contactPhoneCodeSearchTerms[contact.id] || '').length === 0 && contactPhoneCodeSearchTerms[contact.id] && (
+                                  <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                    No country codes found
+                                  </div>
+                                )}
+                              </div>
                               <input
                                 type="tel"
                                 placeholder="Enter phone"
@@ -2990,37 +3470,86 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Country</label>
                         <div className="flex-1 ml-4">
                           {contact.isMain && isEditingMainContact ? (
-                            <select
-                              className="select select-bordered w-full"
-                              value={editedMainContact.country_id || ''}
-                              onChange={(e) => setEditedMainContact({ 
-                                ...editedMainContact, 
-                                country_id: e.target.value ? parseInt(e.target.value, 10) : null 
-                              })}
-                            >
-                              <option value="">Select a country</option>
-                              {countries.map(country => (
-                                <option key={country.id} value={country.id}>
+                            <div className="relative" ref={mainContactCountryInputRef}>
+                              <input
+                                type="text"
+                                className="input input-bordered w-full"
+                                value={mainContactCountrySearchTerm}
+                                onChange={(e) => {
+                                  setMainContactCountrySearchTerm(e.target.value);
+                                  setShowMainContactCountryDropdown(true);
+                                  if (e.target.value !== countries.find(c => c.id === editedMainContact.country_id)?.name) {
+                                    setEditedMainContact({ ...editedMainContact, country_id: null });
+                                  }
+                                }}
+                                onFocus={() => setShowMainContactCountryDropdown(true)}
+                                placeholder="Search or type country..."
+                              />
+                              {showMainContactCountryDropdown && filteredMainContactCountryOptions.length > 0 && (
+                                <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  {filteredMainContactCountryOptions.map(country => (
+                                    <button
+                                      key={country.id}
+                                      type="button"
+                                      className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                      onClick={() => handleMainContactCountrySelect(country.id, country.name)}
+                                    >
                                   {country.name}
-                                </option>
-                              ))}
-                            </select>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {showMainContactCountryDropdown && filteredMainContactCountryOptions.length === 0 && mainContactCountrySearchTerm && (
+                                <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  No countries found
+                                </div>
+                              )}
+                            </div>
                           ) : contact.isEditing ? (
-                            <select
-                              className="select select-bordered w-full"
-                              value={contact.country_id || ''}
-                              onChange={(e) => setContacts(contacts.map(c => c.id === contact.id ? { 
-                                ...c, 
-                                country_id: e.target.value ? parseInt(e.target.value, 10) : null 
-                              } : c))}
+                            <div 
+                              className="relative" 
+                              ref={(el) => {
+                                if (el) {
+                                  contactCountryInputRefs.current[contact.id] = el;
+                                } else {
+                                  delete contactCountryInputRefs.current[contact.id];
+                                }
+                              }}
                             >
-                              <option value="">Select a country</option>
-                              {countries.map(country => (
-                                <option key={country.id} value={country.id}>
+                              <input
+                                type="text"
+                                className="input input-bordered w-full"
+                                value={contactCountrySearchTerms[contact.id] || ''}
+                                onChange={(e) => {
+                                  setContactCountrySearchTerms({ ...contactCountrySearchTerms, [contact.id]: e.target.value });
+                                  setShowContactCountryDropdowns({ ...showContactCountryDropdowns, [contact.id]: true });
+                                  if (e.target.value !== countries.find(c => c.id === contact.country_id)?.name) {
+                                    setContacts(contacts.map(c => c.id === contact.id ? { ...c, country_id: null } : c));
+                                  }
+                                }}
+                                onFocus={() => setShowContactCountryDropdowns({ ...showContactCountryDropdowns, [contact.id]: true })}
+                                placeholder="Search or type country..."
+                              />
+                              {showContactCountryDropdowns[contact.id] && getFilteredContactCountryOptions(contact.id).length > 0 && (
+                                <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                                  {getFilteredContactCountryOptions(contact.id).map(country => (
+                                    <button
+                                      key={country.id}
+                                      type="button"
+                                      className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                      onClick={() => handleContactCountrySelect(contact.id, country.id, country.name)}
+                                    >
                                   {country.name}
-                                </option>
-                              ))}
-                            </select>
+                                    </button>
+                                  ))}
+                                </div>
+                              )}
+                              {showContactCountryDropdowns[contact.id] && getFilteredContactCountryOptions(contact.id).length === 0 && contactCountrySearchTerms[contact.id] && (
+                                <div className="absolute z-[9999] w-full bottom-full mb-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                                  No countries found
+                                </div>
+                              )}
+                            </div>
                           ) : contact.country_id ? (
                             <div className="text-base text-gray-900 text-right">
                               {countries.find(c => c.id === contact.country_id)?.name || '---'}

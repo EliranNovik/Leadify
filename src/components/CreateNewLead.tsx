@@ -20,6 +20,8 @@ const CreateNewLead: React.FC = () => {
     phone: '',
     source: '',
     language: '',
+    category: '',
+    country_id: '',
     topic: '',
     facts: '',
     specialNotes: '',
@@ -29,11 +31,22 @@ const CreateNewLead: React.FC = () => {
   const [currentUserEmail, setCurrentUserEmail] = useState<string | null>(null);
   const [sourceOptions, setSourceOptions] = useState<Array<{ id: number; name: string }>>([]);
   const [languageOptions, setLanguageOptions] = useState<Array<{ id: number; name: string | null }>>([]);
+  const [categoryOptions, setCategoryOptions] = useState<Array<{ id: number; name: string; displayName: string }>>([]);
   const [countryOptions, setCountryOptions] = useState<Array<{ id: number; name: string; phone_code: string; iso_code: string }>>([]);
+  const [countryDropdownOptions, setCountryDropdownOptions] = useState<Array<{ id: number; name: string; iso_code: string }>>([]);
   const [selectedCountryCode, setSelectedCountryCode] = useState<string>('+972'); // Default to Israel
   const [sourceSearchTerm, setSourceSearchTerm] = useState<string>('');
   const [showSourceDropdown, setShowSourceDropdown] = useState<boolean>(false);
   const sourceInputRef = useRef<HTMLDivElement>(null);
+  const [categorySearchTerm, setCategorySearchTerm] = useState<string>('');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
+  const categoryInputRef = useRef<HTMLDivElement>(null);
+  const [countrySearchTerm, setCountrySearchTerm] = useState<string>('');
+  const [showCountryDropdown, setShowCountryDropdown] = useState<boolean>(false);
+  const countryInputRef = useRef<HTMLDivElement>(null);
+  const [countryCodeSearchTerm, setCountryCodeSearchTerm] = useState<string>(''); // Empty initially, will show placeholder
+  const [showCountryCodeDropdown, setShowCountryCodeDropdown] = useState<boolean>(false);
+  const countryCodeInputRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const fetchUser = async () => {
@@ -56,7 +69,9 @@ const CreateNewLead: React.FC = () => {
         const [
           { data: sourcesData, error: sourcesError },
           { data: languagesData, error: languagesError },
-          { data: countriesData, error: countriesError }
+          { data: categoriesData, error: categoriesError },
+          { data: countriesData, error: countriesError },
+          { data: allCountriesData, error: allCountriesError }
         ] = await Promise.all([
           supabase
             .from('misc_leadsource')
@@ -68,9 +83,26 @@ const CreateNewLead: React.FC = () => {
             .select('id, name')
             .order('name', { ascending: true }),
           supabase
+            .from('misc_category')
+            .select(`
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id (
+                id,
+                name
+              )
+            `)
+            .order('name', { ascending: true }),
+          supabase
             .from('misc_country')
             .select('id, name, phone_code, iso_code')
             .not('phone_code', 'is', null)
+            .order('"order"', { ascending: true })
+            .order('name', { ascending: true }),
+          supabase
+            .from('misc_country')
+            .select('id, name, iso_code')
             .order('"order"', { ascending: true })
             .order('name', { ascending: true }),
         ]);
@@ -91,16 +123,146 @@ const CreateNewLead: React.FC = () => {
           );
         }
 
+        if (!categoriesError && categoriesData) {
+          const formattedCategories = categoriesData
+            .filter(category => category?.name)
+            .map((category: any) => {
+              const mainCategory = Array.isArray(category.misc_maincategory) 
+                ? category.misc_maincategory[0] 
+                : category.misc_maincategory;
+              const displayName = mainCategory?.name 
+                ? `${category.name} (${mainCategory.name})`
+                : category.name;
+              return {
+                id: category.id,
+                name: category.name,
+                displayName: displayName
+              };
+            });
+          setCategoryOptions(formattedCategories);
+        }
+
         if (!countriesError && countriesData) {
-          setCountryOptions(
-            countriesData
-              .filter(country => country?.phone_code && country?.name)
-              .map(country => ({
-                id: country.id,
-                name: country.name,
-                phone_code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
-                iso_code: country.iso_code || ''
-              }))
+          // Process countries: normalize phone codes, filter out NULL phone_code, and remove duplicates
+          const processedCountries = countriesData
+            .filter(country => country?.phone_code && country?.phone_code !== '\\N' && country?.phone_code !== null && country?.name)
+            .map(country => ({
+              id: country.id,
+              name: country.name,
+              phone_code: country.phone_code.startsWith('+') ? country.phone_code : `+${country.phone_code}`,
+              iso_code: country.iso_code || ''
+            }));
+
+          // Remove duplicates by phone_code, keeping the first occurrence
+          const uniqueCountriesMap = new Map<string, { id: number; name: string; phone_code: string; iso_code: string }>();
+          processedCountries.forEach(country => {
+            if (!uniqueCountriesMap.has(country.phone_code)) {
+              uniqueCountriesMap.set(country.phone_code, country);
+            }
+          });
+
+          // Ensure USA is included (check by name or iso_code)
+          const usaCountry = processedCountries.find(
+            c => c.name.toLowerCase().includes('united states') || 
+                 c.name.toLowerCase() === 'usa' || 
+                 c.name.toLowerCase() === 'us' ||
+                 c.iso_code === 'US' ||
+                 c.iso_code === 'USA'
+          );
+          
+          if (usaCountry && !uniqueCountriesMap.has(usaCountry.phone_code)) {
+            uniqueCountriesMap.set(usaCountry.phone_code, usaCountry);
+          } else if (!usaCountry) {
+            // If USA not found, add it manually
+            uniqueCountriesMap.set('+1', {
+              id: 0,
+              name: 'United States',
+              phone_code: '+1',
+              iso_code: 'US'
+            });
+          }
+
+          // Convert map to array and sort by phone code
+          const uniqueCountries = Array.from(uniqueCountriesMap.values())
+            .sort((a, b) => {
+              // Sort ID 234 first (highest priority)
+              if (a.id === 234 && b.id !== 234) return -1;
+              if (b.id === 234 && a.id !== 234) return 1;
+              // Sort ID 249 second
+              if (a.id === 249 && b.id !== 249 && b.id !== 234) return -1;
+              if (b.id === 249 && a.id !== 249 && a.id !== 234) return 1;
+              // Then sort USA (+1) next
+              if (a.phone_code === '+1') return -1;
+              if (b.phone_code === '+1') return 1;
+              // Then sort UK (+44) and South Africa (+27) after USA
+              const isUK = a.name.toLowerCase().includes('united kingdom') || 
+                          a.name.toLowerCase() === 'uk' || 
+                          a.iso_code === 'GB' || 
+                          a.iso_code === 'UK' ||
+                          a.phone_code === '+44';
+              const isSouthAfrica = a.name.toLowerCase().includes('south africa') || 
+                                   a.iso_code === 'ZA' ||
+                                   a.phone_code === '+27';
+              const isBUK = b.name.toLowerCase().includes('united kingdom') || 
+                           b.name.toLowerCase() === 'uk' || 
+                           b.iso_code === 'GB' || 
+                           b.iso_code === 'UK' ||
+                           b.phone_code === '+44';
+              const isBSouthAfrica = b.name.toLowerCase().includes('south africa') || 
+                                    b.iso_code === 'ZA' ||
+                                    b.phone_code === '+27';
+              
+              if (isUK && !isBUK) return -1;
+              if (isBUK && !isUK) return 1;
+              if (isSouthAfrica && !isBSouthAfrica) return -1;
+              if (isBSouthAfrica && !isSouthAfrica) return 1;
+              // Then sort by phone code (ID 110 will be in its natural sorted position)
+              return a.phone_code.localeCompare(b.phone_code);
+            });
+
+          setCountryOptions(uniqueCountries);
+        }
+
+        if (!allCountriesError && allCountriesData) {
+          const processedCountries = allCountriesData
+            .filter(country => country?.name)
+            .map(country => ({
+              id: country.id,
+              name: country.name,
+              iso_code: country.iso_code || ''
+            }));
+
+          // Ensure United States is included - check if it exists
+          const hasUnitedStates = processedCountries.some(
+            c => c.name.toLowerCase().includes('united states') || 
+                 c.name.toLowerCase() === 'usa' || 
+                 c.name.toLowerCase() === 'us' ||
+                 c.iso_code === 'US' ||
+                 c.iso_code === 'USA'
+          );
+
+          // If United States doesn't exist, try to find it by checking all countries (including those with null phone_code)
+          if (!hasUnitedStates) {
+            // Try to find USA in the countriesData (which includes phone_code filter)
+            const usaFromPhoneCode = countriesData?.find(
+              c => c.name.toLowerCase().includes('united states') || 
+                   c.name.toLowerCase() === 'usa' || 
+                   c.name.toLowerCase() === 'us' ||
+                   c.iso_code === 'US' ||
+                   c.iso_code === 'USA'
+            );
+            
+            if (usaFromPhoneCode) {
+              processedCountries.push({
+                id: usaFromPhoneCode.id,
+                name: usaFromPhoneCode.name,
+                iso_code: usaFromPhoneCode.iso_code || 'US'
+              });
+            }
+          }
+
+          setCountryDropdownOptions(
+            processedCountries.sort((a, b) => a.name.localeCompare(b.name))
           );
         }
       } catch (fetchError) {
@@ -110,6 +272,16 @@ const CreateNewLead: React.FC = () => {
 
     fetchSourcesAndLanguages();
   }, []);
+
+  // Sync country code search term with selected code when dropdown closes
+  useEffect(() => {
+    if (!showCountryCodeDropdown && selectedCountryCode) {
+      // Only sync if search term is empty or matches selected code
+      if (!countryCodeSearchTerm || countryCodeSearchTerm === selectedCountryCode) {
+        setCountryCodeSearchTerm('');
+      }
+    }
+  }, [selectedCountryCode, showCountryCodeDropdown]);
 
   // Auto-select source if search term exactly matches an option
   useEffect(() => {
@@ -124,24 +296,140 @@ const CreateNewLead: React.FC = () => {
     }
   }, [sourceSearchTerm, sourceOptions]);
 
+  // Auto-select category if search term exactly matches an option
+  useEffect(() => {
+    const exactMatch = categoryOptions.find(
+      category => category.displayName.toLowerCase() === categorySearchTerm.toLowerCase() ||
+                  category.name.toLowerCase() === categorySearchTerm.toLowerCase()
+    );
+    if (exactMatch) {
+      setForm(prev => ({ ...prev, category: exactMatch.displayName }));
+    } else if (categorySearchTerm && !exactMatch) {
+      // Clear form.category if search term doesn't match exactly
+      setForm(prev => ({ ...prev, category: '' }));
+    }
+  }, [categorySearchTerm, categoryOptions]);
+
+  // Auto-select country if search term exactly matches an option
+  useEffect(() => {
+    const searchTerm = countrySearchTerm.toLowerCase();
+    
+    // Find exact match by name
+    let exactMatch = countryDropdownOptions.find(
+      country => country.name.toLowerCase() === searchTerm
+    );
+    
+    // If no exact match, check for United States aliases
+    if (!exactMatch && (searchTerm === 'usa' || searchTerm === 'us' || searchTerm === 'america')) {
+      exactMatch = countryDropdownOptions.find(
+        country => {
+          const countryName = country.name.toLowerCase();
+          const isoCode = country.iso_code.toLowerCase();
+          return countryName.includes('united states') || 
+                 countryName === 'usa' || 
+                 isoCode === 'us' || 
+                 isoCode === 'usa';
+        }
+      );
+    }
+    
+    if (exactMatch) {
+      setForm(prev => ({ ...prev, country_id: exactMatch.id.toString() }));
+    } else if (countrySearchTerm && !exactMatch) {
+      // Clear form.country_id if search term doesn't match exactly
+      setForm(prev => ({ ...prev, country_id: '' }));
+    }
+  }, [countrySearchTerm, countryDropdownOptions]);
+
   // Close source dropdown when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
       if (sourceInputRef.current && !sourceInputRef.current.contains(event.target as Node)) {
         setShowSourceDropdown(false);
       }
+      if (categoryInputRef.current && !categoryInputRef.current.contains(event.target as Node)) {
+        setShowCategoryDropdown(false);
+      }
+      if (countryInputRef.current && !countryInputRef.current.contains(event.target as Node)) {
+        setShowCountryDropdown(false);
+      }
+      if (countryCodeInputRef.current && !countryCodeInputRef.current.contains(event.target as Node)) {
+        setShowCountryCodeDropdown(false);
+        // Clear search term when closing (will show placeholder)
+        setCountryCodeSearchTerm('');
+      }
     };
 
-    if (showSourceDropdown) {
+    if (showSourceDropdown || showCategoryDropdown || showCountryDropdown || showCountryCodeDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
       return () => document.removeEventListener('mousedown', handleClickOutside);
     }
-  }, [showSourceDropdown]);
+  }, [showSourceDropdown, showCategoryDropdown, showCountryDropdown, showCountryCodeDropdown, selectedCountryCode]);
 
   // Filter source options based on search term
   const filteredSourceOptions = sourceOptions.filter(source =>
     source.name.toLowerCase().includes(sourceSearchTerm.toLowerCase())
   );
+
+  // Filter category options based on search term
+  const filteredCategoryOptions = categoryOptions.filter(category =>
+    category.displayName.toLowerCase().includes(categorySearchTerm.toLowerCase()) ||
+    category.name.toLowerCase().includes(categorySearchTerm.toLowerCase())
+  );
+
+  // Filter country options based on search term
+  const filteredCountryOptions = countryDropdownOptions.filter(country => {
+    const searchTerm = countrySearchTerm.toLowerCase();
+    const countryName = country.name.toLowerCase();
+    const isoCode = country.iso_code.toLowerCase();
+    
+    // Check if search term matches country name or ISO code
+    if (countryName.includes(searchTerm) || isoCode.includes(searchTerm)) {
+      return true;
+    }
+    
+    // Special handling for United States aliases
+    const isUnitedStates = countryName.includes('united states') || 
+                          countryName === 'usa' || 
+                          isoCode === 'us' || 
+                          isoCode === 'usa';
+    if (isUnitedStates) {
+      return searchTerm === 'usa' || 
+             searchTerm === 'us' || 
+             searchTerm === 'america' || 
+             searchTerm.includes('united states');
+    }
+    
+    return false;
+  });
+
+  // Filter country code options based on search term (search by code or country name)
+  const filteredCountryCodeOptions = countryOptions.filter(country => {
+    const searchTerm = countryCodeSearchTerm.toLowerCase();
+    const phoneCode = country.phone_code.toLowerCase();
+    const countryName = country.name.toLowerCase();
+    
+    // Direct matches
+    if (phoneCode.includes(searchTerm) || countryName.includes(searchTerm)) {
+      return true;
+    }
+    
+    // Special handling for USA/United States/America
+    const usaSearchTerms = ['usa', 'us', 'america', 'united states'];
+    const isUSASearch = usaSearchTerms.some(term => searchTerm.includes(term) || term.includes(searchTerm));
+    
+    if (isUSASearch) {
+      return countryName.includes('united states') || 
+             countryName.includes('america') ||
+             countryName === 'usa' || 
+             countryName === 'us' ||
+             country.iso_code === 'US' ||
+             country.iso_code === 'USA' ||
+             phoneCode === '+1';
+    }
+    
+    return false;
+  });
 
   const handleChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setForm({ ...form, [e.target.name]: e.target.value });
@@ -151,6 +439,19 @@ const CreateNewLead: React.FC = () => {
     setForm({ ...form, source: sourceName });
     setSourceSearchTerm(sourceName);
     setShowSourceDropdown(false);
+  };
+
+  const handleCategorySelect = (categoryDisplayName: string) => {
+    setForm({ ...form, category: categoryDisplayName });
+    setCategorySearchTerm(categoryDisplayName);
+    setShowCategoryDropdown(false);
+  };
+
+  const handleCountrySelect = (countryId: number, countryName: string) => {
+    console.log('Country selected:', { countryId, countryName });
+    setForm({ ...form, country_id: countryId.toString() });
+    setCountrySearchTerm(countryName);
+    setShowCountryDropdown(false);
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -179,6 +480,12 @@ const CreateNewLead: React.FC = () => {
         fullPhoneNumber = form.phone.trim();
       }
 
+      // Extract category name from display format (remove main category part if present)
+      let categoryName = form.category;
+      if (categoryName && categoryName.includes(' (')) {
+        categoryName = categoryName.split(' (')[0];
+      }
+
       // Call the new database function to create the lead
       const { data, error } = await supabase.rpc('create_new_lead_v3', {
         p_lead_name: form.name,
@@ -196,8 +503,11 @@ const CreateNewLead: React.FC = () => {
       const newLead = data?.[0] as NewLeadResult;
       if (!newLead) throw new Error("Could not create lead.");
 
-      // Update the lead with facts and special_notes if provided
-      const updateData: { facts?: string; special_notes?: string } = {};
+      // Update the lead with category, facts and special_notes if provided
+      const updateData: { category?: string; facts?: string; special_notes?: string } = {};
+      if (categoryName && categoryName.trim()) {
+        updateData.category = categoryName.trim();
+      }
       if (form.facts && form.facts.trim()) {
         updateData.facts = form.facts.trim();
       }
@@ -212,9 +522,46 @@ const CreateNewLead: React.FC = () => {
           .eq('id', newLead.id);
 
         if (updateError) {
-          console.error('Error updating facts/special_notes:', updateError);
+          console.error('Error updating category/facts/special_notes:', updateError);
           // Don't throw - lead was created successfully, just log the error
         }
+      }
+
+      // Update the contact record with country_id if provided
+      if (form.country_id && form.country_id.trim() !== '') {
+        console.log('Updating contact with country_id:', form.country_id);
+        // Find the contact record for this lead
+        const { data: contactData, error: contactFetchError } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .eq('newlead_id', newLead.id)
+          .limit(1)
+          .single();
+
+        if (contactFetchError) {
+          console.error('Error fetching contact for country update:', contactFetchError);
+        } else if (contactData) {
+          const countryIdInt = parseInt(form.country_id, 10);
+          if (isNaN(countryIdInt)) {
+            console.error('Invalid country_id:', form.country_id);
+          } else {
+            const { error: contactUpdateError } = await supabase
+              .from('leads_contact')
+              .update({ country_id: countryIdInt })
+              .eq('id', contactData.id);
+
+            if (contactUpdateError) {
+              console.error('Error updating contact country_id:', contactUpdateError);
+              // Don't throw - lead was created successfully, just log the error
+            } else {
+              console.log('Successfully updated contact country_id to:', countryIdInt);
+            }
+          }
+        } else {
+          console.warn('No contact found for new lead:', newLead.id);
+        }
+      } else {
+        console.log('No country_id provided, skipping country update');
       }
 
       // Navigate to the new lead's page
@@ -228,9 +575,10 @@ const CreateNewLead: React.FC = () => {
   };
 
   return (
-    <div className="max-w-xl mx-auto p-8">
+    <div className="max-w-6xl mx-auto p-8">
       <h1 className="text-4xl font-bold mb-8">Create New Lead</h1>
       <form className="space-y-6" onSubmit={handleSubmit}>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
         <div>
           <label className="block font-semibold mb-1">Name:</label>
           <input
@@ -255,17 +603,46 @@ const CreateNewLead: React.FC = () => {
         <div>
           <label className="block font-semibold mb-1">Phone:</label>
           <div className="flex gap-2">
-            <select
-              className="select select-bordered w-40"
-              value={selectedCountryCode}
-              onChange={(e) => setSelectedCountryCode(e.target.value)}
-            >
-              {countryOptions.map(country => (
-                <option key={country.id} value={country.phone_code}>
-                  {country.phone_code} {country.name}
-                </option>
-              ))}
-            </select>
+            <div className="relative w-40" ref={countryCodeInputRef}>
+              <input
+                type="text"
+                className="input input-bordered w-full"
+                value={countryCodeSearchTerm}
+                onChange={(e) => {
+                  setCountryCodeSearchTerm(e.target.value);
+                  setShowCountryCodeDropdown(true);
+                }}
+                onFocus={() => {
+                  setShowCountryCodeDropdown(true);
+                  // Clear the field on focus so user can type immediately
+                  setCountryCodeSearchTerm('');
+                }}
+                placeholder={selectedCountryCode || '+972'}
+              />
+            {showCountryCodeDropdown && filteredCountryCodeOptions.length > 0 && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                {filteredCountryCodeOptions.map(country => (
+                  <button
+                    key={`${country.phone_code}-${country.id}`}
+                    type="button"
+                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                    onClick={() => {
+                      setSelectedCountryCode(country.phone_code);
+                      setCountryCodeSearchTerm(country.phone_code);
+                      setShowCountryCodeDropdown(false);
+                    }}
+                  >
+                    {country.phone_code} {country.name}
+                  </button>
+                ))}
+              </div>
+            )}
+              {showCountryCodeDropdown && filteredCountryCodeOptions.length === 0 && countryCodeSearchTerm && (
+                <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                  No country codes found
+                </div>
+              )}
+            </div>
             <input
               type="tel"
               name="phone"
@@ -331,7 +708,83 @@ const CreateNewLead: React.FC = () => {
           </select>
         </div>
         <div>
-          <label className="block font-semibold mb-1">Topic:</label>
+          <label className="block font-semibold mb-1">Country <span className="text-gray-500 font-normal">(optional)</span>:</label>
+          <div className="relative" ref={countryInputRef}>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              value={countrySearchTerm}
+              onChange={(e) => {
+                setCountrySearchTerm(e.target.value);
+                setShowCountryDropdown(true);
+                if (e.target.value !== countryDropdownOptions.find(c => c.id.toString() === form.country_id)?.name) {
+                  setForm({ ...form, country_id: '' });
+                }
+              }}
+              onFocus={() => setShowCountryDropdown(true)}
+              placeholder="Search or type country..."
+            />
+            {showCountryDropdown && filteredCountryOptions.length > 0 && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                {filteredCountryOptions.map(country => (
+                  <button
+                    key={country.id}
+                    type="button"
+                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                    onClick={() => handleCountrySelect(country.id, country.name)}
+                  >
+                    {country.name}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showCountryDropdown && filteredCountryOptions.length === 0 && countrySearchTerm && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                No countries found
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Category:</label>
+          <div className="relative" ref={categoryInputRef}>
+            <input
+              type="text"
+              className="input input-bordered w-full"
+              value={categorySearchTerm}
+              onChange={(e) => {
+                setCategorySearchTerm(e.target.value);
+                setShowCategoryDropdown(true);
+                if (e.target.value !== form.category) {
+                  setForm({ ...form, category: '' });
+                }
+              }}
+              onFocus={() => setShowCategoryDropdown(true)}
+              placeholder="Search or type category..."
+            />
+            {showCategoryDropdown && filteredCategoryOptions.length > 0 && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                {filteredCategoryOptions.map(category => (
+                  <button
+                    key={category.id}
+                    type="button"
+                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                    onClick={() => handleCategorySelect(category.displayName)}
+                  >
+                    {category.displayName}
+                  </button>
+                ))}
+              </div>
+            )}
+            {showCategoryDropdown && filteredCategoryOptions.length === 0 && categorySearchTerm && (
+              <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg p-4 text-center text-base-content/60">
+                No categories found
+              </div>
+            )}
+          </div>
+        </div>
+        <div>
+          <label className="block font-semibold mb-1">Topic <span className="text-gray-500 font-normal">(optional)</span>:</label>
           <input
             type="text"
             name="topic"
@@ -358,10 +811,11 @@ const CreateNewLead: React.FC = () => {
             onChange={handleChange}
           />
         </div>
-        <div className="pt-4">
+        </div>
+        <div className="pt-4 md:col-span-2">
           <button 
             type="submit" 
-            className={`btn btn-primary w-full text-lg font-semibold ${isLoading ? 'loading' : ''}`}
+            className={`btn btn-primary w-full md:w-auto md:min-w-[200px] text-lg font-semibold ${isLoading ? 'loading' : ''}`}
             disabled={isLoading}
           >
             {isLoading ? 'Saving...' : 'Save'}

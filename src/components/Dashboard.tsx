@@ -6,7 +6,7 @@ import OverdueFollowups from './OverdueFollowups';
 import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
@@ -91,7 +91,7 @@ const Dashboard: React.FC = () => {
   const [overdueCountFetched, setOverdueCountFetched] = useState(false);
   
   // State for follow-ups tabs and view mode
-  const [followUpTab, setFollowUpTab] = useState<'today' | 'overdue' | 'tomorrow'>('today');
+  const [followUpTab, setFollowUpTab] = useState<'today' | 'overdue' | 'tomorrow' | 'future'>('today');
   const [followUpViewMode, setFollowUpViewMode] = useState<'table' | 'card'>(() => {
     // Default to table on desktop, card on mobile
     if (typeof window !== 'undefined') {
@@ -101,6 +101,8 @@ const Dashboard: React.FC = () => {
   });
   const [todayFollowUps, setTodayFollowUps] = useState<any[]>([]);
   const [tomorrowFollowUps, setTomorrowFollowUps] = useState<any[]>([]);
+  const [futureFollowUps, setFutureFollowUps] = useState<any[]>([]);
+  const [futureFollowUpsLoading, setFutureFollowUpsLoading] = useState(false);
   const [todayFollowUpsLoading, setTodayFollowUpsLoading] = useState(false);
   const [tomorrowFollowUpsLoading, setTomorrowFollowUpsLoading] = useState(false);
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
@@ -334,7 +336,7 @@ const Dashboard: React.FC = () => {
   };
 
   // Optimized function to fetch follow-up leads data using the new follow_ups table
-  const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow', fetchAll = false) => {
+  const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow' | 'future', fetchAll = false) => {
     try {
       // Get current user's data
       const { data: { user } } = await supabase.auth.getUser();
@@ -367,6 +369,12 @@ const Dashboard: React.FC = () => {
       const tomorrowStart = tomorrow.toISOString();
       tomorrow.setHours(23, 59, 59, 999);
       const tomorrowEnd = tomorrow.toISOString();
+      
+      // Get 2 days from now (start of future follow-ups)
+      const twoDaysFromNow = new Date(today);
+      twoDaysFromNow.setDate(twoDaysFromNow.getDate() + 2);
+      twoDaysFromNow.setHours(0, 0, 0, 0);
+      const futureStart = twoDaysFromNow.toISOString();
       
       const fiftyDaysAgo = new Date();
       fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
@@ -412,6 +420,9 @@ const Dashboard: React.FC = () => {
         newFollowupsQuery = newFollowupsQuery.gte('date', todayStart).lte('date', todayEnd);
       } else if (dateType === 'tomorrow') {
         newFollowupsQuery = newFollowupsQuery.gte('date', tomorrowStart).lte('date', tomorrowEnd);
+      } else if (dateType === 'future') {
+        // future: 2 days and up from now
+        newFollowupsQuery = newFollowupsQuery.gte('date', futureStart);
       } else {
         // overdue: less than today but not more than 50 days ago
         newFollowupsQuery = newFollowupsQuery.gte('date', fiftyDaysAgoISO).lt('date', todayStart);
@@ -454,6 +465,9 @@ const Dashboard: React.FC = () => {
         legacyFollowupsQuery = legacyFollowupsQuery.gte('date', todayStart).lte('date', todayEnd);
       } else if (dateType === 'tomorrow') {
         legacyFollowupsQuery = legacyFollowupsQuery.gte('date', tomorrowStart).lte('date', tomorrowEnd);
+      } else if (dateType === 'future') {
+        // future: 2 days and up from now
+        legacyFollowupsQuery = legacyFollowupsQuery.gte('date', futureStart);
       } else {
         // overdue: less than today but not more than 50 days ago
         legacyFollowupsQuery = legacyFollowupsQuery.gte('date', fiftyDaysAgoISO).lt('date', todayStart);
@@ -606,6 +620,9 @@ const Dashboard: React.FC = () => {
       } else if (followUpTab === 'tomorrow') {
         const result = await fetchFollowUpLeadsData('tomorrow');
         setTomorrowFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else if (followUpTab === 'future') {
+        const result = await fetchFollowUpLeadsData('future');
+        setFutureFollowUps([...result.newLeads, ...result.legacyLeads]);
       } else {
         const result = await fetchFollowUpLeadsData('overdue');
         setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
@@ -644,6 +661,9 @@ const Dashboard: React.FC = () => {
       } else if (followUpTab === 'tomorrow') {
         const result = await fetchFollowUpLeadsData('tomorrow');
         setTomorrowFollowUps([...result.newLeads, ...result.legacyLeads]);
+      } else if (followUpTab === 'future') {
+        const result = await fetchFollowUpLeadsData('future');
+        setFutureFollowUps([...result.newLeads, ...result.legacyLeads]);
       } else {
         const result = await fetchFollowUpLeadsData('overdue');
         setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
@@ -1853,31 +1873,34 @@ const Dashboard: React.FC = () => {
           return;
         }
         
-        const todayStr = new Date().toISOString().split('T')[0];
+        // Get today's date for filtering
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const todayStart = today.toISOString();
+        today.setHours(23, 59, 59, 999);
+        const todayEnd = today.toISOString();
         
-        // Fetch today's follow-ups count for new leads
+        const userId = userData.id;
+        
+        // Fetch today's follow-ups count for new leads from follow_ups table
         const newLeadsPromise = supabase
-          .from('leads')
+          .from('follow_ups')
           .select('*', { count: 'exact', head: true })
-          .eq('next_followup', todayStr)
-          .not('next_followup', 'is', null)
-          .or(`expert.eq.${userFullName},manager.eq.${userFullName},meeting_manager.eq.${userFullName},handler.eq.${userFullName},scheduler.eq.${userFullName},closer.eq.${userFullName}`);
+          .eq('user_id', userId)
+          .not('new_lead_id', 'is', null)
+          .gte('date', todayStart)
+          .lte('date', todayEnd);
         
-        // Fetch today's follow-ups count for legacy leads
-        let legacyLeadsPromise: any = null;
-        if (userEmployeeId) {
-          legacyLeadsPromise = supabase
-            .from('leads_lead')
-            .select('*', { count: 'exact', head: true })
-            .eq('next_followup', todayStr)
-            .not('next_followup', 'is', null)
-            .or(`expert_id.eq.${userEmployeeId},meeting_manager_id.eq.${userEmployeeId},meeting_lawyer_id.eq.${userEmployeeId},meeting_scheduler_id.eq.${userEmployeeId},case_handler_id.eq.${userEmployeeId},closer_id.eq.${userEmployeeId}`);
-        }
+        // Fetch today's follow-ups count for legacy leads from follow_ups table
+        const legacyLeadsPromise = supabase
+          .from('follow_ups')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', userId)
+          .not('lead_id', 'is', null)
+          .gte('date', todayStart)
+          .lte('date', todayEnd);
         
-        const countPromises = [newLeadsPromise];
-        if (legacyLeadsPromise) {
-          countPromises.push(legacyLeadsPromise);
-        }
+        const countPromises = [newLeadsPromise, legacyLeadsPromise];
         
         const results = await Promise.all(countPromises);
         const [newLeadsCount, legacyLeadsCount] = results;
@@ -5063,6 +5086,18 @@ const Dashboard: React.FC = () => {
         } finally {
           setTomorrowFollowUpsLoading(false);
         }
+      } else if (followUpTab === 'future') {
+        setFutureFollowUpsLoading(true);
+        try {
+          const { newLeads, legacyLeads } = await fetchFollowUpLeadsData('future', true);
+          const combinedLeads = [...newLeads, ...legacyLeads];
+          const processedLeads = await processOverdueLeadsForDisplay(combinedLeads, true);
+          setFutureFollowUps(processedLeads);
+        } catch (error) {
+          setFutureFollowUps([]);
+        } finally {
+          setFutureFollowUpsLoading(false);
+        }
       } else {
         // overdue
         setOverdueLeadsLoading(true);
@@ -5152,13 +5187,36 @@ const Dashboard: React.FC = () => {
         }
       }
       
-      // Fetch employee names for new leads (for expert_id and meeting_manager_id)
+      // Fetch employee names for new leads (for expert_id, meeting_manager_id, and also check expert/manager fields if they're numeric IDs)
       let newLeadEmployeeIds: number[] = [];
       if (newLeads.length > 0) {
-        newLeadEmployeeIds = [...new Set([
-          ...newLeads.map(lead => lead.expert_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number'),
-          ...newLeads.map(lead => lead.meeting_manager_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number')
-        ])];
+        const employeeIdSet = new Set<number>();
+        
+        // Collect from ID fields
+        newLeads.forEach(lead => {
+          if (lead.expert_id && typeof lead.expert_id === 'number') {
+            employeeIdSet.add(lead.expert_id);
+          }
+          if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
+            employeeIdSet.add(lead.meeting_manager_id);
+          }
+          
+          // Also check expert and manager text fields - they might contain numeric IDs
+          if (lead.expert && typeof lead.expert === 'string' && !isNaN(Number(lead.expert))) {
+            const expertId = Number(lead.expert);
+            if (expertId > 0) {
+              employeeIdSet.add(expertId);
+            }
+          }
+          if (lead.manager && typeof lead.manager === 'string' && !isNaN(Number(lead.manager))) {
+            const managerId = Number(lead.manager);
+            if (managerId > 0) {
+              employeeIdSet.add(managerId);
+            }
+          }
+        });
+        
+        newLeadEmployeeIds = Array.from(employeeIdSet);
       }
       
       let newLeadEmployeeNameMap: { [key: number]: string } = {};
@@ -5230,22 +5288,42 @@ const Dashboard: React.FC = () => {
         return true; // Valid lead_number
       });
       const processedNewLeads = validNewLeads.map(lead => {
-        // Resolve expert name - check if expert is a numeric ID or a text name
+        // Resolve expert name - check if expert_id is set, or if expert field contains a numeric ID
         let expertName = 'Not assigned';
         if (lead.expert_id && typeof lead.expert_id === 'number') {
           expertName = newLeadEmployeeNameMap[lead.expert_id] || 'Not assigned';
-        } else if (lead.expert && typeof lead.expert === 'string') {
-          expertName = lead.expert;
+        } else if (lead.expert) {
+          // Check if expert is a numeric ID (string that can be converted to number)
+          if (typeof lead.expert === 'string' && !isNaN(Number(lead.expert)) && Number(lead.expert) > 0) {
+            const expertId = Number(lead.expert);
+            expertName = newLeadEmployeeNameMap[expertId] || lead.expert;
+          } else {
+            // It's a text name, use it directly
+            expertName = lead.expert;
+          }
         }
         
-        // Resolve manager name - check if meeting_manager_id is set, otherwise use manager text field
+        // Resolve manager name - check if meeting_manager_id is set, or if manager field contains a numeric ID
         let managerName = 'Not assigned';
         if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
           managerName = newLeadEmployeeNameMap[lead.meeting_manager_id] || 'Not assigned';
-        } else if (lead.manager && typeof lead.manager === 'string') {
-          managerName = lead.manager;
+        } else if (lead.manager) {
+          // Check if manager is a numeric ID (string that can be converted to number)
+          if (typeof lead.manager === 'string' && !isNaN(Number(lead.manager)) && Number(lead.manager) > 0) {
+            const managerId = Number(lead.manager);
+            managerName = newLeadEmployeeNameMap[managerId] || lead.manager;
+          } else {
+            // It's a text name, use it directly
+            managerName = lead.manager;
+          }
         } else if (lead.meeting_manager && typeof lead.meeting_manager === 'string') {
-          managerName = lead.meeting_manager;
+          // Check if meeting_manager is a numeric ID
+          if (!isNaN(Number(lead.meeting_manager)) && Number(lead.meeting_manager) > 0) {
+            const managerId = Number(lead.meeting_manager);
+            managerName = newLeadEmployeeNameMap[managerId] || lead.meeting_manager;
+          } else {
+            managerName = lead.meeting_manager;
+          }
         }
         
         // Resolve category name - check if category_id is set, otherwise use category text field
@@ -5662,71 +5740,78 @@ const Dashboard: React.FC = () => {
             <div className="font-bold text-lg text-base-content/80">Follow ups</div>
             
             {/* Tabs */}
-            <div className="flex gap-2">
+            <div className="flex gap-2 items-center">
               <button
                 onClick={() => setFollowUpTab('today')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                   followUpTab === 'today'
-                    ? 'bg-purple-600 text-white shadow-sm'
+                    ? 'text-white shadow-md'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                style={followUpTab === 'today' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Today
               </button>
               <button
                 onClick={() => setFollowUpTab('overdue')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                   followUpTab === 'overdue'
-                    ? 'bg-purple-600 text-white shadow-sm'
+                    ? 'text-white shadow-md'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                style={followUpTab === 'overdue' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Overdue
               </button>
               <button
                 onClick={() => setFollowUpTab('tomorrow')}
-                className={`px-4 py-2 rounded-lg text-sm font-medium transition-all ${
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
                   followUpTab === 'tomorrow'
-                    ? 'bg-purple-600 text-white shadow-sm'
+                    ? 'text-white shadow-md'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                style={followUpTab === 'tomorrow' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Tomorrow
               </button>
-            </div>
-            
-            {/* View Mode Toggle - Desktop only */}
-            <div className="hidden md:flex gap-2">
               <button
-                onClick={() => setFollowUpViewMode('table')}
-                className={`px-3 py-1 rounded text-xs font-medium transition-all ${
-                  followUpViewMode === 'table'
-                    ? 'bg-purple-600 text-white'
+                onClick={() => setFollowUpTab('future')}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
+                  followUpTab === 'future'
+                    ? 'text-white shadow-md'
                     : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                 }`}
+                style={followUpTab === 'future' ? { backgroundColor: '#3E2BCD' } : {}}
               >
-                Table
+                Future
               </button>
-              <button
-                onClick={() => setFollowUpViewMode('card')}
-                className={`px-3 py-1 rounded text-xs font-medium transition-all ${
-                  followUpViewMode === 'card'
-                    ? 'bg-purple-600 text-white'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
-              >
-                Cards
-              </button>
+              {/* View Mode Toggle - Desktop only */}
+              <div className="hidden md:flex">
+                <button
+                  onClick={() => setFollowUpViewMode(followUpViewMode === 'table' ? 'card' : 'table')}
+                  className={`px-3 py-2 rounded-xl text-sm font-medium transition-all text-white shadow-md`}
+                  style={{ backgroundColor: '#3E2BCD' }}
+                  title={followUpViewMode === 'table' ? 'Switch to Card View' : 'Switch to Table View'}
+                >
+                  {followUpViewMode === 'table' ? (
+                    <Squares2X2Icon className="w-5 h-5" />
+                  ) : (
+                    <TableCellsIcon className="w-5 h-5" />
+                  )}
+                </button>
+              </div>
             </div>
           </div>
           
           {/* Get current leads based on tab */}
           {(() => {
             const isLoading = followUpTab === 'today' ? todayFollowUpsLoading : 
-                             followUpTab === 'tomorrow' ? tomorrowFollowUpsLoading : 
+                             followUpTab === 'tomorrow' ? tomorrowFollowUpsLoading :
+                             followUpTab === 'future' ? futureFollowUpsLoading :
                              overdueLeadsLoading;
             const currentLeads = followUpTab === 'today' ? todayFollowUps :
                                 followUpTab === 'tomorrow' ? tomorrowFollowUps :
+                                followUpTab === 'future' ? futureFollowUps :
                                 realOverdueLeads;
             
             if (isLoading) {
@@ -5905,6 +5990,9 @@ const Dashboard: React.FC = () => {
                               {followUpTab === 'tomorrow' && (
                                 <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
                               )}
+                              {followUpTab === 'future' && (
+                                <span className="text-sm font-bold px-2 py-1 rounded bg-purple-600 text-white">Future</span>
+                              )}
                             </div>
                             <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate">{lead.name}</h3>
                           </div>
@@ -5928,7 +6016,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Expert</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                                {lead.expert_name || 'Not assigned'}
                               </span>
                             </div>
                             <div className="flex justify-between items-center py-1">
@@ -5943,7 +6031,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Manager</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                                {lead.manager_name || 'Not assigned'}
                               </span>
                             </div>
                             <div className="flex justify-between items-center py-1">
@@ -6081,7 +6169,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Expert</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                                {lead.expert_name || 'Not assigned'}
                               </span>
                             </div>
                             {/* Amount */}
@@ -6098,7 +6186,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Manager</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                                {lead.manager_name || 'Not assigned'}
                               </span>
                             </div>
                             {/* Probability */}
@@ -6230,7 +6318,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Expert</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.expert_name : (lead.expert || 'Not assigned')}
+                                {lead.expert_name || 'Not assigned'}
                               </span>
                             </div>
                             {/* Amount */}
@@ -6247,7 +6335,7 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Manager</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.manager_name : (lead.manager || 'Not assigned')}
+                                {lead.manager_name || 'Not assigned'}
                               </span>
                             </div>
                             {/* Probability */}
