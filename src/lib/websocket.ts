@@ -72,8 +72,13 @@ class WebSocketService {
     
       // Connect to the backend WebSocket server
       // In development: localhost:3001 (backend server)
-      // In production: your backend server URL
-      const serverUrl = import.meta.env.VITE_WEBSOCKET_URL || 'http://localhost:3001';
+      // In production: use VITE_WEBSOCKET_URL if set, otherwise use VITE_BACKEND_URL, fallback to localhost
+      // Socket.IO automatically handles http/https to ws/wss conversion
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+      const serverUrl = import.meta.env.VITE_WEBSOCKET_URL || backendUrl;
+      console.log('🔌 WebSocket server URL:', serverUrl);
+      console.log('🔌 Environment check - VITE_WEBSOCKET_URL:', import.meta.env.VITE_WEBSOCKET_URL);
+      console.log('🔌 Environment check - VITE_BACKEND_URL:', import.meta.env.VITE_BACKEND_URL);
     
     this.socket = io(serverUrl, {
       auth: {
@@ -257,8 +262,12 @@ class WebSocketService {
 
   // Send typing indicator
   sendTyping(conversationId: number, userId: string, userName: string, isTyping: boolean): void {
-    if (!this.socket?.connected) return;
+    if (!this.socket?.connected) {
+      console.warn('⌨️ Cannot send typing indicator: WebSocket not connected');
+      return;
+    }
 
+    console.log('⌨️ Emitting typing event:', { conversationId, userId, userName, isTyping });
     this.socket.emit('typing', {
       conversation_id: conversationId,
       user_id: userId,

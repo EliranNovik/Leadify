@@ -1526,7 +1526,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           userId: avatarKey,
           name,
           photoUrl,
-              sizeClass: 'w-14 h-14',
+          sizeClass: 'w-14 h-14',
               borderClass: '',
           textClass: 'text-lg',
             })}
@@ -1621,12 +1621,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
           // Typing indicator handler
           websocketService.onTyping((data) => {
+            console.log('⌨️ Typing event received:', data);
             const { conversation_id, user_id, user_name, is_typing } = data;
             
             // Don't show typing indicator for own messages
-            if (user_id === currentUser?.id) return;
+            if (user_id === currentUser?.id) {
+              console.log('⌨️ Ignoring own typing event');
+              return;
+            }
             
             if (is_typing) {
+              console.log('⌨️ User is typing:', user_name);
               setTypingUsers(prev => {
                 const newMap = new Map(prev);
                 newMap.set(conversation_id, { userId: user_id, userName: user_name });
@@ -1644,6 +1649,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 });
               }, 3000);
             } else {
+              console.log('⌨️ User stopped typing:', user_name);
               setTypingUsers(prev => {
                 const newMap = new Map(prev);
                 if (newMap.get(conversation_id)?.userId === user_id) {
@@ -1655,6 +1661,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           });
 
           websocketService.onConnect(() => {
+            console.log('✅ WebSocket connected, requesting online status...');
             // Add current user to online users when they connect
             if (userData?.id) {
               setOnlineUsers(prev => {
@@ -1664,12 +1671,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               });
             }
             // Request online status for all contacts after connection is established
+            // Use a longer delay to ensure the connection is fully established
             setTimeout(() => {
               if (allUsers.length > 0 && websocketService.isSocketConnected()) {
                 const userIds = allUsers.map(u => String(u.id));
+                console.log('📤 Requesting online status for', userIds.length, 'users');
                 websocketService.requestOnlineStatus(userIds);
+              } else {
+                console.warn('⚠️ Cannot request online status:', {
+                  allUsersLength: allUsers.length,
+                  isConnected: websocketService.isSocketConnected()
+                });
               }
-            }, 1000);
+            }, 2000);
           });
 
           websocketService.onDisconnect(() => {
@@ -1677,6 +1691,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
           // Online status response handler - MUST be set up before connecting
           websocketService.onOnlineStatusResponse((onlineUserIds: string[]) => {
+            console.log('📊 Online status response received:', onlineUserIds.length, 'online users');
             const onlineSet = new Set(onlineUserIds.map(id => String(id)));
             setOnlineUsers(onlineSet);
           });
@@ -2553,9 +2568,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
       
-      // Only update conversation list if WebSocket is NOT connected
-      // If WebSocket is connected, the conversation update will come through the WebSocket handler
-      if (!websocketService.isSocketConnected()) {
+      // Update conversation list immediately for optimistic UI update
+      // The WebSocket handler will also update it when the message comes back, but this ensures immediate feedback
       setConversations(prev => 
         prev.map(conv => 
           conv.id === selectedConversation.id
@@ -2567,7 +2581,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             : conv
         ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
       );
-      }
 
       // Refresh read receipts for the new message after a short delay
       if (messageData.id) {
@@ -3410,7 +3423,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const adjustTextareaHeight = (textarea: HTMLTextAreaElement | null, maxHeight = 200) => {
     if (!textarea) return;
     textarea.style.height = 'auto';
-    const newHeight = Math.min(textarea.scrollHeight, maxHeight);
+    const minHeight = 48; // Match button height (h-12 = 48px)
+    const newHeight = Math.max(minHeight, Math.min(textarea.scrollHeight, maxHeight));
     textarea.style.height = `${newHeight}px`;
   };
 
@@ -3438,6 +3452,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       const userName = currentUser.full_name || currentUser.email || 'User';
       
       // Send typing started
+      console.log('⌨️ Sending typing indicator: true');
       websocketService.sendTyping(
         selectedConversation.id,
         currentUser.id,
@@ -3453,6 +3468,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Set timeout to stop typing after 2 seconds of inactivity
       typingTimeoutRef.current = setTimeout(() => {
         if (selectedConversation && currentUser && websocketService.isSocketConnected()) {
+          console.log('⌨️ Sending typing indicator: false');
           websocketService.sendTyping(
             selectedConversation.id,
             currentUser.id,
@@ -3461,6 +3477,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           );
         }
       }, 2000);
+    } else {
+      console.warn('⌨️ Cannot send typing indicator:', {
+        hasConversation: !!selectedConversation,
+        hasUser: !!currentUser,
+        isConnected: websocketService.isSocketConnected()
+      });
     }
   };
 
@@ -3652,18 +3674,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
       // Update conversation preview for all conversations
-      setConversations(prev => 
-        prev.map(conv => 
+      setConversations(prev => {
+        // Format preview text based on message type
+        let previewText = '';
+        if (message.message_type === 'file' || message.message_type === 'image') {
+          previewText = message.attachment_name || `📎 ${message.message_type === 'image' ? 'Image' : 'File'}`;
+        } else if (message.content && message.content.trim()) {
+          previewText = message.content.substring(0, 100);
+        } else {
+          previewText = 'New message';
+        }
+        
+        return prev.map(conv => 
           conv.id === message.conversation_id
             ? {
                 ...conv,
                 last_message_at: message.sent_at,
-                last_message_preview: message.content.substring(0, 100),
+                last_message_preview: previewText,
                 unread_count: conv.id === selectedConversation?.id ? 0 : (conv.unread_count || 0) + 1
               }
             : conv
-        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
-      );
+        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime());
+      });
     };
 
     websocketService.onMessage(handleWebSocketMessage);
@@ -4616,20 +4648,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {/* Floating Date Indicator - Desktop */}
-              {showFloatingDate && floatingDate && (
-                <div 
-                  className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
-                  style={{ 
-                    opacity: floatingDateOpacity, 
-                    transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                    willChange: 'opacity'
-                  }}
-                >
+              <div 
+                className="fixed top-20 left-1/2 -translate-x-1/2 z-50 pointer-events-none"
+                style={{ 
+                  opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
+                  visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
+                  transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                  willChange: 'opacity'
+                }}
+              >
+                {floatingDate && (
                   <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
                     {formatDateSeparator(floatingDate)}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
               {messages.length === 0 ? (
                 <div className="text-center py-12">
                   <ChatBubbleLeftRightIcon className="w-16 h-16 mx-auto mb-4" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.7)' : '#d1d5db' }} />
@@ -4718,8 +4751,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
                           }
                           >
-                          {/* Message content */}
-                          {message.content && (
+                          {/* Message content - hide if it's an image message */}
+                          {message.content && !isImageMessage(message) && (
                             <p className="break-words">
                               <span 
                                 className="emoji-message" 
@@ -4735,11 +4768,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           
                           {/* File attachment */}
                           {message.attachment_url && (
-                            <div className={`mt-2 rounded-lg border ${
-                              isOwn 
-                                ? 'bg-white/10 border-white/20' 
-                                : 'bg-gray-50 border-gray-200'
-                            }`}>
+                            <div className={`mt-2 rounded-lg ${
+                              isImageMessage(message) 
+                                ? '' 
+                                : `border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                            }`}
+                            style={isImageMessage(message) ? { border: 'none', padding: '0' } : {}}
+                            >
                               {message.message_type === 'voice' ? (
                                 // Voice message player
                                 <div className="p-3 flex items-center gap-3">
@@ -4833,7 +4868,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 </div>
                               ) : isImageMessage(message) ? (
                                 // Image preview
-                                <div className="space-y-2">
+                                <div>
                                   <div 
                                     className="relative cursor-pointer group"
                                     onClick={() => openMediaModal(message)}
@@ -4841,7 +4876,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     <img
                                       src={message.attachment_url}
                                       alt={message.attachment_name}
-                                      className="max-w-full max-h-80 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                      className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                      style={{ marginTop: '0.25px', marginLeft: '0.25px', marginRight: '0.25px', marginBottom: '0', border: '0.25px solid rgba(0, 0, 0, 0.03)' }}
                                     />
                                     <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                       <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -4849,7 +4885,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                       </svg>
                                     </div>
                                   </div>
-                                  <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                  <div className="flex items-center justify-between text-xs opacity-75 px-1 pt-1" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
                                     <div className="flex items-center gap-2">
                                       <span className="truncate">{message.attachment_name}</span>
                                       <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
@@ -4987,21 +5023,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       setNewMessagesCount(0);
                       scrollToBottom('smooth');
                     }}
-                    className="text-white rounded-full p-3 shadow-lg transition-all relative"
-                    style={{ background: 'linear-gradient(to bottom right, #10b981, #14b8a6)' }}
+                    className="text-white rounded-full p-3 shadow-lg transition-all"
+                    style={{ backgroundColor: '#3C00B8' }}
                     onMouseEnter={(e) => {
-                      e.currentTarget.style.background = 'linear-gradient(to bottom right, #059669, #0d9488)';
+                      e.currentTarget.style.backgroundColor = '#4a00d4';
                     }}
                     onMouseLeave={(e) => {
-                      e.currentTarget.style.background = 'linear-gradient(to bottom right, #10b981, #14b8a6)';
+                      e.currentTarget.style.backgroundColor = '#3C00B8';
                     }}
-                    title={newMessagesCount > 0 ? `${newMessagesCount} new message${newMessagesCount > 1 ? 's' : ''} - click to scroll down` : "New messages - click to scroll down"}
+                    title="Scroll to bottom"
                   >
-                    {newMessagesCount > 0 && (
-                      <span className="absolute -top-1 -right-1 bg-red-500 text-white text-xs font-bold rounded-full w-6 h-6 flex items-center justify-center shadow-lg">
-                        {newMessagesCount > 99 ? '99+' : newMessagesCount}
-                      </span>
-                    )}
                     <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" />
                     </svg>
@@ -5014,14 +5045,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
             {/* Message Input - Desktop Only */}
             <div className="hidden lg:block absolute bottom-0 left-0 right-0 p-4 z-30 pointer-events-none">
-              <div className="flex items-end gap-3 relative pointer-events-auto">
+              <div className="flex items-center gap-3 relative pointer-events-auto">
                 {/* Consolidated Tools Button */}
-                <div className="relative" ref={desktopToolsRef}>
+                <div className="relative flex-shrink-0" ref={desktopToolsRef}>
                   {!isRecording ? (
                     <button
                       onClick={() => setShowDesktopTools(prev => !prev)}
                       disabled={isSending}
-                      className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow"
+                      className="btn btn-circle w-12 h-12 text-white disabled:opacity-50 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
                       style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
@@ -5193,13 +5224,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     onChange={handleMessageInputChange}
                     onKeyDown={handleMessageKeyDown}
                     placeholder="Type a message..."
-                    className="textarea w-full resize-none min-h-[44px] max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                    className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                     rows={1}
                     disabled={isSending}
                     style={{ 
+                      height: '48px',
+                      minHeight: '48px',
                       backgroundColor: 'rgba(255, 255, 255, 0.8)', 
                       backdropFilter: 'blur(10px)',
-                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' 
+                      boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                      padding: '12px 16px',
+                      boxSizing: 'border-box'
                     }}
                   />
                 </div>
@@ -5207,8 +5242,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 <button
                   onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
                   disabled={isSending}
-                  className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow"
-                  style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                  className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
+                  style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                   title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
                 >
                   {isSending ? (
@@ -5289,15 +5324,143 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Mobile Chat Header */}
             <div 
-              className="px-3 py-2 border-b border-white/30 absolute top-0 left-0 right-0 z-20"
-              style={{ 
-                backgroundColor: 'rgba(255, 255, 255, 0.6)',
-                backdropFilter: 'blur(10px)',
-                WebkitBackdropFilter: 'blur(10px)',
-                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
-              }}
+              className="absolute top-0 left-0 right-0 p-3 z-20 pointer-events-none"
             >
-              <div className="flex items-center gap-2 mb-1">
+              {selectedConversation.type === 'direct' ? (
+                /* New Layout for Direct Chats - 4 Parts Separately Hovering */
+                <div className="flex items-center justify-between pointer-events-auto">
+                  {/* Left: Back Button - Separate Floating Box */}
+                  <div className="flex-shrink-0">
+                    <button
+                      onClick={() => setShowMobileConversations(true)}
+                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
+                      style={{ 
+                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                        backdropFilter: 'blur(10px)',
+                        WebkitBackdropFilter: 'blur(10px)',
+                        borderColor: 'rgba(255, 255, 255, 0.3)',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                      }}
+                    >
+                      <ArrowLeftIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                  
+                  {/* Center: Profile Image with Name - Separate Floating Box */}
+                  <div className="flex-1 flex flex-col items-center justify-center min-w-0 px-2 pointer-events-auto">
+                    {(() => {
+                      const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
+                      if (otherParticipant?.user) {
+                        const name =
+                          otherParticipant.user.tenants_employee?.display_name ||
+                          otherParticipant.user.full_name ||
+                          'Unknown User';
+                        const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
+                        const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
+                        const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
+                        const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
+                        const handleAvatarClick = () => {
+                          const employee = otherParticipant.user?.tenants_employee;
+                          if (employee) {
+                            setSelectedEmployee({
+                              id: otherParticipant.user.employee_id?.toString() || '',
+                              display_name: employee.display_name || name,
+                              official_name: employee.official_name || employee.display_name || name,
+                              email: otherParticipant.user.email || '',
+                              bonuses_role: employee.bonuses_role || '',
+                              department: employee.tenant_departement?.name || '',
+                              photo_url: photoUrl,
+                              mobile: employee.mobile,
+                              phone: employee.phone,
+                              is_active: otherParticipant.user.is_active,
+                              user: otherParticipant.user
+                            });
+                            setShowEmployeeInfoModal(true);
+                          }
+                        };
+                        return (
+                          <div
+                            className="flex flex-col items-center px-4 py-2 rounded-2xl shadow-lg hover:shadow-xl transition-shadow cursor-pointer"
+                            onClick={handleAvatarClick}
+                            style={{ 
+                              backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                              backdropFilter: 'blur(10px)',
+                              WebkitBackdropFilter: 'blur(10px)',
+                              borderColor: 'rgba(255, 255, 255, 0.3)',
+                              boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                            }}
+                            title={`View ${name}'s profile`}
+                          >
+                            {/* Avatar with Online/Offline Indicator */}
+                            <div className="relative">
+                              {renderUserAvatar({
+                                userId: avatarKey,
+                                name,
+                                photoUrl,
+                                sizeClass: 'w-12 h-12',
+                                borderClass: '',
+                                textClass: 'text-base',
+                              })}
+                              {/* Online/Offline Indicator Circle */}
+                              <div 
+                                className="absolute -top-1 -right-1 w-4 h-4 rounded-full border-2 border-white shadow-sm"
+                                style={{
+                                  backgroundColor: isOnline ? '#10b981' : '#9ca3af'
+                                }}
+                              />
+                            </div>
+                            <h2 className="font-semibold text-sm text-gray-900 truncate w-full text-center mt-2" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                              {name}
+                            </h2>
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
+                  </div>
+                  
+                  {/* Right: Image Button and Exit Button - Separate Floating Boxes */}
+                  <div className="flex-shrink-0 flex items-center gap-2 pointer-events-auto">
+                    {/* Background Image Upload Button - Separate Floating Box */}
+                    <button
+                      onClick={() => backgroundImageInputRef.current?.click()}
+                      disabled={isUploadingBackground}
+                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
+                      style={{ 
+                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                        backdropFilter: 'blur(10px)',
+                        WebkitBackdropFilter: 'blur(10px)',
+                        borderColor: 'rgba(255, 255, 255, 0.3)',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                      }}
+                      title="Upload chat background image"
+                    >
+                      {isUploadingBackground ? (
+                        <div className="loading loading-spinner loading-sm"></div>
+                      ) : (
+                        <PhotoIcon className="w-5 h-5" />
+                      )}
+                    </button>
+                    {/* Exit Button - Separate Floating Box */}
+                    <button 
+                      onClick={onClose}
+                      className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow"
+                      style={{ 
+                        backgroundColor: 'rgba(255, 255, 255, 0.8)',
+                        backdropFilter: 'blur(10px)',
+                        WebkitBackdropFilter: 'blur(10px)',
+                        borderColor: 'rgba(255, 255, 255, 0.3)',
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                      }}
+                      title="Close Messages"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                /* Original Layout for Group Chats */
+                <div className="flex items-center gap-2 mb-1">
                 <button
                   onClick={() => setShowMobileConversations(true)}
                   className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
@@ -5306,62 +5469,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </button>
                 {getConversationAvatar(selectedConversation)}
                 <div className="flex-1 min-w-0">
-                  <h2 className="font-semibold text-sm text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
+                    <h2 className="font-semibold text-sm text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                     {getConversationTitle(selectedConversation)}
                   </h2>
-                    {selectedConversation.type === 'direct' ? (
-                      (() => {
-                        const otherParticipant = selectedConversation.participants?.find(p => p.user_id !== currentUser?.id);
-                      if (otherParticipant?.user) {
-                        const employee = otherParticipant.user.tenants_employee;
-                        const role = employee ? getRoleDisplayName(employee.bonuses_role || '') : '';
-                        const department = employee?.tenant_departement?.name || '';
-                        const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
-                        const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
-                        if (otherUserId && process.env.NODE_ENV === 'development') {
-                        }
-                        
-                        return (
-                          <>
-                            {isEmployeeUnavailable && (
-                              <div className="flex items-center gap-1 px-1.5 py-0.5 bg-orange-100 rounded-full mt-0.5" title={unavailabilityReason || 'Currently unavailable'}>
-                                <ClockIcon className="w-3 h-3 flex-shrink-0 text-orange-600" />
-                                <span className="text-xs font-medium text-orange-700 truncate">
-                                  Unavailable{unavailabilityTimePeriod ? ` (${unavailabilityTimePeriod})` : ''}
-                                </span>
-                              </div>
-                            )}
-                            {isOnline ? (
-                              <div className="flex items-center gap-1 mt-0.5">
-                                <span className="relative flex h-1.5 w-1.5">
-                                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-green-400 opacity-75"></span>
-                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-green-500"></span>
-                                </span>
-                                <span className="text-xs font-medium text-green-600" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Online</span>
-                              </div>
-                            ) : !isEmployeeUnavailable ? (
-                              <div className="flex items-center gap-1 mt-0.5">
-                                <span className="relative flex h-1.5 w-1.5">
-                                  <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-gray-400"></span>
-                                </span>
-                                <span className="text-xs font-medium text-gray-500" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                                  {otherUserId && lastOnlineTimes.has(otherUserId) 
-                                    ? `Last online: ${formatLastOnlineTime(lastOnlineTimes.get(otherUserId)!)}`
-                                    : 'Offline'
-                                  }
-                                </span>
-                              </div>
-                            ) : null}
-                          </>
-                        );
-                      }
-                      return <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>Direct message</p>;
-                      })()
-                    ) : (
                     <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
                       {selectedConversation.participants?.length || 0} members
                   </p>
-                  )}
                 </div>
                 <div className="flex items-center gap-1">
                   {/* Background Image Upload Button - Mobile */}
@@ -5384,7 +5497,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
                       title="Reset to default white background"
                     >
-                      <ArrowPathIcon className="w-5 h-5" />
+                        <ArrowPathIcon className="w-5 h-5" />
                     </button>
                   )}
                   {/* Add/Remove Member Buttons for Group Chats - Mobile */}
@@ -5404,26 +5517,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                         <UserIcon className="w-5 h-5" />
                       </button>
-                      {isSuperUser && (
-                        <button
-                          onClick={() => setShowDeleteGroupModal(true)}
-                          className="btn btn-ghost btn-sm btn-circle text-red-500 hover:bg-red-50"
-                          title="Delete Group Chat"
-                        >
-                          <TrashIcon className="w-5 h-5" />
-                        </button>
-                      )}
+                        {isSuperUser && (
+                          <button
+                            onClick={() => setShowDeleteGroupModal(true)}
+                            className="btn btn-ghost btn-sm btn-circle text-red-500 hover:bg-red-50"
+                            title="Delete Group Chat"
+                          >
+                            <TrashIcon className="w-5 h-5" />
+                          </button>
+                        )}
                     </>
                   )}
                   <button 
                     onClick={onClose}
-                    className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                      className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
                     title="Close Messages"
                   >
-                    <XMarkIcon className="w-5 h-5" />
+                      <XMarkIcon className="w-5 h-5" />
                   </button>
                 </div>
               </div>
+              )}
               
               {/* Group Members List - Mobile (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
@@ -5495,20 +5609,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               }}
             >
               {/* Floating Date Indicator - Mobile */}
-              {showFloatingDate && floatingDate && (
-                <div 
-                  className="fixed top-20 left-1/2 -translate-x-1/2 z-[60] pointer-events-none"
-                  style={{ 
-                    opacity: floatingDateOpacity, 
-                    transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
-                    willChange: 'opacity'
-                  }}
-                >
+              <div 
+                className="fixed top-32 left-1/2 -translate-x-1/2 z-[60] pointer-events-none"
+                style={{ 
+                  opacity: showFloatingDate && floatingDate ? floatingDateOpacity : 0,
+                  visibility: showFloatingDate && floatingDate ? 'visible' : 'hidden',
+                  transition: 'opacity 200ms cubic-bezier(0.4, 0, 0.2, 1)',
+                  willChange: 'opacity'
+                }}
+              >
+                {floatingDate && (
                   <div className="text-white px-3 py-1 rounded-full text-sm font-medium shadow-lg" style={{ backgroundColor: '#3E17C3' }}>
                     {formatDateSeparator(floatingDate)}
                   </div>
-                </div>
-              )}
+                )}
+              </div>
               <AnimatePresence initial={false}>
                 {messages.map((message, index) => {
                   const isOwn = message.sender_id === currentUser?.id;
@@ -5577,8 +5692,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             : { backgroundColor: 'white', borderColor: '#e5e7eb', color: '#111827' }
                           }
                         >
-                        {/* Message content */}
-                        {message.content && (
+                        {/* Message content - hide if it's an image message */}
+                        {message.content && !isImageMessage(message) && (
                           <p className="break-words">
                             <span 
                               className="emoji-message" 
@@ -5594,11 +5709,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         
                         {/* File attachment */}
                         {message.attachment_url && (
-                          <div className={`mt-2 rounded-lg border ${
-                            isOwn 
-                              ? 'bg-white/10 border-white/20' 
-                              : 'bg-gray-50 border-gray-200'
-                          }`}>
+                          <div className={`mt-2 rounded-lg ${
+                            isImageMessage(message) 
+                              ? '' 
+                              : `border ${isOwn ? 'bg-white/10 border-white/20' : 'bg-gray-50 border-gray-200'}`
+                          }`}
+                          style={isImageMessage(message) ? { border: 'none', padding: '0' } : {}}
+                          >
                             {message.message_type === 'voice' ? (
                               // Mobile voice message player
                               <div className="p-2 flex items-center gap-2">
@@ -5693,7 +5810,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               </div>
                             ) : isImageMessage(message) ? (
                               // Image preview
-                              <div className="space-y-2">
+                              <div>
                                 <div 
                                   className="relative cursor-pointer group"
                                   onClick={() => openMediaModal(message)}
@@ -5701,7 +5818,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                   <img
                                     src={message.attachment_url}
                                     alt={message.attachment_name}
-                                    className="max-w-full max-h-80 rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                    className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover w-full transition-transform group-hover:scale-105"
+                                    style={{ marginTop: '0.25px', marginLeft: '0.25px', marginRight: '0.25px', marginBottom: '0', border: '0.25px solid rgba(0, 0, 0, 0.03)' }}
                                   />
                                   <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
                                     <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -5709,7 +5827,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                     </svg>
                                   </div>
                                 </div>
-                                <div className="flex items-center justify-between text-xs opacity-75 px-2 pb-2" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
+                                <div className="flex items-center justify-between text-xs opacity-75 px-1 pt-1" style={{ color: chatBackgroundImageUrl ? 'rgba(255, 255, 255, 0.8)' : 'inherit' }}>
                                   <div className="flex items-center gap-2">
                                     <span className="truncate">{message.attachment_name}</span>
                                     <span>({Math.round((message.attachment_size || 0) / 1024)} KB)</span>
@@ -5868,10 +5986,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             <div className="lg:hidden absolute bottom-0 left-0 right-0 p-3 z-30 pointer-events-none">
               <div className="relative space-y-2 pointer-events-auto">
                 <div className="flex items-center gap-2">
-                  <div className="relative" ref={mobileToolsRef}>
+                  <div className="relative flex-shrink-0" ref={mobileToolsRef}>
                     <button
                       onClick={() => setShowMobileTools(prev => !prev)}
-                      className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow"
+                      className="btn btn-circle w-12 h-12 text-white shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
                       style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                       title="Message tools"
                     >
@@ -5920,14 +6038,18 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       onChange={handleMessageInputChange}
                       onKeyDown={handleMessageKeyDown}
                       placeholder="Type a message..."
-                      className="textarea w-full resize-none text-sm min-h-[36px] max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
+                      className="textarea w-full resize-none text-sm max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
                       disabled={isSending}
                       style={{ 
+                        height: '48px',
+                        minHeight: '48px',
                         lineHeight: '1.4', 
                         backgroundColor: 'rgba(255, 255, 255, 0.8)', 
                         backdropFilter: 'blur(10px)',
-                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' 
+                        boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)',
+                        padding: '12px 16px',
+                        boxSizing: 'border-box'
                       }}
                     />
                   </div>
@@ -5935,8 +6057,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   <button
                     onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
                     disabled={isSending}
-                    className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow"
-                    style={{ backgroundColor: '#3E28CD', borderColor: '#3E28CD' }}
+                    className="btn btn-primary btn-circle w-12 h-12 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
+                    style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)', borderColor: 'transparent' }}
                     title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
                   >
                     {isSending ? (
