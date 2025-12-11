@@ -143,7 +143,8 @@ const CreateNewLead: React.FC = () => {
         }
 
         if (!countriesError && countriesData) {
-          // Process countries: normalize phone codes, filter out NULL phone_code, and remove duplicates
+          // Process countries: normalize phone codes, filter out NULL phone_code
+          // Keep ALL countries even if they share the same phone code
           const processedCountries = countriesData
             .filter(country => country?.phone_code && country?.phone_code !== '\\N' && country?.phone_code !== null && country?.name)
             .map(country => ({
@@ -153,74 +154,25 @@ const CreateNewLead: React.FC = () => {
               iso_code: country.iso_code || ''
             }));
 
-          // Remove duplicates by phone_code, keeping the first occurrence
-          const uniqueCountriesMap = new Map<string, { id: number; name: string; phone_code: string; iso_code: string }>();
-          processedCountries.forEach(country => {
-            if (!uniqueCountriesMap.has(country.phone_code)) {
-              uniqueCountriesMap.set(country.phone_code, country);
-            }
+          // Sort all countries (including duplicates by phone code)
+          const sortedCountries = processedCountries.sort((a, b) => {
+            // Sort ID 110 first (highest priority)
+            if (a.id === 110 && b.id !== 110) return -1;
+            if (b.id === 110 && a.id !== 110) return 1;
+            // Sort ID 234 second
+            if (a.id === 234 && b.id !== 234 && b.id !== 110) return -1;
+            if (b.id === 234 && a.id !== 234 && a.id !== 110) return 1;
+            // Sort ID 249 third
+            if (a.id === 249 && b.id !== 249 && b.id !== 234 && b.id !== 110) return -1;
+            if (b.id === 249 && a.id !== 249 && a.id !== 234 && a.id !== 110) return 1;
+            // Then sort by phone code first
+            const phoneCodeCompare = a.phone_code.localeCompare(b.phone_code);
+            if (phoneCodeCompare !== 0) return phoneCodeCompare;
+            // If phone codes are the same, sort by country name
+            return a.name.localeCompare(b.name);
           });
 
-          // Ensure USA is included (check by name or iso_code)
-          const usaCountry = processedCountries.find(
-            c => c.name.toLowerCase().includes('united states') || 
-                 c.name.toLowerCase() === 'usa' || 
-                 c.name.toLowerCase() === 'us' ||
-                 c.iso_code === 'US' ||
-                 c.iso_code === 'USA'
-          );
-          
-          if (usaCountry && !uniqueCountriesMap.has(usaCountry.phone_code)) {
-            uniqueCountriesMap.set(usaCountry.phone_code, usaCountry);
-          } else if (!usaCountry) {
-            // If USA not found, add it manually
-            uniqueCountriesMap.set('+1', {
-              id: 0,
-              name: 'United States',
-              phone_code: '+1',
-              iso_code: 'US'
-            });
-          }
-
-          // Convert map to array and sort by phone code
-          const uniqueCountries = Array.from(uniqueCountriesMap.values())
-            .sort((a, b) => {
-              // Sort ID 234 first (highest priority)
-              if (a.id === 234 && b.id !== 234) return -1;
-              if (b.id === 234 && a.id !== 234) return 1;
-              // Sort ID 249 second
-              if (a.id === 249 && b.id !== 249 && b.id !== 234) return -1;
-              if (b.id === 249 && a.id !== 249 && a.id !== 234) return 1;
-              // Then sort USA (+1) next
-              if (a.phone_code === '+1') return -1;
-              if (b.phone_code === '+1') return 1;
-              // Then sort UK (+44) and South Africa (+27) after USA
-              const isUK = a.name.toLowerCase().includes('united kingdom') || 
-                          a.name.toLowerCase() === 'uk' || 
-                          a.iso_code === 'GB' || 
-                          a.iso_code === 'UK' ||
-                          a.phone_code === '+44';
-              const isSouthAfrica = a.name.toLowerCase().includes('south africa') || 
-                                   a.iso_code === 'ZA' ||
-                                   a.phone_code === '+27';
-              const isBUK = b.name.toLowerCase().includes('united kingdom') || 
-                           b.name.toLowerCase() === 'uk' || 
-                           b.iso_code === 'GB' || 
-                           b.iso_code === 'UK' ||
-                           b.phone_code === '+44';
-              const isBSouthAfrica = b.name.toLowerCase().includes('south africa') || 
-                                    b.iso_code === 'ZA' ||
-                                    b.phone_code === '+27';
-              
-              if (isUK && !isBUK) return -1;
-              if (isBUK && !isUK) return 1;
-              if (isSouthAfrica && !isBSouthAfrica) return -1;
-              if (isBSouthAfrica && !isSouthAfrica) return 1;
-              // Then sort by phone code (ID 110 will be in its natural sorted position)
-              return a.phone_code.localeCompare(b.phone_code);
-            });
-
-          setCountryOptions(uniqueCountries);
+          setCountryOptions(sortedCountries);
         }
 
         if (!allCountriesError && allCountriesData) {
@@ -428,6 +380,18 @@ const CreateNewLead: React.FC = () => {
              phoneCode === '+1';
     }
     
+    // Special handling for United Kingdom/UK
+    const ukSearchTerms = ['uk', 'united kingdom', 'britain', 'british'];
+    const isUKSearch = ukSearchTerms.some(term => searchTerm.includes(term) || term.includes(searchTerm));
+    
+    if (isUKSearch) {
+      return countryName.includes('united kingdom') || 
+             countryName === 'uk' ||
+             country.iso_code === 'GB' ||
+             country.iso_code === 'UK' ||
+             phoneCode === '+44';
+    }
+    
     return false;
   });
 
@@ -452,6 +416,41 @@ const CreateNewLead: React.FC = () => {
     setForm({ ...form, country_id: countryId.toString() });
     setCountrySearchTerm(countryName);
     setShowCountryDropdown(false);
+  };
+
+  // Handle country code selection and auto-select matching country
+  const handleCountryCodeSelect = (selectedCountry: { id: number; name: string; phone_code: string; iso_code: string }) => {
+    setSelectedCountryCode(selectedCountry.phone_code);
+    setCountryCodeSearchTerm(selectedCountry.phone_code);
+    setShowCountryCodeDropdown(false);
+    
+    // Auto-select the matching country in the country dropdown
+    // First try to find by ID (exact match)
+    const matchingCountry = countryDropdownOptions.find(
+      country => country.id === selectedCountry.id
+    );
+    
+    if (matchingCountry) {
+      handleCountrySelect(matchingCountry.id, matchingCountry.name);
+    } else {
+      // If not found by ID, try to find by name (case-insensitive)
+      const matchingByName = countryDropdownOptions.find(
+        country => country.name.toLowerCase() === selectedCountry.name.toLowerCase()
+      );
+      
+      if (matchingByName) {
+        handleCountrySelect(matchingByName.id, matchingByName.name);
+      } else {
+        // If not found by name, try to find by ISO code
+        const matchingByIso = countryDropdownOptions.find(
+          country => country.iso_code && country.iso_code.toLowerCase() === selectedCountry.iso_code.toLowerCase()
+        );
+        
+        if (matchingByIso) {
+          handleCountrySelect(matchingByIso.id, matchingByIso.name);
+        }
+      }
+    }
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -611,7 +610,7 @@ const CreateNewLead: React.FC = () => {
         <div>
           <label className="block font-semibold mb-1">Phone:</label>
           <div className="flex gap-2">
-            <div className="relative w-40" ref={countryCodeInputRef}>
+            <div className="relative w-56" ref={countryCodeInputRef}>
               <input
                 type="text"
                 className="input input-bordered w-full"
@@ -633,14 +632,11 @@ const CreateNewLead: React.FC = () => {
                   <button
                     key={`${country.phone_code}-${country.id}`}
                     type="button"
-                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                    onClick={() => {
-                      setSelectedCountryCode(country.phone_code);
-                      setCountryCodeSearchTerm(country.phone_code);
-                      setShowCountryCodeDropdown(false);
-                    }}
+                    className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors flex items-center gap-2"
+                    onClick={() => handleCountryCodeSelect(country)}
                   >
-                    {country.phone_code} {country.name}
+                    <span className="font-semibold text-primary min-w-[60px]">{country.phone_code}</span>
+                    <span className="text-base-content">{country.name}</span>
                   </button>
                 ))}
               </div>
