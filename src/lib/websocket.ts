@@ -92,7 +92,9 @@ class WebSocketService {
       reconnectionDelay: 1000,
       autoConnect: true,
       upgrade: true,
-      rememberUpgrade: false
+      rememberUpgrade: false,
+      withCredentials: false, // Disable credentials for CORS compatibility
+      extraHeaders: {} // Allow Socket.IO to handle headers
     });
 
     this.socket.on('connect', () => {
