@@ -18,6 +18,7 @@ import type { ContactInfo } from '../lib/contactHelpers';
 import { searchLeads } from '../lib/legacyLeadsApi';
 import type { CombinedLead } from '../lib/legacyLeadsApi';
 import { generateSearchVariants } from '../lib/transliteration';
+import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -219,6 +220,14 @@ const normaliseAddressList = (value: string | null | undefined) => {
     .filter(item => item.length > 0);
 };
 
+// Helper function to detect Hebrew/RTL text
+const containsRTLText = (text?: string | null): boolean => {
+  if (!text) return false;
+  // Remove HTML tags to check only text content
+  const textOnly = text.replace(/<[^>]*>/g, '');
+  return /[\u0590-\u05FF]/.test(textOnly);
+};
+
 const convertBodyToHtml = (text: string) => {
   if (!text) return '';
   // First, protect existing anchor tags by replacing them with placeholders
@@ -243,7 +252,24 @@ const convertBodyToHtml = (text: string) => {
     result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
   });
   
-  return result.replace(/\n/g, '<br>');
+  // Preserve line breaks: convert \n to <br>
+  result = result
+    .replace(/\r\n/g, '\n')  // Normalize line endings
+    .replace(/\r/g, '\n')    // Handle old Mac line endings
+    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+  
+  // Check if content contains Hebrew/RTL text
+  const textOnly = result.replace(/<[^>]*>/g, '');
+  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+  
+  // Wrap with proper direction and styling
+  if (isRTL) {
+    result = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
+  } else {
+    result = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
+  }
+  
+  return result;
 };
 
 // Filter out problematic image URLs that are known to be blocked by CORS
@@ -304,13 +330,55 @@ const sanitizeEmailHtml = (html: string): string => {
   });
 };
 
-const replaceTemplateTokens = (content: string, contact: Contact | null) => {
+const replaceTemplateTokens = async (
+  content: string, 
+  contact: Contact | null,
+  options?: {
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingLocation?: string;
+    meetingLink?: string;
+  }
+) => {
   if (!content) return '';
-  return content
-    .replace(/\{client_name\}/gi, contact?.name || 'Client')
-    .replace(/\{lead_number\}/gi, contact?.lead_number || '')
-    .replace(/\{topic\}/gi, contact?.topic || '')
-    .replace(/\{lead_type\}/gi, contact?.lead_type || '');
+  
+  // Build context for template replacement
+  const isLegacyLead = contact?.lead_type === 'legacy' || 
+                       (contact?.id && contact.id.toString().startsWith('legacy_'));
+  
+  // Determine client ID and legacy ID
+  let clientId: string | null = null;
+  let legacyId: number | null = null;
+  
+  if (isLegacyLead) {
+    if (contact?.lead_number) {
+      const numeric = parseInt(contact.lead_number.replace(/[^0-9]/g, ''), 10);
+      legacyId = isNaN(numeric) ? null : numeric;
+      clientId = legacyId?.toString() || null;
+    } else if (contact?.id) {
+      const numeric = parseInt(contact.id.toString().replace(/[^0-9]/g, ''), 10);
+      legacyId = isNaN(numeric) ? null : numeric;
+      clientId = legacyId?.toString() || null;
+    }
+  } else {
+    clientId = contact?.client_uuid || contact?.id?.toString() || null;
+  }
+  
+  const context = {
+    clientId,
+    legacyId,
+    clientName: contact?.name || null,
+    contactName: contact?.name || null,
+    leadNumber: contact?.lead_number || null,
+    topic: contact?.topic || null,
+    leadType: contact?.lead_type || null,
+    meetingDate: options?.meetingDate || null,
+    meetingTime: options?.meetingTime || null,
+    meetingLocation: options?.meetingLocation || null,
+    meetingLink: options?.meetingLink || null,
+  };
+  
+  return await replaceEmailTemplateParams(content, context);
 };
 
 // Check if an email is from the office domain (always team/user, never client)
@@ -761,11 +829,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     handleCancelLink();
   };
 
-  const handleTemplateSelect = (template: EmailTemplate) => {
+  const handleTemplateSelect = async (template: EmailTemplate) => {
     setSelectedTemplateId(template.id);
-    const templatedBody = replaceTemplateTokens(template.content, selectedContact);
+    
+    // Replace template tokens (async to fetch meeting data if needed)
+    const templatedBody = await replaceTemplateTokens(template.content, selectedContact);
     if (template.subject && template.subject.trim()) {
-      setSubject(replaceTemplateTokens(template.subject, selectedContact));
+      const templatedSubject = await replaceTemplateTokens(template.subject, selectedContact);
+      setSubject(templatedSubject);
     }
     setNewMessage(templatedBody || template.content || template.rawContent);
     setTemplateSearch(template.name);
@@ -1610,7 +1681,25 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
             // Filter problematic images before processing
             const filteredContent = filterProblematicImages(rawContent);
-            const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(filteredContent));
+            
+            // Extract body and ensure line breaks are preserved
+            let cleanedHtml = sanitizeEmailHtml(extractHtmlBody(filteredContent));
+            
+            // Ensure line breaks are preserved (convert \n to <br> if needed)
+            if (cleanedHtml && !cleanedHtml.includes('<br>')) {
+              cleanedHtml = cleanedHtml.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
+            }
+            
+            // Apply RTL formatting if needed (only if not already wrapped)
+            if (cleanedHtml && !cleanedHtml.includes('dir=')) {
+              const textOnly = cleanedHtml.replace(/<[^>]*>/g, '');
+              const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+              if (isRTL) {
+                cleanedHtml = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${cleanedHtml}</div>`;
+                cleanedHtml = sanitizeEmailHtml(cleanedHtml);
+              }
+            }
+            
             const previewHtml = cleanedHtml && cleanedHtml.trim() ? cleanedHtml : convertBodyToHtml(filteredContent);
 
             updates[message.id] = {
@@ -1712,108 +1801,123 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         }
       }
       
+      // Build a comprehensive query that matches emails in multiple ways
+      // This ensures we catch all emails regardless of how they were saved
       let emailQuery = supabase
         .from('emails')
         .select('id, message_id, sender_name, sender_email, recipient_list, subject, body_html, body_preview, sent_at, direction, attachments, client_id, legacy_id, contact_id, is_read')
         .order('sent_at', { ascending: true });
 
-      // If we have a contact_id, filter by it (each contact has their own conversation)
-      if (contactId) {
-        console.log(`📧 Querying emails by contact_id=${contactId}`);
-        // First try exact contact_id match
-        emailQuery = emailQuery.eq('contact_id', contactId);
-        
-        // Fallback: Also include emails that match by email address but don't have contact_id set
-        // This handles cases where contact_id matching failed but email address matches
-        const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
-        if (contactEmail) {
-          // Build fallback query: match by client_id/legacy_id AND email address AND contact_id is null
-          const fallbackConditions: string[] = [];
-          
-          if (legacyId !== null) {
-            fallbackConditions.push(`legacy_id.eq.${legacyId}`);
-          }
-          if (clientUuid) {
-            fallbackConditions.push(`client_id.eq.${clientUuid}`);
-          }
-          
-          if (fallbackConditions.length > 0) {
-            // Use or() to include both contact_id match and fallback email match
-            const emailMatch = `sender_email.ilike.${contactEmail},recipient_list.ilike.%${contactEmail}%`;
-            const fallbackQuery = `${fallbackConditions[0]},${emailMatch}`;
-            // Note: We'll fetch all and filter in memory for complex conditions
-            emailQuery = emailQuery.or(`contact_id.eq.${contactId},${fallbackQuery}`);
-          }
-        }
-      } else {
-        // Fallback to old logic if no contact_id
-        // Also include messages where client_id doesn't match but belong to the lead (show in main contact)
-        if (legacyId !== null) {
-          console.log(`📧 Querying legacy emails by legacy_id=${legacyId}`);
-          emailQuery = emailQuery.eq('legacy_id', legacyId);
-        } else if (clientUuid) {
-          // For new leads, show all emails for this client_id, even if contact_id doesn't match
-          // This ensures messages appear in the main contact
-          emailQuery = emailQuery.eq('client_id', clientUuid);
-        } else {
-          console.warn('Skipping email fetch: contact lacks valid client UUID or legacy id', selectedContact);
-          setEmailThread([]);
-          setIsLoading(false);
-          return;
-        }
-
-        const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
-        const filterClauses: string[] = [];
-        if (legacyId !== null) {
-          filterClauses.push(`legacy_id.eq.${legacyId}`);
-        }
-        if (clientUuid) {
-          filterClauses.push(`client_id.eq.${clientUuid}`);
-        }
-        if (contactEmail) {
-          filterClauses.push(`sender_email.ilike.${contactEmail}`);
-          filterClauses.push(`recipient_list.ilike.%${contactEmail}%`);
-        }
-
-        if (filterClauses.length === 0) {
-          console.warn('📧 No valid identifiers for email fetch', selectedContact);
-          setEmailThread([]);
-          setIsLoading(false);
-          return;
-        }
-
-        emailQuery = emailQuery.or(filterClauses.join(','));
+      // Build query conditions that match emails by:
+      // 1. client_id/legacy_id (main identifier)
+      // 2. contact_id (if available)
+      // 3. email address (fallback for emails without contact_id)
+      
+      const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
+      const queryConditions: string[] = [];
+      
+      // Always include client_id/legacy_id match
+      if (legacyId !== null) {
+        queryConditions.push(`legacy_id.eq.${legacyId}`);
+        console.log(`📧 Querying emails with legacy_id=${legacyId}`);
       }
+      if (clientUuid) {
+        queryConditions.push(`client_id.eq.${clientUuid}`);
+        console.log(`📧 Querying emails with client_id=${clientUuid}`);
+      }
+      
+      // Also match by contact_id if we have it
+      if (contactId) {
+        queryConditions.push(`contact_id.eq.${contactId}`);
+        console.log(`📧 Querying emails with contact_id=${contactId}`);
+      }
+      
+      // Also match by email address in recipient_list or sender_email
+      // This catches emails that might not have contact_id set yet
+      if (contactEmail) {
+        queryConditions.push(`recipient_list.ilike.%${contactEmail}%`);
+        queryConditions.push(`sender_email.ilike.${contactEmail}`);
+        console.log(`📧 Querying emails with email=${contactEmail}`);
+      }
+      
+      if (queryConditions.length === 0) {
+        console.warn('📧 No valid identifiers for email fetch', {
+          selectedContact,
+          clientUuid,
+          legacyId,
+          contactId,
+          contactEmail
+        });
+        setEmailThread([]);
+        setIsLoading(false);
+        return;
+      }
+      
+      // Use OR to match any of these conditions
+      // Then we'll filter in memory to ensure proper matching
+      emailQuery = emailQuery.or(queryConditions.join(','));
 
     let { data, error } = await emailQuery;
     
-    // If we have contactId and contactEmail, apply fallback filtering in memory
-    if (contactId && !error && data) {
-      const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
-      if (contactEmail) {
-        // Filter to include: contact_id match OR (contact_id is null AND email matches AND client_id/legacy_id matches)
-        const normalizedContactEmail = contactEmail.toLowerCase();
-        data = data.filter((email: any) => {
-          if (email.contact_id === contactId) return true;
-          if (!email.contact_id) {
-            // Check if client_id or legacy_id matches first (required)
-            const clientMatch = (clientUuid && email.client_id === clientUuid) || 
-                               (legacyId !== null && email.legacy_id === legacyId);
-            if (clientMatch) {
-              // Then check email match
-              const senderMatch = email.sender_email && 
-                                 normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
-              const recipientMatch = email.recipient_list && 
-                                    email.recipient_list.toLowerCase().includes(normalizedContactEmail);
-              return senderMatch || recipientMatch;
+    if (error) {
+      console.error('📧 Error querying emails:', error);
+      throw error;
+    }
+    
+    // Filter results in memory to ensure proper matching
+    // Include emails that match by:
+    // 1. client_id/legacy_id match (required)
+    // 2. AND (contact_id match OR email address match OR no contact_id)
+    if (!error && data && data.length > 0) {
+      const normalizedContactEmail = contactEmail ? contactEmail.toLowerCase() : null;
+      const normalizedSenderEmail = selectedContact.email ? normalizeEmailForFilter(selectedContact.email).toLowerCase() : null;
+      
+      data = data.filter((email: any) => {
+        // First, must match by client_id or legacy_id
+        const clientIdMatch = clientUuid && email.client_id === clientUuid;
+        const legacyIdMatch = legacyId !== null && email.legacy_id === legacyId;
+        
+        if (!clientIdMatch && !legacyIdMatch) {
+          return false; // Must match main identifier
+        }
+        
+        // If we have a contactId, prefer emails with matching contact_id
+        if (contactId && email.contact_id === contactId) {
+          return true;
+        }
+        
+        // If email has no contact_id, include it if email address matches
+        if (!email.contact_id || email.contact_id === null) {
+          if (normalizedContactEmail) {
+            const recipientMatch = email.recipient_list && 
+                                  email.recipient_list.toLowerCase().includes(normalizedContactEmail);
+            const senderMatch = email.sender_email && 
+                               normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
+            if (recipientMatch || senderMatch) {
+              return true;
             }
           }
-          return false;
-        });
-      }
+          // If no contact_id and no email match, still include for main contact view
+          // This ensures emails sent without contact_id still appear
+          return true;
+        }
+        
+        // If email has a different contact_id, only include if it matches the main contact email
+        if (normalizedContactEmail) {
+          const recipientMatch = email.recipient_list && 
+                                email.recipient_list.toLowerCase().includes(normalizedContactEmail);
+          const senderMatch = email.sender_email && 
+                             normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
+          return recipientMatch || senderMatch;
+        }
+        
+        return false;
+      });
+      
+      console.log(`📧 Filtered to ${data.length} emails after in-memory filtering`);
     }
 
-      if (error) throw error;
+    if (error) throw error;
       
       console.log(`📧 Found ${data?.length || 0} emails for contact ${selectedContact.name} (ID: ${selectedContact.id})`);
       if (data && data.length > 0) {
@@ -1859,14 +1963,40 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         
         const cleanedPreview = rawPreview ? extractHtmlBody(rawPreview) : null;
 
+        // Ensure line breaks are preserved in cleaned HTML
+        if (cleanedHtml) {
+          // Convert newlines to <br> if not already present
+          if (!cleanedHtml.includes('<br>') && !cleanedHtml.includes('<br/>') && !cleanedHtml.includes('<br />')) {
+            cleanedHtml = cleanedHtml.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
+          }
+          
+          // Apply RTL formatting if needed (only if not already wrapped)
+          if (!cleanedHtml.includes('dir=')) {
+            const textOnly = cleanedHtml.replace(/<[^>]*>/g, '');
+            const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+            if (isRTL) {
+              cleanedHtml = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${cleanedHtml}</div>`;
+            }
+          }
+        }
+
         const fallbackText = cleanedPreview || cleanedHtml || row.subject || '';
-        const resolvedHtml = cleanedHtml ?? (fallbackText ? convertBodyToHtml(fallbackText) : null);
+        let resolvedHtml = cleanedHtml;
+        if (!resolvedHtml && fallbackText) {
+          resolvedHtml = convertBodyToHtml(fallbackText);
+        }
         
         // Sanitize but preserve Outlook's direction and style attributes
         const sanitizedHtml = resolvedHtml ? sanitizeEmailHtml(resolvedHtml) : null;
-        const sanitizedPreview = cleanedPreview
-          ? sanitizeEmailHtml(cleanedPreview)
-          : sanitizedHtml ?? (fallbackText ? sanitizeEmailHtml(convertBodyToHtml(fallbackText)) : null);
+        
+        // For preview, ensure line breaks and RTL
+        let sanitizedPreview = cleanedPreview ? sanitizeEmailHtml(cleanedPreview) : null;
+        if (!sanitizedPreview) {
+          sanitizedPreview = sanitizedHtml;
+        }
+        if (!sanitizedPreview && fallbackText) {
+          sanitizedPreview = sanitizeEmailHtml(convertBodyToHtml(fallbackText));
+        }
 
         // Parse attachments from JSONB - it might be a string or already an array
         let parsedAttachments: any[] = [];
@@ -2550,6 +2680,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Get contact_id from selectedContactId or propSelectedContact
         const emailContactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
         
+        // Determine client_id - use the same logic as fetchEmailThread to ensure consistency
+        const clientUuidForSend = selectedContact.client_uuid
+          ?? selectedContact.idstring
+          ?? (typeof selectedContact.id === 'string' && selectedContact.id.includes('-') ? selectedContact.id : null)
+          ?? (!isLegacyLead ? selectedContact.id : null);
+        
+        console.log('📧 Sending email with context:', {
+          clientId: !isLegacyLead ? clientUuidForSend : null,
+          legacyLeadId: isLegacyLead ? legacyId : null,
+          contactId: emailContactId,
+          contactEmail: selectedContact.email,
+          leadType: selectedContact.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+        });
+        
         await sendEmailViaBackend({
           userId,
           subject: derivedSubject,
@@ -2558,7 +2702,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           cc: finalCcSnapshot,
           attachments: backendAttachments.length > 0 ? backendAttachments : undefined,
           context: {
-            clientId: !isLegacyLead ? selectedContact.client_uuid ?? selectedContact.id : null,
+            clientId: !isLegacyLead ? clientUuidForSend : null,
             legacyLeadId: isLegacyLead ? legacyId : null,
             leadType: selectedContact.lead_type || (isLegacyLead ? 'legacy' : 'new'),
             leadNumber: selectedContact.lead_number || null,
@@ -2569,10 +2713,89 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             userInternalId: selectedContact.user_internal_id || undefined,
           },
         });
+        
+        console.log('📧 Email sent successfully, waiting before refresh...');
 
+        // Update contact's last_message_time optimistically in contacts list
+        const now = new Date().toISOString();
+        setContacts(prev => prev.map(contact => {
+          if (contact.id === selectedContact.id) {
+            return { ...contact, last_message_time: now };
+          }
+          return contact;
+        }));
+
+        // Force refresh the thread by clearing fetch flags
+        isFetchingRef.current = false;
+        lastFetchedKeyRef.current = null;
+        
+        // Add a delay to ensure the email is saved in the database
+        // Increase delay to 2 seconds to allow backend processing
+        console.log('📧 Waiting 2 seconds for email to be saved...');
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        console.log('📧 Refreshing email thread...');
         // Refresh the thread in the background to replace any optimistic
         // messages with the final stored versions.
         await fetchEmailThread();
+        console.log('📧 Email thread refresh completed');
+        
+        // Also refresh contacts list to ensure it's sorted correctly
+        // This will update last_message_time from the database
+        if (isOpen) {
+          // Re-fetch contacts to update last_message_time and sort order
+          const fetchContactsAsync = async () => {
+            try {
+              // Fetch unique client_id and legacy_id from emails table
+              const { data: emailsData } = await supabase
+                .from('emails')
+                .select('client_id, legacy_id')
+                .or('client_id.not.is.null,legacy_id.not.is.null');
+
+              if (!emailsData) return;
+
+              const uniqueClientIds = new Set<string>();
+              const uniqueLegacyIds = new Set<number>();
+              
+              emailsData.forEach((email: any) => {
+                if (email.client_id) uniqueClientIds.add(String(email.client_id));
+                if (email.legacy_id) uniqueLegacyIds.add(Number(email.legacy_id));
+              });
+
+              // Update the current selected contact's last_message_time
+              setContacts(prev => {
+                const updated = prev.map(contact => {
+                  if (contact.id === selectedContact.id) {
+                    // Get the latest email for this contact
+                    const isLegacyContact = contact.lead_type === 'legacy';
+                    const legacyId = isLegacyContact 
+                      ? parseInt(String(contact.lead_number || contact.id).replace(/[^0-9]/g, ''), 10)
+                      : null;
+                    
+                    // We'll update this properly in a moment, for now just return the contact
+                    return contact;
+                  }
+                  return contact;
+                });
+                
+                // Sort by last_message_time
+                return updated.sort((a, b) => {
+                  if (a.last_message_time && b.last_message_time) {
+                    return new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime();
+                  }
+                  if (a.last_message_time) return -1;
+                  if (b.last_message_time) return 1;
+                  return a.name.localeCompare(b.name);
+                });
+              });
+            } catch (error) {
+              console.error('Error refreshing contacts list:', error);
+            }
+          };
+          
+          // Refresh contacts list in background
+          fetchContactsAsync();
+        }
       } catch (error) {
         console.error('Error sending email (background):', error);
         toast.error(error instanceof Error ? error.message : 'Failed to send email');
@@ -3232,9 +3455,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                     className="prose prose-sm max-w-none text-gray-700 break-words email-content"
                                     style={{ 
                                       wordBreak: 'break-word', 
-                                      overflowWrap: 'anywhere'
+                                      overflowWrap: 'anywhere',
+                                      whiteSpace: 'pre-wrap' // Preserve line breaks and whitespace
                                     }}
-                                    dir="auto"
+                                    dir={containsRTLText(message.body_html) ? 'rtl' : 'auto'}
                                   />
                                 ) : message.body_preview ? (
                                   <div
@@ -3243,7 +3467,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                       wordBreak: 'break-word', 
                                       overflowWrap: 'anywhere'
                                     }}
-                                    dir="auto"
+                                    dir={containsRTLText(message.body_preview) ? 'rtl' : 'auto'}
                                   >
                                     {message.body_preview}
                                   </div>

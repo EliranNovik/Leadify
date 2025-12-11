@@ -32,6 +32,7 @@ import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '
 import { generateICSFromDateTime } from '../../lib/icsGenerator';
 import { meetingInvitationEmailTemplate } from '../Meetings';
 import MeetingSummaryComponent from '../MeetingSummary';
+import { replaceEmailTemplateParams, replaceEmailTemplateParamsSync } from '../../lib/emailTemplateParams';
 
 const fakeNames = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', '---'];
 
@@ -158,13 +159,23 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [selectedMeetingForNotify, setSelectedMeetingForNotify] = useState<Meeting | null>(null);
   const [contacts, setContacts] = useState<ContactInfo[]>([]);
   const [loadingContacts, setLoadingContacts] = useState(false);
+  const [selectedEmailLanguage, setSelectedEmailLanguage] = useState<'en' | 'he'>('en');
+  const [emailTemplates, setEmailTemplates] = useState<{ en: string | null; he: string | null }>({ en: null, he: null });
+  const [emailType, setEmailType] = useState<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled'>('invitation');
+  
+  // Notify dropdown state
+  const [showNotifyDropdown, setShowNotifyDropdown] = useState<number | null>(null); // Track which meeting's dropdown is open
+  const notifyDropdownRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [showWhatsAppDropdown, setShowWhatsAppDropdown] = useState<number | null>(null); // Track which meeting's WhatsApp dropdown is open
+  const whatsAppDropdownRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const [whatsAppReminderType, setWhatsAppReminderType] = useState<'reminder' | 'missed_appointment'>('reminder');
   
   // WhatsApp notify modal state
   const [showWhatsAppNotifyModal, setShowWhatsAppNotifyModal] = useState(false);
   const [selectedMeetingForWhatsAppNotify, setSelectedMeetingForWhatsAppNotify] = useState<Meeting | null>(null);
   const [whatsAppContacts, setWhatsAppContacts] = useState<ContactInfo[]>([]);
   const [loadingWhatsAppContacts, setLoadingWhatsAppContacts] = useState(false);
-  const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en'>('he');
+  const [selectedLanguage, setSelectedLanguage] = useState<'he' | 'en' | 'ru'>('he');
   const [reminderTemplates, setReminderTemplates] = useState<Array<{ id: number; language: string; content: string; name: string; params?: string; param_mapping?: any }>>([]);
   const [sendingWhatsAppMeetingId, setSendingWhatsAppMeetingId] = useState<number | null>(null);
   
@@ -237,25 +248,209 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   // Helper function to get currency symbol
-  const getCurrencySymbol = (currencyCode?: string) => {
-    switch (currencyCode) {
-      case '₪':
-      case 'NIS':
-      case 'ILS':
-        return '₪';
-      case '$':
-      case 'USD':
-        return '$';
-      case '€':
-      case 'EUR':
-        return '€';
-      case '£':
-      case 'GBP':
-        return '£';
-      default:
-        return '₪'; // Default to NIS for legacy leads
-    }
+const getCurrencySymbol = (currencyCode?: string) => {
+  switch (currencyCode) {
+    case '₪':
+    case 'NIS':
+    case 'ILS':
+      return '₪';
+    case '$':
+    case 'USD':
+      return '$';
+    case '€':
+    case 'EUR':
+      return '€';
+    case '£':
+    case 'GBP':
+      return '£';
+    default:
+      return '₪'; // Default to NIS for legacy leads
+  }
+};
+
+// Helper function to detect Hebrew/RTL text
+const containsRTL = (text?: string | null): boolean => {
+  if (!text) return false;
+  // Remove HTML tags to check only text content
+  const textOnly = text.replace(/<[^>]*>/g, '');
+  return /[\u0590-\u05FF]/.test(textOnly);
+};
+
+// Parse template content from database (handles various formats)
+const parseTemplateContent = (rawContent: string | null | undefined): string => {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) => {
+    if (!text) return '';
+    return text
+      .split('\n')
+      .map(line => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
   };
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        const text = ops
+          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+          .join('');
+        return sanitizeTemplateText(text);
+      }
+    } catch (error) {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) {
+      text = htmlMatch[1];
+    }
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) {
+    return text;
+  }
+
+  text = tryParseDelta(
+    rawContent
+      .replace(/^"|"$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  );
+  if (text !== null) {
+    return text;
+  }
+
+  const normalised = rawContent
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    const combined = inserts.join('');
+    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return sanitizeTemplateText(decoded);
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+};
+
+// Helper function to preserve line breaks and format HTML with RTL support
+const formatEmailBody = async (
+  template: string, 
+  recipientName: string,
+  context?: {
+    client?: any;
+    meeting?: Meeting;
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingLocation?: string;
+    meetingLink?: string;
+  }
+): Promise<string> => {
+  if (!template) return '';
+  
+  let htmlBody = template;
+  
+  // If context is provided, use centralized template replacement
+  if (context?.client || context?.meeting) {
+    const isLegacyLead = context.client?.lead_type === 'legacy' || 
+                         (context.client?.id && context.client.id.toString().startsWith('legacy_'));
+    
+    // Determine client ID and legacy ID
+    let clientId: string | null = null;
+    let legacyId: number | null = null;
+    
+    if (isLegacyLead) {
+      if (context.client?.id) {
+        const numeric = parseInt(context.client.id.toString().replace(/[^0-9]/g, ''), 10);
+        legacyId = isNaN(numeric) ? null : numeric;
+        clientId = legacyId?.toString() || null;
+      }
+    } else {
+      clientId = context.client?.id || null;
+    }
+    
+    // Use provided meeting data or fetch from DB
+    const templateContext = {
+      clientId,
+      legacyId,
+      clientName: context.client?.name || recipientName,
+      contactName: recipientName,
+      leadNumber: context.client?.lead_number || null,
+      topic: context.client?.topic || null,
+      leadType: context.client?.lead_type || null,
+      meetingDate: context.meetingDate || null,
+      meetingTime: context.meetingTime || null,
+      meetingLocation: context.meetingLocation || null,
+      meetingLink: context.meetingLink || null,
+    };
+    
+    htmlBody = await replaceEmailTemplateParams(template, templateContext);
+  } else {
+    // Fallback: just replace {name} for backward compatibility
+    htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
+  }
+  
+  // Preserve line breaks: convert \n to <br> if not already in HTML
+  // Check if content already has HTML structure
+  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
+  
+  if (!hasHtmlTags) {
+    // Plain text: convert line breaks to <br> and preserve spacing
+    htmlBody = htmlBody
+      .replace(/\r\n/g, '\n')  // Normalize line endings
+      .replace(/\r/g, '\n')    // Handle old Mac line endings
+      .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+  } else {
+    // Has HTML: ensure <br> tags are preserved, convert remaining \n
+    htmlBody = htmlBody
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
+      .replace(/\n/g, '<br>'); // Convert any remaining newlines
+  }
+  
+  // Detect if content contains Hebrew/RTL text
+  const isRTL = containsRTL(htmlBody);
+  
+  // Wrap in div with proper direction and styling
+  if (isRTL) {
+    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  } else {
+    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  }
+  
+  return htmlBody;
+};
 
   // Fetch all employees and meeting locations
   useEffect(() => {
@@ -284,12 +479,12 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     };
 
     const fetchReminderTemplates = async () => {
-      // Fetch reminder templates by exact name "reminder_of_a_meeting" and language
+      // Fetch both reminder_of_a_meeting and missed_appointment templates
+      // Fetch all languages and normalize in code, since DB might have 'he_IL', 'en_US', etc.
       const { data, error } = await supabase
         .from('whatsapp_templates_v2')
         .select('id, name, language, content, params, param_mapping')
-        .eq('name', 'reminder_of_a_meeting')
-        .in('language', ['he', 'en'])
+        .in('name', ['reminder_of_a_meeting', 'missed_appointment'])
         .eq('active', true);
       
       if (!error && data) {
@@ -370,13 +565,29 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (helperDropdownRef.current && !helperDropdownRef.current.contains(event.target as Node)) {
         setShowHelperDropdown(false);
       }
+      // Close notify dropdowns
+      notifyDropdownRefs.current.forEach((ref, meetingId) => {
+        if (ref && !ref.contains(event.target as Node)) {
+          if (showNotifyDropdown === meetingId) {
+            setShowNotifyDropdown(null);
+          }
+        }
+      });
+      // Close WhatsApp dropdowns
+      whatsAppDropdownRefs.current.forEach((ref, meetingId) => {
+        if (ref && !ref.contains(event.target as Node)) {
+          if (showWhatsAppDropdown === meetingId) {
+            setShowWhatsAppDropdown(null);
+          }
+        }
+      });
     };
 
     document.addEventListener('mousedown', handleClickOutside);
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, []);
+  }, [showNotifyDropdown, showWhatsAppDropdown]);
 
       // Reset form and set default location to Teams when drawer opens
       useEffect(() => {
@@ -863,9 +1074,11 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const handleNotifyClick = async (meeting: Meeting) => {
+  const handleNotifyClick = async (meeting: Meeting, type: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled') => {
+    setEmailType(type);
     setSelectedMeetingForNotify(meeting);
     setLoadingContacts(true);
+    setShowNotifyDropdown(null); // Close dropdown
     try {
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const normalizedLeadId = isLegacyLead 
@@ -874,6 +1087,75 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       
       const fetchedContacts = await fetchLeadContacts(normalizedLeadId, isLegacyLead);
       setContacts(fetchedContacts);
+      
+      // Fetch email templates based on type
+      try {
+        let enTemplateId: number;
+        let heTemplateId: number;
+        
+        switch (type) {
+          case 'invitation':
+            enTemplateId = 151;
+            heTemplateId = 152;
+            break;
+          case 'invitation_jlm':
+            enTemplateId = 157;
+            heTemplateId = 158;
+            break;
+          case 'invitation_tlv':
+            enTemplateId = 161;
+            heTemplateId = 162;
+            break;
+          case 'invitation_tlv_parking':
+            enTemplateId = 159;
+            heTemplateId = 160;
+            break;
+          case 'reminder':
+            enTemplateId = 163;
+            heTemplateId = 164;
+            break;
+          case 'cancellation':
+            enTemplateId = 153;
+            heTemplateId = 154;
+            break;
+          case 'rescheduled':
+            enTemplateId = 155;
+            heTemplateId = 156;
+            break;
+          default:
+            enTemplateId = 151;
+            heTemplateId = 152;
+        }
+        
+        const { data: enTemplate, error: enError } = await supabase
+          .from('misc_emailtemplate')
+          .select('content')
+          .eq('id', enTemplateId)
+          .single();
+        
+        const { data: heTemplate, error: heError } = await supabase
+          .from('misc_emailtemplate')
+          .select('content')
+          .eq('id', heTemplateId)
+          .single();
+        
+        if (!enError && enTemplate) {
+          const parsedContent = parseTemplateContent(enTemplate.content);
+          setEmailTemplates(prev => ({ ...prev, en: parsedContent }));
+        } else {
+          setEmailTemplates(prev => ({ ...prev, en: null }));
+        }
+        
+        if (!heError && heTemplate) {
+          const parsedContent = parseTemplateContent(heTemplate.content);
+          setEmailTemplates(prev => ({ ...prev, he: parsedContent }));
+        } else {
+          setEmailTemplates(prev => ({ ...prev, he: null }));
+        }
+      } catch (error) {
+        console.error('Error fetching email templates:', error);
+      }
+      
       setShowNotifyModal(true);
     } catch (error) {
       console.error('Error fetching contacts:', error);
@@ -981,18 +1263,67 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const handleSendWhatsAppReminder = async (meeting: Meeting, phoneNumbers?: string | string[]) => {
+  const handleSendWhatsAppReminder = async (meeting: Meeting, phoneNumbers?: string | string[], reminderType?: 'reminder' | 'missed_appointment') => {
     if (!selectedMeetingForWhatsAppNotify) return;
     
+    const type = reminderType || whatsAppReminderType;
     setSendingWhatsAppMeetingId(meeting.id);
     setShowWhatsAppNotifyModal(false);
+    setShowWhatsAppDropdown(null); // Close dropdown
     
     try {
-      // Get the selected template based on language - match by name "reminder_of_a_meeting" and language
-      const targetLanguage = selectedLanguage === 'he' ? 'he' : 'en';
-      const selectedTemplate = reminderTemplates.find(t => 
-        t.name === 'reminder_of_a_meeting' && t.language === targetLanguage
-      );
+      // Get the selected template based on reminder type and language
+      const templateName = type === 'missed_appointment' ? 'missed_appointment' : 'reminder_of_a_meeting';
+      const targetLanguage = selectedLanguage.toLowerCase();
+      
+      // Helper function to normalize language code (e.g., 'he_IL' -> 'he', 'en_US' -> 'en')
+      const normalizeLanguageCode = (lang: string | null | undefined): string => {
+        if (!lang) return '';
+        return lang.split('_')[0].toLowerCase();
+      };
+      
+      // Template ID mappings:
+      // reminder_of_a_meeting: HE = 1, EN = 2
+      // missed_appointment: EN = 16, HE = 15, RU = 15
+      let selectedTemplate;
+      if (type === 'missed_appointment') {
+        // Use template ID mapping for missed_appointment
+        const templateIdMap: Record<string, number> = {
+          'en': 16,
+          'he': 15,
+          'ru': 15
+        };
+        const templateId = templateIdMap[targetLanguage];
+        
+        // Match by ID first (most reliable)
+        selectedTemplate = reminderTemplates.find(t => t.id === templateId);
+        
+        // Fallback: match by name and normalized language
+        if (!selectedTemplate) {
+          selectedTemplate = reminderTemplates.find(t => {
+            const templateLangNormalized = normalizeLanguageCode(t.language);
+            return t.name === 'missed_appointment' && templateLangNormalized === targetLanguage;
+          });
+        }
+      } else {
+        // reminder_of_a_meeting: match by ID first
+        const templateIdMap: Record<string, number> = {
+          'he': 1,
+          'en': 2
+        };
+        const templateId = templateIdMap[targetLanguage];
+        
+        // Match by ID first (most reliable)
+        selectedTemplate = reminderTemplates.find(t => t.id === templateId);
+        
+        // Fallback: match by name and normalized language
+        if (!selectedTemplate) {
+          selectedTemplate = reminderTemplates.find(t => {
+            const templateLangNormalized = normalizeLanguageCode(t.language);
+            return t.name === 'reminder_of_a_meeting' && templateLangNormalized === targetLanguage;
+          });
+        }
+      }
 
       if (!selectedTemplate) {
         console.error('📱 Template not found:', { 
@@ -1223,7 +1554,8 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const failureCount = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).length;
 
       if (successCount > 0) {
-        toast.success(`WhatsApp reminder sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
+        const typeLabel = type === 'missed_appointment' ? 'missed appointment' : 'reminder';
+        toast.success(`WhatsApp ${typeLabel} sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
       }
       if (failureCount > 0) {
         const errors = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).map(r => r.error || 'Unknown error').join(', ');
@@ -1240,7 +1572,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const handleSendEmail = async (meeting: Meeting, emailAddress?: string | string[]) => {
+  const handleSendEmail = async (meeting: Meeting, emailAddress?: string | string[], contactName?: string) => {
     setSendingEmailMeetingId(meeting.id);
     setShowNotifyModal(false);
     try {
@@ -1279,8 +1611,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       };
       const formattedDate = formatDate(meeting.date);
       
-      // Compose subject: Meeting with Decker, Pex, Levi Lawoffice - (meeting date)
-      const subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+      // Compose subject based on email type
+      let subject: string;
+      if (emailType === 'cancellation') {
+        subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
+      } else if (emailType === 'reminder') {
+        subject = `Meeting Reminder - ${formattedDate}`;
+      } else if (emailType === 'rescheduled') {
+        subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
+      } else {
+        // All invitation types (invitation, invitation_jlm, invitation_tlv, invitation_tlv_parking)
+        subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+      }
       const joinLink = getValidTeamsLink(meeting.link);
       const category = client.category || '---';
       const topic = client.topic || '---';
@@ -1299,8 +1641,13 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const primaryRecipientEmail = recipientEmailArray[0];
       const useOutlookCalendarInvite = isMicrosoftEmail(recipientEmail);
       
+      // Get recipient name (use provided contactName, or find from contacts, or fallback to client name)
+      const recipientName = contactName || (Array.isArray(emailAddress) 
+        ? (contacts.find(c => c.email === primaryRecipientEmail)?.name || client.name)
+        : (contacts.find(c => c.email === emailAddress)?.name || client.name));
+      
       // Build description HTML
-      let descriptionHtml = `<p>Meeting with <strong>${client.name}</strong></p>`;
+      let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
       if (category && category !== '---') {
         descriptionHtml += `<p><strong>Category:</strong> ${category}</p>`;
       }
@@ -1323,84 +1670,130 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
       const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
       
-      // Build HTML body for email (used for both Outlook and non-Outlook clients)
-      const htmlBody = meetingInvitationEmailTemplate({
-        clientName: client.name,
-        meetingDate: formattedDate,
-        meetingTime: undefined,
-        location: locationName,
-        category: '',
-        topic,
-        joinLink,
-        senderName: senderName,
-      });
+      // Get email template based on selected language
+      const selectedTemplate = selectedEmailLanguage === 'en' ? emailTemplates.en : emailTemplates.he;
       
-      if (useOutlookCalendarInvite) {
-        // Use Microsoft Graph API to create a calendar event with attendees
-        // This automatically sends a proper Outlook meeting invitation that appears as a calendar box, not an attachment
-        // The invitation email is sent automatically by Outlook/Exchange, so we don't need to send a separate email
-        try {
-          await createCalendarEventWithAttendee(tokenResponse.accessToken, {
-            subject: calendarSubject,
-            startDateTime: startDateTime.toISOString(),
-            endDateTime: endDateTime.toISOString(),
-            location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
-            description: descriptionHtml,
-            attendeeEmail: primaryRecipientEmail,
-            attendeeName: client.name,
-            organizerEmail: account.username || 'noreply@lawoffice.org.il',
-            organizerName: senderName,
-            teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
-            timeZone: 'Asia/Jerusalem'
-          });
+      // Build HTML body for email - use template if available, otherwise fallback to default template
+      let htmlBody: string;
+      if (selectedTemplate) {
+        // Use formatEmailBody to preserve line breaks and apply RTL formatting
+        // Pass meeting context for template parameter replacement
+        htmlBody = await formatEmailBody(selectedTemplate, recipientName, {
+          client,
+          meeting,
+          meetingDate: formattedDate,
+          meetingTime: formattedTime,
+          meetingLocation: locationName,
+          meetingLink: joinLink,
+        });
+      } else {
+        // Fallback to default template if no template found
+        const fallbackHtml = meetingInvitationEmailTemplate({
+          clientName: recipientName,
+          meetingDate: formattedDate,
+          meetingTime: undefined,
+          location: locationName,
+          category: '',
+          topic,
+          joinLink,
+          senderName: senderName,
+        });
+        // Apply RTL formatting to fallback template as well
+        htmlBody = await formatEmailBody(fallbackHtml, recipientName, {
+          client,
+          meeting,
+          meetingDate: formattedDate,
+          meetingTime: formattedTime,
+          meetingLocation: locationName,
+          meetingLink: joinLink,
+        });
+      }
+      
+      // Only create calendar invites for invitations (all invitation types)
+      if (emailType === 'invitation' || emailType === 'invitation_jlm' || emailType === 'invitation_tlv' || emailType === 'invitation_tlv_parking') {
+        if (useOutlookCalendarInvite) {
+          // Use Microsoft Graph API to create a calendar event with attendees
+          // This automatically sends a proper Outlook meeting invitation that appears as a calendar box, not an attachment
+          // The invitation email is sent automatically by Outlook/Exchange, so we don't need to send a separate email
+          try {
+            await createCalendarEventWithAttendee(tokenResponse.accessToken, {
+              subject: calendarSubject,
+              startDateTime: startDateTime.toISOString(),
+              endDateTime: endDateTime.toISOString(),
+              location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+              description: descriptionHtml,
+              attendeeEmail: primaryRecipientEmail,
+              attendeeName: recipientName,
+              organizerEmail: account.username || 'noreply@lawoffice.org.il',
+              organizerName: senderName,
+              teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+              timeZone: 'Asia/Jerusalem'
+            });
+            
+            // The calendar event creation automatically sends a meeting invitation email via Outlook
+            // This invitation appears as a proper calendar box in Outlook, not as an attachment
+          } catch (calendarError) {
+            console.error('Failed to create Outlook calendar event:', calendarError);
+            // Fallback to ICS attachment if Outlook calendar creation fails
+            throw calendarError; // Will be caught by outer catch
+          }
+        } else {
+          // For non-Microsoft email clients (Gmail, etc.), use ICS attachment
+          // Generate ICS calendar file attachment
+          let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
+          try {
+            const icsContent = generateICSFromDateTime({
+              subject: calendarSubject,
+              date: meeting.date,
+              time: formattedTime,
+              durationMinutes: 60,
+              location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+              description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
+              organizerEmail: account.username || 'noreply@lawoffice.org.il',
+              organizerName: senderName,
+              attendeeEmail: primaryRecipientEmail,
+              attendeeName: recipientName,
+              teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
+              timeZone: 'Asia/Jerusalem'
+            });
+            
+            const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+            
+            attachments = [{
+              name: 'meeting-invite.ics',
+              contentBytes: icsBase64,
+              contentType: 'text/calendar; charset=utf-8; method=REQUEST'
+            }];
+          } catch (icsError) {
+            console.error('Failed to generate ICS file:', icsError);
+          }
           
-          // The calendar event creation automatically sends a meeting invitation email via Outlook
-          // This invitation appears as a proper calendar box in Outlook, not as an attachment
-        } catch (calendarError) {
-          console.error('Failed to create Outlook calendar event:', calendarError);
-          // Fallback to ICS attachment if Outlook calendar creation fails
-          throw calendarError; // Will be caught by outer catch
+          // Send email with ICS attachment
+          await sendEmail(tokenResponse.accessToken, { 
+            to: recipientEmail, 
+            subject, 
+            body: htmlBody,
+            attachments
+          });
         }
       } else {
-        // For non-Microsoft email clients (Gmail, etc.), use ICS attachment
-        // Generate ICS calendar file attachment
-        let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
-        try {
-          const icsContent = generateICSFromDateTime({
-            subject: calendarSubject,
-            date: meeting.date,
-            time: formattedTime,
-            durationMinutes: 60,
-            location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
-            description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
-            organizerEmail: account.username || 'noreply@lawoffice.org.il',
-            organizerName: senderName,
-            attendeeEmail: primaryRecipientEmail,
-            attendeeName: client.name,
-            teamsJoinUrl: locationName === 'Teams' ? joinLink : undefined,
-            timeZone: 'Asia/Jerusalem'
-          });
-          
-          const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-          
-          attachments = [{
-            name: 'meeting-invite.ics',
-            contentBytes: icsBase64,
-            contentType: 'text/calendar; charset=utf-8; method=REQUEST'
-          }];
-        } catch (icsError) {
-          console.error('Failed to generate ICS file:', icsError);
-        }
-        
-        // Send email with ICS attachment
+        // For reminder and cancellation, just send email without calendar invite
         await sendEmail(tokenResponse.accessToken, { 
           to: recipientEmail, 
           subject, 
-          body: htmlBody,
-          attachments
+          body: htmlBody
         });
       }
-      toast.success(`Meeting invitation sent for meeting on ${meeting.date}`);
+      const emailTypeMessages: Record<'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled', string> = {
+        invitation: `Meeting invitation sent for meeting on ${meeting.date}`,
+        invitation_jlm: `Meeting invitation (JLM) sent for meeting on ${meeting.date}`,
+        invitation_tlv: `Meeting invitation (TLV) sent for meeting on ${meeting.date}`,
+        invitation_tlv_parking: `Meeting invitation (TLV + Parking) sent for meeting on ${meeting.date}`,
+        reminder: `Meeting reminder sent for meeting on ${meeting.date}`,
+        cancellation: `Meeting cancellation notice sent for meeting on ${meeting.date}`,
+        rescheduled: `Meeting rescheduled notice sent for meeting on ${meeting.date}`
+      };
+      toast.success(emailTypeMessages[emailType]);
       // --- Optimistic upsert to emails table ---
       // For Outlook calendar invites, the email is sent automatically by Exchange
       // For non-Outlook, we send the email with ICS attachment
@@ -2091,26 +2484,119 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           }
         }
         
-        const userName = account?.name || 'Staff';
-        let signature = (account && (account as any).signature) ? (account as any).signature : null;
-        if (!signature) {
-          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+        // Get language_id from client - for legacy leads, it's directly in the client object
+        // For new leads, we might need to fetch it from the database
+        const isLegacyLeadForCancel = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        let clientLanguageId: number | null = null;
+        
+        if (isLegacyLeadForCancel) {
+          // For legacy leads, language_id should be directly on the client
+          // It might be in client.language_id or we need to fetch it
+          if ((client as any).language_id) {
+            clientLanguageId = (client as any).language_id;
+          } else {
+            // Fetch it from the database
+            const legacyId = client.id.toString().replace('legacy_', '');
+            const { data: legacyData } = await supabase
+              .from('leads_lead')
+              .select('language_id')
+              .eq('id', legacyId)
+              .single();
+            clientLanguageId = legacyData?.language_id || null;
+          }
+        } else {
+          // For new leads, check if language_id is on the client, otherwise fetch it
+          if ((client as any).language_id) {
+            clientLanguageId = (client as any).language_id;
+          } else {
+            const { data: leadData } = await supabase
+              .from('leads')
+              .select('language_id')
+              .eq('id', client.id)
+              .single();
+            clientLanguageId = leadData?.language_id || null;
+          }
         }
         
-        const emailBody = `
-          <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-            <p>Dear ${client.name},</p>
-            <p>We regret to inform you that your meeting scheduled for:</p>
-            <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-              <li><strong>Date:</strong> ${canceledMeeting.meeting_date}</li>
-              <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : ''}</li>
-              <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
-            </ul>
-            <p>has been canceled.</p>
-            <p>If you have any questions or would like to reschedule, please let us know.</p>
-            <div style='margin-top:32px;'>${signature}</div>
-          </div>
-        `;
+        // Fetch email template by name ('cancellation') and language_id
+        let templateContent: string | null = null;
+        try {
+          console.log('📧 Fetching cancellation email template:', { clientLanguageId, isLegacyLeadForCancel });
+          
+          if (!clientLanguageId) {
+            console.warn('⚠️ No language_id found for client, cannot fetch template');
+          } else {
+            const { data: template, error: templateError } = await supabase
+              .from('misc_emailtemplate')
+              .select('content')
+              .eq('name', 'cancellation')
+              .eq('language_id', clientLanguageId)
+              .single();
+          
+            if (templateError) {
+              console.error('❌ Error fetching cancellation email template:', templateError);
+            } else if (template && template.content) {
+              // Try parsing, but if it returns empty, use raw content (might be HTML)
+              const parsed = parseTemplateContent(template.content);
+              templateContent = parsed && parsed.trim() ? parsed : template.content;
+              console.log('✅ Cancellation email template fetched successfully', {
+                languageId: clientLanguageId,
+                rawLength: template.content.length,
+                parsedLength: parsed?.length || 0,
+                finalLength: templateContent?.length || 0,
+                usingRaw: !parsed || !parsed.trim()
+              });
+            }
+          }
+        } catch (error) {
+          console.error('❌ Exception fetching cancellation email template:', error);
+        }
+        
+        // Format meeting date and time
+        const formatDate = (dateStr: string): string => {
+          const [year, month, day] = dateStr.split('-');
+          return `${day}/${month}/${year}`;
+        };
+        const formattedDate = formatDate(canceledMeeting.meeting_date);
+        const formattedTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
+        const locationName = getMeetingLocationName(canceledMeeting.meeting_location || canceledMeeting.meeting_location_old);
+        
+        // Build email body using template or fallback
+        let emailBody: string;
+        if (templateContent && templateContent.trim()) {
+          console.log('✅ Using cancellation email template');
+          // Use template with parameter replacement
+          emailBody = await formatEmailBody(templateContent, client.name, {
+            client,
+            meeting: canceledMeeting as any,
+            meetingDate: formattedDate,
+            meetingTime: formattedTime,
+            meetingLocation: locationName,
+          });
+        } else {
+          console.warn('⚠️ Using fallback hardcoded email template for cancellation');
+          // Fallback to hardcoded email
+          const userName = account?.name || 'Staff';
+          let signature = (account && (account as any).signature) ? (account as any).signature : null;
+          if (!signature) {
+            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+          }
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${client.name},</p>
+              <p>We regret to inform you that your meeting scheduled for:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${formattedDate}</li>
+                <li><strong>Time:</strong> ${formattedTime}</li>
+                <li><strong>Location:</strong> ${locationName}</li>
+              </ul>
+              <p>has been canceled.</p>
+              <p>If you have any questions or would like to reschedule, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+        }
+        
         const subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
         await sendEmail(accessToken, {
           to: client.email,
@@ -2152,16 +2638,38 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     try {
       const account = instance.getAllAccounts()[0];
       
-      // Determine which meeting to cancel
-      let meetingIdToCancel = meetingToDelete;
-      if (!meetingIdToCancel && rescheduleMeetings.length > 0) {
-        meetingIdToCancel = rescheduleMeetings[0]?.id;
+      // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
+      // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
+      
+      // Query for the oldest upcoming meeting to cancel
+      let query = supabase
+        .from('meetings')
+        .select('id, meeting_date, meeting_time, meeting_location, meeting_location_old')
+        .neq('status', 'canceled')
+        .gte('meeting_date', new Date().toISOString().split('T')[0])
+        .order('meeting_date', { ascending: true })
+        .order('meeting_time', { ascending: true })
+        .limit(1);
+      
+      if (isLegacyLead) {
+        query = query.eq('legacy_lead_id', legacyId);
+      } else {
+        query = query.eq('client_id', client.id);
       }
       
-      let canceledMeeting = null;
+      const { data: upcomingMeetingsToCancel, error: queryError } = await query;
       
-      // Cancel the selected meeting if one is selected
-      if (meetingIdToCancel) {
+      let canceledMeeting = null;
+      let meetingIdToCancel: number | null = null;
+      
+      if (queryError) {
+        console.error('❌ Error querying for meetings to cancel:', queryError);
+      } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
+        meetingIdToCancel = upcomingMeetingsToCancel[0].id;
+        console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
+        
         const { data: { user } } = await supabase.auth.getUser();
         const editor = user?.email || account?.name || 'system';
         const { error: cancelError } = await supabase
@@ -2173,7 +2681,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           })
           .eq('id', meetingIdToCancel);
         
-        if (cancelError) throw cancelError;
+        if (cancelError) {
+          console.error('❌ Failed to cancel old meeting:', cancelError);
+          throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
+        }
 
         const { data: canceledMeetingData } = await supabase
           .from('meetings')
@@ -2182,6 +2693,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .single();
         
         canceledMeeting = canceledMeetingData;
+        console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
+      } else {
+        console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
       }
 
       // Get current user's full_name from database
@@ -2267,10 +2781,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         teamsMeetingUrl = selectedLocation.default_link;
       }
 
-      // Check if this is a legacy lead
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      const legacyId = isLegacyLead ? client.id.toString().replace('legacy_', '') : null;
-
+      // Use the isLegacyLead and legacyId already declared at the start of the function (line 2605-2606)
       const meetingData = {
         client_id: isLegacyLead ? null : client.id,
         legacy_lead_id: isLegacyLead ? legacyId : null,
@@ -2331,50 +2842,157 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             </div>`
           : '';
         
-        let emailBody = '';
-        let emailSubject = '';
+        // Get language_id from client - for legacy leads, it's directly in the client object
+        // For new leads, we might need to fetch it from the database
+        let clientLanguageId: number | null = null;
         
-        if (canceledMeeting) {
-          emailBody = `
-            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-              <p>Dear ${client.name},</p>
-              <p>We regret to inform you that your previous meeting scheduled for:</p>
-              <ul style='margin:16px 0 16px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${canceledMeeting.meeting_date || 'N/A'}</li>
-                <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : 'N/A'}</li>
-                <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
-              </ul>
-              <p>has been canceled. Please find below the details for your new meeting:</p>
-              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
-                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
-                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
-              </ul>
-              ${joinButton}
-              <p>Please check the calendar invitation attached for the exact meeting time.</p>
-              <p>If you have any questions or need to reschedule again, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
-            </div>
-          `;
-          emailSubject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
+        if (isLegacyLead) {
+          // For legacy leads, language_id should be directly on the client
+          // It might be in client.language_id or we need to fetch it
+          if ((client as any).language_id) {
+            clientLanguageId = (client as any).language_id;
+          } else {
+            // Fetch it from the database
+            const legacyIdForReschedule = client.id.toString().replace('legacy_', '');
+            const { data: legacyData } = await supabase
+              .from('leads_lead')
+              .select('language_id')
+              .eq('id', legacyIdForReschedule)
+              .single();
+            clientLanguageId = legacyData?.language_id || null;
+          }
         } else {
-          emailBody = `
-            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-              <p>Dear ${client.name},</p>
-              <p>We have scheduled a new meeting for you. Please find the details below:</p>
-              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
-                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
-                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
-              </ul>
-              ${joinButton}
-              <p>Please check the calendar invitation attached for the exact meeting time.</p>
-              <p>If you have any questions or need to reschedule, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
-            </div>
-          `;
-          emailSubject = `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`;
+          // For new leads, check if language_id is on the client, otherwise fetch it
+          if ((client as any).language_id) {
+            clientLanguageId = (client as any).language_id;
+          } else {
+            const { data: leadData } = await supabase
+              .from('leads')
+              .select('language_id')
+              .eq('id', client.id)
+              .single();
+            clientLanguageId = leadData?.language_id || null;
+          }
         }
+        
+        // Fetch email template by name ('rescheduled') and language_id
+        let templateContent: string | null = null;
+        try {
+          console.log('📧 Fetching rescheduled email template:', { clientLanguageId, isLegacyLead });
+          
+          if (!clientLanguageId) {
+            console.warn('⚠️ No language_id found for client, cannot fetch template');
+          } else {
+            const { data: template, error: templateError } = await supabase
+              .from('misc_emailtemplate')
+              .select('content')
+              .eq('name', 'rescheduled')
+              .eq('language_id', clientLanguageId)
+              .single();
+            
+            if (templateError) {
+              console.error('❌ Error fetching rescheduled email template:', templateError);
+            } else if (template && template.content) {
+              // Try parsing, but if it returns empty, use raw content (might be HTML)
+              const parsed = parseTemplateContent(template.content);
+              templateContent = parsed && parsed.trim() ? parsed : template.content;
+              console.log('✅ Rescheduled email template fetched successfully', {
+                languageId: clientLanguageId,
+                rawLength: template.content.length,
+                parsedLength: parsed?.length || 0,
+                finalLength: templateContent?.length || 0,
+                usingRaw: !parsed || !parsed.trim()
+              });
+            }
+          }
+        } catch (error) {
+          console.error('❌ Exception fetching rescheduled email template:', error);
+        }
+        
+        // Format dates and times
+        const formatDate = (dateStr: string): string => {
+          const [year, month, day] = dateStr.split('-');
+          return `${day}/${month}/${year}`;
+        };
+        const formattedNewDate = formatDate(rescheduleFormData.date);
+        const formattedNewTime = rescheduleFormData.time.substring(0, 5);
+        const newLocationName = getMeetingLocationName(rescheduleFormData.location);
+        
+        let formattedOldDate = '';
+        let formattedOldTime = '';
+        let oldLocationName = '';
+        if (canceledMeeting) {
+          formattedOldDate = formatDate(canceledMeeting.meeting_date);
+          formattedOldTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
+          oldLocationName = getMeetingLocationName(canceledMeeting.meeting_location || canceledMeeting.meeting_location_old);
+        }
+        
+        // Build email body using template or fallback
+        let emailBody: string;
+        if (templateContent && templateContent.trim()) {
+          console.log('✅ Using rescheduled email template');
+          // Use template with parameter replacement
+          // For rescheduled, we pass both old and new meeting details
+          emailBody = await formatEmailBody(templateContent, client.name, {
+            client,
+            meetingDate: formattedNewDate,
+            meetingTime: formattedNewTime,
+            meetingLocation: newLocationName,
+            meetingLink: meetingLink || undefined,
+          });
+        } else {
+          console.warn('⚠️ Using fallback hardcoded email template for rescheduled meeting');
+          // Fallback to hardcoded email
+          const userName = account?.name || 'Staff';
+          let signature = (account && (account as any).signature) ? (account as any).signature : null;
+          if (!signature) {
+            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+          }
+          
+          if (canceledMeeting) {
+            emailBody = `
+              <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+                <p>Dear ${client.name},</p>
+                <p>We regret to inform you that your previous meeting scheduled for:</p>
+                <ul style='margin:16px 0 16px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedOldDate}</li>
+                  <li><strong>Time:</strong> ${formattedOldTime}</li>
+                  <li><strong>Location:</strong> ${oldLocationName}</li>
+                </ul>
+                <p>has been canceled. Please find below the details for your new meeting:</p>
+                <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedNewDate}</li>
+                  <li><strong>Time:</strong> ${formattedNewTime}</li>
+                  <li><strong>Location:</strong> ${newLocationName}</li>
+                </ul>
+                ${joinButton}
+                <p>Please check the calendar invitation attached for the exact meeting time.</p>
+                <p>If you have any questions or need to reschedule again, please let us know.</p>
+                <div style='margin-top:32px;'>${signature}</div>
+              </div>
+            `;
+          } else {
+            emailBody = `
+              <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+                <p>Dear ${client.name},</p>
+                <p>We have scheduled a new meeting for you. Please find the details below:</p>
+                <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedNewDate}</li>
+                  <li><strong>Time:</strong> ${formattedNewTime}</li>
+                  <li><strong>Location:</strong> ${newLocationName}</li>
+                </ul>
+                ${joinButton}
+                <p>Please check the calendar invitation attached for the exact meeting time.</p>
+                <p>If you have any questions or need to reschedule, please let us know.</p>
+                <div style='margin-top:32px;'>${signature}</div>
+              </div>
+            `;
+          }
+        }
+        
+        const emailSubject = canceledMeeting 
+          ? `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`
+          : `[${client.lead_number || client.id}] - ${client.name} - New Meeting Scheduled`;
         
         const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
@@ -2746,42 +3364,15 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
-  const updateOutlookMeeting = async (accessToken: string, meetingId: string, updates: any) => {
-    const url = `https://graph.microsoft.com/v1.0/me/calendar/events/${meetingId}`;
-    
-    const response = await fetch(url, {
-      method: 'PATCH',
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        start: {
-          dateTime: updates.startDateTime,
-          timeZone: 'Asia/Jerusalem'
-        },
-        end: {
-          dateTime: updates.endDateTime,
-          timeZone: 'Asia/Jerusalem'
-        }
-      }),
-    });
+  // Use expandedMeetingData if available
+  const expandedData = expandedMeetingData[meeting.id] || {};
+  const isExpanded = expandedMeetingId === meeting.id;
 
-    if (!response.ok) {
-      throw new Error(`Failed to update Outlook meeting: ${response.statusText}`);
-    }
-    };
+  const past = isPastMeeting(meeting);
+  const showPastActions = past && isRecentPastMeeting(meeting);
+  const headerColor = past ? '#DC473F' : '#369A69';
 
-    // Use expandedMeetingData if available
-    const expandedData = expandedMeetingData[meeting.id] || {};
-    const isExpanded = expandedMeetingId === meeting.id;
-
-
-
-    const past = isPastMeeting(meeting);
-    const showPastActions = past && isRecentPastMeeting(meeting);
-
-    return (
+  return (
       <div key={meeting.id} className="bg-white border border-gray-200 rounded-xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden relative">
         {/* Canceled watermark */}
         {meeting.status === 'canceled' && (
@@ -2792,10 +3383,10 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         )}
         {/* Header */}
-        <div className="px-4 py-3 border-b" style={{ backgroundColor: '#391BCB', color: 'white' }}>
+        <div className="px-4 py-3 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg shadow-sm" style={{ backgroundColor: '#391BCB' }}>
+              <div className="flex items-center justify-center w-10 h-10 rounded-lg shadow-sm" style={{ backgroundColor: headerColor }}>
                 <CalendarIcon className="w-5 h-5 text-white" />
               </div>
               <div>
@@ -2818,38 +3409,133 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               </button>
               {!past && (
                 <>
-                  <button
-                    className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white notify-btn-disabled"
-                    onClick={() => {
-                      if (sendingEmailMeetingId !== meeting.id) {
-                        handleNotifyClick(meeting);
-                      }
-                    }}
-                    disabled={sendingEmailMeetingId === meeting.id}
-                    title="Notify Client via Email"
-                  >
-                    {sendingEmailMeetingId === meeting.id ? (
-                      <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
-                    ) : (
-                      <EnvelopeIcon className="w-4 h-4" />
+                  <div className="relative" ref={(el) => {
+                    if (el) {
+                      notifyDropdownRefs.current.set(meeting.id, el);
+                    } else {
+                      notifyDropdownRefs.current.delete(meeting.id);
+                    }
+                  }}>
+                    <button
+                      className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
+                      onClick={() => {
+                        if (sendingEmailMeetingId !== meeting.id) {
+                          setShowNotifyDropdown(showNotifyDropdown === meeting.id ? null : meeting.id);
+                        }
+                      }}
+                      disabled={sendingEmailMeetingId === meeting.id}
+                      title="Notify Client via Email"
+                    >
+                      {sendingEmailMeetingId === meeting.id ? (
+                        <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                      ) : (
+                        <>
+                          <EnvelopeIcon className="w-4 h-4" />
+                          <ChevronDownIcon className="w-3 h-3 ml-1" />
+                        </>
+                      )}
+                    </button>
+                    {showNotifyDropdown === meeting.id && (
+                      <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={() => handleNotifyClick(meeting, 'invitation')}
+                        >
+                          Meeting Invitation
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_jlm')}
+                        >
+                          Meeting Invitation JLM
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv')}
+                        >
+                          Meeting Invitation TLV
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv_parking')}
+                        >
+                          Meeting Invitation TLV + Parking
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                          onClick={() => handleNotifyClick(meeting, 'reminder')}
+                        >
+                          Meeting Reminder
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
+                          onClick={() => handleNotifyClick(meeting, 'rescheduled')}
+                        >
+                          Meeting Rescheduled
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-gray-100 last:rounded-b-lg text-red-600"
+                          onClick={() => handleNotifyClick(meeting, 'cancellation')}
+                        >
+                          Meeting Cancellation
+                        </button>
+                      </div>
                     )}
-                  </button>
-                  <button
-                    className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
-                    onClick={() => {
-                      if (sendingWhatsAppMeetingId !== meeting.id) {
-                        handleWhatsAppNotifyClick(meeting);
-                      }
-                    }}
-                    disabled={sendingWhatsAppMeetingId === meeting.id}
-                    title="Send WhatsApp Reminder"
-                  >
-                    {sendingWhatsAppMeetingId === meeting.id ? (
-                      <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
-                    ) : (
-                      <FaWhatsapp className="w-4 h-4 text-green-600" />
+                  </div>
+                  <div className="relative" ref={(el) => {
+                    if (el) {
+                      whatsAppDropdownRefs.current.set(meeting.id, el);
+                    } else {
+                      whatsAppDropdownRefs.current.delete(meeting.id);
+                    }
+                  }}>
+                    <button
+                      className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        if (sendingWhatsAppMeetingId !== meeting.id) {
+                          setShowWhatsAppDropdown(showWhatsAppDropdown === meeting.id ? null : meeting.id);
+                        }
+                      }}
+                      disabled={sendingWhatsAppMeetingId === meeting.id}
+                      title="Send WhatsApp Reminder"
+                    >
+                      {sendingWhatsAppMeetingId === meeting.id ? (
+                        <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                      ) : (
+                        <>
+                          <FaWhatsapp className="w-4 h-4 text-green-600" />
+                          <ChevronDownIcon className="w-3 h-3 ml-1" />
+                        </>
+                      )}
+                    </button>
+                    {showWhatsAppDropdown === meeting.id && (
+                      <div className="absolute right-0 top-full mt-1 w-48 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setWhatsAppReminderType('reminder');
+                            handleWhatsAppNotifyClick(meeting);
+                            setShowWhatsAppDropdown(null);
+                          }}
+                        >
+                          Meeting Reminder
+                        </button>
+                        <button
+                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 last:rounded-b-lg"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setWhatsAppReminderType('missed_appointment');
+                            handleWhatsAppNotifyClick(meeting);
+                            setShowWhatsAppDropdown(null);
+                          }}
+                        >
+                          Missed Appointment
+                        </button>
+                      </div>
                     )}
-                  </button>
+                  </div>
                 </>
               )}
               {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
@@ -3282,6 +3968,32 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     );
   };
 
+  const updateOutlookMeeting = async (accessToken: string, meetingId: string, updates: any) => {
+    const url = `https://graph.microsoft.com/v1.0/me/calendar/events/${meetingId}`;
+    
+    const response = await fetch(url, {
+      method: 'PATCH',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        start: {
+          dateTime: updates.startDateTime,
+          timeZone: 'Asia/Jerusalem'
+        },
+        end: {
+          dateTime: updates.endDateTime,
+          timeZone: 'Asia/Jerusalem'
+        }
+      }),
+    });
+
+    if (!response.ok) {
+      throw new Error(`Failed to update Outlook meeting: ${response.statusText}`);
+    }
+  };
+
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
       {/* Header */}
@@ -3424,28 +4136,26 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         {/* Upcoming Meetings (Left) */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="px-6 py-4 bg-white">
-            <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
-            {upcomingMeetings.length > 0 && (
-              <div className="mt-3 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm text-gray-600">Client confirmed the next meeting?</span>
-                  <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
-                    <span>{(leadSchedulingInfo.meeting_confirmation ?? false) ? 'Confirmed' : 'Not confirmed'}</span>
-                    <input
-                      type="checkbox"
-                      className="toggle toggle-primary"
-                      checked={leadSchedulingInfo.meeting_confirmation ?? false}
-                      onChange={handleToggleMeetingConfirmation}
-                    />
-                  </label>
-                </div>
-                {leadSchedulingInfo.meeting_confirmation && (
-                  <p className="text-sm text-gray-600">
-                    Confirmed by: {getEmployeeDisplayName(leadSchedulingInfo.meeting_confirmation_by)}
-                  </p>
-                )}
-              </div>
-            )}
+            <div className="flex items-center justify-between">
+              <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
+              {upcomingMeetings.length > 0 && (
+                <label className="flex items-center gap-2 text-sm font-medium text-gray-700">
+                  {leadSchedulingInfo.meeting_confirmation && leadSchedulingInfo.meeting_confirmation_by ? (
+                    <span className="text-sm text-gray-600">
+                      {getEmployeeDisplayName(leadSchedulingInfo.meeting_confirmation_by)} confirmed meeting
+                    </span>
+                  ) : (
+                    <span className="text-sm text-gray-600">Not confirmed</span>
+                  )}
+                  <input
+                    type="checkbox"
+                    className="toggle toggle-primary toggle-sm"
+                    checked={leadSchedulingInfo.meeting_confirmation ?? false}
+                    onChange={handleToggleMeetingConfirmation}
+                  />
+                </label>
+              )}
+            </div>
             <div className="border-b border-gray-200 mt-3"></div>
           </div>
           <div className="p-6">
@@ -3500,6 +4210,33 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </button>
               </div>
               
+              {/* Language Selection */}
+              <div className="mb-4">
+                <label className="block text-sm font-medium text-gray-700 mb-2">Email Language</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => setSelectedEmailLanguage('en')}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
+                      selectedEmailLanguage === 'en'
+                        ? 'bg-primary text-white border-primary'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    English
+                  </button>
+                  <button
+                    onClick={() => setSelectedEmailLanguage('he')}
+                    className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
+                      selectedEmailLanguage === 'he'
+                        ? 'bg-primary text-white border-primary'
+                        : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                    }`}
+                  >
+                    עברית
+                  </button>
+                </div>
+              </div>
+              
               {loadingContacts ? (
                 <div className="flex justify-center items-center py-8">
                   <span className="loading loading-spinner loading-md"></span>
@@ -3520,7 +4257,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           return;
                         }
                         
-                        handleSendEmail(selectedMeetingForNotify, allEmails);
+                        handleSendEmail(selectedMeetingForNotify, allEmails, client.name);
                       }}
                       className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
                     >
@@ -3542,7 +4279,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     .map((contact) => (
                       <button
                         key={contact.id}
-                        onClick={() => handleSendEmail(selectedMeetingForNotify, contact.email!)}
+                        onClick={() => handleSendEmail(selectedMeetingForNotify, contact.email!, contact.name)}
                         className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
                       >
                         <div className="flex items-center gap-3">
@@ -3563,7 +4300,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   {/* Client Email (fallback) */}
                   {client.email && contacts.filter(c => c.email && c.email !== '---').length === 0 && (
                     <button
-                      onClick={() => handleSendEmail(selectedMeetingForNotify, client.email)}
+                      onClick={() => handleSendEmail(selectedMeetingForNotify, client.email, client.name)}
                       className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-purple-50 hover:border-purple-300 transition-colors"
                     >
                       <div className="flex items-center gap-3">
@@ -3595,7 +4332,9 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           <div className="bg-white rounded-lg shadow-xl max-w-md w-full mx-4" onClick={(e) => e.stopPropagation()}>
             <div className="p-6">
               <div className="flex justify-between items-center mb-4">
-                <h3 className="text-lg font-semibold text-gray-900">Send WhatsApp Reminder</h3>
+                <h3 className="text-lg font-semibold text-gray-900">
+                  Send WhatsApp {whatsAppReminderType === 'missed_appointment' ? 'Missed Appointment' : 'Reminder'}
+                </h3>
                 <button
                   onClick={() => setShowWhatsAppNotifyModal(false)}
                   className="text-gray-400 hover:text-gray-600"
@@ -3628,6 +4367,18 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   >
                     English
                   </button>
+                  {whatsAppReminderType === 'missed_appointment' && (
+                    <button
+                      onClick={() => setSelectedLanguage('ru')}
+                      className={`flex-1 px-4 py-2 rounded-lg border transition-colors ${
+                        selectedLanguage === 'ru'
+                          ? 'bg-green-600 text-white border-green-600'
+                          : 'bg-white text-gray-700 border-gray-300 hover:bg-gray-50'
+                      }`}
+                    >
+                      Russian
+                    </button>
+                  )}
                 </div>
               </div>
               
@@ -3665,7 +4416,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                                 return;
                               }
                               
-                              handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, allPhones);
+                              handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, allPhones, whatsAppReminderType);
                             }}
                             className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
                           >
@@ -3692,7 +4443,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           return (
                             <button
                               key={contact.id}
-                              onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, phoneNumber)}
+                              onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, phoneNumber, whatsAppReminderType)}
                               className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
                             >
                               <div className="flex items-center gap-3">
@@ -3722,7 +4473,7 @@ const MeetingTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                             if (clientPhoneNumber) {
                               return (
                                 <button
-                                  onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, clientPhoneNumber)}
+                                  onClick={() => handleSendWhatsAppReminder(selectedMeetingForWhatsAppNotify, clientPhoneNumber, whatsAppReminderType)}
                                   className="w-full text-left px-4 py-3 border border-gray-200 rounded-lg hover:bg-green-50 hover:border-green-300 transition-colors"
                                 >
                                   <div className="flex items-center gap-3">

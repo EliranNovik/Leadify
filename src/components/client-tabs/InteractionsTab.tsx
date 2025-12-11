@@ -54,6 +54,7 @@ import { useAuthContext } from '../../contexts/AuthContext';
 import { fetchLeadContacts } from '../../lib/contactHelpers';
 import type { ContactInfo } from '../../lib/contactHelpers';
 import { fetchWhatsAppTemplates, type WhatsAppTemplate } from '../../lib/whatsappTemplates';
+import { replaceEmailTemplateParams } from '../../lib/emailTemplateParams';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -287,6 +288,85 @@ const extractHtmlBody = (html: string) => {
   return bodyMatch ? bodyMatch[1] : html;
 };
 
+// Helper function to format email HTML with line breaks and RTL support
+const formatEmailHtmlForDisplay = (html: string | null | undefined): string => {
+  if (!html) return '';
+  
+  // First extract body content if wrapped in body tags
+  let content = extractHtmlBody(html);
+  
+  // Normalize line endings first
+  content = content
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  
+  // Normalize multiple consecutive line breaks (collapse 3+ to 2 for paragraph spacing)
+  content = content.replace(/\n{3,}/g, '\n\n');
+  
+  // CRITICAL: Always convert \n to <br> tags, regardless of HTML structure
+  // Strategy: 
+  // 1. Protect existing <br> tags with a placeholder
+  // 2. Convert all newlines to <br> tags (even inside HTML tags - we'll handle this properly)
+  // 3. Restore original <br> tags
+  // 4. Clean up any <br> tags that ended up inside HTML tags
+  
+  const brPlaceholder = '__BR_PLACEHOLDER__';
+  
+  // Protect existing <br> tags (including self-closing variants)
+  content = content.replace(/<br\s*\/?>/gi, brPlaceholder);
+  
+  // Now convert ALL newlines to <br> tags, even those inside or between HTML tags
+  // Handle double newlines (paragraph breaks) separately
+  content = content.replace(/\n\n/g, '__PARA_BREAK__');
+  content = content.replace(/\n/g, '<br>');
+  content = content.replace(/__PARA_BREAK__/g, '<br><br>');
+  
+  // Restore the original <br> tags
+  content = content.replace(new RegExp(brPlaceholder, 'g'), '<br>');
+  
+  // Clean up <br> tags that ended up inside HTML tags (between < and >)
+  // This regex finds <br> tags that are inside HTML tag boundaries and removes them
+  content = content.replace(/<([^>]+)<br>([^>]*)>/gi, '<$1 $2>');
+  content = content.replace(/<([^>]*)<br>([^>]+)>/gi, '<$1 $2>');
+  
+  // Normalize whitespace around HTML tags (but preserve intentional spacing)
+  content = content.replace(/>\s+/g, '>');
+  content = content.replace(/\s+</g, '<');
+  
+  // Collapse 3+ consecutive <br> tags (with optional whitespace) to exactly 2
+  content = content.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
+  
+  // Remove any remaining newlines (shouldn't be any, but just in case)
+  content = content.replace(/\n/g, ' ');
+  
+  // Clean up excessive whitespace between tags
+  content = content.replace(/(>)\s{2,}(<)/g, '$1 $2');
+  
+  // Remove leading/trailing whitespace
+  content = content.trim();
+  
+  // Check if content contains Hebrew/RTL text
+  const textOnly = content.replace(/<[^>]*>/g, '');
+  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+  
+  // If content doesn't already have a wrapper div with direction, add one
+  // But only if it's plain content or doesn't already have direction attributes
+  const hasDirection = /dir\s*=\s*["'](rtl|ltr)["']/i.test(content);
+  const hasWrapperDiv = /^<div[^>]*dir/i.test(content.trim());
+  
+  if (!hasDirection && !hasWrapperDiv) {
+    // Wrap with proper direction and styling
+    if (isRTL) {
+      content = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
+    } else {
+      // Still wrap for consistent styling, but with LTR
+      content = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
+    }
+  }
+  
+  return content;
+};
+
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
   if (!rawContent) return '';
 
@@ -409,19 +489,59 @@ const convertBodyToHtml = (text: string) => {
     result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
   });
   
-  return result.replace(/\n/g, '<br>');
+  // Preserve line breaks: convert \n to <br>
+  result = result
+    .replace(/\r\n/g, '\n')  // Normalize line endings
+    .replace(/\r/g, '\n')    // Handle old Mac line endings
+    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+  
+  // Check if content contains Hebrew/RTL text
+  const textOnly = result.replace(/<[^>]*>/g, '');
+  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+  
+  // Wrap with proper direction and styling
+  if (isRTL) {
+    result = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
+  } else {
+    result = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
+  }
+  
+  return result;
 };
 
 const escapeRegExp = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
-const replaceTemplateTokens = (content: string, client: any) => {
+const replaceTemplateTokens = async (content: string, client: any) => {
   if (!content) return '';
-  return content
-    .replace(/\{client_name\}/gi, client?.name || 'Client')
-    .replace(/\{lead_number\}/gi, client?.lead_number || '')
-    .replace(/\{topic\}/gi, client?.topic || '')
-    .replace(/\{closer_name\}/gi, client?.closer || '')
-    .replace(/\{lead_type\}/gi, client?.lead_type || '');
+  
+  const isLegacyLead = client?.lead_type === 'legacy' || 
+                       (client?.id && typeof client.id === 'string' && client.id.startsWith('legacy_'));
+  
+  // Determine client ID and legacy ID
+  let clientId: string | null = null;
+  let legacyId: number | null = null;
+  
+  if (isLegacyLead) {
+    if (client?.id) {
+      const numeric = parseInt(client.id.toString().replace(/[^0-9]/g, ''), 10);
+      legacyId = isNaN(numeric) ? null : numeric;
+      clientId = legacyId?.toString() || null;
+    }
+  } else {
+    clientId = client?.id || null;
+  }
+  
+  const context = {
+    clientId,
+    legacyId,
+    clientName: client?.name || null,
+    contactName: client?.name || null,
+    leadNumber: client?.lead_number || null,
+    topic: client?.topic || null,
+    leadType: client?.lead_type || null,
+  };
+  
+  return await replaceEmailTemplateParams(content, context);
 };
 
 // Check if an email is from the office domain (always team/user, never client)
@@ -522,17 +642,27 @@ async function fetchCurrentUserFullName() {
 // Utility to sanitize email HTML for modal view - preserve Outlook formatting
 function sanitizeEmailHtml(html: string): string {
   return sanitizeHtml(html, {
-    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
+    allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img', 'table', 'tbody', 'tr', 'td', 'th', 'thead', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'],
     allowedAttributes: {
-      a: ['href', 'target', 'rel'],
-      span: ['style', 'dir'],
-      div: ['style', 'dir'],
-      p: ['style', 'dir'],
+      a: ['href', 'target', 'rel', 'style'],
+      span: ['style', 'dir', 'class', 'data-icon'],
+      div: ['style', 'dir', 'class'],
+      p: ['style', 'dir', 'class'],
       body: ['style', 'dir'],
-      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin'],
+      img: ['src', 'alt', 'style', 'width', 'height', 'crossorigin', 'class'],
+      td: ['style', 'dir', 'colspan', 'rowspan', 'align'],
+      th: ['style', 'dir', 'colspan', 'rowspan', 'align'],
+      tr: ['style'],
+      table: ['style', 'width', 'border', 'cellpadding', 'cellspacing'],
+      '*': ['style', 'dir'], // Allow style and dir on any allowed tag
     },
-    allowedSchemes: ['http', 'https', 'mailto'],
+    allowedSchemes: ['http', 'https', 'mailto', 'data'],
     disallowedTagsMode: 'discard',
+    // Preserve whitespace and structure better
+    textFilter: (text) => {
+      // Preserve Unicode characters including emojis
+      return text;
+    },
   });
 }
 
@@ -878,11 +1008,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     handleCancelComposeLink();
   };
 
-  const handleComposeTemplateSelect = (template: EmailTemplate) => {
+  const handleComposeTemplateSelect = async (template: EmailTemplate) => {
     setSelectedComposeTemplateId(template.id);
-    const templatedBody = replaceTemplateTokens(template.content, client);
+    const templatedBody = await replaceTemplateTokens(template.content, client);
     if (template.subject && template.subject.trim()) {
-      setComposeSubject(replaceTemplateTokens(template.subject, client));
+      const templatedSubject = await replaceTemplateTokens(template.subject, client);
+      setComposeSubject(templatedSubject || template.subject);
     }
     setComposeBody(templatedBody || template.content || template.rawContent);
     setComposeTemplateSearch(template.name);
@@ -2340,8 +2471,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const emailInteractions = sortedEmails.map((e: any) => {
           const emailDate = new Date(e.sent_at);
           
-          const bodyHtml = e.body_html ? extractHtmlBody(e.body_html) : null;
-          const bodyPreview = e.body_preview || '';
+          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
+          const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
+          const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
           const body = bodyHtml || bodyPreview || e.subject || '';
           
           // Determine if email is from team/user based on sender email domain
@@ -2408,8 +2540,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         const formattedEmailsForModal = sortedEmails.slice(0, EMAIL_MODAL_LIMIT).map((e: any) => {
           const previewSource = e.body_html || e.body_preview || e.subject || '';
+          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
           const previewHtmlSource = previewSource
-            ? (/<[a-z][\s\S]*>/i.test(previewSource) ? extractHtmlBody(previewSource) : convertBodyToHtml(previewSource))
+            ? (/<[a-z][\s\S]*>/i.test(previewSource) 
+                ? formatEmailHtmlForDisplay(previewSource) 
+                : convertBodyToHtml(previewSource))
             : '';
           const sanitizedPreviewBase = previewHtmlSource ? sanitizeEmailHtml(previewHtmlSource) : '';
           const sanitizedPreview = sanitizedPreviewBase || sanitizeEmailHtml(convertBodyToHtml(e.subject || ''));
@@ -2639,7 +2774,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const rawContent = await fetchEmailBodyFromBackend(userId, message.id);
             if (!rawContent || typeof rawContent !== 'string') return;
 
-            const cleanedHtml = sanitizeEmailHtml(extractHtmlBody(rawContent));
+            // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
+            const formattedHtml = formatEmailHtmlForDisplay(rawContent);
+            const cleanedHtml = sanitizeEmailHtml(formattedHtml);
             const previewHtml =
               cleanedHtml && cleanedHtml.trim()
                 ? cleanedHtml
@@ -2755,27 +2892,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
           const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
           
-          // Preserve original Outlook HTML as much as possible
+          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
           let cleanedHtml = null;
           if (rawHtml) {
-            const bodyMatch = rawHtml.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-            if (bodyMatch) {
-              // Extract body content but preserve the inner HTML structure
-              cleanedHtml = bodyMatch[1];
-            } else {
-              // No body tags, use as-is
-              cleanedHtml = rawHtml;
-            }
+            cleanedHtml = formatEmailHtmlForDisplay(rawHtml);
           }
           
           let cleanedPreview = null;
           if (rawPreview) {
-            const previewMatch = rawPreview.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
-            if (previewMatch) {
-              cleanedPreview = previewMatch[1];
-            } else {
-              cleanedPreview = rawPreview;
-            }
+            cleanedPreview = formatEmailHtmlForDisplay(rawPreview);
           } else if (cleanedHtml) {
             cleanedPreview = cleanedHtml;
           }
@@ -2783,6 +2908,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const fallbackText = cleanedPreview || cleanedHtml || e.subject || '';
           
           // Sanitize but preserve Outlook's direction and style attributes
+          // Note: formatEmailHtmlForDisplay already handles line breaks and RTL, so we just sanitize
           const sanitizedHtml = cleanedHtml ? sanitizeEmailHtml(cleanedHtml) : null;
           const sanitizedPreview = cleanedPreview
             ? sanitizeEmailHtml(cleanedPreview)
@@ -2806,13 +2932,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             senderDisplayName = employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null;
           }
           
+          // Prefer body_html over body_preview for better formatting (body_html has <br> tags)
+          const finalBody = sanitizedHtml || sanitizedPreview || '';
+          
           return {
           id: e.message_id,
           subject: e.subject,
           from: senderEmail,
           to: e.recipient_list,
           date: e.sent_at,
-            bodyPreview: sanitizedPreview || '',
+            bodyPreview: finalBody,
           direction: correctedDirection,
           attachments: e.attachments,
           contact_id: e.contact_id,
@@ -4434,9 +4563,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   className="prose prose-sm max-w-none text-gray-700 break-words email-content"
                                   style={{ 
                                     wordBreak: 'break-word', 
-                                    overflowWrap: 'anywhere'
+                                    overflowWrap: 'anywhere',
+                                    whiteSpace: 'normal', // Use normal wrapping since we handle breaks with <br> tags
+                                    lineHeight: '1.6' // Ensure proper line spacing
                                   }}
-                                  dir="auto"
+                                  dir={containsRTL(message.bodyPreview) ? 'rtl' : 'auto'}
                                 />
                               ) : (
                                 <div className="text-gray-500 italic">No content available</div>

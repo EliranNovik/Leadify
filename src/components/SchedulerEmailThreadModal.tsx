@@ -13,6 +13,7 @@ import {
 } from '../lib/mailboxApi';
 import { fetchLeadContacts } from '../lib/contactHelpers';
 import type { ContactInfo } from '../lib/contactHelpers';
+import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 
 const normalizeEmailForFilter = (value?: string | null) =>
   value ? value.trim().toLowerCase() : '';
@@ -210,7 +211,26 @@ const convertBodyToHtml = (text: string) => {
     const safeUrl = url.replace(/"/g, '&quot;');
     return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
   });
-  return escaped.replace(/\n/g, '<br>');
+  
+  // Preserve line breaks: convert \n to <br>
+  let html = escaped
+    .replace(/\r\n/g, '\n')  // Normalize line endings
+    .replace(/\r/g, '\n')    // Handle old Mac line endings
+    .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+  
+  // Check if content contains Hebrew/RTL text using helper function (defined later in component)
+  // For now, use inline check to avoid dependency issues
+  const textOnly = html.replace(/<[^>]*>/g, '');
+  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
+  
+  // Wrap with proper direction and styling
+  if (isRTL) {
+    html = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${html}</div>`;
+  } else {
+    html = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${html}</div>`;
+  }
+  
+  return html;
 };
 
 // Filter out problematic image URLs that are known to be blocked by CORS
@@ -272,13 +292,37 @@ const sanitizeEmailHtml = (html: string): string => {
   });
 };
 
-const replaceTemplateTokens = (content: string, client: SchedulerEmailThreadModalProps['client']) => {
+const replaceTemplateTokens = async (content: string, client: SchedulerEmailThreadModalProps['client']) => {
   if (!content) return '';
-  return content
-    .replace(/\{client_name\}/gi, client?.name || 'Client')
-    .replace(/\{lead_number\}/gi, client?.lead_number || '')
-    .replace(/\{topic\}/gi, client?.topic || '')
-    .replace(/\{lead_type\}/gi, client?.lead_type || '');
+  
+  const isLegacyLead = client?.lead_type === 'legacy' || 
+                       (client?.id && client.id.toString().startsWith('legacy_'));
+  
+  // Determine client ID and legacy ID
+  let clientId: string | null = null;
+  let legacyId: number | null = null;
+  
+  if (isLegacyLead) {
+    if (client?.id) {
+      const numeric = parseInt(client.id.toString().replace(/[^0-9]/g, ''), 10);
+      legacyId = isNaN(numeric) ? null : numeric;
+      clientId = legacyId?.toString() || null;
+    }
+  } else {
+    clientId = client?.id || null;
+  }
+  
+  const context = {
+    clientId,
+    legacyId,
+    clientName: client?.name || null,
+    contactName: client?.name || null,
+    leadNumber: client?.lead_number || null,
+    topic: client?.topic || null,
+    leadType: client?.lead_type || null,
+  };
+  
+  return await replaceEmailTemplateParams(content, context);
 };
 
 // Check if an email is from the office domain (always team/user, never client)
@@ -1232,6 +1276,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   const handleTemplateSelect = (template: EmailTemplate) => {
     setSelectedTemplateId(template.id);
+    // Use parsed content which preserves line breaks from DB
     setComposeBody(template.content);
     setComposeSubject(template.subject || `[${client?.lead_number}] - ${client?.name} - ${client?.topic || ''}]`);
     setShowLinkForm(false);

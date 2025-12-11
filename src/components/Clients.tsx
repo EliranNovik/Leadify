@@ -66,6 +66,8 @@ import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../lib/graph';
+import { sendEmailViaBackend } from '../lib/mailboxApi';
+import { useAuthContext } from '../contexts/AuthContext';
 import { ClientInteractionsCache, ClientTabProps } from '../types/client';
 import { useAdminRole } from '../hooks/useAdminRole';
 import {
@@ -79,6 +81,7 @@ import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
+import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
 
 const getContrastingTextColor = (hexColor?: string | null) => {
   if (!hexColor) return '#111827';
@@ -294,11 +297,204 @@ async function fetchCurrentUserFullName() {
   }
 }
 
+// Helper function to detect RTL text (Hebrew)
+const containsRTL = (text?: string | null): boolean => {
+  if (!text) return false;
+  return /[\u0590-\u05FF]/.test(text);
+};
+
+// Helper function to parse template content from database
+const parseTemplateContent = (rawContent: string | null | undefined): string => {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) => {
+    if (!text) return '';
+    return text
+      .split('\n')
+      .map(line => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+  };
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        const text = ops
+          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+          .join('');
+        return sanitizeTemplateText(text);
+      }
+    } catch (error) {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) {
+      text = htmlMatch[1];
+    }
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) {
+    return text;
+  }
+
+  text = tryParseDelta(
+    rawContent
+      .replace(/^"|"$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  );
+  if (text !== null) {
+    return text;
+  }
+
+  const normalised = rawContent
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    const combined = inserts.join('');
+    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return sanitizeTemplateText(decoded);
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+};
+
+// Helper function to preserve line breaks and format HTML with RTL support
+const formatEmailBody = async (
+  template: string,
+  recipientName: string,
+  context?: {
+    client?: any;
+    meeting?: any;
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingLocation?: string;
+    meetingLink?: string;
+  }
+): Promise<string> => {
+  if (!template) return '';
+  
+  let htmlBody = template;
+  
+  // If context is provided, use centralized template replacement
+  if (context?.client || context?.meeting) {
+    const isLegacyLead = context.client?.lead_type === 'legacy' ||
+                         (context.client?.id && context.client.id.toString().startsWith('legacy_'));
+    
+    let clientId: string | null = null;
+    let legacyId: number | null = null;
+    
+    if (isLegacyLead) {
+      if (context.client?.id) {
+        const numeric = parseInt(context.client.id.toString().replace(/[^0-9]/g, ''), 10);
+        legacyId = isNaN(numeric) ? null : numeric;
+        clientId = legacyId?.toString() || null;
+      }
+    } else {
+      clientId = context.client?.id || null;
+    }
+    
+    const templateContext = {
+      clientId,
+      legacyId,
+      clientName: context.client?.name || recipientName,
+      contactName: recipientName,
+      leadNumber: context.client?.lead_number || null,
+      topic: context.client?.topic || null,
+      leadType: context.client?.lead_type || null,
+      meetingDate: context.meetingDate || null,
+      meetingTime: context.meetingTime || null,
+      meetingLocation: context.meetingLocation || null,
+      meetingLink: context.meetingLink || null,
+    };
+    
+    htmlBody = await replaceEmailTemplateParams(template, templateContext);
+  } else {
+    // Fallback: just replace {name} for backward compatibility
+    htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
+  }
+  
+  // CRITICAL: Always preserve line breaks by converting \n to <br> tags
+  // Normalize line endings first
+  htmlBody = htmlBody
+    .replace(/\r\n/g, '\n')
+    .replace(/\r/g, '\n');
+  
+  // Normalize multiple consecutive line breaks (collapse 3+ to 2 for paragraph spacing)
+  htmlBody = htmlBody.replace(/\n{3,}/g, '\n\n');
+  
+  // Protect existing <br> tags with a placeholder
+  const brPlaceholder = '__BR_PLACEHOLDER_TEMP__';
+  htmlBody = htmlBody.replace(/<br\s*\/?>/gi, brPlaceholder);
+  
+  // Convert all remaining newlines to <br> tags
+  // Handle double newlines (paragraph breaks) separately
+  htmlBody = htmlBody.replace(/\n\n/g, '__PARA_BREAK_TEMP__');
+  htmlBody = htmlBody.replace(/\n/g, '<br>');
+  htmlBody = htmlBody.replace(/__PARA_BREAK_TEMP__/g, '<br><br>');
+  
+  // Restore original <br> tags
+  htmlBody = htmlBody.replace(new RegExp(brPlaceholder, 'g'), '<br>');
+  
+  // Clean up any <br> tags that ended up inside HTML tag boundaries
+  htmlBody = htmlBody.replace(/<([^>]+)<br>([^>]*)>/gi, '<$1 $2>');
+  htmlBody = htmlBody.replace(/<([^>]*)<br>([^>]+)>/gi, '<$1 $2>');
+  
+  // Collapse 3+ consecutive <br> tags to exactly 2
+  htmlBody = htmlBody.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
+  
+  // Detect if content contains Hebrew/RTL text
+  const isRTL = containsRTL(htmlBody);
+  
+  // Wrap in div with proper direction and styling
+  if (isRTL) {
+    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  } else {
+    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  }
+  
+  return htmlBody;
+};
+
 const Clients: React.FC<ClientsProps> = ({
   selectedClient,
   setSelectedClient,
   refreshClientData,
 }) => {
+  const { user } = useAuthContext();
+  const userId = user?.id ?? null;
+  
   // Removed excessive console.log statements for performance
   // State to store all employees for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
@@ -5838,32 +6034,136 @@ useEffect(() => {
           }
         }
         
-        const userName = account?.name || 'Staff';
-        let signature = (account && (account as any).signature) ? (account as any).signature : null;
-        if (!signature) {
-          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+        // Get language_id from client
+        const isLegacyLeadForCancel = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+        let clientLanguageId: number | null = null;
+        
+        if (isLegacyLeadForCancel) {
+          if ((selectedClient as any).language_id) {
+            clientLanguageId = (selectedClient as any).language_id;
+          } else {
+            const legacyId = selectedClient.id.toString().replace('legacy_', '');
+            const { data: legacyData } = await supabase
+              .from('leads_lead')
+              .select('language_id')
+              .eq('id', legacyId)
+              .single();
+            clientLanguageId = legacyData?.language_id || null;
+          }
+        } else {
+          if ((selectedClient as any).language_id) {
+            clientLanguageId = (selectedClient as any).language_id;
+          } else {
+            const { data: leadData } = await supabase
+              .from('leads')
+              .select('language_id')
+              .eq('id', selectedClient.id)
+              .single();
+            clientLanguageId = leadData?.language_id || null;
+          }
         }
         
-        const emailBody = `
-          <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-            <p>Dear ${selectedClient.name},</p>
-            <p>We regret to inform you that your meeting scheduled for:</p>
-            <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-              <li><strong>Date:</strong> ${canceledMeeting.meeting_date}</li>
-              <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : ''}</li>
-              <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
-            </ul>
-            <p>has been canceled.</p>
-            <p>If you have any questions or would like to reschedule, please let us know.</p>
-            <div style='margin-top:32px;'>${signature}</div>
-          </div>
-        `;
+        // Fetch email template by name ('cancellation') and language_id
+        let templateContent: string | null = null;
+        try {
+          console.log('📧 Fetching cancellation email template:', { clientLanguageId, isLegacyLeadForCancel });
+          
+          if (!clientLanguageId) {
+            console.warn('⚠️ No language_id found for client, cannot fetch template');
+          } else {
+            const { data: template, error: templateError } = await supabase
+              .from('misc_emailtemplate')
+              .select('content')
+              .eq('name', 'cancellation')
+              .eq('language_id', clientLanguageId)
+              .single();
+            
+            if (templateError) {
+              console.error('❌ Error fetching cancellation email template:', templateError);
+            } else if (template && template.content) {
+              const parsed = parseTemplateContent(template.content);
+              templateContent = parsed && parsed.trim() ? parsed : template.content;
+              console.log('✅ Cancellation email template fetched successfully', {
+                languageId: clientLanguageId,
+                rawLength: template.content.length,
+                parsedLength: parsed?.length || 0,
+                finalLength: templateContent?.length || 0,
+                usingRaw: !parsed || !parsed.trim()
+              });
+            }
+          }
+        } catch (error) {
+          console.error('❌ Exception fetching cancellation email template:', error);
+        }
+        
+        const formattedDate = canceledMeeting.meeting_date ? new Date(canceledMeeting.meeting_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
+        const formattedTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
+        const locationName = canceledMeeting.meeting_location || 'Teams';
+        
+        // Build email body using template or fallback
+        let emailBody: string;
+        if (templateContent && templateContent.trim()) {
+          console.log('✅ Using cancellation email template');
+          emailBody = await formatEmailBody(templateContent, selectedClient.name, {
+            client: selectedClient,
+            meeting: canceledMeeting,
+            meetingDate: formattedDate,
+            meetingTime: formattedTime,
+            meetingLocation: locationName,
+          });
+        } else {
+          console.warn('⚠️ Using fallback hardcoded email template for cancellation');
+          const userName = account?.name || 'Staff';
+          let signature = (account && (account as any).signature) ? (account as any).signature : null;
+          if (!signature) {
+            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
+          }
+          emailBody = `
+            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+              <p>Dear ${selectedClient.name},</p>
+              <p>We regret to inform you that your meeting scheduled for:</p>
+              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                <li><strong>Date:</strong> ${formattedDate}</li>
+                <li><strong>Time:</strong> ${formattedTime}</li>
+                <li><strong>Location:</strong> ${locationName}</li>
+              </ul>
+              <p>has been canceled.</p>
+              <p>If you have any questions or would like to reschedule, please let us know.</p>
+              <div style='margin-top:32px;'>${signature}</div>
+            </div>
+          `;
+        }
+        
         const subject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
-        await sendEmail(accessToken, {
-          to: selectedClient.email,
-          subject,
-          body: emailBody,
-        });
+        
+        // Use sendEmailViaBackend to save email to database with proper context
+        if (userId) {
+          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+          const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
+          
+          await sendEmailViaBackend({
+            userId,
+            subject,
+            bodyHtml: emailBody,
+            to: [selectedClient.email],
+            context: {
+              clientId: !isLegacyLead ? selectedClient.id : null,
+              legacyLeadId: isLegacyLead ? legacyId : null,
+              leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+              leadNumber: selectedClient.lead_number || null,
+              contactEmail: selectedClient.email || null,
+              contactName: selectedClient.name || null,
+              senderName: account?.name || 'Staff',
+            },
+          });
+        } else {
+          // Fallback to old method if userId not available
+          await sendEmail(accessToken, {
+            to: selectedClient.email,
+            subject,
+            body: emailBody,
+          });
+        }
       }
 
       // 4. Update stage to "Meeting rescheduling" (ID 21)
@@ -5888,30 +6188,40 @@ useEffect(() => {
     
     setIsReschedulingMeeting(true);
     
-    // Check if we're in stage 21 and no meeting is selected - allow rescheduling without canceling
-    const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
-                        (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
-    const isStage21 = currentStage === 21;
+    // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
+    // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
+    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+    const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
     
-    // Determine which meeting to cancel:
-    // 1. If a meeting is explicitly selected, use that
-    // 2. If no meeting is selected but we're not in stage 21, auto-select the first upcoming meeting
-    // 3. If we're in stage 21 and no meeting is selected, don't cancel anything
-    let meetingIdToCancel = meetingToDelete;
-    if (!meetingIdToCancel && !isStage21 && rescheduleMeetings.length > 0) {
-      // Auto-select the first (most recent) upcoming meeting to cancel
-      meetingIdToCancel = rescheduleMeetings[0]?.id;
+    // Query for the oldest upcoming meeting to cancel
+    let query = supabase
+      .from('meetings')
+      .select('id, meeting_date, meeting_time, meeting_location')
+      .neq('status', 'canceled')
+      .gte('meeting_date', new Date().toISOString().split('T')[0])
+      .order('meeting_date', { ascending: true })
+      .order('meeting_time', { ascending: true })
+      .limit(1);
+    
+    if (isLegacyLead) {
+      query = query.eq('legacy_lead_id', legacyId);
+    } else {
+      query = query.eq('client_id', selectedClient.id);
     }
     
-    const shouldCancelMeeting = meetingIdToCancel && !isStage21;
+    const { data: upcomingMeetingsToCancel, error: queryError } = await query;
     
-    try {
-      const account = instance.getAllAccounts()[0];
+    let canceledMeeting = null;
+    let meetingIdToCancel: number | null = null;
+    
+    if (queryError) {
+      console.error('❌ Error querying for meetings to cancel:', queryError);
+    } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
+      meetingIdToCancel = upcomingMeetingsToCancel[0].id;
+      console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
       
-      let canceledMeeting = null;
-      
-      // 1. Cancel the selected meeting only if we have a meeting to cancel and not in stage 21 without selection
-      if (shouldCancelMeeting && meetingIdToCancel) {
+      try {
+        const account = instance.getAllAccounts()[0];
         const { data: { user } } = await supabase.auth.getUser();
         const editor = user?.email || account?.name || 'system';
         const { error: cancelError } = await supabase
@@ -5923,9 +6233,11 @@ useEffect(() => {
           })
           .eq('id', meetingIdToCancel);
         
-        if (cancelError) throw cancelError;
+        if (cancelError) {
+          console.error('❌ Failed to cancel old meeting:', cancelError);
+          throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
+        }
 
-        // Get canceled meeting details for email
         const { data: canceledMeetingData } = await supabase
           .from('meetings')
           .select('*')
@@ -5933,7 +6245,17 @@ useEffect(() => {
           .single();
         
         canceledMeeting = canceledMeetingData;
+        console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
+      } catch (error) {
+        console.error('❌ Error canceling meeting:', error);
+        throw error;
       }
+    } else {
+      console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
+    }
+    
+    try {
+      const account = instance.getAllAccounts()[0];
 
       // Get current user's full_name from database to match scheduler dropdown values
       let currentUserFullName = '';
@@ -6038,97 +6360,18 @@ useEffect(() => {
       const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
 
       // 2. Create the new meeting
+      // Note: We don't create the calendar event here - it will be created later with the attendee
+      // For Teams meetings, we'll get the URL from createCalendarEventWithAttendee
       let teamsMeetingUrl = '';
       const selectedLocation = meetingLocations.find(
         loc => loc.name === rescheduleFormData.location
       );
 
-      // If this is a Teams meeting, create an online event via Graph as before.
-      // Otherwise, if the chosen location has a default_link, use that as the join URL.
-      if (rescheduleFormData.location === 'Teams') {
-        let accessToken;
-        try {
-          const response = await instance.acquireTokenSilent({ ...loginRequest, account });
-          accessToken = response.accessToken;
-        } catch (error) {
-          if (error instanceof InteractionRequiredAuthError) {
-            const response = await instance.loginPopup(loginRequest);
-            accessToken = response.accessToken;
-          } else {
-            throw error;
-          }
-        }
-
-        // Convert date and time to start/end times
-        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
-        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-        const start = new Date(year, month - 1, day, hours, minutes);
-        const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
-
-        // Test calendar access first
-        const calendarEmail = rescheduleFormData.calendar === 'active_client' 
-          ? 'shared-newclients@lawoffice.org.il' 
-          : 'shared-potentialclients@lawoffice.org.il';
-        
-        console.log('🔍 Testing calendar access for:', calendarEmail);
-        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-        
-        if (!hasAccess) {
-          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
-            duration: 5000,
-            position: 'top-right',
-            style: {
-              background: '#ef4444',
-              color: '#fff',
-              fontWeight: '500',
-              maxWidth: '500px',
-            },
-            icon: '🔒',
-          });
-          return;
-        }
-
-        // Create calendar event with client name, category, and lead number in subject
-        const categoryName = selectedClient.category || 'No Category';
-        const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
-        
-        try {
-          const calendarEventData = await createCalendarEvent(accessToken, {
-            subject: meetingSubject,
-            startDateTime: start.toISOString(),
-            endDateTime: end.toISOString(),
-            location: rescheduleFormData.location,
-            calendar: rescheduleFormData.calendar,
-            manager: rescheduleFormData.manager,
-            helper: rescheduleFormData.helper,
-            attendance_probability: rescheduleFormData.attendance_probability,
-            complexity: rescheduleFormData.complexity,
-            car_number: rescheduleFormData.car_number,
-            expert: selectedClient.expert || '---',
-            amount: 0,
-            currency: '₪',
-          });
-          teamsMeetingUrl = calendarEventData.joinUrl;
-          console.log('✅ Teams meeting URL set to:', teamsMeetingUrl);
-        } catch (calendarError) {
-          console.error('❌ Calendar creation failed:', calendarError);
-          const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
-          toast.error(`Failed to create calendar event: ${errorMessage}`, {
-            duration: 6000,
-            position: 'top-right',
-            style: {
-              background: '#ef4444',
-              color: '#fff',
-              fontWeight: '500',
-              maxWidth: '500px',
-            },
-          });
-          return;
-        }
-      } else if (selectedLocation?.default_link) {
-        // For non-Teams online locations, use the default_link from tenants_meetinglocation
+      // For non-Teams online locations, use the default_link from tenants_meetinglocation
+      if (selectedLocation?.default_link && rescheduleFormData.location !== 'Teams') {
         teamsMeetingUrl = selectedLocation.default_link;
       }
+      // For Teams meetings, the URL will be generated by createCalendarEventWithAttendee later
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
@@ -6177,7 +6420,8 @@ useEffect(() => {
       
       // If we canceled a meeting, update to stage 21. If we're already in stage 21 and just creating a new meeting, stay in stage 21
       // If we're in stage 20 and rescheduling, update to stage 21
-      const shouldUpdateStage = shouldCancelMeeting || currentStage !== 21;
+      // Since we now always automatically cancel the oldest meeting when rescheduling, check if we actually canceled one
+      const shouldUpdateStage = canceledMeeting !== null || currentStage !== 21;
       const rescheduledStageId = 21; // Meeting rescheduled
 
       if (shouldUpdateStage) {
@@ -6291,44 +6535,179 @@ useEffect(() => {
             </div>`
           : '';
         
+        // Determine client language to select correct template ID
+        // Template IDs: 155 for English, 156 for Hebrew
+        let templateContent: string | null = null;
+        
+        if (canceledMeeting) {
+          try {
+            // Get language_id from client to determine language
+            let clientLanguageId: number | null = null;
+            
+            if (isLegacyLead) {
+              if ((selectedClient as any).language_id) {
+                clientLanguageId = (selectedClient as any).language_id;
+              } else {
+                const legacyIdForReschedule = selectedClient.id.toString().replace('legacy_', '');
+                const { data: legacyData } = await supabase
+                  .from('leads_lead')
+                  .select('language_id')
+                  .eq('id', legacyIdForReschedule)
+                  .single();
+                clientLanguageId = legacyData?.language_id || null;
+              }
+            } else {
+              if ((selectedClient as any).language_id) {
+                clientLanguageId = (selectedClient as any).language_id;
+              } else {
+                const { data: leadData } = await supabase
+                  .from('leads')
+                  .select('language_id')
+                  .eq('id', selectedClient.id)
+                  .single();
+                clientLanguageId = leadData?.language_id || null;
+              }
+            }
+            
+            // Get language name from language_id to determine if Hebrew or English
+            let templateId: number = 155; // Default to English
+            if (clientLanguageId) {
+              const { data: languageData } = await supabase
+                .from('misc_language')
+                .select('name')
+                .eq('id', clientLanguageId)
+                .single();
+              
+              const languageName = languageData?.name?.toLowerCase() || '';
+              const isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
+              templateId = isHebrew ? 156 : 155; // HE: 156, EN: 155
+              
+              console.log('📧 Fetching rescheduled email template:', { 
+                clientLanguageId, 
+                languageName, 
+                isHebrew, 
+                templateId 
+              });
+            } else {
+              console.warn('⚠️ No language_id found for client, defaulting to English template (155)');
+            }
+            
+            // Fetch email template by ID
+            const { data: template, error: templateError } = await supabase
+              .from('misc_emailtemplate')
+              .select('content')
+              .eq('id', templateId)
+              .single();
+            
+            if (templateError) {
+              console.error('❌ Error fetching rescheduled email template:', templateError);
+            } else if (template && template.content) {
+              const parsed = parseTemplateContent(template.content);
+              templateContent = parsed && parsed.trim() ? parsed : template.content;
+              console.log('✅ Rescheduled email template fetched successfully', {
+                templateId,
+                rawLength: template.content.length,
+                parsedLength: parsed?.length || 0,
+                finalLength: templateContent?.length || 0,
+                usingRaw: !parsed || !parsed.trim()
+              });
+            }
+          } catch (error) {
+            console.error('❌ Exception fetching rescheduled email template:', error);
+          }
+        }
+        
+        // Format dates and times
+        const formatDate = (dateStr: string): string => {
+          const [year, month, day] = dateStr.split('-');
+          return `${day}/${month}/${year}`;
+        };
+        const formattedNewDate = formatDate(rescheduleFormData.date);
+        const formattedNewTime = rescheduleFormData.time.substring(0, 5);
+        const formattedOldDate = canceledMeeting?.meeting_date ? formatDate(canceledMeeting.meeting_date) : '';
+        const formattedOldTime = canceledMeeting?.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
+        const newLocationName = rescheduleFormData.location;
+        const oldLocationName = canceledMeeting?.meeting_location || 'Teams';
+        
         // Build email body based on whether we canceled a meeting or not
         let emailBody = '';
         let emailSubject = '';
         
         if (canceledMeeting) {
-          // Meeting was canceled and rescheduled
-          emailBody = `
-            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-              <p>Dear ${selectedClient.name},</p>
-              <p>We regret to inform you that your previous meeting scheduled for:</p>
-              <ul style='margin:16px 0 16px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${canceledMeeting.meeting_date || 'N/A'}</li>
-                <li><strong>Time:</strong> ${canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : 'N/A'}</li>
-                <li><strong>Location:</strong> ${canceledMeeting.meeting_location || 'Teams'}</li>
-              </ul>
-              <p>has been canceled. Please find below the details for your new meeting:</p>
-              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
-                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
-                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
-              </ul>
-              ${joinButton}
-              <p>Please check the calendar invitation attached for the exact meeting time.</p>
-              <p>If you have any questions or need to reschedule again, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
-            </div>
-          `;
+          // Meeting was canceled and rescheduled - use template if available
+          if (templateContent && templateContent.trim()) {
+            console.log('✅ Using rescheduled email template');
+            // For rescheduled meetings, we need to replace template parameters
+            // First replace standard parameters using the centralized function
+            let templatedBody = await replaceEmailTemplateParams(templateContent, {
+              clientName: selectedClient.name,
+              contactName: selectedClient.name,
+              leadNumber: selectedClient.lead_number || null,
+              topic: selectedClient.topic || null,
+              leadType: selectedClient.lead_type || null,
+              clientId: isLegacyLead ? null : selectedClient.id,
+              legacyId: isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null,
+              meetingDate: formattedNewDate,
+              meetingTime: formattedNewTime,
+              meetingLocation: newLocationName,
+              meetingLink: meetingLink || undefined,
+            });
+            
+            // Manually replace old meeting details if the template has those placeholders
+            // Common placeholders might be: {old_date}, {old_time}, {old_location}
+            templatedBody = templatedBody
+              .replace(/\{old_date\}/gi, formattedOldDate)
+              .replace(/\{old_time\}/gi, formattedOldTime)
+              .replace(/\{old_location\}/gi, oldLocationName)
+              .replace(/\{previous_date\}/gi, formattedOldDate)
+              .replace(/\{previous_time\}/gi, formattedOldTime)
+              .replace(/\{previous_location\}/gi, oldLocationName);
+            
+            // Then format with RTL support
+            emailBody = await formatEmailBody(templatedBody, selectedClient.name, {
+              client: selectedClient,
+              meeting: canceledMeeting,
+              meetingDate: formattedNewDate,
+              meetingTime: formattedNewTime,
+              meetingLocation: newLocationName,
+              meetingLink: meetingLink || undefined,
+            });
+          } else {
+            console.warn('⚠️ Using fallback hardcoded email template for rescheduled');
+            // Fallback to hardcoded email
+            emailBody = `
+              <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+                <p>Dear ${selectedClient.name},</p>
+                <p>We regret to inform you that your previous meeting scheduled for:</p>
+                <ul style='margin:16px 0 16px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedOldDate}</li>
+                  <li><strong>Time:</strong> ${formattedOldTime}</li>
+                  <li><strong>Location:</strong> ${oldLocationName}</li>
+                </ul>
+                <p>has been canceled. Please find below the details for your new meeting:</p>
+                <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedNewDate}</li>
+                  <li><strong>Time:</strong> ${formattedNewTime}</li>
+                  <li><strong>Location:</strong> ${newLocationName}</li>
+                </ul>
+                ${joinButton}
+                <p>Please check the calendar invitation attached for the exact meeting time.</p>
+                <p>If you have any questions or need to reschedule again, please let us know.</p>
+                <div style='margin-top:32px;'>${signature}</div>
+              </div>
+            `;
+          }
           emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
         } else {
-          // Just scheduling a new meeting (stage 21, no meeting to cancel)
+          // Just scheduling a new meeting (no meeting to cancel) - use regular invitation template or fallback
           emailBody = `
             <div style='font-family:sans-serif;font-size:16px;color:#222;'>
               <p>Dear ${selectedClient.name},</p>
               <p>We have scheduled a new meeting for you. Please find the details below:</p>
               <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${rescheduleFormData.date}</li>
-                <li><strong>Time:</strong> ${rescheduleFormData.time}</li>
-                <li><strong>Location:</strong> ${rescheduleFormData.location}</li>
+                <li><strong>Date:</strong> ${formattedNewDate}</li>
+                <li><strong>Time:</strong> ${formattedNewTime}</li>
+                <li><strong>Location:</strong> ${newLocationName}</li>
               </ul>
               ${joinButton}
               <p>Please check the calendar invitation attached for the exact meeting time.</p>
@@ -6352,7 +6731,7 @@ useEffect(() => {
         
         // Create calendar invitation with attendee
         try {
-          await createCalendarEventWithAttendee(accessToken, {
+          const calendarEventResult = await createCalendarEventWithAttendee(accessToken, {
             subject: meetingSubject,
             startDateTime: startDateTime.toISOString(),
             endDateTime: endDateTime.toISOString(),
@@ -6366,20 +6745,73 @@ useEffect(() => {
             timeZone: 'Asia/Jerusalem'
           });
           
+          // Update the meeting record with the Teams URL if we got one from the calendar event
+          if (calendarEventResult?.joinUrl && rescheduleFormData.location === 'Teams' && insertedData && insertedData[0]?.id) {
+            await supabase
+              .from('meetings')
+              .update({ teams_meeting_url: calendarEventResult.joinUrl })
+              .eq('id', insertedData[0].id);
+          }
+          
           // Calendar invitation automatically sends email, but we also send a confirmation email
-          await sendEmail(accessToken, {
-            to: selectedClient.email,
-            subject: emailSubject,
-            body: emailBody,
-          });
+          // Use sendEmailViaBackend to save email to database with proper context
+          if (userId) {
+            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+            const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
+            
+            await sendEmailViaBackend({
+              userId,
+              subject: emailSubject,
+              bodyHtml: emailBody,
+              to: [selectedClient.email],
+              context: {
+                clientId: !isLegacyLead ? selectedClient.id : null,
+                legacyLeadId: isLegacyLead ? legacyId : null,
+                leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+                leadNumber: selectedClient.lead_number || null,
+                contactEmail: selectedClient.email || null,
+                contactName: selectedClient.name || null,
+                senderName: account?.name || 'Staff',
+              },
+            });
+          } else {
+            // Fallback to old method if userId not available
+            await sendEmail(accessToken, {
+              to: selectedClient.email,
+              subject: emailSubject,
+              body: emailBody,
+            });
+          }
         } catch (calendarError) {
           console.error('Failed to create calendar invitation:', calendarError);
           // Fallback to just sending email if calendar creation fails
-          await sendEmail(accessToken, {
-            to: selectedClient.email,
-            subject: emailSubject,
-            body: emailBody,
-          });
+          if (userId) {
+            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+            const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
+            
+            await sendEmailViaBackend({
+              userId,
+              subject: emailSubject,
+              bodyHtml: emailBody,
+              to: [selectedClient.email],
+              context: {
+                clientId: !isLegacyLead ? selectedClient.id : null,
+                legacyLeadId: isLegacyLead ? legacyId : null,
+                leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+                leadNumber: selectedClient.lead_number || null,
+                contactEmail: selectedClient.email || null,
+                contactName: selectedClient.name || null,
+                senderName: account?.name || 'Staff',
+              },
+            });
+          } else {
+            // Fallback to old method if userId not available
+            await sendEmail(accessToken, {
+              to: selectedClient.email,
+              subject: emailSubject,
+              body: emailBody,
+            });
+          }
         }
       }
 
