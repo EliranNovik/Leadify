@@ -14,6 +14,7 @@ import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
 import EditLeadDrawer from '../components/EditLeadDrawer';
 import RMQMessagesPage from './RMQMessagesPage';
 import CallOptionsModal from '../components/CallOptionsModal';
+import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 
 interface Case {
   id: string;
@@ -32,6 +33,12 @@ interface Case {
   hasReadyToPay?: boolean; // Whether any payment has been marked as ready to pay
   hasUnpaidPayment?: boolean; // Whether there are any unpaid payments
   hasPaymentPlan?: boolean; // Whether the lead has any payment plans
+  language?: string | null; // Language name
+  country?: string | null; // Country name
+  country_id?: number | null; // Country ID
+  phone?: string | null; // Phone number
+  mobile?: string | null; // Mobile number
+  next_followup?: string | null; // Follow-up date
 }
 
 // Helper function to get contrasting text color based on background
@@ -88,34 +95,184 @@ const MyCasesPage: React.FC = () => {
     }
   }, [user?.id]);
 
+  // Fetch countries with timezone data (will be populated in fetchMyCases)
+  const [allCountries, setAllCountries] = useState<any[]>([]);
+
+  // Helper function to safely parse dates
+  const safeParseDate = (dateString: string | null | undefined): Date | null => {
+    if (!dateString) return null;
+    try {
+      // Handle empty strings
+      if (typeof dateString === 'string' && dateString.trim() === '') {
+        return null;
+      }
+      
+      const date = new Date(dateString);
+      
+      // Check if date is valid using multiple methods
+      if (isNaN(date.getTime())) {
+        return null;
+      }
+      
+      // Additional check: verify the date is within a reasonable range
+      // (between year 1900 and 2100)
+      const year = date.getFullYear();
+      if (year < 1900 || year > 2100) {
+        return null;
+      }
+      
+      return date;
+    } catch (error) {
+      console.error('Error in safeParseDate:', error);
+      return null;
+    }
+  };
+
+  // Helper function to get follow up date color based on date (same logic as SchedulerToolPage)
+  const getFollowUpColor = (followUpDateStr: string | null | undefined): string => {
+    if (!followUpDateStr) return 'bg-gray-100 text-gray-600';
+    
+    try {
+      const followUpDate = safeParseDate(followUpDateStr);
+      if (!followUpDate) return 'bg-gray-100 text-gray-600';
+      
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      
+      // Set follow up date to start of day for comparison
+      const followUpDateStart = new Date(followUpDate);
+      followUpDateStart.setHours(0, 0, 0, 0);
+      
+      // Calculate difference in days
+      const diffTime = followUpDateStart.getTime() - today.getTime();
+      const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+      
+      if (diffDays < 0) {
+        // Past follow up date - red
+        return 'bg-red-500 text-white';
+      } else if (diffDays === 0) {
+        // Today - green
+        return 'bg-green-500 text-white';
+      } else {
+        // Tomorrow or more than 1 day away - yellow
+        return 'bg-yellow-500 text-white';
+      }
+    } catch (error) {
+      console.error('Error parsing follow-up date for color:', followUpDateStr, error);
+      return 'bg-gray-100 text-gray-600';
+    }
+  };
+
+  // Helper function to get country timezone
+  const getCountryTimezone = (countryId: string | number | null | undefined, countryName: string | null | undefined, phone?: string | null, mobile?: string | null) => {
+    if (!countryId && !countryName) return null;
+    
+    if (!allCountries || allCountries.length === 0) return null;
+    
+    // Try to find by name first
+    if (countryName) {
+      const countryByName = allCountries.find((country: any) => 
+        country.name.toLowerCase().trim() === countryName.toLowerCase().trim()
+      );
+      
+      if (countryByName) {
+        // Special handling for US (country ID 249): use area code from phone number
+        if (countryByName.id === 249) {
+          const usTimezone = getUSTimezoneFromPhone(phone, mobile);
+          if (usTimezone) {
+            return usTimezone;
+          }
+          return 'America/New_York'; // Fallback to default US timezone
+        }
+        
+        if (countryByName.timezone) {
+          return countryByName.timezone;
+        }
+      }
+    }
+    
+    // Try to find by ID
+    if (countryId) {
+      const countryIdNum = typeof countryId === 'string' ? parseInt(countryId, 10) : countryId;
+      if (!isNaN(countryIdNum as number)) {
+        const countryById = allCountries.find((country: any) => country.id.toString() === countryIdNum.toString());
+        
+        if (countryById) {
+          // Special handling for US (country ID 249): use area code from phone number
+          if (countryById.id === 249) {
+            const usTimezone = getUSTimezoneFromPhone(phone, mobile);
+            if (usTimezone) {
+              return usTimezone;
+            }
+            return 'America/New_York'; // Fallback to default US timezone
+          }
+          
+          if (countryById.timezone) {
+            return countryById.timezone;
+          }
+        }
+      }
+    }
+    
+    return null;
+  };
+
+  // Helper function to get business hours info
+  const getBusinessHoursInfo = (timezone: string | null) => {
+    if (!timezone) return { isBusinessHours: false, localTime: null };
+    
+    try {
+      const now = new Date();
+      const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
+      const hour = localTime.getHours();
+      
+      // Business hours: 8 AM to 7 PM (8:00 - 19:00)
+      const isBusinessHours = hour >= 8 && hour < 19;
+      
+      // Format the local time
+      const formattedTime = localTime.toLocaleString("en-US", {
+        timeZone: timezone,
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      });
+      
+      return { isBusinessHours, localTime: formattedTime };
+    } catch (error) {
+      console.error('Error checking business hours for timezone:', timezone, error);
+      return { isBusinessHours: false, localTime: null };
+    }
+  };
 
   const fetchMyCases = async () => {
     try {
       setLoading(true);
       setError(null);
 
-      // Get current user's employee ID and full name from users table
-      console.log('🔍 MyCases - Current user ID:', user?.id);
-      
+      // Get current user's employee ID, full name, and user ID in one query
       const { data: userData, error: userError } = await supabase
         .from('users')
-        .select('employee_id, full_name')
+        .select('id, employee_id, full_name')
         .eq('auth_id', user?.id)
         .single();
 
-      console.log('🔍 MyCases - User data query result:', { userData, userError });
-
       if (userError || !userData?.employee_id) {
-        console.error('🔍 MyCases - Employee lookup failed:', { userError, userData });
         throw new Error('Employee not found for current user');
       }
 
       const employeeId = userData.employee_id;
       const userFullName = userData.full_name;
-      console.log('🔍 MyCases - Employee ID found:', employeeId, 'Full name:', userFullName);
+      const currentUserId = userData.id; // User ID for follow-ups
 
-      // Fetch both new leads and legacy leads in parallel
-      const [newLeadsResult, legacyLeadsResult] = await Promise.all([
+      // Fetch all static/reference data and leads in parallel
+      const [
+        newLeadsResult, 
+        legacyLeadsResult,
+        allCountriesResult,
+        stagesResult,
+        allCategoriesResult,
+        languageMappingResult
+      ] = await Promise.all([
         // New leads: check handler (text) or case_handler_id (numeric)
         supabase
           .from('leads')
@@ -129,7 +286,16 @@ const MyCasesPage: React.FC = () => {
             balance,
             balance_currency,
             handler,
-            case_handler_id
+            case_handler_id,
+            language,
+            country_id,
+            phone,
+            mobile,
+            misc_country!country_id (
+              id,
+              name,
+              timezone
+            )
           `)
           .or(
             userFullName
@@ -152,6 +318,8 @@ const MyCasesPage: React.FC = () => {
             no_of_applicants,
             total,
             currency_id,
+            language_id,
+            phone,
             accounting_currencies!leads_lead_currency_id_fkey (
               name,
               iso_code
@@ -159,175 +327,269 @@ const MyCasesPage: React.FC = () => {
           `)
           .eq('case_handler_id', employeeId)
           .order('cdate', { ascending: false })
-          .limit(200)
+          .limit(200),
+        
+        // Fetch countries with timezone data (static data)
+        supabase
+          .from('misc_country')
+          .select('id, name, timezone')
+          .order('name', { ascending: true }),
+        
+        // Fetch stage names and colors (static data)
+        supabase
+          .from('lead_stages')
+          .select('id, name, colour'),
+        
+        // Fetch categories with their parent main category names (static data)
+        supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id (
+              id,
+              name
+            )
+          `)
+          .order('name', { ascending: true }),
+        
+        // Fetch language mappings (static data)
+        supabase
+          .from('misc_language')
+          .select('id, name')
       ]);
 
-      // Fetch payment information for new leads
-      const newLeadIds = (newLeadsResult.data || []).map(lead => lead.id);
-      const newLeadsPaymentMap = new Map<string, boolean>();
-      const newLeadsReadyToPayMap = new Map<string, boolean>();
-      const newLeadsUnpaidPaymentMap = new Map<string, boolean>();
-      const newLeadsHasPaymentPlanMap = new Map<string, boolean>();
-      
-      if (newLeadIds.length > 0) {
-        const { data: newPayments } = await supabase
-          .from('payment_plans')
-          .select('lead_id, paid, ready_to_pay, cancel_date')
-          .in('lead_id', newLeadIds)
-          .is('cancel_date', null);
-        
-        // Group by lead_id and check payment statuses
-        const paymentsByLead = new Map<string, any[]>();
-        (newPayments || []).forEach((payment: any) => {
-          if (!paymentsByLead.has(payment.lead_id)) {
-            paymentsByLead.set(payment.lead_id, []);
-          }
-          paymentsByLead.get(payment.lead_id)!.push(payment);
-        });
-        
-        // Mark all leads that have payments
-        paymentsByLead.forEach((payments, leadId) => {
-          newLeadsHasPaymentPlanMap.set(leadId, true);
-        });
-        
-        // Mark leads without payments
-        newLeadIds.forEach(leadId => {
-          if (!newLeadsHasPaymentPlanMap.has(leadId)) {
-            newLeadsHasPaymentPlanMap.set(leadId, false);
-          }
-        });
-        
-        paymentsByLead.forEach((payments, leadId) => {
-          // Check if ANY payment has paid = TRUE
-          const hasPaidPayment = payments.some((payment: any) => payment.paid === true);
-          newLeadsPaymentMap.set(leadId, hasPaidPayment);
-          
-          // Check if ANY payment has ready_to_pay = TRUE
-          const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
-          newLeadsReadyToPayMap.set(leadId, hasReadyToPay);
-          
-          // Check if there are any unpaid payments
-          const hasUnpaidPayment = payments.some((payment: any) => payment.paid !== true);
-          newLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
-        });
-      } else {
-        // If no leads, mark all as having no payment plan
-        newLeadIds.forEach(leadId => {
-          newLeadsHasPaymentPlanMap.set(leadId, false);
-        });
+      // Set countries data immediately
+      if (allCountriesResult.data) {
+        setAllCountries(allCountriesResult.data);
       }
 
-      // Fetch payment information for legacy leads
-      const legacyLeadIds = (legacyLeadsResult.data || []).map(lead => String(lead.id));
-      const legacyLeadsPaymentMap = new Map<string, boolean>();
-      const legacyLeadsReadyToPayMap = new Map<string, boolean>();
-      const legacyLeadsUnpaidPaymentMap = new Map<string, boolean>();
-      const legacyLeadsHasPaymentPlanMap = new Map<string, boolean>();
-      
-      if (legacyLeadIds.length > 0) {
-        const { data: legacyPayments } = await supabase
-          .from('finances_paymentplanrow')
-          .select('lead_id, actual_date, ready_to_pay, cancel_date')
-          .in('lead_id', legacyLeadIds)
-          .is('cancel_date', null);
-        
-        // Group by lead_id and check payment statuses
-        const paymentsByLead = new Map<string, any[]>();
-        (legacyPayments || []).forEach((payment: any) => {
-          const leadId = String(payment.lead_id);
-          if (!paymentsByLead.has(leadId)) {
-            paymentsByLead.set(leadId, []);
-          }
-          paymentsByLead.get(leadId)!.push(payment);
-        });
-        
-        // Mark all leads that have payments
-        paymentsByLead.forEach((payments, leadId) => {
-          legacyLeadsHasPaymentPlanMap.set(leadId, true);
-        });
-        
-        // Mark leads without payments
-        legacyLeadIds.forEach(leadId => {
-          if (!legacyLeadsHasPaymentPlanMap.has(leadId)) {
-            legacyLeadsHasPaymentPlanMap.set(leadId, false);
-          }
-        });
-        
-        paymentsByLead.forEach((payments, leadId) => {
-          // Check if ANY payment has actual_date (not null and not empty)
-          const hasPaidPayment = payments.some((payment: any) => 
-            payment.actual_date != null && payment.actual_date !== ''
-          );
-          legacyLeadsPaymentMap.set(leadId, hasPaidPayment);
-          
-          // Check if ANY payment has ready_to_pay = TRUE
-          const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
-          legacyLeadsReadyToPayMap.set(leadId, hasReadyToPay);
-          
-          // Check if there are any unpaid payments
-          const hasUnpaidPayment = payments.some((payment: any) => 
-            payment.actual_date == null || payment.actual_date === ''
-          );
-          legacyLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
-        });
-      } else {
-        // If no leads, mark all as having no payment plan
-        legacyLeadIds.forEach(leadId => {
-          legacyLeadsHasPaymentPlanMap.set(leadId, false);
-        });
-      }
-
-      console.log('🔍 MyCases - New leads query result:', { 
-        newLeadsData: newLeadsResult.data, 
-        newLeadsError: newLeadsResult.error,
-        count: newLeadsResult.data?.length || 0 
-      });
-
-      console.log('🔍 MyCases - Legacy leads query result:', { 
-        legacyLeadsData: legacyLeadsResult.data, 
-        legacyLeadsError: legacyLeadsResult.error,
-        count: legacyLeadsResult.data?.length || 0 
-      });
-
-      if (newLeadsResult.error) throw newLeadsResult.error;
-      if (legacyLeadsResult.error) throw legacyLeadsResult.error;
-
-      // Fetch stage names and colors separately (since foreign key relationship doesn't exist yet)
-      const { data: stages } = await supabase
-        .from('lead_stages')
-        .select('id, name, colour');
-
-      // Fetch categories with their parent main category names using JOINs
-      const { data: allCategories } = await supabase
-        .from('misc_category')
-        .select(`
-          id,
-          name,
-          parent_id,
-          misc_maincategory!parent_id (
-            id,
-            name
-          )
-        `)
-        .order('name', { ascending: true });
+      // Process static data
+      const stages = stagesResult.data || [];
+      const allCategories = allCategoriesResult.data || [];
+      const languageMapping = languageMappingResult.data || [];
 
       // Create lookup maps
       const stageMap = new Map();
       const stageColourMap = new Map();
-      stages?.forEach(stage => {
+      stages.forEach(stage => {
         stageMap.set(String(stage.id), stage.name);
         if (stage.colour) {
           stageColourMap.set(String(stage.id), stage.colour);
         }
       });
 
-      // Helper function to get category name with main category (like PipelinePage)
+      const languageMap = new Map();
+      languageMapping.forEach(language => {
+        languageMap.set(language.id, language.name);
+      });
+
+      if (newLeadsResult.error) throw newLeadsResult.error;
+      if (legacyLeadsResult.error) throw legacyLeadsResult.error;
+
+      // Extract lead IDs for parallel queries
+      const newLeadIds = (newLeadsResult.data || []).map(lead => lead.id);
+      const legacyLeadIds = (legacyLeadsResult.data || []).map(lead => String(lead.id));
+      const legacyLeadIdsForQueries = (legacyLeadsResult.data || []).map(lead => lead.id);
+
+      // Fetch all dependent data in parallel
+      const [
+        newPaymentsResult,
+        legacyPaymentsResult,
+        legacyCountryDataResult,
+        newFollowupsResult,
+        legacyFollowupsResult
+      ] = await Promise.all([
+        // Fetch payment information for new leads
+        newLeadIds.length > 0
+          ? supabase
+              .from('payment_plans')
+              .select('lead_id, paid, ready_to_pay, cancel_date')
+              .in('lead_id', newLeadIds)
+              .is('cancel_date', null)
+          : Promise.resolve({ data: [], error: null }),
+        
+        // Fetch payment information for legacy leads
+        legacyLeadIds.length > 0
+          ? supabase
+              .from('finances_paymentplanrow')
+              .select('lead_id, actual_date, ready_to_pay, cancel_date')
+              .in('lead_id', legacyLeadIds)
+              .is('cancel_date', null)
+          : Promise.resolve({ data: [], error: null }),
+        
+        // Fetch country data for legacy leads via contacts
+        legacyLeadIds.length > 0
+          ? supabase
+              .from('lead_leadcontact')
+              .select(`
+                lead_id,
+                leads_contact (
+                  country_id,
+                  misc_country (
+                    id,
+                    name
+                  )
+                )
+              `)
+              .in('lead_id', legacyLeadIdsForQueries)
+              .eq('main', 'true')
+          : Promise.resolve({ data: [], error: null }),
+        
+        // Fetch follow-ups for new leads
+        newLeadIds.length > 0 && currentUserId
+          ? supabase
+              .from('follow_ups')
+              .select('new_lead_id, date')
+              .eq('user_id', currentUserId)
+              .in('new_lead_id', newLeadIds)
+              .is('lead_id', null)
+          : Promise.resolve({ data: [], error: null }),
+        
+        // Fetch follow-ups for legacy leads
+        legacyLeadIdsForQueries.length > 0 && currentUserId
+          ? supabase
+              .from('follow_ups')
+              .select('lead_id, date')
+              .eq('user_id', currentUserId)
+              .in('lead_id', legacyLeadIdsForQueries)
+              .is('new_lead_id', null)
+          : Promise.resolve({ data: [], error: null })
+      ]);
+
+      // Process payment data for new leads
+      const newLeadsPaymentMap = new Map<string, boolean>();
+      const newLeadsReadyToPayMap = new Map<string, boolean>();
+      const newLeadsUnpaidPaymentMap = new Map<string, boolean>();
+      const newLeadsHasPaymentPlanMap = new Map<string, boolean>();
+      
+      const newPayments = newPaymentsResult.data || [];
+      const paymentsByLead = new Map<string, any[]>();
+      newPayments.forEach((payment: any) => {
+        if (!paymentsByLead.has(payment.lead_id)) {
+          paymentsByLead.set(payment.lead_id, []);
+        }
+        paymentsByLead.get(payment.lead_id)!.push(payment);
+      });
+      
+      // Mark all leads that have payments
+      paymentsByLead.forEach((payments, leadId) => {
+        newLeadsHasPaymentPlanMap.set(leadId, true);
+      });
+      
+      // Mark leads without payments
+      newLeadIds.forEach(leadId => {
+        if (!newLeadsHasPaymentPlanMap.has(leadId)) {
+          newLeadsHasPaymentPlanMap.set(leadId, false);
+        }
+      });
+      
+      paymentsByLead.forEach((payments, leadId) => {
+        const hasPaidPayment = payments.some((payment: any) => payment.paid === true);
+        newLeadsPaymentMap.set(leadId, hasPaidPayment);
+        
+        const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
+        newLeadsReadyToPayMap.set(leadId, hasReadyToPay);
+        
+        const hasUnpaidPayment = payments.some((payment: any) => payment.paid !== true);
+        newLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
+      });
+
+      // Process payment data for legacy leads
+      const legacyLeadsPaymentMap = new Map<string, boolean>();
+      const legacyLeadsReadyToPayMap = new Map<string, boolean>();
+      const legacyLeadsUnpaidPaymentMap = new Map<string, boolean>();
+      const legacyLeadsHasPaymentPlanMap = new Map<string, boolean>();
+      
+      const legacyPayments = legacyPaymentsResult.data || [];
+      const legacyPaymentsByLead = new Map<string, any[]>();
+      legacyPayments.forEach((payment: any) => {
+        const leadId = String(payment.lead_id);
+        if (!legacyPaymentsByLead.has(leadId)) {
+          legacyPaymentsByLead.set(leadId, []);
+        }
+        legacyPaymentsByLead.get(leadId)!.push(payment);
+      });
+      
+      legacyPaymentsByLead.forEach((payments, leadId) => {
+        legacyLeadsHasPaymentPlanMap.set(leadId, true);
+      });
+      
+      legacyLeadIds.forEach(leadId => {
+        if (!legacyLeadsHasPaymentPlanMap.has(leadId)) {
+          legacyLeadsHasPaymentPlanMap.set(leadId, false);
+        }
+      });
+      
+      legacyPaymentsByLead.forEach((payments, leadId) => {
+        const hasPaidPayment = payments.some((payment: any) => 
+          payment.actual_date != null && payment.actual_date !== ''
+        );
+        legacyLeadsPaymentMap.set(leadId, hasPaidPayment);
+        
+        const hasReadyToPay = payments.some((payment: any) => payment.ready_to_pay === true);
+        legacyLeadsReadyToPayMap.set(leadId, hasReadyToPay);
+        
+        const hasUnpaidPayment = payments.some((payment: any) => 
+          payment.actual_date == null || payment.actual_date === ''
+        );
+        legacyLeadsUnpaidPaymentMap.set(leadId, hasUnpaidPayment);
+      });
+
+      // Process legacy country data
+      const legacyCountryMap = new Map();
+      const legacyCountryData = legacyCountryDataResult.data || [];
+      legacyCountryData.forEach((item: any) => {
+        if (item.leads_contact && (item.leads_contact as any).misc_country) {
+          const leadId = item.lead_id;
+          const countryName = ((item.leads_contact as any).misc_country as any).name;
+          legacyCountryMap.set(leadId, countryName);
+        }
+      });
+
+      // Process follow-ups
+      const followUpsMap = new Map<string, string>();
+      const newFollowups = newFollowupsResult.data || [];
+      newFollowups.forEach(fu => {
+        if (fu.new_lead_id && fu.date) {
+          try {
+            const date = new Date(fu.date);
+            if (date && !isNaN(date.getTime())) {
+              const dateStr = date.toISOString().split('T')[0];
+              if (dateStr && dateStr !== 'Invalid Date') {
+                followUpsMap.set(fu.new_lead_id, dateStr);
+              }
+            }
+          } catch (error) {
+            // Silently skip invalid dates
+          }
+        }
+      });
+      
+      const legacyFollowups = legacyFollowupsResult.data || [];
+      legacyFollowups.forEach(fu => {
+        if (fu.lead_id && fu.date) {
+          try {
+            const date = new Date(fu.date);
+            if (date && !isNaN(date.getTime())) {
+              const dateStr = date.toISOString().split('T')[0];
+              if (dateStr && dateStr !== 'Invalid Date') {
+                followUpsMap.set(String(fu.lead_id), dateStr);
+              }
+            }
+          } catch (error) {
+            // Silently skip invalid dates
+          }
+        }
+      });
+
+      // Helper function to get category name with main category
       const getCategoryName = (categoryId: string | number | null | undefined) => {
         if (!categoryId || categoryId === '---') return 'Unknown';
         
-        const category = allCategories?.find((cat: any) => cat.id.toString() === categoryId.toString()) as any;
+        const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString()) as any;
         if (category) {
-          // Return category name with main category in parentheses
           if (category.misc_maincategory?.name) {
             return `${category.name} (${category.misc_maincategory.name})`;
           } else {
@@ -337,16 +599,6 @@ const MyCasesPage: React.FC = () => {
         
         return 'Unknown';
       };
-
-      console.log('🔍 MyCases - Lookup maps created:', {
-        stagesCount: stages?.length || 0,
-        categoriesCount: allCategories?.length || 0,
-        sampleCategories: allCategories?.slice(0, 3).map((cat: any) => ({ 
-          id: cat.id, 
-          name: cat.name, 
-          mainCategory: cat.misc_maincategory?.name 
-        }))
-      });
 
       // Helper function to get currency symbol
       const getCurrencySymbol = (currencyId: number | null | undefined, currencyData: any): string => {
@@ -404,6 +656,12 @@ const MyCasesPage: React.FC = () => {
         const hasReadyToPay = newLeadsReadyToPayMap.get(lead.id) || false;
         const hasUnpaidPayment = newLeadsUnpaidPaymentMap.get(lead.id) || false;
         const hasPaymentPlan = newLeadsHasPaymentPlanMap.get(lead.id) || false;
+        const language = lead.language || null;
+        const country = (lead as any).misc_country?.name || null;
+        const country_id = lead.country_id || (lead as any).misc_country?.id || null;
+        const phone = lead.phone || null;
+        const mobile = lead.mobile || null;
+        const next_followup = followUpsMap.get(lead.id) || null;
 
         return {
           id: lead.id,
@@ -421,7 +679,13 @@ const MyCasesPage: React.FC = () => {
           isNewLead: true,
           hasReadyToPay: hasReadyToPay,
           hasUnpaidPayment: hasUnpaidPayment,
-          hasPaymentPlan: hasPaymentPlan
+          hasPaymentPlan: hasPaymentPlan,
+          language: language,
+          country: country,
+          country_id: country_id,
+          phone: phone,
+          mobile: mobile,
+          next_followup: next_followup
         };
       });
 
@@ -438,6 +702,12 @@ const MyCasesPage: React.FC = () => {
         const hasReadyToPay = legacyLeadsReadyToPayMap.get(String(lead.id)) || false;
         const hasUnpaidPayment = legacyLeadsUnpaidPaymentMap.get(String(lead.id)) || false;
         const hasPaymentPlan = legacyLeadsHasPaymentPlanMap.get(String(lead.id)) || false;
+        const language = lead.language_id ? languageMap.get(lead.language_id) || null : null;
+        const country = legacyCountryMap.get(lead.id) || null;
+        const country_id = null; // Legacy leads don't have country_id directly, we'll need to look it up if needed
+        const phone = (lead as any).phone || null;
+        const mobile = null; // Legacy leads don't have mobile field
+        const next_followup = followUpsMap.get(String(lead.id)) || null;
 
         return {
           id: String(lead.id),
@@ -455,7 +725,13 @@ const MyCasesPage: React.FC = () => {
           isNewLead: false,
           hasReadyToPay: hasReadyToPay,
           hasUnpaidPayment: hasUnpaidPayment,
-          hasPaymentPlan: hasPaymentPlan
+          hasPaymentPlan: hasPaymentPlan,
+          language: language,
+          country: country,
+          country_id: country_id,
+          phone: phone,
+          mobile: mobile,
+          next_followup: next_followup
         };
       });
 
@@ -479,12 +755,6 @@ const MyCasesPage: React.FC = () => {
       const activeCasesList = allProcessedCases.filter(caseItem => {
         const stageId = (caseItem as any).stageId;
         return stageId !== undefined && stageId !== null && stageId >= 110 && stageId !== 200;
-      });
-
-      console.log('🔍 MyCases - Cases separated:', {
-        newCases: newCasesList.length,
-        activeCases: activeCasesList.length,
-        closedCases: closedCasesList.length
       });
 
       setNewCases(newCasesList);
@@ -1209,11 +1479,20 @@ const MyCasesPage: React.FC = () => {
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Case
                 </th>
+                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                  Follow-up
+                </th>
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Client
                 </th>
                 <th className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Category
+                </th>
+                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                  Language
+                </th>
+                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                  Country
                 </th>
                 <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-center text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
                   Applicants
@@ -1263,6 +1542,27 @@ const MyCasesPage: React.FC = () => {
                       </span>
                     </div>
                   </td>
+                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                    {caseItem.next_followup ? (
+                      <span className={`px-2 py-1 rounded font-semibold text-xs ${getFollowUpColor(caseItem.next_followup)}`}>
+                        {(() => {
+                          try {
+                            const date = safeParseDate(caseItem.next_followup);
+                            if (date && !isNaN(date.getTime())) {
+                              return date.toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric'
+                              });
+                            }
+                          } catch (error) {
+                            console.error('Error formatting follow-up date:', error);
+                          }
+                          return caseItem.next_followup;
+                        })()}
+                      </span>
+                    ) : '—'}
+                  </td>
                   <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
                     <div className="whitespace-nowrap">
                       {caseItem.client_name}
@@ -1279,6 +1579,27 @@ const MyCasesPage: React.FC = () => {
                   <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
                     <div className="max-w-[150px] lg:max-w-none truncate lg:whitespace-nowrap">
                       {caseItem.category}
+                    </div>
+                  </td>
+                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                    {caseItem.language || '—'}
+                  </td>
+                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                    <div className="flex items-center gap-2">
+                      <span>{caseItem.country || '—'}</span>
+                      {caseItem.country && (() => {
+                        const timezone = getCountryTimezone(caseItem.country_id, caseItem.country, caseItem.phone, caseItem.mobile);
+                        const businessInfo = getBusinessHoursInfo(timezone);
+                        
+                        return timezone ? (
+                          <div 
+                            className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
+                            title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} 
+                          />
+                        ) : (
+                          <div className="w-3 h-3 rounded-full bg-gray-300" title="No timezone data available" />
+                        );
+                      })()}
                     </div>
                   </td>
                   <td className="px-1 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm">
@@ -1309,7 +1630,7 @@ const MyCasesPage: React.FC = () => {
                             e.stopPropagation();
                             handleOpenRMQForCloser(caseItem);
                           }}
-                          className="btn btn-sm btn-error p-1.5 sm:p-2 rounded animate-pulse"
+                          className="btn btn-sm p-1.5 sm:p-2 rounded animate-pulse bg-red-500 text-white hover:bg-red-600 border-none"
                           title="Missing Payment Plan - Click to message closer"
                         >
                           <ExclamationTriangleIcon className="w-4 h-4 sm:w-5 sm:h-5" />
