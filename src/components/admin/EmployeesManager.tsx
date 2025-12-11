@@ -295,6 +295,16 @@ const EmployeesManager: React.FC = () => {
         { value: 'n', label: 'No role' }
       ]
     },
+    {
+      name: 'onecom_code',
+      label: 'OneCom Code',
+      type: 'number' as const,
+      required: false,
+      placeholder: 'e.g., 12345',
+      hideInTable: false,
+      hideInAdd: false,
+      hideInEdit: false
+    },
   ];
 
   return (

@@ -8,6 +8,7 @@ import DocumentModal from './DocumentModal';
 import EditLeadDrawer from './EditLeadDrawer';
 import SchedulerWhatsAppModal from './SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from './SchedulerEmailThreadModal';
+import CallOptionsModal from './CallOptionsModal';
 import { BarChart3, AlertTriangle, ChevronLeft, ChevronRight } from 'lucide-react';
 import { getStageName, initializeStageNames, getStageColour } from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, Legend, CartesianGrid } from 'recharts';
@@ -140,6 +141,11 @@ const ExpertPage: React.FC = () => {
   const [isWhatsAppModalOpen, setIsWhatsAppModalOpen] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [overdueOpen, setOverdueOpen] = useState(false);
+  
+  // Call options modal state
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
+  const [callLeadName, setCallLeadName] = useState<string>('');
   const [meetingSort, setMeetingSort] = useState<'upcoming' | 'past'>('upcoming');
   const [viewMode, setViewMode] = useState<'box' | 'list'>('list');
   const [newComment, setNewComment] = useState('');
@@ -2709,6 +2715,14 @@ const ExpertPage: React.FC = () => {
           client={clientForEmail}
         />
       )}
+
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callLeadName}
+      />
     </div>
   );
 };

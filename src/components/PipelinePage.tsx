@@ -16,6 +16,8 @@ import { InteractionRequiredAuthError, IPublicClientApplication, AccountInfo } f
 import { toast } from 'react-hot-toast';
 import { getStageName, initializeStageNames } from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
+import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
+import CallOptionsModal from './CallOptionsModal';
 
 interface LeadForPipeline {
   id: number | string;
@@ -169,6 +171,11 @@ const PipelinePage: React.FC = () => {
   const [isContactWhatsAppModalOpen, setIsContactWhatsAppModalOpen] = useState(false);
   const [isContactEmailModalOpen, setIsContactEmailModalOpen] = useState(false);
   
+  // Call options modal state
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
+  const [callLeadName, setCallLeadName] = useState<string>('');
+  
   // Edit lead drawer state
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
   const [editLeadData, setEditLeadData] = useState({
@@ -204,6 +211,10 @@ const PipelinePage: React.FC = () => {
         .order('name', { ascending: true });
       
       if (!countriesError && countriesData) {
+        console.log('🌍 Countries fetched:', {
+          count: countriesData.length,
+          sampleCountries: countriesData.slice(0, 5).map(c => ({ id: c.id, name: c.name }))
+        });
         setAllCountries(countriesData);
         return countriesData;
       } else {
@@ -275,9 +286,22 @@ const PipelinePage: React.FC = () => {
   };
 
   // Get country timezone
-  const getCountryTimezone = (countryId: string | number | null | undefined) => {
+  const getCountryTimezone = (countryId: string | number | null | undefined, phone?: string | null, mobile?: string | null) => {
     if (!countryId || countryId === '---' || countryId === '--' || !allCountries || allCountries.length === 0) {
       return null;
+    }
+    
+    // Special handling for US (country ID 249): use area code from phone number
+    const countryIdNum = typeof countryId === 'string' ? parseInt(countryId, 10) : countryId;
+    if (countryIdNum === 249 || countryId === 249) {
+      // Try to get timezone from US area code
+      const usTimezone = getUSTimezoneFromPhone(phone, mobile);
+      if (usTimezone) {
+        console.log(`🇺🇸 Using US area code timezone: ${usTimezone}`);
+        return usTimezone;
+      }
+      // Fallback to default US timezone (Eastern)
+      return 'America/New_York';
     }
     
     // Try to find by ID
@@ -324,15 +348,45 @@ const PipelinePage: React.FC = () => {
     }
   };
 
-  // Get country name
-  const getCountryName = (countryId: string | number | null | undefined) => {
-    if (!countryId || countryId === '---' || countryId === '--' || !allCountries || allCountries.length === 0) {
-      return 'N/A';
+  // Get country name - handles both joined misc_country object and country_id
+  const getCountryName = (countryId: string | number | null | undefined, miscCountry?: any) => {
+    console.log('🌍 getCountryName called:', {
+      countryId,
+      countryIdType: typeof countryId,
+      miscCountry,
+      miscCountryName: miscCountry?.name,
+      miscCountryType: typeof miscCountry,
+      miscCountryIsNull: miscCountry === null,
+      miscCountryIsUndefined: miscCountry === undefined,
+      allCountriesLength: allCountries?.length || 0
+    });
+    
+    // First, if we have the joined misc_country object, use it directly (like SchedulerToolPage)
+    // Check for null explicitly since null is an object type in JavaScript
+    if (miscCountry !== null && miscCountry !== undefined && typeof miscCountry === 'object' && miscCountry.name) {
+      console.log('✅ Using misc_country.name:', miscCountry.name);
+      return miscCountry.name;
+    }
+    
+    // Fallback to lookup by country_id
+    // Handle null, undefined, empty string, and invalid values explicitly
+    if (countryId === null || countryId === undefined || countryId === '---' || countryId === '--' || countryId === '' || !allCountries || allCountries.length === 0) {
+      console.log('🌍 No country data available, returning "--"', {
+        countryId,
+        countryIdType: typeof countryId,
+        countryIdIsNull: countryId === null,
+        countryIdIsUndefined: countryId === undefined,
+        hasMiscCountry: miscCountry !== null && miscCountry !== undefined,
+        miscCountryValue: miscCountry,
+        allCountriesLength: allCountries?.length || 0
+      });
+      return '--';
     }
     
     // Try to find by ID
     const countryById = allCountries.find((country: any) => country.id.toString() === countryId.toString());
     if (countryById && countryById.name) {
+      console.log('🌍 Found country by ID:', countryById.name);
       return countryById.name;
     }
     
@@ -341,9 +395,11 @@ const PipelinePage: React.FC = () => {
       country.name.toLowerCase().trim() === String(countryId).toLowerCase().trim()
     );
     if (countryByName && countryByName.name) {
+      console.log('🌍 Found country by name:', countryByName.name);
       return countryByName.name;
     }
     
+    console.log('🌍 Country not found, returning countryId as string:', String(countryId));
     return String(countryId);
   };
 
@@ -813,6 +869,10 @@ const PipelinePage: React.FC = () => {
                   label,
                   latest_interaction,
                   country_id,
+                  misc_country!country_id (
+                    id,
+                    name
+                  ),
                   language,
                   source,
                   facts,
@@ -918,6 +978,10 @@ const PipelinePage: React.FC = () => {
                   label,
                   latest_interaction,
                   country_id,
+                  misc_country!country_id (
+                    id,
+                    name
+                  ),
                   language,
                   source,
                   facts,
@@ -1057,6 +1121,10 @@ const PipelinePage: React.FC = () => {
                 label,
                 latest_interaction,
                 country_id,
+                misc_country!country_id (
+                  id,
+                  name
+                ),
                 language,
                 source,
                 meetings (
@@ -1110,6 +1178,36 @@ const PipelinePage: React.FC = () => {
           console.log('🔍 Pipeline Debug - New leads fetched:', {
             count: newLeadsData?.length || 0,
             sampleStages: newLeadsData?.slice(0, 5).map(l => ({ id: l.id, name: l.name, stage: l.stage, eligible: l.eligible }))
+          });
+          
+          // Log FIRST lead's complete structure to see what we're getting
+          if (newLeadsData && newLeadsData.length > 0) {
+            console.log('🌍 FIRST LEAD COMPLETE STRUCTURE:', {
+              firstLead: newLeadsData[0],
+              firstLeadKeys: Object.keys(newLeadsData[0]),
+              firstLeadCountryId: newLeadsData[0].country_id,
+              firstLeadMiscCountry: newLeadsData[0].misc_country,
+              firstLeadMiscCountryType: typeof newLeadsData[0].misc_country,
+              firstLeadMiscCountryName: newLeadsData[0].misc_country?.name
+            });
+          }
+          
+          // Log country data for debugging - check ALL leads, not just filtered
+          console.log('🌍 Country data in RAW fetched leads (before filtering):', {
+            totalLeads: newLeadsData?.length || 0,
+            leadsWithCountryId: newLeadsData?.filter((l: any) => l.country_id).length || 0,
+            leadsWithMiscCountry: newLeadsData?.filter((l: any) => l.misc_country).length || 0,
+            allLeadsCountryData: newLeadsData?.map((l: any) => ({
+              id: l.id,
+              lead_number: l.lead_number,
+              name: l.name,
+              country_id: l.country_id,
+              country_idType: typeof l.country_id,
+              misc_country: l.misc_country,
+              misc_country_name: l.misc_country?.name,
+              misc_countryType: typeof l.misc_country,
+              allKeys: Object.keys(l).filter(k => k.includes('country') || k.includes('Country'))
+            })) || []
           });
           
 
@@ -1532,6 +1630,19 @@ const PipelinePage: React.FC = () => {
               });
             }
             
+            // Log country data for debugging
+            if (lead.country_id || lead.misc_country) {
+              console.log('🌍 Processing lead with country data:', {
+                id: lead.id,
+                lead_number: lead.lead_number,
+                name: lead.name,
+                country_id: lead.country_id,
+                country_idType: typeof lead.country_id,
+                misc_country: lead.misc_country,
+                misc_country_name: lead.misc_country?.name
+              });
+            }
+            
             return {
               ...lead,
               category: getCategoryName(lead.category_id, lead.category), // Use proper category handling
@@ -1540,8 +1651,25 @@ const PipelinePage: React.FC = () => {
               // New leads use language text column directly - preserve even if null/empty
               language: lead.language || null,
               language_id: null, // New leads don't use language_id
-              next_followup: followUpsMap.get(lead.id) || null // Get follow-up from follow_ups table
+              next_followup: followUpsMap.get(lead.id) || null, // Get follow-up from follow_ups table
+              // Preserve misc_country from JOIN (like SchedulerToolPage)
+              misc_country: lead.misc_country || null,
+              // Extract country name directly from JOIN (exactly like SchedulerToolPage.tsx line 1165)
+              country: (lead as any).misc_country?.name || ''
             };
+          });
+          
+          // Log summary of processed leads with country data
+          console.log('🌍 Processed new leads country summary:', {
+            totalProcessed: processedNewLeads.length,
+            withCountryId: processedNewLeads.filter((l: any) => l.country_id).length,
+            withMiscCountry: processedNewLeads.filter((l: any) => l.misc_country).length,
+            sampleWithCountry: processedNewLeads.filter((l: any) => l.country_id || l.misc_country).slice(0, 3).map((l: any) => ({
+              id: l.id,
+              lead_number: l.lead_number,
+              country_id: l.country_id,
+              misc_country: l.misc_country
+            }))
           });
 
           // Process legacy leads
@@ -1668,6 +1796,22 @@ const PipelinePage: React.FC = () => {
           const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
             new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
           );
+
+          // Log country data in final allLeads array
+          console.log('🌍 Final allLeads country data:', {
+            totalLeads: allLeads.length,
+            leadsWithCountryId: allLeads.filter((l: any) => l.country_id).length,
+            leadsWithMiscCountry: allLeads.filter((l: any) => l.misc_country).length,
+            sampleLeadsWithCountry: allLeads.filter((l: any) => l.country_id || l.misc_country).slice(0, 5).map((l: any) => ({
+              id: l.id,
+              lead_number: l.lead_number,
+              name: l.name,
+              country_id: l.country_id,
+              misc_country: l.misc_country,
+              misc_country_name: l.misc_country?.name,
+              lead_type: l.lead_type
+            }))
+          });
 
           // Comprehensive logging for debugging
           if (Number(currentUserEmployeeId) === 54) {
@@ -1938,13 +2082,11 @@ const PipelinePage: React.FC = () => {
         .slice(0, 10);
     }
 
-    // Filter by country
+    // Filter by country (exactly like SchedulerToolPage.tsx)
     if (filterCountry) {
       filtered = filtered.filter(lead => {
-        const countryId = lead.country_id || lead.country;
-        if (!countryId) return false;
-        const country = allCountries.find((c: any) => c.id.toString() === countryId.toString() || c.name === countryId);
-        return country && country.name === filterCountry;
+        const countryName = (lead as any).country || '';
+        return countryName && countryName === filterCountry;
       });
     }
 
@@ -1960,16 +2102,16 @@ const PipelinePage: React.FC = () => {
   }, [leads, showSignedAgreements, searchQuery, filterCreatedDateFrom, filterCreatedDateTo, filterBy, labelFilter, showUnassignedOnly, showLostInteractionsOnly, filterCountry, filterLanguage, allCountries, allLanguages]);
 
   // Extract unique values from leads for filter dropdowns
-  const availableCountries = useMemo(() => {
-    const countrySet = new Set<string>();
-    leads.forEach(lead => {
-      const countryName = getCountryName(lead.country_id || lead.country);
-      if (countryName && countryName !== 'N/A') {
-        countrySet.add(countryName);
-      }
-    });
-    return Array.from(countrySet).sort();
-  }, [leads, allCountries]);
+    const availableCountries = useMemo(() => {
+      const countrySet = new Set<string>();
+      leads.forEach(lead => {
+        const countryName = (lead as any).country;
+        if (countryName && countryName !== '--' && countryName !== 'N/A' && countryName.trim() !== '') {
+          countrySet.add(countryName);
+        }
+      });
+      return Array.from(countrySet).sort();
+    }, [leads]);
 
   const availableLanguages = useMemo(() => {
     const languageSet = new Set<string>();
@@ -2130,7 +2272,7 @@ const PipelinePage: React.FC = () => {
           if (contactIds.length > 0) {
             const { data: contactsData, error: contactsError } = await supabase
               .from('leads_contact')
-              .select('id, name, phone, mobile, email')
+              .select('id, name, phone, mobile, email, country_id')
               .in('id', contactIds);
             
             if (!contactsError && contactsData) {
@@ -2144,7 +2286,8 @@ const PipelinePage: React.FC = () => {
                     phone: contact.phone,
                     mobile: contact.mobile,
                     email: contact.email,
-                    isMain: leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't'
+                    isMain: leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't',
+                    country_id: contact.country_id || null
                   });
                 }
               });
@@ -2155,7 +2298,7 @@ const PipelinePage: React.FC = () => {
         // For new leads, fetch from contacts table
         const { data: contactsData, error: contactsError } = await supabase
           .from('contacts')
-          .select('id, name, phone, mobile, email, is_main_applicant')
+          .select('id, name, phone, mobile, email, is_main_applicant, country_id')
           .eq('lead_id', leadId)
           .order('is_main_applicant', { ascending: false })
           .order('created_at', { ascending: true });
@@ -2167,7 +2310,8 @@ const PipelinePage: React.FC = () => {
             phone: contact.phone,
             mobile: contact.mobile,
             email: contact.email,
-            isMain: contact.is_main_applicant || false
+            isMain: contact.is_main_applicant || false,
+            country_id: contact.country_id || null
           }));
         }
       }
@@ -2292,10 +2436,40 @@ const PipelinePage: React.FC = () => {
   // Action handlers (from SchedulerToolPage)
   const handleCall = (lead: LeadForPipeline) => {
     const phoneNumber = lead.phone || lead.mobile;
-    if (phoneNumber) {
-      window.open(`tel:${phoneNumber}`, '_self');
-    } else {
+    if (!phoneNumber) {
       toast.error('No phone number available for this lead');
+      return;
+    }
+
+    // Only show modal for US numbers (country code +1)
+    const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
+    const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+    
+    if (isUSNumber) {
+      setCallPhoneNumber(phoneNumber);
+      setCallLeadName(lead.name || '');
+      setIsCallModalOpen(true);
+    } else {
+      // For non-US countries, call directly
+      window.open(`tel:${phoneNumber}`, '_self');
+    }
+  };
+  
+  // Handle call for contacts
+  const handleContactCall = (phoneNumber: string, contactName?: string) => {
+    if (!phoneNumber) return;
+
+    // Only show modal for US numbers (country code +1)
+    const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
+    const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+    
+    if (isUSNumber) {
+      setCallPhoneNumber(phoneNumber);
+      setCallLeadName(contactName || '');
+      setIsCallModalOpen(true);
+    } else {
+      // For non-US countries, call directly
+      window.open(`tel:${phoneNumber}`, '_self');
     }
   };
 
@@ -5038,9 +5212,11 @@ const PipelinePage: React.FC = () => {
                     <div className="flex justify-between items-center py-1">
                       <span className="text-sm font-semibold text-gray-500">Country</span>
                       <div className="flex items-center gap-1.5">
-                        <span className="text-sm font-bold text-gray-800 ml-2">{getCountryName(lead.country_id || lead.country)}</span>
-                        {(lead.country_id || lead.country) && (() => {
-                          const timezone = getCountryTimezone(lead.country_id || lead.country);
+                        <span className="text-sm font-bold text-gray-800 ml-2">{(lead as any).country || '--'}</span>
+                        {(lead as any).country && (() => {
+                          // Find country by name to get timezone (like SchedulerToolPage.tsx)
+                          const countryByName = allCountries.find((c: any) => c.name === (lead as any).country);
+                          const timezone = countryByName ? getCountryTimezone(countryByName.id, lead.phone, lead.mobile) : null;
                           const businessInfo = getBusinessHoursInfo(timezone);
                           return timezone ? (
                             <div 
@@ -5281,9 +5457,11 @@ const PipelinePage: React.FC = () => {
                     {/* Country */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <div className="flex items-center justify-center gap-1">
-                        <span className="text-xs sm:text-sm text-gray-700">{getCountryName(lead.country_id || lead.country)}</span>
+                        <span className="text-xs sm:text-sm text-gray-700">
+                          {(lead as any).country || '--'}
+                        </span>
                         {(lead.country_id || lead.country) && (() => {
-                          const timezone = getCountryTimezone(lead.country_id || lead.country);
+                          const timezone = getCountryTimezone(lead.country_id || lead.country, lead.phone, lead.mobile);
                           const businessInfo = getBusinessHoursInfo(timezone);
                           return timezone ? (
                             <div 
@@ -6051,7 +6229,7 @@ const PipelinePage: React.FC = () => {
                           <div className="flex items-center gap-2">
                             {contact.phone && (
                               <button
-                                onClick={() => window.open(`tel:${contact.phone}`, '_self')}
+                                onClick={() => handleContactCall(contact.phone, contact.name)}
                                 className="btn btn-circle btn-sm bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-600 hover:text-blue-700 transition-colors"
                                 title={`Call ${contact.phone}`}
                               >
@@ -6060,7 +6238,7 @@ const PipelinePage: React.FC = () => {
                             )}
                             {contact.mobile && !contact.phone && (
                               <button
-                                onClick={() => window.open(`tel:${contact.mobile}`, '_self')}
+                                onClick={() => handleContactCall(contact.mobile, contact.name)}
                                 className="btn btn-circle btn-sm bg-blue-50 hover:bg-blue-100 border-blue-200 text-blue-600 hover:text-blue-700 transition-colors"
                                 title={`Call ${contact.mobile}`}
                               >
@@ -6332,6 +6510,14 @@ const PipelinePage: React.FC = () => {
           </div>
         </div>
       )}
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callLeadName}
+      />
+
       {/* Document Modal */}
       {selectedLead && (
         <DocumentModal

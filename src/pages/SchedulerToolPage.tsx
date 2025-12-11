@@ -9,6 +9,8 @@ import { FaWhatsapp } from 'react-icons/fa';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import DocumentModal from '../components/DocumentModal';
 import { format, parseISO } from 'date-fns';
+import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
+import CallOptionsModal from '../components/CallOptionsModal';
 
 export interface SchedulerLead {
   id: string;
@@ -37,6 +39,7 @@ export interface SchedulerLead {
   next_followup?: string;
   eligible?: boolean;
   country?: string;
+  country_id?: number | null;
 }
 
 const SCHEDULER_STAGE_TARGETS = [
@@ -128,6 +131,11 @@ const SchedulerToolPage: React.FC = () => {
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
+  
+  // Call options modal state
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
+  const [callLeadName, setCallLeadName] = useState<string>('');
   
   // View mode state (box view is default on mobile)
   const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
@@ -624,30 +632,106 @@ const SchedulerToolPage: React.FC = () => {
     return String(countryId); // Fallback to original value
   };
 
-  const getCountryTimezone = (countryId: string | number | null | undefined, countriesData?: any[]) => {
+  const getCountryTimezone = (countryId: string | number | null | undefined, countriesData?: any[], phone?: string | null, mobile?: string | null) => {
     const countries = countriesData || allCountries;
+    
+    console.log('🌍 getCountryTimezone called:', {
+      countryId,
+      countryIdType: typeof countryId,
+      phone,
+      mobile,
+      countriesLength: countries?.length || 0,
+      allCountriesLength: allCountries?.length || 0
+    });
+    
     if (!countryId || countryId === '---' || countryId === '--') {
+      console.log('🌍 No countryId provided, returning null');
       return null;
     }
     
     if (!countries || countries.length === 0) {
+      console.log('🌍 No countries data available, returning null');
       return null;
     }
     
-    // Try to find by ID
-    const countryById = countries.find((country: any) => country.id.toString() === countryId.toString());
-    if (countryById && countryById.timezone) {
-      return countryById.timezone;
-    }
-    
-    // If not found by ID, try to find by name
+    // Try to find by name first (in case countryId is a name like "United States")
     const countryByName = countries.find((country: any) => 
       country.name.toLowerCase().trim() === String(countryId).toLowerCase().trim()
     );
-    if (countryByName && countryByName.timezone) {
-      return countryByName.timezone;
+    
+    if (countryByName) {
+      console.log('🌍 Found country by name:', {
+        countryName: countryByName.name,
+        countryId: countryByName.id,
+        timezone: countryByName.timezone
+      });
+      
+      // Special handling for US (country ID 249): use area code from phone number
+      if (countryByName.id === 249) {
+        console.log('🇺🇸 US detected by name, checking phone for area code...', {
+          phone,
+          mobile,
+          phoneToCheck: phone || mobile
+        });
+        
+        // Try to get timezone from US area code
+        const usTimezone = getUSTimezoneFromPhone(phone, mobile);
+        if (usTimezone) {
+          console.log(`🇺🇸 Using US area code timezone: ${usTimezone}`);
+          return usTimezone;
+        }
+        console.log('🇺🇸 No area code found, using default US timezone (Eastern)');
+        // Fallback to default US timezone (Eastern)
+        return 'America/New_York';
+      }
+      
+      // For non-US countries, return the timezone from the country data
+      if (countryByName.timezone) {
+        console.log('🌍 Returning timezone from country data:', countryByName.timezone);
+        return countryByName.timezone;
+      }
     }
     
+    // Try to find by ID (in case countryId is a number)
+    const countryIdNum = typeof countryId === 'string' ? parseInt(countryId, 10) : countryId;
+    if (!isNaN(countryIdNum as number)) {
+      const countryById = countries.find((country: any) => country.id.toString() === countryIdNum.toString());
+      
+      if (countryById) {
+        console.log('🌍 Found country by ID:', {
+          countryName: countryById.name,
+          countryId: countryById.id,
+          timezone: countryById.timezone
+        });
+        
+        // Special handling for US (country ID 249): use area code from phone number
+        if (countryById.id === 249) {
+          console.log('🇺🇸 US detected by ID, checking phone for area code...', {
+            phone,
+            mobile,
+            phoneToCheck: phone || mobile
+          });
+          
+          // Try to get timezone from US area code
+          const usTimezone = getUSTimezoneFromPhone(phone, mobile);
+          if (usTimezone) {
+            console.log(`🇺🇸 Using US area code timezone: ${usTimezone}`);
+            return usTimezone;
+          }
+          console.log('🇺🇸 No area code found, using default US timezone (Eastern)');
+          // Fallback to default US timezone (Eastern)
+          return 'America/New_York';
+        }
+        
+        // For non-US countries, return the timezone from the country data
+        if (countryById.timezone) {
+          console.log('🌍 Returning timezone from country data:', countryById.timezone);
+          return countryById.timezone;
+        }
+      }
+    }
+    
+    console.log('🌍 Country not found, returning null');
     return null;
   };
 
@@ -1059,6 +1143,7 @@ const SchedulerToolPage: React.FC = () => {
       // Country data for new leads is now fetched directly from the leads table with the JOIN
       // For legacy leads, we'll keep the existing contact-based approach since they don't have country_id directly
       let legacyCountryMap = new Map();
+      let legacyCountryIdMap = new Map();
       
       if (legacyLeadIds.length > 0) {
         try {
@@ -1085,7 +1170,9 @@ const SchedulerToolPage: React.FC = () => {
               if (item.leads_contact && (item.leads_contact as any).misc_country) {
                 const leadId = item.lead_id;
                 const countryName = ((item.leads_contact as any).misc_country as any).name;
+                const countryId = ((item.leads_contact as any).misc_country as any).id;
                 legacyCountryMap.set(leadId, countryName);
+                if (countryId) legacyCountryIdMap.set(leadId, countryId);
               }
             });
           } else {
@@ -1110,7 +1197,9 @@ const SchedulerToolPage: React.FC = () => {
                 if (item.leads_contact && (item.leads_contact as any).misc_country) {
                   const leadId = item.lead_id;
                   const countryName = ((item.leads_contact as any).misc_country as any).name;
+                  const countryId = ((item.leads_contact as any).misc_country as any).id;
                   legacyCountryMap.set(leadId, countryName);
+                  if (countryId) legacyCountryIdMap.set(leadId, countryId);
                 }
               });
             }
@@ -1218,7 +1307,8 @@ const SchedulerToolPage: React.FC = () => {
             potential_applicants_meeting: '', // Legacy leads don't have this field
             next_followup: followUpsMap.get(`legacy_${lead.id}`) || '', // Get follow-up from follow_ups table
             eligible: (lead as any).eligibile?.toLowerCase() === 'yes' || (lead as any).eligibile?.toLowerCase() === 'true', // Convert text to boolean
-            country: legacyCountryMap.get(lead.id) || '' // Get country from legacyCountryMap
+            country: legacyCountryMap.get(lead.id) || '', // Get country from legacyCountryMap
+            country_id: legacyCountryIdMap.get(lead.id) || null // Get country_id from legacyCountryIdMap
           };
         });
 
@@ -1337,10 +1427,22 @@ const SchedulerToolPage: React.FC = () => {
 
   const handleCall = (lead: SchedulerLead) => {
     const phoneNumber = lead.phone || lead.mobile;
-    if (phoneNumber) {
-      window.open(`tel:${phoneNumber}`, '_self');
-    } else {
+    if (!phoneNumber) {
       toast.error('No phone number available for this lead');
+      return;
+    }
+
+    // Only show modal for US numbers (country code +1)
+    const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
+    const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+    
+    if (isUSNumber) {
+      setCallPhoneNumber(phoneNumber);
+      setCallLeadName(lead.name || '');
+      setIsCallModalOpen(true);
+    } else {
+      // For non-US countries, call directly
+      window.open(`tel:${phoneNumber}`, '_self');
     }
   };
 
@@ -3090,12 +3192,35 @@ const SchedulerToolPage: React.FC = () => {
                       <div className="flex items-center gap-1">
                         <span>{lead.country || 'N/A'}</span>
                         {lead.country && (() => {
-                          const timezone = getCountryTimezone(lead.country, allCountries);
+                          console.log('🔵 Rendering country cell:', {
+                            country: lead.country,
+                            phone: lead.phone,
+                            mobile: lead.mobile,
+                            leadId: lead.id,
+                            leadName: lead.name
+                          });
+                          
+                          const timezone = getCountryTimezone(lead.country, allCountries, lead.phone, lead.mobile);
+                          console.log('🔵 Timezone result:', {
+                            timezone,
+                            timezoneType: typeof timezone,
+                            isNull: timezone === null,
+                            isUndefined: timezone === undefined
+                          });
+                          
                           const businessInfo = getBusinessHoursInfo(timezone);
+                          console.log('🔵 Business hours info:', {
+                            isBusinessHours: businessInfo.isBusinessHours,
+                            localTime: businessInfo.localTime,
+                            timezone
+                          });
+                          
                           return timezone ? (
                             <div className={`w-3 h-3 rounded-full ${businessInfo.isBusinessHours ? 'bg-green-500' : 'bg-red-500'}`} 
                                  title={`${businessInfo.localTime ? `Local time: ${businessInfo.localTime}` : 'Time unavailable'} - ${businessInfo.isBusinessHours ? 'Business hours' : 'Outside business hours'} (${timezone})`} />
-                          ) : null;
+                          ) : (
+                            <div className="w-3 h-3 rounded-full bg-gray-300" title="No timezone data available" />
+                          );
                         })()}
                       </div>
                     </td>
@@ -3438,6 +3563,14 @@ const SchedulerToolPage: React.FC = () => {
           clientName={selectedLead.name}
         />
       )}
+
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callLeadName}
+      />
 
       {/* Modals */}
       {selectedLead && (

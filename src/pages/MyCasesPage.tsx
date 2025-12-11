@@ -13,6 +13,7 @@ import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
 import EditLeadDrawer from '../components/EditLeadDrawer';
 import RMQMessagesPage from './RMQMessagesPage';
+import CallOptionsModal from '../components/CallOptionsModal';
 
 interface Case {
   id: string;
@@ -75,6 +76,11 @@ const MyCasesPage: React.FC = () => {
   const [showEditLeadDrawer, setShowEditLeadDrawer] = useState(false);
   const [isRMQModalOpen, setIsRMQModalOpen] = useState(false);
   const [rmqCloserUserId, setRmqCloserUserId] = useState<string | null>(null);
+  
+  // Call options modal state
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
+  const [callLeadName, setCallLeadName] = useState<string>('');
 
   useEffect(() => {
     if (user?.id) {
@@ -511,10 +517,66 @@ const MyCasesPage: React.FC = () => {
     }
   };
 
-  const handleCall = (caseItem: Case) => {
-    // For now, navigate to client page with phone tab
-    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    navigate(`/clients/${navigationId}?tab=phone`);
+  const handleCall = async (caseItem: Case) => {
+    // Fetch phone data for the case
+    try {
+      const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+      
+      if (caseItem.isNewLead) {
+        const { data: newLeadData } = await supabase
+          .from('leads')
+          .select('phone, mobile')
+          .eq('lead_number', navigationId)
+          .single();
+        
+        const phoneNumber = newLeadData?.phone || newLeadData?.mobile;
+        if (phoneNumber) {
+          // Only show modal for US numbers (country code +1)
+          const normalizedPhone = phoneNumber.replace(/[\s\-\(\)]/g, '');
+          const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+          
+          if (isUSNumber) {
+            setCallPhoneNumber(phoneNumber);
+            setCallLeadName(caseItem.client_name || '');
+            setIsCallModalOpen(true);
+          } else {
+            // For non-US countries, call directly
+            window.open(`tel:${phoneNumber}`, '_self');
+          }
+          return;
+        }
+      } else {
+        const { data: legacyLeadData } = await supabase
+          .from('leads_lead')
+          .select('phone, email')
+          .eq('id', parseInt(navigationId))
+          .single();
+        
+        if (legacyLeadData?.phone) {
+          // Only show modal for US numbers (country code +1)
+          const normalizedPhone = legacyLeadData.phone.replace(/[\s\-\(\)]/g, '');
+          const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+          
+          if (isUSNumber) {
+            setCallPhoneNumber(legacyLeadData.phone);
+            setCallLeadName(caseItem.client_name || '');
+            setIsCallModalOpen(true);
+          } else {
+            // For non-US countries, call directly
+            window.open(`tel:${legacyLeadData.phone}`, '_self');
+          }
+          return;
+        }
+      }
+      
+      // If no phone found, navigate to client page with phone tab
+      navigate(`/clients/${navigationId}?tab=phone`);
+    } catch (error) {
+      console.error('Error fetching phone data:', error);
+      // Fallback: navigate to client page
+      const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+      navigate(`/clients/${navigationId}?tab=phone`);
+    }
   };
 
   const handleEmail = async (caseItem: Case) => {
@@ -1733,6 +1795,14 @@ const MyCasesPage: React.FC = () => {
           initialLeadName={selectedCase.client_name}
         />
       )}
+
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callLeadName}
+      />
     </div>
   );
 };

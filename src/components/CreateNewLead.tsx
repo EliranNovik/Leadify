@@ -503,8 +503,8 @@ const CreateNewLead: React.FC = () => {
       const newLead = data?.[0] as NewLeadResult;
       if (!newLead) throw new Error("Could not create lead.");
 
-      // Update the lead with category, facts and special_notes if provided
-      const updateData: { category?: string; facts?: string; special_notes?: string } = {};
+      // Update the lead with category, facts, special_notes, and country_id if provided
+      const updateData: { category?: string; facts?: string; special_notes?: string; country_id?: number } = {};
       if (categoryName && categoryName.trim()) {
         updateData.category = categoryName.trim();
       }
@@ -514,6 +514,13 @@ const CreateNewLead: React.FC = () => {
       if (form.specialNotes && form.specialNotes.trim()) {
         updateData.special_notes = form.specialNotes.trim();
       }
+      // Add country_id to leads table update if provided
+      if (form.country_id && form.country_id.trim() !== '') {
+        const countryIdInt = parseInt(form.country_id, 10);
+        if (!isNaN(countryIdInt)) {
+          updateData.country_id = countryIdInt;
+        }
+      }
 
       if (Object.keys(updateData).length > 0) {
         const { error: updateError } = await supabase
@@ -522,29 +529,31 @@ const CreateNewLead: React.FC = () => {
           .eq('id', newLead.id);
 
         if (updateError) {
-          console.error('Error updating category/facts/special_notes:', updateError);
+          console.error('Error updating lead fields:', updateError);
           // Don't throw - lead was created successfully, just log the error
+        } else {
+          if (updateData.country_id) {
+            console.log('Successfully updated leads table with country_id:', updateData.country_id);
+          }
         }
       }
 
-      // Update the contact record with country_id if provided
+      // Also update the contact record with country_id if provided (for consistency)
+      // Note: Contact might not exist immediately after lead creation, so we use maybeSingle()
       if (form.country_id && form.country_id.trim() !== '') {
-        console.log('Updating contact with country_id:', form.country_id);
-        // Find the contact record for this lead
-        const { data: contactData, error: contactFetchError } = await supabase
-          .from('leads_contact')
-          .select('id')
-          .eq('newlead_id', newLead.id)
-          .limit(1)
-          .single();
+        const countryIdInt = parseInt(form.country_id, 10);
+        if (!isNaN(countryIdInt)) {
+          // Try to find the contact record for this lead (use maybeSingle to handle no rows)
+          const { data: contactData, error: contactFetchError } = await supabase
+            .from('leads_contact')
+            .select('id')
+            .eq('newlead_id', newLead.id)
+            .maybeSingle();
 
-        if (contactFetchError) {
-          console.error('Error fetching contact for country update:', contactFetchError);
-        } else if (contactData) {
-          const countryIdInt = parseInt(form.country_id, 10);
-          if (isNaN(countryIdInt)) {
-            console.error('Invalid country_id:', form.country_id);
-          } else {
+          if (contactFetchError) {
+            console.error('Error fetching contact for country update:', contactFetchError);
+          } else if (contactData && contactData.id) {
+            // Contact exists, update it
             const { error: contactUpdateError } = await supabase
               .from('leads_contact')
               .update({ country_id: countryIdInt })
@@ -556,12 +565,11 @@ const CreateNewLead: React.FC = () => {
             } else {
               console.log('Successfully updated contact country_id to:', countryIdInt);
             }
+          } else {
+            // Contact doesn't exist yet - this is fine, the country_id is already saved in leads table
+            console.log('Contact not found yet for new lead (this is normal), country_id already saved in leads table');
           }
-        } else {
-          console.warn('No contact found for new lead:', newLead.id);
         }
-      } else {
-        console.log('No country_id provided, skipping country update');
       }
 
       // Navigate to the new lead's page

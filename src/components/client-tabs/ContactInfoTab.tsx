@@ -18,6 +18,7 @@ import { Color } from '@tiptap/extension-color';
 import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
+import CallOptionsModal from '../CallOptionsModal';
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -325,6 +326,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [mainContactCountrySearchTerm, setMainContactCountrySearchTerm] = useState<string>('');
   const [showMainContactCountryDropdown, setShowMainContactCountryDropdown] = useState<boolean>(false);
   const mainContactCountryInputRef = useRef<HTMLDivElement>(null);
+  
+  // Call options modal state
+  const [isCallModalOpen, setIsCallModalOpen] = useState(false);
+  const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
+  const [callContactName, setCallContactName] = useState<string>('');
   
   // State for country search (for regular contacts - keyed by contact ID)
   const [contactCountrySearchTerms, setContactCountrySearchTerms] = useState<{ [key: number]: string }>({});
@@ -1133,6 +1139,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               if (contactsError) {
                 console.error('❌ Error fetching contact details:', contactsError);
               } else if (contacts) {
+                // Get country_id from leads table as fallback for all contacts
+                const { data: leadData } = await supabase
+                  .from('leads')
+                  .select('country_id')
+                  .eq('id', newLeadId)
+                  .single();
+                
+                const leadCountryId = leadData?.country_id || null;
+                
                 // Map contacts to their lead-contact relationships
                 let mainContactFound = false;
                 
@@ -1153,6 +1168,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       mainContactFound = true;
                     }
                     
+                    // Use country_id from contact, fallback to leads table, then null
+                    const countryId = contact.country_id || leadCountryId || null;
+                    
                     // Create contact entry with complete information from leads_contact table
                     const contactEntry: ContactEntry = {
                       id: contact.id,
@@ -1160,7 +1178,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       mobile: contact.mobile || '---',
                       phone: contact.phone || '---',
                       email: contact.email || '---',
-                      country_id: contact.country_id || null,
+                      country_id: countryId,
                       isMain: isMainContact,
                     };
                     
@@ -1195,23 +1213,43 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 .eq('contact_id', existingContact.id)
                 .single();
               
+              // Get country_id from leads table as fallback if contact doesn't have it
+              let countryId = existingContact.country_id;
+              if (!countryId) {
+                const { data: leadData } = await supabase
+                  .from('leads')
+                  .select('country_id')
+                  .eq('id', newLeadId)
+                  .single();
+                countryId = leadData?.country_id || null;
+              }
+              
               const mainContact: ContactEntry = {
                 id: existingContact.id,
                 name: existingContact.name || client.name || '---',
                 mobile: existingContact.mobile || client.mobile || '---',
                 phone: existingContact.phone || client.phone || '---',
                 email: existingContact.email || client.email || '---',
+                country_id: countryId,
                 isMain: existingRelationship?.main === true || existingRelationship?.main === 'true' || existingRelationship?.main === 't',
               };
               contactEntries.push(mainContact);
             } else {
               // No existing contact found, create a new one
+              // Get country_id from leads table first
+              const { data: leadData } = await supabase
+                .from('leads')
+                .select('country_id')
+                .eq('id', newLeadId)
+                .single();
+              
               const insertData: Record<string, any> = {
                 name: client.name || '',
                 mobile: client.mobile || null,
                 phone: client.phone || null,
                 email: client.email || null,
                 newlead_id: newLeadId,
+                country_id: leadData?.country_id || null,
                 cdate: new Date().toISOString().split('T')[0],
                 udate: new Date().toISOString().split('T')[0]
               };
@@ -1274,13 +1312,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               
               if (contactError) {
                 console.error('Error creating main contact:', contactError);
-                // Fallback to temporary contact entry
+                // Fallback to temporary contact entry with country_id from leads table
+                const { data: leadDataForFallback } = await supabase
+                  .from('leads')
+                  .select('country_id')
+                  .eq('id', newLeadId)
+                  .single();
+                
                 const fallbackContact: ContactEntry = {
                   id: 1,
                   name: client.name || '---',
                   mobile: client.mobile || '---',
                   phone: client.phone || '---',
                   email: client.email || '---',
+                  country_id: leadDataForFallback?.country_id || null,
                   isMain: true,
                 };
                 contactEntries.push(fallbackContact);
@@ -1332,12 +1377,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   console.error('Error creating main contact relationship:', relationshipError);
                 }
                 
+                // Get country_id from leads table for the newly created contact
+                const { data: leadDataForNewContact } = await supabase
+                  .from('leads')
+                  .select('country_id')
+                  .eq('id', newLeadId)
+                  .single();
+                
                 const mainContact: ContactEntry = {
                   id: newContact.id,
                   name: client.name || '---',
                   mobile: client.mobile || '---',
                   phone: client.phone || '---',
                   email: client.email || '---',
+                  country_id: leadDataForNewContact?.country_id || null,
                   isMain: true,
                 };
                 contactEntries.push(mainContact);
@@ -1558,14 +1611,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         
         console.log('Contact updated successfully');
 
-        // Also update leads_lead table with main contact details
+        // Also update leads_lead table with main contact details (including country_id)
         const { error: updateLeadError } = await supabase
           .from('leads_lead')
           .update({
             name: editedMainContact.name,
             mobile: editedMainContact.mobile || null,
             phone: editedMainContact.phone || null,
-            email: editedMainContact.email || null
+            email: editedMainContact.email || null,
+            country_id: editedMainContact.country_id || null
           })
           .eq('id', parseInt(legacyId));
         
@@ -1636,14 +1690,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         
         console.log('Contact updated successfully');
 
-        // Also update leads table with main contact details
+        // Also update leads table with main contact details (including country_id)
         const { error: updateLeadError } = await supabase
           .from('leads')
           .update({
             name: editedMainContact.name,
             mobile: editedMainContact.mobile || null,
             phone: editedMainContact.phone || null,
-            email: editedMainContact.email || null
+            email: editedMainContact.email || null,
+            country_id: editedMainContact.country_id || null
           })
           .eq('id', newLeadId);
         
@@ -2350,7 +2405,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         
         if (setError) throw setError;
         
-        // Update leads_lead table with main contact details
+        // Update leads_lead table with main contact details (including country_id)
         const { error: updateLeadError } = await supabase
           .from('leads_lead')
           .update({
@@ -2358,6 +2413,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             email: contactData.email || null,
             phone: contactData.phone || null,
             mobile: contactData.mobile || null,
+            country_id: contactData.country_id || null
           })
           .eq('id', parseInt(legacyId));
         
@@ -2387,7 +2443,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         
         if (setError) throw setError;
         
-        // Update leads table with main contact details
+        // Update leads table with main contact details (including country_id)
         const { error: updateLeadError } = await supabase
           .from('leads')
           .update({
@@ -2395,6 +2451,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             email: contactData.email || null,
             phone: contactData.phone || null,
             mobile: contactData.mobile || null,
+            country_id: contactData.country_id || null
           })
           .eq('id', newLeadId);
         
@@ -3273,6 +3330,27 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 }}
                               />
                             </div>
+                          ) : contact.mobile && contact.mobile !== '---' ? (
+                            <button
+                              onClick={() => {
+                                // Only show modal for US numbers (country code +1)
+                                const normalizedPhone = contact.mobile.replace(/[\s\-\(\)]/g, '');
+                                const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+                                
+                                if (isUSNumber) {
+                                  setCallPhoneNumber(contact.mobile);
+                                  setCallContactName(contact.name || '');
+                                  setIsCallModalOpen(true);
+                                } else {
+                                  // For non-US countries, call directly
+                                  window.open(`tel:${contact.mobile}`, '_self');
+                                }
+                              }}
+                              className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
+                            >
+                              <PhoneIcon className="w-4 h-4 text-gray-400" />
+                              <span className="text-base font-medium">{contact.mobile}</span>
+                            </button>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <PhoneIcon className="w-4 h-4 text-gray-400" />
@@ -3285,7 +3363,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       {/* Phone */}
                       <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Phone</label>
-                        <div className="flex-1 ml-4">
+                        <div className="flex-1 ml-4 flex justify-end">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
                               <div className="relative w-40" ref={mainContactPhoneCodeInputRef}>
@@ -3418,10 +3496,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               />
                             </div>
                           ) : contact.phone && contact.phone !== '---' ? (
-                            <a href={`tel:${contact.phone}`} className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors">
+                            <button
+                              onClick={() => {
+                                // Only show modal for US numbers (country code +1)
+                                const normalizedPhone = contact.phone.replace(/[\s\-\(\)]/g, '');
+                                const isUSNumber = normalizedPhone.startsWith('+1') || (normalizedPhone.startsWith('1') && normalizedPhone.length >= 10);
+                                
+                                if (isUSNumber) {
+                                  setCallPhoneNumber(contact.phone);
+                                  setCallContactName(contact.name || '');
+                                  setIsCallModalOpen(true);
+                                } else {
+                                  // For non-US countries, call directly
+                                  window.open(`tel:${contact.phone}`, '_self');
+                                }
+                              }}
+                              className="text-base text-gray-900 hover:text-purple-600 flex items-center justify-end gap-2 transition-colors cursor-pointer"
+                            >
                               <PhoneIcon className="w-4 h-4 text-gray-400" />
                               <span className="text-base font-medium">{contact.phone}</span>
-                            </a>
+                            </button>
                           ) : (
                             <div className="text-base text-gray-900 flex items-center justify-end gap-2">
                               <PhoneIcon className="w-4 h-4 text-gray-400" />
@@ -4486,6 +4580,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         </div>,
         document.body
       )}
+
+      {/* Call Options Modal */}
+      <CallOptionsModal
+        isOpen={isCallModalOpen}
+        onClose={() => setIsCallModalOpen(false)}
+        phoneNumber={callPhoneNumber}
+        leadName={callContactName}
+      />
     </Fragment>
   );
 };

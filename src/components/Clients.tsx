@@ -1365,6 +1365,7 @@ const Clients: React.FC<ClientsProps> = ({
   });
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
+  const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
 
   // 1. Add state for the payments plan drawer
   const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
@@ -2097,10 +2098,14 @@ useEffect(() => {
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
       
+      // Get today's date in YYYY-MM-DD format for filtering
+      const today = new Date().toISOString().split('T')[0];
+      
       let query = supabase
         .from('meetings')
         .select('*')
-        .neq('status', 'canceled'); // Only fetch non-canceled meetings
+        .neq('status', 'canceled') // Only fetch non-canceled meetings
+        .gte('meeting_date', today); // Only fetch upcoming meetings (today and future)
       
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
@@ -2109,7 +2114,7 @@ useEffect(() => {
         query = query.eq('client_id', selectedClient.id);
       }
       
-      const { data, error } = await query.order('meeting_date', { ascending: false });
+      const { data, error } = await query.order('meeting_date', { ascending: true });
       
       if (!error && data) setRescheduleMeetings(data);
       else setRescheduleMeetings([]);
@@ -5881,6 +5886,8 @@ useEffect(() => {
   const handleRescheduleMeeting = async () => {
     if (!selectedClient || !rescheduleFormData.date || !rescheduleFormData.time) return;
     
+    setIsReschedulingMeeting(true);
+    
     // Check if we're in stage 21 and no meeting is selected - allow rescheduling without canceling
     const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
                         (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
@@ -5931,16 +5938,62 @@ useEffect(() => {
       // Get current user's full_name from database to match scheduler dropdown values
       let currentUserFullName = '';
       try {
-        const { data: userData } = await supabase
-          .from('users')
-          .select('full_name')
-          .eq('email', account.username)
-          .single();
-        if (userData?.full_name) {
-          currentUserFullName = userData.full_name;
+        // First try to get user by auth_id (more reliable)
+        const { data: { user: authUser } } = await supabase.auth.getUser();
+        if (authUser?.id) {
+          const { data: userData } = await supabase
+            .from('users')
+            .select('full_name, employee_id')
+            .eq('auth_id', authUser.id)
+            .maybeSingle();
+          
+          if (userData?.full_name) {
+            currentUserFullName = userData.full_name;
+          } else if (userData?.employee_id) {
+            // Fallback: try to get display_name from employees table
+            const employee = allEmployees.find((emp: any) => emp.id === userData.employee_id);
+            if (employee?.display_name) {
+              currentUserFullName = employee.display_name;
+            }
+          }
+        }
+        
+        // If still empty, try by email as fallback
+        if (!currentUserFullName && account.username) {
+          const { data: userDataByEmail } = await supabase
+            .from('users')
+            .select('full_name, employee_id')
+            .eq('email', account.username)
+            .maybeSingle();
+          
+          if (userDataByEmail?.full_name) {
+            currentUserFullName = userDataByEmail.full_name;
+          } else if (userDataByEmail?.employee_id) {
+            // Fallback: try to get display_name from employees table
+            const employee = allEmployees.find((emp: any) => emp.id === userDataByEmail.employee_id);
+            if (employee?.display_name) {
+              currentUserFullName = employee.display_name;
+            }
+          }
+        }
+        
+        // Final fallback: use account name if available
+        if (!currentUserFullName && account.name) {
+          currentUserFullName = account.name;
         }
       } catch (error) {
-        console.log('Could not fetch user full_name');
+        console.error('Could not fetch user full_name:', error);
+        // Use account name as fallback
+        if (account.name) {
+          currentUserFullName = account.name;
+        }
+      }
+      
+      // Ensure we have a scheduler name - if still empty, use account username
+      if (!currentUserFullName) {
+        console.error('⚠️ Could not determine current user full name for scheduler field');
+        // Use account username as last resort
+        currentUserFullName = account.username || 'System User';
       }
 
       // Helper function to convert display name to employee ID
@@ -6340,6 +6393,8 @@ useEffect(() => {
     } catch (error) {
       toast.error('Failed to reschedule meeting.');
       console.error(error);
+    } finally {
+      setIsReschedulingMeeting(false);
     }
   };
 
@@ -12635,9 +12690,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <button
                     className="btn btn-primary px-8"
                     onClick={handleRescheduleMeeting}
-                    disabled={!rescheduleFormData.date || !rescheduleFormData.time}
+                    disabled={!rescheduleFormData.date || !rescheduleFormData.time || isReschedulingMeeting}
                   >
-                    Reschedule Meeting
+                    {isReschedulingMeeting ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm"></span>
+                        Rescheduling...
+                      </>
+                    ) : (
+                      'Reschedule Meeting'
+                    )}
                   </button>
                 )}
               </div>
