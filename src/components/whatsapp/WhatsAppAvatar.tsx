@@ -32,7 +32,7 @@ const WhatsAppAvatar: React.FC<WhatsAppAvatarProps> = ({
   const initials = getInitials(name);
 
   return (
-    <div className={`${sizeClasses[size]} ${className} rounded-full flex items-center justify-center overflow-hidden flex-shrink-0 text-white font-semibold shadow-sm`} style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
+    <div className={`${sizeClasses[size]} ${className} rounded-full flex items-center justify-center overflow-hidden flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)] font-semibold`}>
       {profilePictureUrl ? (
         <img
           src={profilePictureUrl}
@@ -44,7 +44,7 @@ const WhatsAppAvatar: React.FC<WhatsAppAvatarProps> = ({
             target.style.display = 'none';
             const parent = target.parentElement;
             if (parent) {
-              parent.innerHTML = `<span class="flex items-center justify-center w-full h-full">${initials}</span>`;
+              parent.innerHTML = `<span class="flex items-center justify-center w-full h-full text-green-700 font-semibold">${initials}</span>`;
             }
           }}
         />

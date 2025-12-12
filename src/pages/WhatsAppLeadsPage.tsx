@@ -2428,13 +2428,70 @@ const WhatsAppLeadsPage: React.FC = () => {
                             {message.sender_first_name || message.sender_name || 'You'}
                           </span>
                         )}
-                        <div
-                          className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
-                            message.direction === 'out'
-                              ? 'bg-green-600 text-white'
-                              : 'bg-white text-gray-900 border border-gray-200'
-                          }`}
-                        >
+                        
+                        {/* Image or Emoji-only messages - render outside bubble */}
+                        {(message.message_type === 'image' || (message.message_type === 'text' && message.message && /^[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/u.test(message.message.trim()) && message.message.trim().length <= 5)) ? (
+                          <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                            {/* Image content */}
+                            {message.message_type === 'image' && message.media_url && (
+                              <div 
+                                className="relative cursor-pointer group"
+                                onClick={() => {
+                                  if (message.media_url) {
+                                    setSelectedMedia({
+                                      url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                      type: 'image',
+                                      caption: message.caption
+                                    });
+                                  }
+                                }}
+                              >
+                                <img
+                                  src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                  alt="Image"
+                                  className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                  onError={(e) => {
+                                    e.currentTarget.style.display = 'none';
+                                  }}
+                                />
+                                <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                  </svg>
+                                </div>
+                              </div>
+                            )}
+
+                            {/* Emoji-only content */}
+                            {message.message_type === 'text' && message.message && /^[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/u.test(message.message.trim()) && message.message.trim().length <= 5 && (
+                              <div className="text-6xl leading-tight">
+                                {message.message}
+                              </div>
+                            )}
+
+                            {/* Caption for images */}
+                            {message.message_type === 'image' && message.caption && (
+                              <p className="text-base break-words mt-1">{message.caption}</p>
+                            )}
+
+                            {/* Timestamp at bottom of image/emoji */}
+                            <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                              <span className="text-xs text-gray-500">
+                                {new Date(message.sent_at).toLocaleTimeString([], {
+                                  hour: '2-digit',
+                                  minute: '2-digit'
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                        ) : (
+                          <div
+                            className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
+                              message.direction === 'out'
+                                ? 'bg-green-600 text-white'
+                                : 'bg-white text-gray-900 border border-gray-200'
+                            }`}
+                          >
                           {/* Edit input or message content */}
                           {editingMessage === message.id ? (
                             <textarea
@@ -2497,49 +2554,6 @@ const WhatsAppLeadsPage: React.FC = () => {
                                 </div>
                               )}
                             </>
-                          )}
-
-                          {/* Image message */}
-                          {message.message_type === 'image' && message.media_url && (
-                            <div>
-                              <img 
-                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                alt="Image"
-                                className="max-w-full max-h-[400px] object-cover rounded-lg mb-2 cursor-pointer hover:opacity-90 transition-opacity"
-                                onClick={() => {
-                                  if (message.media_url) {
-                                    setSelectedMedia({
-                                      url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                      type: 'image',
-                                      caption: message.caption
-                                    });
-                                  }
-                                }}
-                                onError={(e) => {
-                                  e.currentTarget.style.display = 'none';
-                                }}
-                              />
-                              <div className="flex items-center gap-2">
-                                <button
-                                  onClick={() => handleDownloadMedia(message.media_url!, `image_${message.id}.jpg`)}
-                                  className="btn btn-sm btn-ghost"
-                                >
-                                  <svg className="w-4 h-4 mr-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
-                                  </svg>
-                                  Download
-                                </button>
-                                {message.caption && (
-                                  <p 
-                                    className="text-base break-words"
-                                    dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                                    style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                                  >
-                                    {message.caption}
-                                  </p>
-                                )}
-                              </div>
-                            </div>
                           )}
 
                           {/* Voice message */}
@@ -2630,6 +2644,7 @@ const WhatsAppLeadsPage: React.FC = () => {
                             {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                         </div>
                       </div>
+                        )}
                       </div>
                       </React.Fragment>
                     );
@@ -2649,29 +2664,45 @@ const WhatsAppLeadsPage: React.FC = () => {
                 >
                   {/* Template Dropdown - Above input on mobile */}
                   {showTemplateSelector && isMobile && (
-                    <div className="absolute bottom-full left-0 right-0 mb-2 p-4 bg-white rounded-t-xl border-t border-x border-gray-200 shadow-lg max-h-[50vh] overflow-y-auto">
-                      <div className="flex items-center justify-between mb-3">
-                        <div className="text-sm font-semibold text-gray-900">Select Template</div>
-                        <button
-                          type="button"
-                          onClick={() => setShowTemplateSelector(false)}
-                          className="btn btn-ghost btn-xs"
-                        >
-                          <XMarkIcon className="w-4 h-4" />
-                        </button>
-                      </div>
-                      
-                      <div className="mb-3">
-                        <input
-                          type="text"
-                          placeholder="Search templates..."
-                          value={templateSearchTerm}
-                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                          className="w-full px-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent bg-white"
-                        />
-                      </div>
-                      
-                      <div className="space-y-3 max-h-[40vh] overflow-y-auto">
+                    <>
+                      {/* Backdrop */}
+                      <div 
+                        className="fixed inset-0 bg-black/50 z-[9998]"
+                        onClick={() => setShowTemplateSelector(false)}
+                      />
+                      <div 
+                        className="fixed inset-0 z-[9999] overflow-hidden flex flex-col pointer-events-auto"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="bg-white h-full flex flex-col overflow-hidden">
+                          <div className="flex items-center justify-between p-4 border-b border-gray-200 flex-shrink-0">
+                            <div className="text-lg font-semibold text-gray-900">Select Template</div>
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setShowTemplateSelector(false);
+                              }}
+                              className="btn btn-ghost btn-xs z-50"
+                              aria-label="Close template selector"
+                            >
+                              <XMarkIcon className="w-5 h-5" />
+                            </button>
+                          </div>
+                          
+                          <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                            <div className="mb-3 flex-shrink-0">
+                              <input
+                                type="text"
+                                placeholder="Search templates..."
+                                value={templateSearchTerm}
+                                onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                                className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500 bg-gray-50 transition-all"
+                              />
+                            </div>
+                            
+                            <div className="space-y-3 flex-1 overflow-y-auto">
                         {isLoadingTemplates ? (
                           <div className="text-center text-gray-500 py-4">
                             <div className="loading loading-spinner loading-sm"></div>
@@ -2713,8 +2744,11 @@ const WhatsAppLeadsPage: React.FC = () => {
                             />
                           ))
                         )}
+                            </div>
+                          </div>
+                        </div>
                       </div>
-                    </div>
+                    </>
                   )}
 
                   {/* Template Dropdown - Desktop */}

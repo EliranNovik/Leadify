@@ -88,6 +88,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const [selectedTemplate, setSelectedTemplate] = useState<WhatsAppTemplate | null>(null);
   const [templates, setTemplates] = useState<WhatsAppTemplate[]>([]);
   const [templateSearchTerm, setTemplateSearchTerm] = useState('');
+  const [selectedLanguage, setSelectedLanguage] = useState<string>('');
   const [isLoadingTemplates, setIsLoadingTemplates] = useState(false);
   
   // AI suggestions state
@@ -395,6 +396,41 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5;
     return hasNonAscii && isShort;
+  };
+
+  // Helper function to normalize language codes (en and en_US both become 'en')
+  const normalizeLanguage = (lang: string | undefined | null): string => {
+    if (!lang) return 'en';
+    const normalized = lang.toLowerCase();
+    if (normalized === 'en_us' || normalized === 'en') return 'en';
+    return normalized;
+  };
+
+  // Helper function to get display name for language
+  const getLanguageDisplayName = (lang: string): string => {
+    const normalized = normalizeLanguage(lang);
+    const langMap: { [key: string]: string } = {
+      'en': 'English',
+      'he': 'Hebrew',
+      'fr': 'French',
+      'ar': 'Arabic',
+      'ru': 'Russian',
+      'es': 'Spanish',
+      'de': 'German',
+      'it': 'Italian',
+      'pt': 'Portuguese',
+      'zh': 'Chinese',
+      'ja': 'Japanese',
+      'ko': 'Korean',
+      'tr': 'Turkish',
+      'pl': 'Polish',
+      'nl': 'Dutch',
+      'sv': 'Swedish',
+      'da': 'Danish',
+      'no': 'Norwegian',
+      'fi': 'Finnish',
+    };
+    return langMap[normalized] || lang.toUpperCase();
   };
 
   const getDocumentIcon = (mimeType?: string) => {
@@ -1479,7 +1515,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 <React.Fragment key={message.id || index}>
                   {showDateSeparator && (
                     <div className="flex justify-center my-4">
-                      <div className="text-sm font-medium px-3 py-1.5 rounded-full text-black" style={{ backgroundColor: '#4ade80' }}>
+                      <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
                         {formatDateSeparator(message.sent_at)}
                       </div>
                     </div>
@@ -1496,48 +1532,74 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         {message.sender_name}
                       </span>
                     )}
-                    <div
-                      className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
-                        message.direction === 'out'
-                          ? isEmojiOnly(message.message)
-                            ? 'bg-white text-gray-900'
-                            : 'text-white'
-                          : 'bg-white text-gray-900 border border-gray-200'
-                      }`}
-                      style={message.direction === 'out' && !isEmojiOnly(message.message) 
-                        ? { 
-                            background: 'linear-gradient(to bottom right, #059669, #0d9488)',
-                            borderColor: 'transparent'
-                          }
-                        : undefined
-                      }
-                    >
+                    
+                    {/* Image or Emoji-only messages - render outside bubble */}
+                    {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
+                      <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                        {/* Image content */}
+                        {message.message_type === 'image' && message.media_url && (
+                          <div className="relative">
+                            <img 
+                              src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                              alt="Image"
+                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover"
+                              onError={(e) => {
+                                e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                              }}
+                            />
+                          </div>
+                        )}
+
+                        {/* Emoji-only content */}
+                        {message.message_type === 'text' && isEmojiOnly(message.message) && (
+                          <div className="text-6xl leading-tight">
+                            {message.message}
+                          </div>
+                        )}
+
+                        {/* Caption for images */}
+                        {message.message_type === 'image' && message.caption && (
+                          <p className="text-base break-words mt-1">{message.caption}</p>
+                        )}
+
+                        {/* Timestamp and read receipts at bottom of image/emoji */}
+                        <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                          <span className="text-xs text-gray-500">
+                            {new Date(message.sent_at).toLocaleTimeString([], {
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                          {message.direction === 'out' && (
+                            <span className="inline-block align-middle text-current">
+                              {renderMessageStatus(message.whatsapp_status)}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    ) : (
+                      <div
+                        className={`group max-w-[85%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm ${
+                          message.direction === 'out'
+                            ? 'text-white'
+                            : 'bg-white text-gray-900 border border-gray-200'
+                        }`}
+                        style={message.direction === 'out' 
+                          ? { 
+                              background: 'linear-gradient(to bottom right, #059669, #0d9488)',
+                              borderColor: 'transparent'
+                            }
+                          : undefined
+                        }
+                      >
                       {message.message_type === 'text' && (
                         <p 
-                          className={`break-words whitespace-pre-wrap ${
-                            isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
-                          }`}
+                          className="break-words whitespace-pre-wrap text-base"
                           dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                           style={{ textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
                         >
                           {message.message}
                         </p>
-                      )}
-                      
-                      {message.message_type === 'image' && message.media_url && (
-                        <div>
-                          <img 
-                            src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                            alt="Image"
-                            className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm"
-                            onError={(e) => {
-                              e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
-                            }}
-                          />
-                          {message.caption && (
-                            <p className="text-base break-words">{message.caption}</p>
-                          )}
-                        </div>
                       )}
                       
                       {message.message_type === 'document' && (
@@ -1610,7 +1672,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                         </div>
                       </div>
                     </div>
-                  </div>
+                      )}
+                    </div>
                 </React.Fragment>
               );
             })
@@ -1691,86 +1754,124 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
           {/* Template Dropdown - Mobile */}
           {showTemplateSelector && isMobile && (
-            <div 
-              ref={templateSelectorRef} 
-              className="pointer-events-auto fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto"
-            >
-              <div className="bg-white rounded-t-2xl border-t border-x border-gray-200 shadow-2xl overflow-hidden">
-                {/* Header with gradient background */}
-                <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600">
-                  <div className="flex items-center justify-between">
-                    <div className="flex items-center gap-2">
-                      <FaWhatsapp className="w-5 h-5 text-white" />
-                      <h3 className="text-base font-bold text-white">Select Template</h3>
+            <>
+              {/* Backdrop */}
+              <div 
+                className="fixed inset-0 bg-black/50 z-[9998]"
+                onClick={() => setShowTemplateSelector(false)}
+              />
+              <div 
+                ref={templateSelectorRef} 
+                className="pointer-events-auto fixed inset-0 z-[9999] overflow-hidden flex flex-col"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="bg-white h-full flex flex-col overflow-hidden">
+                  {/* Header with gradient background */}
+                  <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <FaWhatsapp className="w-5 h-5 text-white" />
+                        <h3 className="text-base font-bold text-white">Select Template</h3>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setShowTemplateSelector(false);
+                        }}
+                        className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50"
+                        aria-label="Close template selector"
+                      >
+                        <XMarkIcon className="w-4 h-4" />
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setShowTemplateSelector(false)}
-                      className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5"
-                    >
-                      <XMarkIcon className="w-4 h-4" />
-                    </button>
-                  </div>
-                </div>
-                
-                {/* Content */}
-                <div className="p-4">
-                  <div className="mb-4">
-                    <input
-                      type="text"
-                      placeholder="Search templates..."
-                      value={templateSearchTerm}
-                      onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                      className="w-full px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                    />
                   </div>
                   
-                  <div className="space-y-3 max-h-[calc(60vh-120px)] overflow-y-auto">
-                  {isLoadingTemplates ? (
-                    <div className="text-center text-gray-500 py-4">
-                      <div className="loading loading-spinner loading-sm"></div>
-                      <span className="ml-2">Loading templates...</span>
-                    </div>
-                  ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                    <div className="text-center text-gray-500 py-4 text-sm">
-                      {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                    </div>
-                  ) : (
-                    filterTemplates(templates, templateSearchTerm).map((template) => (
-                      <TemplateOptionCard
-                        key={template.id}
-                        template={template}
-                        isSelected={selectedTemplate?.id === template.id}
-                        onClick={() => {
-                          if (template.active !== 't') {
-                            toast.error('Template pending approval');
-                            return;
-                          }
-                          setSelectedTemplate(template);
-                          setShowTemplateSelector(false);
-                          setTemplateSearchTerm('');
-                          if (template.params === '0') {
-                            setNewMessage(template.content || '');
-                            if (textareaRef.current) {
-                              setTimeout(() => {
-                                if (textareaRef.current) {
-                                  textareaRef.current.style.height = 'auto';
-                                  const maxHeight = isMobile ? 300 : 400;
-                                  textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
-                                }
-                              }, 0);
-                            }
-                          } else {
-                            setNewMessage('');
-                          }
-                        }}
+                  {/* Content */}
+                  <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                    <div className="mb-4 flex gap-2 flex-shrink-0">
+                      <input
+                        type="text"
+                        placeholder="Search templates..."
+                        value={templateSearchTerm}
+                        onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                        className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
                       />
-                    ))
-                  )}
+                      <select
+                        value={selectedLanguage}
+                        onChange={(e) => setSelectedLanguage(e.target.value)}
+                        className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
+                      >
+                        <option value="">All</option>
+                        {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                          .sort()
+                          .map(lang => (
+                            <option key={lang} value={lang}>
+                              {getLanguageDisplayName(lang)}
+                            </option>
+                          ))}
+                      </select>
+                    </div>
+                    
+                    <div className="space-y-3 flex-1 overflow-y-auto">
+                      {isLoadingTemplates ? (
+                        <div className="text-center text-gray-500 py-4">
+                          <div className="loading loading-spinner loading-sm"></div>
+                          <span className="ml-2">Loading templates...</span>
+                        </div>
+                      ) : (() => {
+                        let filtered = filterTemplates(templates, templateSearchTerm);
+                        if (selectedLanguage) {
+                          filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                        }
+                        return filtered;
+                      })().length === 0 ? (
+                        <div className="text-center text-gray-500 py-4 text-sm">
+                          {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                        </div>
+                      ) : (() => {
+                        let filtered = filterTemplates(templates, templateSearchTerm);
+                        if (selectedLanguage) {
+                          filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                        }
+                        return filtered;
+                      })().map((template) => (
+                        <TemplateOptionCard
+                          key={template.id}
+                          template={template}
+                          isSelected={selectedTemplate?.id === template.id}
+                          onClick={() => {
+                            if (template.active !== 't') {
+                              toast.error('Template pending approval');
+                              return;
+                            }
+                            setSelectedTemplate(template);
+                            setShowTemplateSelector(false);
+                            setTemplateSearchTerm('');
+                            setSelectedLanguage('');
+                            if (template.params === '0') {
+                              setNewMessage(template.content || '');
+                              if (textareaRef.current) {
+                                setTimeout(() => {
+                                  if (textareaRef.current) {
+                                    textareaRef.current.style.height = 'auto';
+                                    const maxHeight = isMobile ? 300 : 400;
+                                    textareaRef.current.style.height = `${Math.min(textareaRef.current.scrollHeight, maxHeight)}px`;
+                                  }
+                                }, 0);
+                              }
+                            } else {
+                              setNewMessage('');
+                            }
+                          }}
+                        />
+                      ))}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
+            </>
           )}
 
           {/* Template Dropdown - Desktop */}
@@ -1796,28 +1897,53 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 
                 {/* Content */}
                 <div className="p-6">
-                  <div className="mb-5">
+                  <div className="mb-5 flex gap-3">
                     <input
                       type="text"
                       placeholder="Search templates..."
                       value={templateSearchTerm}
                       onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                      className="w-full px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                      className="flex-1 px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
                     />
+                    <select
+                      value={selectedLanguage}
+                      onChange={(e) => setSelectedLanguage(e.target.value)}
+                      className="px-4 py-3 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[140px]"
+                    >
+                      <option value="">All Languages</option>
+                      {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                        .sort()
+                        .map(lang => (
+                          <option key={lang} value={lang}>
+                            {getLanguageDisplayName(lang)}
+                          </option>
+                        ))}
+                    </select>
                   </div>
                   
                   <div className={`space-y-3 ${isMobile ? 'max-h-[calc(60vh-120px)] overflow-y-auto' : 'max-h-[500px] overflow-y-auto'}`}>
-                  {isLoadingTemplates ? (
-                    <div className="text-center text-gray-500 py-4">
-                      <div className="loading loading-spinner loading-sm"></div>
-                      <span className="ml-2">Loading templates...</span>
-                    </div>
-                  ) : filterTemplates(templates, templateSearchTerm).length === 0 ? (
-                    <div className="text-center text-gray-500 py-4 text-sm">
-                      {templateSearchTerm ? 'No templates found matching your search.' : 'No templates available.'}
-                    </div>
-                  ) : (
-                    filterTemplates(templates, templateSearchTerm).map((template) => (
+                    {isLoadingTemplates ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Loading templates...</span>
+                      </div>
+                    ) : (() => {
+                      let filtered = filterTemplates(templates, templateSearchTerm);
+                      if (selectedLanguage) {
+                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                      }
+                      return filtered;
+                    })().length === 0 ? (
+                      <div className="text-center text-gray-500 py-4 text-sm">
+                        {templateSearchTerm || selectedLanguage ? 'No templates found matching your filters.' : 'No templates available.'}
+                      </div>
+                    ) : (() => {
+                      let filtered = filterTemplates(templates, templateSearchTerm);
+                      if (selectedLanguage) {
+                        filtered = filtered.filter(t => normalizeLanguage(t.language) === selectedLanguage);
+                      }
+                      return filtered;
+                    })().map((template) => (
                       <TemplateOptionCard
                         key={template.id}
                         template={template}
@@ -1830,6 +1956,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           setSelectedTemplate(template);
                           setShowTemplateSelector(false);
                           setTemplateSearchTerm('');
+                          setSelectedLanguage('');
                           if (template.params === '0') {
                             setNewMessage(template.content || '');
                             if (textareaRef.current) {
@@ -1846,8 +1973,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                           }
                         }}
                       />
-                    ))
-                  )}
+                    ))}
                   </div>
                 </div>
               </div>

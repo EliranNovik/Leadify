@@ -3505,8 +3505,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </svg>
                       </button>
                     <div className="flex items-center gap-2 flex-1 min-w-0 mr-2" style={{ maxWidth: 'calc(100% - 200px)' }}>
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
-                        <span className="text-white font-semibold text-sm">
+                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
+                        <span className="font-semibold text-sm">
                           {selectedClient.name.charAt(0).toUpperCase()}
                         </span>
                         {(isLocked || messages.length === 0) && (
@@ -3613,7 +3613,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {/* Date Separator */}
                       {showDateSeparator && (
                         <div className="flex justify-center my-4">
-                          <div className="text-sm font-medium px-3 py-1.5 rounded-full text-black" style={{ backgroundColor: '#4ade80' }}>
+                          <div className="text-sm font-medium px-3 py-1.5 rounded-full border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
                             {formatDateSeparator(message.sent_at)}
                           </div>
                         </div>
@@ -3633,24 +3633,89 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           {message.sender_name}
                         </span>
                       )}
-                      <div
-                        className={`group max-w-[75%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
-                          message.direction === 'out'
-                            ? isEmojiOnly(message.message)
-                              ? 'bg-white text-gray-900'
-                              : 'text-white'
-                            : 'bg-white text-gray-900 border border-gray-200'
-                        }`}
-                        style={message.direction === 'out' && !isEmojiOnly(message.message) 
-                          ? { 
-                              wordBreak: 'break-word', 
-                              overflowWrap: 'break-word',
-                              background: 'linear-gradient(to bottom right, #059669, #0d9488)',
-                              borderColor: 'transparent'
-                            }
-                          : { wordBreak: 'break-word', overflowWrap: 'break-word' }
-                        }
-                      >
+                      
+                      {/* Image or Emoji-only messages - render outside bubble */}
+                      {(message.message_type === 'image' || (message.message_type === 'text' && isEmojiOnly(message.message))) ? (
+                        <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                          {/* Image content */}
+                          {message.message_type === 'image' && message.media_url && (
+                            <div 
+                              className="relative cursor-pointer group"
+                              onClick={() => message.media_url && setSelectedMedia({
+                                url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
+                                type: 'image',
+                                caption: message.caption
+                              })}
+                            >
+                              <img
+                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
+                                alt="Image"
+                                className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                                onError={(e) => {
+                                  console.log('Failed to load image:', message.media_url);
+                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
+                                  e.currentTarget.style.border = '1px solid #e5e7eb';
+                                  e.currentTarget.style.borderRadius = '0.5rem';
+                                }}
+                              />
+                              <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center">
+                                <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                                </svg>
+                              </div>
+                            </div>
+                          )}
+
+                          {/* Emoji-only content */}
+                          {message.message_type === 'text' && isEmojiOnly(message.message) && (
+                            <div className="text-6xl leading-tight">
+                              {message.message}
+                            </div>
+                          )}
+
+                          {/* Caption for images */}
+                          {message.message_type === 'image' && message.caption && (
+                            <p 
+                              className="text-base break-words mt-1"
+                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
+                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
+                            >
+                              {message.caption}
+                            </p>
+                          )}
+
+                          {/* Timestamp and read receipts at bottom of image/emoji */}
+                          <div className={`flex items-center gap-1 mt-1 ${message.direction === 'out' ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs text-gray-500">
+                              {new Date(message.sent_at).toLocaleTimeString([], {
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                            {message.direction === 'out' && (
+                              <span className="inline-block align-middle text-current">
+                                {renderMessageStatus(message.whatsapp_status)}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className={`group max-w-[75%] md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm relative ${
+                            message.direction === 'out'
+                              ? 'text-white'
+                              : 'bg-white text-gray-900 border border-gray-200'
+                          }`}
+                          style={message.direction === 'out' 
+                            ? { 
+                                wordBreak: 'break-word', 
+                                overflowWrap: 'break-word',
+                                background: 'linear-gradient(to bottom right, #059669, #0d9488)',
+                                borderColor: 'transparent'
+                              }
+                            : { wordBreak: 'break-word', overflowWrap: 'break-word' }
+                          }
+                        >
                       {/* Edit input or message content */}
                       {editingMessage === message.id ? (
                         <textarea
@@ -3685,9 +3750,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           {/* Message content based on type */}
                           {message.message_type === 'text' && (
                             <p 
-                              className={`break-words whitespace-pre-wrap ${
-                                isEmojiOnly(message.message) ? 'text-6xl leading-tight' : 'text-base'
-                              }`}
+                              className="break-words whitespace-pre-wrap text-base"
                               dir={message.message?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
                               style={{ 
                                 textAlign: message.message?.match(/[\u0590-\u05FF]/) ? 'right' : 'left',
@@ -3718,57 +3781,6 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                             </div>
                           )}
                         </>
-                      )}
-                      
-                      {message.message_type === 'image' && (
-                        <div>
-                          {message.media_url && (
-                            <div className="relative inline-block">
-                              <img 
-                                src={message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`)}
-                                alt="Image"
-                                className="max-w-full md:max-w-[700px] max-h-[300px] md:max-h-[600px] object-cover rounded-lg mb-2 shadow-sm cursor-pointer hover:opacity-90 transition-opacity"
-                                onClick={() => message.media_url && setSelectedMedia({
-                                  url: message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`),
-                                  type: 'image',
-                                  caption: message.caption
-                                })}
-                                onError={(e) => {
-                                  console.log('Failed to load image:', message.media_url);
-                                  // Replace with error placeholder
-                                  e.currentTarget.src = 'data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjAwIiBoZWlnaHQ9IjIwMCIgdmlld0JveD0iMCAwIDIwMCAyMDAiIGZpbGw9Im5vbmUiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+CjxyZWN0IHdpZHRoPSIyMDAiIGhlaWdodD0iMjAwIiBmaWxsPSIjRjNGNEY2Ii8+CjxwYXRoIGQ9Ik01MCAxMDAgTDEwMCA1MCBMMTUwIDEwMCBMMTAwIDE1MCBMNTAgMTAwWiIgZmlsbD0iI0QxRDVEMCIvPgo8dGV4dCB4PSIxMDAiIHk9IjExMCIgZm9udC1mYW1pbHk9IkFyaWFsIiBmb250LXNpemU9IjE0IiBmaWxsPSIjNjc3NDhCIiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5JbWFnZSBVbmF2YWlsYWJsZTwvdGV4dD4KPC9zdmc+';
-                                  e.currentTarget.style.border = '1px solid #e5e7eb';
-                                  e.currentTarget.style.borderRadius = '0.5rem';
-                                }}
-                              />
-                              <button
-                                onClick={() => {
-                                  if (!message.media_url) return;
-                                  const url = message.media_url.startsWith('http') ? message.media_url : buildApiUrl(`/api/whatsapp/media/${message.media_url}`);
-                                  const link = document.createElement('a');
-                                  link.href = url;
-                                  link.download = `image_${Date.now()}.jpg`;
-                                  link.click();
-                                }}
-                                className="absolute top-2 right-2 btn btn-ghost btn-xs bg-black bg-opacity-50 text-white hover:bg-opacity-70"
-                                title="Download"
-                              >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-                                </svg>
-                              </button>
-                            </div>
-                          )}
-                          {message.caption && (
-                            <p 
-                              className="text-base break-words"
-                              dir={message.caption?.match(/[\u0590-\u05FF]/) ? 'rtl' : 'ltr'}
-                              style={{ textAlign: message.caption?.match(/[\u0590-\u05FF]/) ? 'right' : 'left' }}
-                            >
-                              {message.caption}
-                            </p>
-                          )}
-                        </div>
                       )}
                       
                       {message.message_type === 'document' && (
@@ -3995,6 +4007,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         {/* Edit/Delete buttons removed - WhatsApp API does not support these features */}
                       </div>
                     </div>
+                      )}
                     </div>
                   </div>
                     </React.Fragment>
@@ -4577,56 +4590,83 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             {/* Template Dropdown - Mobile (rendered outside hidden container) */}
               {showTemplateSelector && isMobile && (
               <div 
-                ref={templateSelectorRef}
-                className="fixed inset-x-0 bottom-[220px] z-[100] max-h-[60vh] overflow-y-auto pointer-events-auto"
+                className="fixed inset-0 z-[9999] flex items-end justify-center p-4"
+                onClick={(e) => {
+                  // Only close if clicking directly on the backdrop, not on the modal content
+                  if (e.target === e.currentTarget) {
+                    setShowTemplateSelector(false);
+                  }
+                }}
               >
-                <div className="bg-white rounded-t-2xl border-t border-x border-gray-200 shadow-2xl overflow-hidden">
-                  {/* Header with gradient background */}
-                  <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <FaWhatsapp className="w-5 h-5 text-white" />
-                        <h3 className="text-base font-bold text-white">Select Template</h3>
+                {/* Backdrop */}
+                <div 
+                  className="fixed inset-0 bg-black/50 z-[9998]"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setShowTemplateSelector(false);
+                  }}
+                />
+                <div 
+                  ref={templateSelectorRef}
+                  className="relative z-[9999] w-full max-w-md h-[90vh] overflow-hidden pointer-events-auto flex flex-col rounded-t-2xl shadow-2xl"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    // Prevent clicks inside modal from closing anything
+                  }}
+                >
+                  <div className="bg-white h-full flex flex-col overflow-hidden rounded-t-2xl">
+                    {/* Header with gradient background */}
+                    <div className="px-5 py-4 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <FaWhatsapp className="w-5 h-5 text-white" />
+                          <h3 className="text-base font-bold text-white">Select Template</h3>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            e.nativeEvent.stopImmediatePropagation();
+                            setShowTemplateSelector(false);
+                          }}
+                          className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5 z-50 relative"
+                          aria-label="Close template selector"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                        </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => setShowTemplateSelector(false)}
-                        className="btn btn-ghost btn-xs text-white hover:bg-white/20 rounded-full p-1.5"
-                      >
-                        <XMarkIcon className="w-4 h-4" />
-                      </button>
-                    </div>
-                  </div>
-                  
-                  {/* Content */}
-                  <div className="p-4">
-                    {/* Search Input */}
-                    <div className="mb-4 flex gap-2">
-                      <input
-                        type="text"
-                        placeholder="Search templates..."
-                        value={templateSearchTerm}
-                        onChange={(e) => setTemplateSearchTerm(e.target.value)}
-                        className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
-                      />
-                      <select
-                        value={selectedLanguage}
-                        onChange={(e) => setSelectedLanguage(e.target.value)}
-                        className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
-                      >
-                        <option value="">All</option>
-                        {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
-                          .sort()
-                          .map(lang => (
-                            <option key={lang} value={lang}>
-                              {getLanguageDisplayName(lang)}
-                            </option>
-                          ))}
-                      </select>
                     </div>
                     
-                    {/* Templates List */}
-                    <div className="space-y-3 max-h-[40vh] overflow-y-auto">
+                    {/* Content */}
+                    <div className="p-4 flex-1 flex flex-col min-h-0 overflow-hidden">
+                      {/* Search Input */}
+                      <div className="mb-4 flex gap-2 flex-shrink-0">
+                        <input
+                          type="text"
+                          placeholder="Search templates..."
+                          value={templateSearchTerm}
+                          onChange={(e) => setTemplateSearchTerm(e.target.value)}
+                          className="flex-1 px-4 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all"
+                        />
+                        <select
+                          value={selectedLanguage}
+                          onChange={(e) => setSelectedLanguage(e.target.value)}
+                          className="px-3 py-2.5 border-2 border-gray-200 rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-green-500 focus:border-green-500 bg-gray-50 transition-all min-w-[120px]"
+                        >
+                          <option value="">All</option>
+                          {Array.from(new Set(templates.map(t => normalizeLanguage(t.language))))
+                            .sort()
+                            .map(lang => (
+                              <option key={lang} value={lang}>
+                                {getLanguageDisplayName(lang)}
+                              </option>
+                            ))}
+                        </select>
+                      </div>
+                      
+                      {/* Templates List */}
+                      <div className="space-y-3 flex-1 overflow-y-auto">
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
                         <div className="loading loading-spinner loading-sm"></div>
@@ -4678,6 +4718,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       />
                     ))
                     }
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -4973,8 +5014,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200"
                       >
                         <div className="flex items-center gap-3">
-                          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ background: 'linear-gradient(to bottom right, #059669, #0d9488)' }}>
-                            <span className="font-semibold text-white">
+                          <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
+                            <span className="font-semibold">
                               {displayName.charAt(0).toUpperCase()}
                             </span>
                           </div>
