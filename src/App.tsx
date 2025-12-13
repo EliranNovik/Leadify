@@ -54,6 +54,8 @@ import ContractPage from './components/ContractPage';
 import PublicContractView from './pages/PublicContractView';
 import PublicLegacyContractView from './pages/PublicLegacyContractView';
 import PaymentPage from './pages/PaymentPage';
+import CTIPopupPage from './pages/CTIPopupPage';
+import CTIPopupModal from './components/CTIPopupModal';
 import ProformaCreatePage from './pages/ProformaCreatePage';
 import AboutPage from './pages/AboutPage';
 import DocumentsPage from './pages/DocumentsPage';
@@ -341,6 +343,7 @@ const AppContentInner: React.FC = () => {
       <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
       <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
       <Route path="/payment/:token" element={<PaymentPage />} />
+      <Route path="/cti/pop" element={<CTIPopupPage />} />
       <Route path="/documents" element={
         <div className="flex h-screen bg-white">
           <div className="flex-1 flex flex-col overflow-hidden">
@@ -625,6 +628,8 @@ const AppContentInner: React.FC = () => {
                 isOpen={isMessagingOpen} 
                 onClose={() => setIsMessagingOpen(false)} 
               />
+              {/* CTI Popup Modal - shows on any authenticated page when phone parameter is present */}
+              <CTIPopupModal />
             </div>
           </ProtectedRoute>
         }

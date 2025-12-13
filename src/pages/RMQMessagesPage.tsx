@@ -70,6 +70,8 @@ interface Conversation {
   last_message_preview?: string;
   is_active: boolean;
   description?: string;
+  notes?: string;
+  icon_url?: string;
   participants: ConversationParticipant[];
   unread_count?: number;
 }
@@ -148,6 +150,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [newGroupDescription, setNewGroupDescription] = useState('');
   const [isSuperUser, setIsSuperUser] = useState(false);
   const [showDeleteGroupModal, setShowDeleteGroupModal] = useState(false);
+  const [showGroupInfoModal, setShowGroupInfoModal] = useState(false);
+  const [groupTitle, setGroupTitle] = useState('');
+  const [groupDescription, setGroupDescription] = useState('');
+  const [groupNotes, setGroupNotes] = useState('');
+  const [groupIconUrl, setGroupIconUrl] = useState<string | null>(null);
+  const [isUpdatingGroupInfo, setIsUpdatingGroupInfo] = useState(false);
+  const [isUploadingIcon, setIsUploadingIcon] = useState(false);
+  const groupIconInputRef = useRef<HTMLInputElement>(null);
+  const [isFetchingConversations, setIsFetchingConversations] = useState(false);
+  const fetchConversationsAbortControllerRef = useRef<AbortController | null>(null);
   
   // Chat background image state
   const [chatBackgroundImageUrl, setChatBackgroundImageUrl] = useState<string | null>(null);
@@ -1487,7 +1499,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return `Group Chat (${participantCount} members)`;
   };
 
-  const getConversationAvatar = (conversation: Conversation): JSX.Element => {
+  const getConversationAvatar = (conversation: Conversation, size: 'small' | 'large' | 'xlarge' = 'small'): JSX.Element => {
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
       const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
       if (otherParticipant?.user) {
@@ -1535,10 +1547,64 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
     }
 
+    const handleGroupIconClick = (e: React.MouseEvent) => {
+      e.stopPropagation();
+      if (conversation && conversation.type === 'group') {
+        // Set the conversation as selected first if not already
+        if (conversation.id !== selectedConversation?.id) {
+          setSelectedConversation(conversation);
+        }
+        setGroupTitle(conversation.title || '');
+        setGroupDescription(conversation.description || '');
+        setGroupNotes(conversation.notes || '');
+        setGroupIconUrl(conversation.icon_url || null);
+        setShowGroupInfoModal(true);
+      }
+    };
+
+    // Render group icon - use custom image if available, otherwise default gradient
+    const renderGroupIcon = () => {
+      const iconSize = size === 'xlarge' ? 'w-16 h-16' : size === 'large' ? 'w-14 h-14' : 'w-10 h-10';
+      const iconInnerSize = size === 'xlarge' ? 'w-8 h-8' : size === 'large' ? 'w-7 h-7' : 'w-5 h-5';
+      
+      if (conversation.icon_url) {
+        return (
+          <img
+            src={conversation.icon_url}
+            alt={conversation.title || 'Group'}
+            className={`${iconSize} rounded-full object-cover border-2 border-white shadow-md`}
+            onError={(e) => {
+              // Fallback to default if image fails to load
+              const target = e.target as HTMLImageElement;
+              target.style.display = 'none';
+              if (target.parentElement) {
+                target.parentElement.innerHTML = `
+                  <div class="${iconSize} rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
+                    <svg class="${iconInnerSize}" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z"></path>
+                    </svg>
+                  </div>
+                `;
+              }
+            }}
+          />
+        );
+      }
+      return (
+        <div className={`${iconSize} rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md`}>
+          <UserGroupIcon className={iconInnerSize} />
+        </div>
+      );
+    };
+
     return (
-      <div className="w-14 h-14 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-white shadow-md">
-        <UserGroupIcon className="w-7 h-7" />
-      </div>
+      <button
+        onClick={handleGroupIconClick}
+        className="cursor-pointer hover:opacity-80 transition-opacity"
+        title="Edit group info"
+      >
+        {renderGroupIcon()}
+      </button>
     );
   };
 
@@ -1738,7 +1804,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Then, get full conversation data with ALL participants
-      const { data: conversationsData, error } = await supabase
+      // Try with icon_url first, fallback without it if column doesn't exist
+      let conversationsData: any = null;
+      let error: any = null;
+      
+      // First attempt: try with icon_url
+      const queryWithIcon = supabase
         .from('conversations')
         .select(`
           id,
@@ -1751,6 +1822,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           last_message_preview,
           is_active,
           description,
+          notes,
+          icon_url,
           conversation_participants(
             id,
             user_id,
@@ -1782,6 +1855,71 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .in('id', conversationIds)
         .eq('is_active', true)
         .order('last_message_at', { ascending: false });
+
+      const resultWithIcon = await queryWithIcon;
+      conversationsData = resultWithIcon.data;
+      error = resultWithIcon.error;
+
+      // If error is about missing icon_url column, retry without it
+      if (error && error.code === '42703' && error.message && error.message.includes('icon_url')) {
+        const queryWithoutIcon = supabase
+          .from('conversations')
+          .select(`
+            id,
+            title,
+            type,
+            created_by,
+            created_at,
+            updated_at,
+            last_message_at,
+            last_message_preview,
+            is_active,
+            description,
+            notes,
+            conversation_participants(
+              id,
+              user_id,
+              joined_at,
+              last_read_at,
+              is_active,
+              role,
+              user:users!user_id(
+                id,
+                full_name,
+                email,
+                employee_id,
+                is_active,
+                tenants_employee!users_employee_id_fkey(
+                  display_name,
+                  official_name,
+                  bonuses_role,
+                  department_id,
+                  photo_url,
+                  mobile,
+                  phone,
+                  tenant_departement!tenants_employee_department_id_fkey(
+                    name
+                  )
+                )
+              )
+            )
+          `)
+          .in('id', conversationIds)
+          .eq('is_active', true)
+          .order('last_message_at', { ascending: false });
+
+        const resultWithoutIcon = await queryWithoutIcon;
+        conversationsData = resultWithoutIcon.data;
+        error = resultWithoutIcon.error;
+        
+        // Add icon_url as null for all conversations if column doesn't exist
+        if (conversationsData) {
+          conversationsData = conversationsData.map((conv: any) => ({
+            ...conv,
+            icon_url: null
+          }));
+        }
+      }
 
       if (error) {
         return [];
@@ -1838,8 +1976,24 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   // Fetch conversations
-  const fetchConversations = useCallback(async () => {
+  const fetchConversations = useCallback(async (showErrors = true) => {
     if (!currentUser) return;
+
+    // Prevent duplicate concurrent calls
+    if (isFetchingConversations) {
+      return;
+    }
+
+    // Cancel any ongoing fetch
+    if (fetchConversationsAbortControllerRef.current) {
+      fetchConversationsAbortControllerRef.current.abort();
+    }
+
+    // Create new abort controller
+    const abortController = new AbortController();
+    fetchConversationsAbortControllerRef.current = abortController;
+
+    setIsFetchingConversations(true);
 
     try {
       // First, get conversations where the current user participates
@@ -1849,8 +2003,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('user_id', currentUser.id)
         .eq('is_active', true);
 
+      // Check if aborted
+      if (abortController.signal.aborted) {
+        return;
+      }
+
       if (convError) {
-        toast.error('Failed to load conversations');
+        console.error('Error fetching conversation participants:', convError);
+        // Only show error if explicitly requested (e.g., user-initiated refresh)
+        if (showErrors) {
+          // Check error type - don't show for network errors that might be temporary
+          if (convError.code !== 'PGRST116' && convError.message && !convError.message.includes('timeout')) {
+            toast.error('Failed to load conversations');
+          }
+        }
         return;
       }
 
@@ -1862,7 +2028,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
 
       // Then, get full conversation data with ALL participants
-      const { data: conversationsData, error } = await supabase
+      // Try with icon_url first, fallback without it if column doesn't exist
+      let conversationsData: any = null;
+      let error: any = null;
+      
+      // First attempt: try with icon_url
+      const queryWithIcon = supabase
         .from('conversations')
         .select(`
           id,
@@ -1875,6 +2046,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           last_message_preview,
           is_active,
           description,
+          notes,
+          icon_url,
           conversation_participants(
             id,
             user_id,
@@ -1907,60 +2080,166 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         .eq('is_active', true)
         .order('last_message_at', { ascending: false });
 
+      const resultWithIcon = await queryWithIcon;
+      conversationsData = resultWithIcon.data;
+      error = resultWithIcon.error;
+
+      // If error is about missing icon_url column, retry without it
+      if (error && error.code === '42703' && error.message && error.message.includes('icon_url')) {
+        console.log('icon_url column not found, retrying without it...');
+        const queryWithoutIcon = supabase
+          .from('conversations')
+          .select(`
+            id,
+            title,
+            type,
+            created_by,
+            created_at,
+            updated_at,
+            last_message_at,
+            last_message_preview,
+            is_active,
+            description,
+            notes,
+            conversation_participants(
+              id,
+              user_id,
+              joined_at,
+              last_read_at,
+              is_active,
+              role,
+              user:users!user_id(
+                id,
+                full_name,
+                email,
+                employee_id,
+                is_active,
+                tenants_employee!users_employee_id_fkey(
+                  display_name,
+                  official_name,
+                  bonuses_role,
+                  department_id,
+                  photo_url,
+                  mobile,
+                  phone,
+                  tenant_departement!tenants_employee_department_id_fkey(
+                    name
+                  )
+                )
+              )
+            )
+          `)
+          .in('id', conversationIds)
+          .eq('is_active', true)
+          .order('last_message_at', { ascending: false });
+
+        const resultWithoutIcon = await queryWithoutIcon;
+        conversationsData = resultWithoutIcon.data;
+        error = resultWithoutIcon.error;
+        
+        // Add icon_url as null for all conversations if column doesn't exist
+        if (conversationsData) {
+          conversationsData = conversationsData.map((conv: any) => ({
+            ...conv,
+            icon_url: null
+          }));
+        }
+      }
+
+      // Check if aborted
+      if (abortController.signal.aborted) {
+        return;
+      }
+
       if (error) {
-        toast.error('Failed to load conversations');
+        console.error('Error fetching conversations:', error);
+        // Only show error if explicitly requested and it's not a transient error
+        if (showErrors) {
+          if (error.code !== 'PGRST116' && error.message && !error.message.includes('timeout')) {
+            toast.error('Failed to load conversations');
+          }
+        }
         return;
       }
 
       // Process conversations and calculate unread counts
       const processedConversations = await Promise.all(
         (conversationsData || []).map(async (conv: any) => {
-          // Get unread count for this conversation
-          const userParticipant = conv.conversation_participants.find(
-            (p: ConversationParticipant) => p.user_id === currentUser.id
-          );
-          
-          let unreadCount = 0;
-          if (userParticipant) {
-            const { data: unreadMessages } = await supabase
-              .from('messages')
-              .select('id')
-              .eq('conversation_id', conv.id)
-              .gt('sent_at', userParticipant.last_read_at)
-              .neq('sender_id', currentUser.id)
-              .eq('is_deleted', false);
-            
-            unreadCount = unreadMessages?.length || 0;
+          // Check if aborted during processing
+          if (abortController.signal.aborted) {
+            return null;
           }
 
-          // Remove duplicate participants and filter only active ones (both participant and user must be active)
-          const activeParticipants = conv.conversation_participants.filter((participant: any) => {
-            const user = participant.user;
-            const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
-                               (user?.full_name || user?.tenants_employee?.display_name).length > 1;
-            const isNotExplicitlyInactive = user?.is_active !== false;
-            return participant.is_active && 
-                   isNotExplicitlyInactive && 
-                   hasValidName;
-          });
-          const uniqueParticipants = activeParticipants.filter(
-            (participant: any, index: number, self: any[]) => 
-              index === self.findIndex(p => p.user_id === participant.user_id)
-          );
+          try {
+            // Get unread count for this conversation
+            const userParticipant = conv.conversation_participants.find(
+              (p: ConversationParticipant) => p.user_id === currentUser.id
+            );
+            
+            let unreadCount = 0;
+            if (userParticipant) {
+              const { data: unreadMessages } = await supabase
+                .from('messages')
+                .select('id')
+                .eq('conversation_id', conv.id)
+                .gt('sent_at', userParticipant.last_read_at)
+                .neq('sender_id', currentUser.id)
+                .eq('is_deleted', false);
+              
+              unreadCount = unreadMessages?.length || 0;
+            }
 
-          const processedConv = {
-            ...conv,
-            participants: uniqueParticipants,
-            unread_count: unreadCount
-          };
+            // Remove duplicate participants and filter only active ones (both participant and user must be active)
+            const activeParticipants = conv.conversation_participants.filter((participant: any) => {
+              const user = participant.user;
+              const hasValidName = (user?.full_name || user?.tenants_employee?.display_name) && 
+                                 (user?.full_name || user?.tenants_employee?.display_name).length > 1;
+              const isNotExplicitlyInactive = user?.is_active !== false;
+              return participant.is_active && 
+                     isNotExplicitlyInactive && 
+                     hasValidName;
+            });
+            const uniqueParticipants = activeParticipants.filter(
+              (participant: any, index: number, self: any[]) => 
+                index === self.findIndex(p => p.user_id === participant.user_id)
+            );
 
-          return processedConv;
+            const processedConv = {
+              ...conv,
+              participants: uniqueParticipants,
+              unread_count: unreadCount
+            };
+
+            return processedConv;
+          } catch (err) {
+            console.error('Error processing conversation:', conv.id, err);
+            // Return null for failed conversations, will be filtered out
+            return null;
+          }
         })
       );
 
-      setConversations(processedConversations);
-    } catch (error) {
-      toast.error('Failed to load conversations');
+      // Check if aborted before setting state
+      if (!abortController.signal.aborted) {
+        // Filter out any null values from failed processing
+        const validConversations = processedConversations.filter((conv): conv is Conversation => conv !== null);
+        setConversations(validConversations);
+      }
+    } catch (error: any) {
+      // Only show error for non-abort errors and if explicitly requested
+      if (!error?.name?.includes('Abort') && showErrors) {
+        console.error('Error in fetchConversations:', error);
+        // Don't show toast for abort errors or network timeouts
+        if (error.message && !error.message.includes('timeout') && !error.message.includes('aborted')) {
+          toast.error('Failed to load conversations');
+        }
+      }
+    } finally {
+      // Only clear the flag if this was the active fetch
+      if (fetchConversationsAbortControllerRef.current === abortController) {
+        setIsFetchingConversations(false);
+        fetchConversationsAbortControllerRef.current = null;
+      }
     }
   }, [currentUser]);
 
@@ -2890,6 +3169,154 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       toast.success('Member removed from the group');
     } catch (error) {
       toast.error('Failed to remove member from the group');
+    }
+  };
+
+  // Upload group icon image
+  const uploadGroupIcon = async (file: File): Promise<string | null> => {
+    if (!selectedConversation) return null;
+
+    setIsUploadingIcon(true);
+    try {
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        toast.error('Please select an image file');
+        return null;
+      }
+
+      // Validate file size (max 5MB)
+      if (file.size > 5 * 1024 * 1024) {
+        toast.error('Image size must be less than 5MB');
+        return null;
+      }
+
+      // Generate unique filename
+      const fileExt = file.name.split('.').pop();
+      const fileName = `group_${selectedConversation.id}_${Date.now()}.${fileExt}`;
+
+      // Upload to Supabase storage
+      const { data, error } = await supabase.storage
+        .from('RMQ-Groups')
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type
+        });
+
+      if (error) {
+        console.error('Error uploading icon:', error);
+        
+        // Provide more specific error messages
+        if (error.message?.includes('Bucket not found') || error.message?.includes('does not exist')) {
+          toast.error('Storage bucket not found. Please run the SQL migration to create the RMQ-Groups bucket.');
+        } else if (error.message?.includes('new row violates row-level security')) {
+          toast.error('Permission denied. Please check bucket policies.');
+        } else if (error.message?.includes('NetworkError') || error.message?.includes('Failed to fetch')) {
+          toast.error('Network error. Please check your connection and try again.');
+        } else {
+          toast.error(`Failed to upload icon: ${error.message || 'Unknown error'}`);
+        }
+        return null;
+      }
+
+      // Get public URL
+      const { data: { publicUrl } } = supabase.storage
+        .from('RMQ-Groups')
+        .getPublicUrl(fileName);
+
+      return publicUrl;
+    } catch (error: any) {
+      console.error('Error uploading icon:', error);
+      
+      // Handle network errors and other exceptions
+      if (error?.name === 'NetworkError' || error?.message?.includes('Failed to fetch') || error?.message?.includes('NetworkError')) {
+        toast.error('Network error. Please check your connection and ensure the RMQ-Groups bucket exists.');
+      } else if (error?.message) {
+        toast.error(`Failed to upload icon: ${error.message}`);
+      } else {
+        toast.error('Failed to upload icon. Please ensure the storage bucket is configured.');
+      }
+      return null;
+    } finally {
+      setIsUploadingIcon(false);
+    }
+  };
+
+  // Handle icon file selection
+  const handleIconFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+
+    const url = await uploadGroupIcon(file);
+    if (url) {
+      setGroupIconUrl(url);
+      toast.success('Icon uploaded successfully');
+    }
+
+    // Reset input
+    if (groupIconInputRef.current) {
+      groupIconInputRef.current.value = '';
+    }
+  };
+
+  // Remove group icon
+  const handleRemoveIcon = () => {
+    setGroupIconUrl(null);
+  };
+
+  // Update group description and notes
+  const updateGroupInfo = async (
+    conversationId: number,
+    title: string,
+    description: string,
+    notes: string,
+    iconUrl: string | null
+  ) => {
+    if (!currentUser) return;
+
+    setIsUpdatingGroupInfo(true);
+    try {
+      const updateData: any = {
+        description: description.trim() || null,
+        notes: notes.trim() || null,
+        updated_at: new Date().toISOString()
+      };
+
+      // Only update title if it changed and is not empty
+      const trimmedTitle = title.trim();
+      if (trimmedTitle && trimmedTitle !== selectedConversation?.title) {
+        updateData.title = trimmedTitle;
+      }
+
+      // Only update icon_url if it changed
+      if (iconUrl !== (selectedConversation?.icon_url || null)) {
+        updateData.icon_url = iconUrl;
+      }
+
+      const { error } = await supabase
+        .from('conversations')
+        .update(updateData)
+        .eq('id', conversationId);
+
+      if (error) throw error;
+
+      // Refresh conversations
+      await fetchConversations();
+
+      // Update selected conversation
+      const updatedConversations = await getUpdatedConversations();
+      const updatedConversation = updatedConversations.find(c => c.id === conversationId);
+      if (updatedConversation) {
+        setSelectedConversation(updatedConversation);
+      }
+
+      setShowGroupInfoModal(false);
+      toast.success('Group info updated successfully');
+    } catch (error) {
+      console.error('Error updating group info:', error);
+      toast.error('Failed to update group info');
+    } finally {
+      setIsUpdatingGroupInfo(false);
     }
   };
 
@@ -4109,7 +4536,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   style={selectedConversation?.id === conversation.id ? { backgroundColor: 'rgba(62, 40, 205, 0.05)', borderLeftColor: '#3E28CD' } : {}}
                 >
                   <div className="flex items-center gap-3">
-                    {getConversationAvatar(conversation)}
+                    {getConversationAvatar(conversation, 'large')}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-gray-900 truncate">
@@ -4372,7 +4799,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   className="p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 active:bg-gray-100 bg-white"
                 >
                   <div className="flex items-center gap-3">
-                    {getConversationAvatar(conversation)}
+                    {getConversationAvatar(conversation, 'large')}
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center justify-between">
                         <h3 className="font-semibold text-gray-900 truncate">
@@ -4423,7 +4850,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   >
                     <ArrowLeftIcon className="w-5 h-5" />
                   </button>
-                  {getConversationAvatar(selectedConversation)}
+                  {getConversationAvatar(selectedConversation, 'xlarge')}
                   <div className="flex-1">
                       {selectedConversation.type === 'direct' ? (
                         (() => {
@@ -4503,9 +4930,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         <h2 className="font-semibold text-gray-900">
                           {getConversationTitle(selectedConversation)}
                         </h2>
-                        <p className="text-sm text-gray-700">
-                          {selectedConversation.participants?.length || 0} members
-                        </p>
                       </>
                     )}
                   </div>
@@ -5330,7 +5754,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           <>
             {/* Mobile Chat Header */}
             <div 
-              className="absolute top-0 left-0 right-0 p-3 z-20 pointer-events-none"
+              className={`absolute top-0 left-0 right-0 z-30 ${selectedConversation.type === 'group' ? 'p-4 bg-white border-b border-gray-200' : 'p-3 pointer-events-none'}`}
+              style={selectedConversation.type === 'group' ? { boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)' } : {}}
             >
               {selectedConversation.type === 'direct' ? (
                 /* New Layout for Direct Chats - 4 Parts Separately Hovering */
@@ -5466,80 +5891,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
               ) : (
                 /* Original Layout for Group Chats */
-                <div className="flex items-center gap-2 mb-1">
-                <button
-                  onClick={() => setShowMobileConversations(true)}
-                  className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                >
-                  <ArrowLeftIcon className="w-5 h-5" />
-                </button>
-                {getConversationAvatar(selectedConversation)}
-                <div className="flex-1 min-w-0">
-                    <h2 className="font-semibold text-sm text-gray-900 truncate" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                    {getConversationTitle(selectedConversation)}
-                  </h2>
-                    <p className="text-sm text-gray-700" style={{ textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)' }}>
-                      {selectedConversation.participants?.length || 0} members
-                  </p>
-                </div>
-                <div className="flex items-center gap-1">
-                  {/* Background Image Upload Button - Mobile */}
+                <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-3">
                   <button
-                    onClick={() => backgroundImageInputRef.current?.click()}
-                    disabled={isUploadingBackground}
+                    onClick={() => setShowMobileConversations(true)}
                     className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                    title="Upload chat background image"
                   >
-                    {isUploadingBackground ? (
-                      <div className="loading loading-spinner loading-sm"></div>
-                    ) : (
-                      <PhotoIcon className="w-5 h-5" />
-                    )}
+                    <ArrowLeftIcon className="w-5 h-5" />
                   </button>
-                  {chatBackgroundImageUrl && (
-                    <button
-                      onClick={resetBackgroundToDefault}
-                      disabled={isUploadingBackground}
-                      className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                      title="Reset to default white background"
-                    >
-                        <ArrowPathIcon className="w-5 h-5" />
-                    </button>
-                  )}
-                  {/* Add/Remove Member Buttons for Group Chats - Mobile */}
-                  {selectedConversation.type === 'group' && (
-                    <>
-                      <button
-                        onClick={() => setShowAddMemberModal(true)}
-                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                        title="Add Members"
-                      >
-                        <PlusIcon className="w-5 h-5" />
-                      </button>
-                      <button
-                        onClick={() => setShowRemoveMemberModal(true)}
-                        className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
-                        title="Remove Members"
-                      >
-                        <UserIcon className="w-5 h-5" />
-                      </button>
-                        {isSuperUser && (
-                          <button
-                            onClick={() => setShowDeleteGroupModal(true)}
-                            className="btn btn-ghost btn-sm btn-circle text-red-500 hover:bg-red-50"
-                            title="Delete Group Chat"
-                          >
-                            <TrashIcon className="w-5 h-5" />
-                          </button>
-                        )}
-                    </>
-                  )}
+                  {getConversationAvatar(selectedConversation)}
+                  <div className="flex-1 min-w-0">
+                    <h2 className="font-semibold text-gray-900 truncate">
+                      {getConversationTitle(selectedConversation)}
+                    </h2>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
                   <button 
                     onClick={onClose}
-                      className="btn btn-ghost btn-sm btn-circle text-gray-500 hover:bg-gray-100"
+                    className="btn btn-ghost btn-circle text-gray-500 hover:bg-gray-100"
                     title="Close Messages"
                   >
-                      <XMarkIcon className="w-5 h-5" />
+                    <XMarkIcon className="w-7 h-7" />
                   </button>
                 </div>
               </div>
@@ -5547,7 +5920,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               
               {/* Group Members List - Mobile (Collapsible) */}
               {selectedConversation.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 && (
-                <div className="border-t border-white/30">
+                <div className="mt-3 border-t border-gray-200">
                   <button
                     onClick={() => setShowMobileGroupMembers(!showMobileGroupMembers)}
                     className="w-full flex items-center justify-between p-3 hover:bg-gray-50 transition-colors"
@@ -5592,6 +5965,55 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           })}
                         </div>
                       </div>
+                      {/* Action Buttons - Mobile Only */}
+                      <div className="mt-4 pt-4 border-t border-gray-200 space-y-2">
+                        {/* Background Image Buttons */}
+                        <div className="flex items-center justify-center gap-3">
+                          <button
+                            onClick={() => backgroundImageInputRef.current?.click()}
+                            disabled={isUploadingBackground}
+                            className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                            title="Upload chat background image"
+                          >
+                            {isUploadingBackground ? (
+                              <div className="loading loading-spinner loading-sm mr-2"></div>
+                            ) : (
+                              <PhotoIcon className="w-5 h-5 mr-2" />
+                            )}
+                            Upload Background
+                          </button>
+                          {chatBackgroundImageUrl && (
+                            <button
+                              onClick={resetBackgroundToDefault}
+                              disabled={isUploadingBackground}
+                              className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                              title="Reset to default white background"
+                            >
+                              <ArrowPathIcon className="w-5 h-5 mr-2" />
+                              Reset Background
+                            </button>
+                          )}
+                        </div>
+                        {/* Add/Remove Member Buttons */}
+                        <div className="flex items-center justify-center gap-3">
+                          <button
+                            onClick={() => setShowAddMemberModal(true)}
+                            className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                            title="Add Members"
+                          >
+                            <PlusIcon className="w-5 h-5 mr-2" />
+                            Add Member
+                          </button>
+                          <button
+                            onClick={() => setShowRemoveMemberModal(true)}
+                            className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                            title="Remove Members"
+                          >
+                            <UserIcon className="w-5 h-5 mr-2" />
+                            Remove Member
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -5603,7 +6025,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               className="fixed left-0 right-0 top-0 pointer-events-none"
               style={{
                 height: '40px',
-                zIndex: 15,
+                zIndex: 5,
                 background: 'linear-gradient(to bottom, rgba(255, 255, 255, 0.95) 0%, rgba(255, 255, 255, 0.85) 50%, rgba(255, 255, 255, 0) 100%)',
                 backdropFilter: 'blur(8px) saturate(150%)',
                 WebkitBackdropFilter: 'blur(8px) saturate(150%)'
@@ -5742,7 +6164,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         
                         <div className={`max-w-[75%] ${isOwn ? 'items-end' : 'items-start'} flex flex-col`}>
                           {!isOwn && selectedConversation.type !== 'direct' && (
-                            <span className="text-xs text-gray-500 mb-1 px-3">
+                            <span 
+                              className="text-xs font-medium mb-1 px-2 py-0.5 rounded-full inline-block"
+                              style={{
+                                backgroundColor: 'rgba(255, 255, 255, 0.7)',
+                                backdropFilter: 'blur(10px)',
+                                WebkitBackdropFilter: 'blur(10px)',
+                                color: '#374151',
+                                border: '1px solid rgba(255, 255, 255, 0.3)',
+                                textShadow: '0 1px 2px rgba(255, 255, 255, 0.8)'
+                              }}
+                            >
                               {senderName}
                             </span>
                           )}
@@ -6879,6 +7311,176 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 style={{ backgroundColor: '#3E17C3', borderColor: '#3E17C3' }}
               >
                 View Full Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Group Info Modal */}
+      {showGroupInfoModal && selectedConversation && selectedConversation.type === 'group' && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-gray-200 flex items-center justify-between">
+              <h2 className="text-2xl font-bold text-gray-900">Edit Group Info</h2>
+              <button
+                onClick={() => setShowGroupInfoModal(false)}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-6 h-6" />
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              <div className="space-y-6">
+                {/* Group Icon */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Group Icon
+                  </label>
+                  <div className="flex items-center gap-4">
+                    {/* Icon Preview */}
+                    <div className="flex-shrink-0">
+                      {groupIconUrl ? (
+                        <div className="relative">
+                          <img
+                            src={groupIconUrl}
+                            alt="Group icon"
+                            className="w-20 h-20 rounded-full object-cover border-2 border-gray-200"
+                          />
+                          <button
+                            onClick={handleRemoveIcon}
+                            className="absolute -top-1 -right-1 w-6 h-6 rounded-full bg-red-500 text-white flex items-center justify-center hover:bg-red-600 transition-colors"
+                            title="Remove icon"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="w-20 h-20 rounded-full bg-gradient-to-br from-green-500 to-teal-500 flex items-center justify-center text-white border-2 border-gray-200">
+                          <UserGroupIcon className="w-10 h-10" />
+                        </div>
+                      )}
+                    </div>
+
+                    {/* Upload Button */}
+                    <div className="flex-1">
+                      <input
+                        ref={groupIconInputRef}
+                        type="file"
+                        accept="image/*"
+                        onChange={handleIconFileSelect}
+                        className="hidden"
+                      />
+                      <button
+                        onClick={() => groupIconInputRef.current?.click()}
+                        disabled={isUploadingIcon}
+                        className="btn btn-outline"
+                      >
+                        {isUploadingIcon ? (
+                          <>
+                            <span className="loading loading-spinner loading-sm mr-2"></span>
+                            Uploading...
+                          </>
+                        ) : (
+                          <>
+                            <PhotoIcon className="w-5 h-5 mr-2" />
+                            {groupIconUrl ? 'Change Icon' : 'Upload Icon'}
+                          </>
+                        )}
+                      </button>
+                      <p className="text-xs text-gray-500 mt-2">
+                        Upload a custom icon for this group (max 5MB, JPG/PNG/GIF)
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Group Name */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Group Name *
+                  </label>
+                  <input
+                    type="text"
+                    value={groupTitle}
+                    onChange={(e) => setGroupTitle(e.target.value)}
+                    placeholder="Enter group name..."
+                    className="input input-bordered w-full"
+                    maxLength={255}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    The display name for this group
+                  </p>
+                </div>
+
+                {/* Group Description */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Description
+                  </label>
+                  <textarea
+                    value={groupDescription}
+                    onChange={(e) => setGroupDescription(e.target.value)}
+                    placeholder="Add a description for this group..."
+                    className="textarea textarea-bordered w-full min-h-[100px]"
+                    rows={4}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    A brief description of the group's purpose
+                  </p>
+                </div>
+
+                {/* Group Notes */}
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-2">
+                    Notes
+                  </label>
+                  <textarea
+                    value={groupNotes}
+                    onChange={(e) => setGroupNotes(e.target.value)}
+                    placeholder="Add internal notes about this group..."
+                    className="textarea textarea-bordered w-full min-h-[150px]"
+                    rows={6}
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Internal notes (visible to all group members)
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-gray-200 flex gap-3">
+              <button
+                onClick={() => setShowGroupInfoModal(false)}
+                className="btn btn-outline flex-1"
+                disabled={isUpdatingGroupInfo}
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => updateGroupInfo(
+                  selectedConversation.id,
+                  groupTitle,
+                  groupDescription,
+                  groupNotes,
+                  groupIconUrl
+                )}
+                className="btn btn-primary flex-1"
+                disabled={isUpdatingGroupInfo || !groupTitle.trim()}
+                style={{ backgroundColor: '#3E17C3', borderColor: '#3E17C3' }}
+              >
+                {isUpdatingGroupInfo ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm mr-2"></span>
+                    Saving...
+                  </>
+                ) : (
+                  'Save Changes'
+                )}
               </button>
             </div>
           </div>

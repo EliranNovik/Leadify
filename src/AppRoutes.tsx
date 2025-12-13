@@ -16,6 +16,7 @@ import SignedSalesReportPage from './pages/SignedSalesReportPage';
 import PublicContractView from './pages/PublicContractView';
 import PublicLegacyContractView from './pages/PublicLegacyContractView';
 import MeetingSummaryTestPage from './pages/MeetingSummaryTestPage';
+import CTIPopupModal from './components/CTIPopupModal';
 
 interface AppRoutesProps {
   selectedClient: any;
@@ -26,30 +27,35 @@ interface AppRoutesProps {
 }
 
 const AppRoutes: React.FC<AppRoutesProps> = (props) => (
-  <Routes>
-    <Route path="/" element={<Dashboard />} />
-    <Route path="/meetings" element={<Meetings />} />
-    <Route path="/clients/:lead_number" element={<Clients {...props} />} />
-    <Route path="/clients" element={<Clients {...props} />} />
-    <Route path="/create" element={<CreateNewLead />} />
-    <Route path="/calendar" element={<CalendarPage />} />
-    <Route path="/pipeline" element={<PipelinePage />} />
-    <Route path="/collection" element={<div>Collection</div>} />
-    <Route path="/expert" element={<ExpertPage />} />
-    <Route path="/qa" element={<div>QA</div>} />
-    <Route path="/settings" element={<div>Settings</div>} />
-    <Route path="/admin" element={<AdminPage />} />
-    <Route path="/teams" element={<TeamsPage />} />
-    <Route path="/whatsapp" element={<WhatsAppPage />} />
-    <Route path="/proforma/:id" element={<ProformaViewPage />} />
-    <Route path="/reports" element={<ReportsPage />} />
-    <Route path="/sales/signed" element={<SignedSalesReportPage />} />
-    <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
-    <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
-    <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
-    {/* Add other routes from your sidebar here */}
-    <Route path="*" element={<Navigate to="/" replace />} />
-  </Routes>
+  <>
+    <Routes>
+      <Route path="/" element={<Dashboard />} />
+      <Route path="/meetings" element={<Meetings />} />
+      <Route path="/clients/:lead_number" element={<Clients {...props} />} />
+      <Route path="/clients" element={<Clients {...props} />} />
+      <Route path="/create" element={<CreateNewLead />} />
+      <Route path="/calendar" element={<CalendarPage />} />
+      <Route path="/pipeline" element={<PipelinePage />} />
+      <Route path="/collection" element={<div>Collection</div>} />
+      <Route path="/expert" element={<ExpertPage />} />
+      <Route path="/qa" element={<div>QA</div>} />
+      <Route path="/settings" element={<div>Settings</div>} />
+      <Route path="/admin" element={<AdminPage />} />
+      <Route path="/teams" element={<TeamsPage />} />
+      <Route path="/whatsapp" element={<WhatsAppPage />} />
+      <Route path="/proforma/:id" element={<ProformaViewPage />} />
+      <Route path="/reports" element={<ReportsPage />} />
+      <Route path="/sales/signed" element={<SignedSalesReportPage />} />
+      <Route path="/public-contract/:contractId/:token" element={<PublicContractView />} />
+      <Route path="/public-legacy-contract/:contractId/:token" element={<PublicLegacyContractView />} />
+      <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
+      <Route path="/cti/pop" element={<CTIPopupModal />} />
+      {/* Add other routes from your sidebar here */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
+    {/* CTI Popup Modal - shows on any page when phone parameter is present */}
+    <CTIPopupModal />
+  </>
 );
 
 export default AppRoutes; 

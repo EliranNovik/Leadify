@@ -34,11 +34,7 @@ class OneComSyncService {
       console.log('🔍 DEBUG: End Date:', endDate);
       console.log('🔍 DEBUG: Extensions:', extensions);
 
-      // For now, let's try without date filtering to see if we can get data
-      // TODO: Fix date format issue - API returns data without dates but empty with dates
-      console.log('🔍 DEBUG: Temporarily skipping date filtering to test data availability');
-      console.log('🔍 DEBUG: Original dates would be:', { start: startDate, end: endDate });
-
+      // Build API parameters with date filtering
       const params = new URLSearchParams({
         key: this.apiKey,
         reqtype: 'INFO',
@@ -46,6 +42,14 @@ class OneComSyncService {
         tenant: this.tenant,
         format: 'csv'
       });
+
+      // Add date filtering if dates are provided
+      if (startDate && endDate) {
+        // OneCom API expects dates in YYYY-MM-DD format
+        params.append('start', startDate);
+        params.append('end', endDate);
+        console.log('🔍 DEBUG: Adding date filter:', { start: startDate, end: endDate });
+      }
 
       if (extensions) {
         params.append('phone', extensions);
@@ -327,8 +331,9 @@ class OneComSyncService {
     // Map employee_id from cleaned source extension and incoming DID
     const employeeId = await this.mapExtensionToEmployeeId(cleanSourceField, cleanIncomingDidField);
     
-    // Map lead_id from destination number
-    const leadId = await this.mapDestinationToLeadId(cleanDestinationField);
+    // Map lead_id from destination number (call_logs table only supports legacy lead_id, not client_id)
+    const leadMapping = await this.mapDestinationToLeadId(cleanDestinationField);
+    const leadId = leadMapping.leadId; // Only use leadId for legacy leads (call_logs table structure)
 
     // Try to get recording URL if available
     let recordingUrl = '';
@@ -360,13 +365,15 @@ class OneComSyncService {
       action: onecomRecord.disposition || '',
       // Map employee_id from cleaned source extension
       employee_id: employeeId,
-      // Map lead_id from destination number
-      lead_id: leadId,
+      // Map lead_id from destination number (only for legacy leads - call_logs table doesn't have client_id column)
+      lead_id: leadId || null,
       // Store original 1com data for reference
       onecom_uniqueid: onecomRecord.uniqueid,
       onecom_te_id: onecomRecord.call_id?.toString() || '', // Convert to string to avoid integer overflow
       onecom_raw_data: JSON.stringify(onecomRecord)
     };
+
+    return dbRecord;
   }
 
   /**
@@ -425,6 +432,47 @@ class OneComSyncService {
   }
 
   /**
+   * Normalize phone number by removing country code prefixes and formatting
+   * Handles Israeli phone numbers with country codes like 00, +, etc.
+   * @param {string} phoneNumber - Raw phone number
+   * @returns {string} - Normalized phone number (digits only)
+   */
+  normalizePhoneNumber(phoneNumber) {
+    if (!phoneNumber) return '';
+    
+    // Remove all non-digit characters
+    let cleaned = phoneNumber.replace(/[^\d]/g, '');
+    
+    // Handle Israeli phone numbers with country code prefixes
+    // Remove common country code prefixes: 00972, 972, 00 (double zero prefix)
+    if (cleaned.startsWith('00972')) {
+      // Remove "00972" and add leading 0 for Israeli format
+      cleaned = '0' + cleaned.substring(5);
+    } else if (cleaned.startsWith('972')) {
+      // Remove "972" and add leading 0 for Israeli format
+      cleaned = '0' + cleaned.substring(3);
+    } else if (cleaned.startsWith('00') && cleaned.length > 10) {
+      // For numbers starting with "00" and longer than 10 digits, it's likely a country code
+      // Remove "00" prefix, but if the result doesn't start with 0, add it for Israeli numbers
+      const withoutPrefix = cleaned.substring(2);
+      if (withoutPrefix.length >= 9 && !withoutPrefix.startsWith('0')) {
+        // Add leading 0 if it's an Israeli number (9 digits without leading 0)
+        cleaned = '0' + withoutPrefix;
+      } else {
+        cleaned = withoutPrefix;
+      }
+    }
+    
+    // Ensure Israeli numbers have leading 0 if they're 9 digits (without leading 0)
+    // Israeli mobile/phone numbers are typically 10 digits: 0 + 9 digits
+    if (cleaned.length === 9 && cleaned[0] !== '0') {
+      cleaned = '0' + cleaned;
+    }
+    
+    return cleaned;
+  }
+
+  /**
    * Map extension/phone number to employee_id automatically
    * Cross-matches ALL employee phone/mobile/extension fields against BOTH source and incoming DID
    * @param {string} source - Extension or phone number from 1com
@@ -463,7 +511,7 @@ class OneComSyncService {
         return null;
       }
 
-      // Comprehensive matching logic: 3 digits = extension, 4+ digits = phone number
+      // Comprehensive matching logic: 2-4 digits = extension, 5+ digits = phone number
       console.log(`🔍 Starting matching process with ${allEmployees.length} employees`);
       
       for (const employee of allEmployees) {
@@ -481,45 +529,64 @@ class OneComSyncService {
         for (const searchTerm of searchTerms) {
           console.log(`\n  🔍 Searching for: "${searchTerm}"`);
           
-          // Clean the search term (remove formatting)
-          const cleanSearch = searchTerm.replace(/[^\d]/g, '');
-          console.log(`    Cleaned search: "${cleanSearch}" (length: ${cleanSearch.length})`);
+          // Normalize and clean the search term
+          const normalizedSearch = this.normalizePhoneNumber(searchTerm);
+          console.log(`    Normalized search: "${normalizedSearch}" (length: ${normalizedSearch.length})`);
           
-          // Determine if this is an extension (3 digits) or phone number (4+ digits)
-          const isExtension = cleanSearch.length === 3;
-          console.log(`    Type: ${isExtension ? 'EXTENSION (3 digits)' : 'PHONE NUMBER (4+ digits)'}`);
+          // Determine if this is an extension (2-4 digits) or phone number (5+ digits)
+          const isExtension = normalizedSearch.length >= 2 && normalizedSearch.length <= 4;
+          console.log(`    Type: ${isExtension ? `EXTENSION (${normalizedSearch.length} digits)` : `PHONE NUMBER (${normalizedSearch.length} digits)`}`);
           
           for (const field of employeeFields) {
-            const cleanField = field.value.replace(/[^\d]/g, '');
-            console.log(`    Testing ${field.type}: "${field.value}" -> cleaned: "${cleanField}" (length: ${cleanField.length})`);
+            const normalizedField = this.normalizePhoneNumber(field.value);
+            console.log(`    Testing ${field.type}: "${field.value}" -> normalized: "${normalizedField}" (length: ${normalizedField.length})`);
             
             if (isExtension) {
-              // Extension matching: 3 digits, exact match with ANY field that has 3 digits
-              if (cleanField.length === 3 && cleanSearch === cleanField) {
+              // Extension matching: 2-4 digits, exact match or partial match
+              // Try exact match first
+              if (normalizedField === normalizedSearch) {
                 console.log(`      ✅ EXTENSION EXACT MATCH: "${searchTerm}" matches "${field.value}"`);
                 console.log(`✅ Extension exact match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                 return employee.id;
-              } else if (cleanField.length === 3) {
-                console.log(`      ❌ Extension no match: "${cleanSearch}" !== "${cleanField}"`);
-              } else {
-                console.log(`      ⏭️ Skipping ${field.type} (not 3 digits: length ${cleanField.length})`);
+              }
+              // Try partial match: check if search term is contained in field or vice versa
+              if (normalizedField.length >= normalizedSearch.length && normalizedField.slice(-normalizedSearch.length) === normalizedSearch) {
+                console.log(`      ✅ EXTENSION PARTIAL MATCH (ends with): "${searchTerm}" matches end of "${field.value}"`);
+                console.log(`✅ Extension partial match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                return employee.id;
+              }
+              if (normalizedSearch.length >= normalizedField.length && normalizedSearch.slice(-normalizedField.length) === normalizedField) {
+                console.log(`      ✅ EXTENSION PARTIAL MATCH (contained): "${searchTerm}" contains "${field.value}"`);
+                console.log(`✅ Extension partial match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                return employee.id;
               }
             } else {
-              // Phone number matching: 4+ digits, match last 4 digits with ANY field that has 4+ digits
-              if (cleanField.length >= 4) {
-                const searchLast4 = cleanSearch.slice(-4);
-                const fieldLast4 = cleanField.slice(-4);
-                console.log(`      Comparing last 4: "${searchLast4}" vs "${fieldLast4}"`);
+              // Phone number matching: 5+ digits, match last 5 digits (less restrictive)
+              if (normalizedField.length >= 5 && normalizedSearch.length >= 5) {
+                const searchLast5 = normalizedSearch.slice(-5);
+                const fieldLast5 = normalizedField.slice(-5);
+                console.log(`      Comparing last 5: "${searchLast5}" vs "${fieldLast5}"`);
                 
-                if (searchLast4 === fieldLast4) {
-                  console.log(`      ✅ PHONE NUMBER MATCH: "${searchTerm}" matches "${field.value}"`);
-                  console.log(`✅ Phone number match (last 4 digits): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                if (searchLast5 === fieldLast5) {
+                  console.log(`      ✅ PHONE NUMBER MATCH (last 5 digits): "${searchTerm}" matches "${field.value}"`);
+                  console.log(`✅ Phone number match (last 5 digits): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                   return employee.id;
                 } else {
-                  console.log(`      ❌ Phone number no match: "${searchLast4}" !== "${fieldLast4}"`);
+                  console.log(`      ❌ Phone number no match: "${searchLast5}" !== "${fieldLast5}"`);
+                }
+              } else if (normalizedField.length >= 4 && normalizedSearch.length >= 4) {
+                // Fallback to last 4 digits if one is shorter than 5
+                const searchLast4 = normalizedSearch.slice(-4);
+                const fieldLast4 = normalizedField.slice(-4);
+                console.log(`      Comparing last 4 (fallback): "${searchLast4}" vs "${fieldLast4}"`);
+                
+                if (searchLast4 === fieldLast4) {
+                  console.log(`      ✅ PHONE NUMBER MATCH (last 4 digits fallback): "${searchTerm}" matches "${field.value}"`);
+                  console.log(`✅ Phone number match (last 4 digits fallback): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                  return employee.id;
                 }
               } else {
-                console.log(`      ⏭️ Skipping ${field.type} (too short: length ${cleanField.length})`);
+                console.log(`      ⏭️ Skipping ${field.type} (too short: search=${normalizedSearch.length}, field=${normalizedField.length})`);
               }
             }
           }
@@ -535,100 +602,327 @@ class OneComSyncService {
   }
 
   /**
-   * Map destination phone number to lead_id
+   * Helper function to normalize phone number (remove all non-digits)
+   * @param {string} phone - Phone number to normalize
+   * @returns {string} - Normalized phone number
+   */
+  normalizePhone(phone) {
+    if (!phone || phone === null || phone === '') return '';
+    return phone.replace(/\D/g, '');
+  }
+
+  /**
+   * Helper function to parse additional_phones field (can be JSON array or comma-separated string)
+   * @param {string} value - additional_phones field value
+   * @returns {Array<string>} - Array of phone numbers
+   */
+  parseAdditionalPhones(value) {
+    if (!value) return [];
+    try {
+      const parsed = JSON.parse(value);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(Boolean);
+      }
+      if (typeof parsed === 'string') {
+        return parsed.split(/[,;|\s]+/).map(item => item.trim()).filter(Boolean);
+      }
+    } catch (error) {
+      // Not JSON, fall back to string parsing
+    }
+    return value.split(/[,;|\s]+/).map(item => item.trim()).filter(Boolean);
+  }
+
+  /**
+   * Pick preferred lead link when contact is linked to multiple leads
+   * Prioritizes new leads over legacy leads, and main contacts
+   * @param {Array} links - Array of lead_leadcontact records
+   * @returns {Object|null} - Preferred link or null
+   */
+  pickPreferredLeadLink(links) {
+    if (!links || links.length === 0) return null;
+    
+    // Sort: new leads first, then legacy leads; main contacts first
+    return [...links].sort((a, b) => {
+      // Prioritize new leads
+      if (a.newlead_id && !b.newlead_id) return -1;
+      if (!a.newlead_id && b.newlead_id) return 1;
+      
+      // Prioritize main contacts
+      if (a.main === 'true' && b.main !== 'true') return -1;
+      if (a.main !== 'true' && b.main === 'true') return 1;
+      
+      return 0;
+    })[0];
+  }
+
+  /**
+   * Map destination phone number to lead_id (using WhatsApp-style comprehensive matching)
+   * Checks both main lead phone numbers and contacts for new and legacy leads
    * @param {string} destination - Destination phone number from 1com
-   * @returns {Promise<number|null>}
+   * @returns {Promise<{leadId: number|null, clientId: string|null}>}
    */
   async mapDestinationToLeadId(destination) {
     if (!destination || destination === '---') {
-      return null;
+      return { leadId: null, clientId: null };
     }
 
     try {
-      // Clean the destination number (remove formatting)
-      const cleanDestination = destination.replace(/[^\d]/g, '');
-      console.log(`🔍 Mapping destination "${destination}" -> cleaned: "${cleanDestination}"`);
+      // Normalize the phone number and create variations (same as WhatsApp implementation)
+      const incomingNormalized = this.normalizePhone(destination);
+      const incomingVariations = [
+        incomingNormalized,
+        incomingNormalized.replace(/^972/, ''), // Remove country code
+        incomingNormalized.replace(/^00972/, ''), // Remove 00972 prefix
+        incomingNormalized.replace(/^0/, ''), // Remove leading 0
+        `972${incomingNormalized.replace(/^972/, '')}`, // Add country code
+        `0${incomingNormalized.replace(/^0/, '')}`, // Add leading 0
+        incomingNormalized.replace(/^972/, '0'), // Replace 972 with 0
+        incomingNormalized.replace(/^0/, '972'), // Replace 0 with 972
+      ].filter(Boolean);
 
-      if (cleanDestination.length < 9) {
-        console.log(`❌ Destination too short for phone matching (need 9+ digits): ${cleanDestination}`);
-        return null;
+      const normalizedSet = new Set(
+        incomingVariations
+          .map(v => this.normalizePhone(v))
+          .filter(Boolean)
+      );
+      normalizedSet.add(incomingNormalized);
+
+      const rawSearchValues = Array.from(new Set(
+        incomingVariations
+          .concat([destination])
+          .filter(Boolean)
+      ));
+
+      console.log(`🔍 Mapping destination "${destination}" -> normalized: "${incomingNormalized}", variations: ${incomingVariations.length}`);
+
+      if (incomingNormalized.length < 8) {
+        console.log(`❌ Destination too short for phone matching (need 8+ digits): ${incomingNormalized}`);
+        return { leadId: null, clientId: null };
       }
 
-      // Get the last 9 digits for matching (stricter matching)
-      const last9Digits = cleanDestination.slice(-9);
-      console.log(`  Last 9 digits: ${last9Digits}`);
+      const contactSelectColumns = `
+        id,
+        name,
+        phone,
+        mobile,
+        additional_phones,
+        newlead_id,
+        lead_leadcontact (
+          lead_id,
+          newlead_id,
+          main
+        )
+      `;
 
-      // Find contacts with matching phone numbers
-      const { data: contacts, error: contactsError } = await supabase
-        .from('leads_contact')
-        .select('id, name, mobile, phone, additional_phones')
-        .or(
-          `mobile.like.%${last9Digits},` +
-          `phone.like.%${last9Digits},` +
-          `additional_phones.like.%${last9Digits}`
-        );
+      const contactCandidatesMap = new Map();
+      const addContacts = (rows) => {
+        (rows || []).forEach(row => {
+          if (!contactCandidatesMap.has(row.id)) {
+            contactCandidatesMap.set(row.id, row);
+          }
+        });
+      };
 
-      if (contactsError) {
-        console.error('Error fetching contacts:', contactsError);
-        return null;
+      // STEP 1: Try exact matches in contacts using .in() queries (fastest)
+      if (rawSearchValues.length > 0) {
+        const { data: phoneMatches } = await supabase
+          .from('leads_contact')
+          .select(contactSelectColumns)
+          .in('phone', rawSearchValues);
+        if (phoneMatches) addContacts(phoneMatches);
+
+        const { data: mobileMatches } = await supabase
+          .from('leads_contact')
+          .select(contactSelectColumns)
+          .in('mobile', rawSearchValues);
+        if (mobileMatches) addContacts(mobileMatches);
       }
 
-      if (!contacts || contacts.length === 0) {
-        console.log(`❌ No contacts found with phone numbers ending in ${last9Digits}`);
-        return null;
-      }
+      // Store direct lead matches for fallback if no contacts found
+      let directNewLeadMatch = null;
+      let directLegacyLeadMatch = null;
 
-      console.log(`📞 Found ${contacts.length} potential contacts`);
-
-      // For each contact, check if any phone number matches
-      for (const contact of contacts) {
-        console.log(`  👤 Checking contact: ${contact.name} (ID: ${contact.id})`);
+      // STEP 2: If no exact matches found, try partial matching using last 8 digits (same as WhatsApp)
+      const last8Digits = incomingNormalized.length >= 8 ? incomingNormalized.slice(-8) : null;
+      
+      if (!contactCandidatesMap.size && last8Digits) {
+        console.log(`📞 No exact contact matches, trying partial matching with last 8 digits: ${last8Digits}`);
         
-        const phoneNumbers = [
-          contact.mobile,
-          contact.phone,
-          contact.additional_phones
-        ].filter(phone => phone && phone !== '' && phone !== '\\N');
-
-        for (const phone of phoneNumbers) {
-          if (phone) {
-            const cleanPhone = phone.replace(/[^\d]/g, '');
-            const phoneLast9 = cleanPhone.slice(-9);
+        // Search in leads_contact table with last 8 digits (includes additional_phones)
+        const { data: contactPartialMatches } = await supabase
+          .from('leads_contact')
+          .select(contactSelectColumns)
+          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+        if (contactPartialMatches) addContacts(contactPartialMatches);
+        
+        // Also search via lead_leadcontact junction table to find leads associated with matching contacts
+        const { data: matchingContactsByLast8 } = await supabase
+          .from('leads_contact')
+          .select('id')
+          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
+        
+        if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
+          const matchingContactIds = matchingContactsByLast8.map(c => c.id);
+          
+          // Find all leads (new and legacy) linked to these contacts via lead_leadcontact
+          const { data: linkedLeadsViaContacts } = await supabase
+            .from('lead_leadcontact')
+            .select('newlead_id, lead_id')
+            .in('contact_id', matchingContactIds);
+          
+          if (linkedLeadsViaContacts && linkedLeadsViaContacts.length > 0) {
+            // Get unique new lead IDs
+            const newLeadIds = [...new Set(linkedLeadsViaContacts
+              .filter(ll => ll.newlead_id)
+              .map(ll => ll.newlead_id)
+            )];
             
-            console.log(`    Phone: "${phone}" -> cleaned: "${cleanPhone}" -> last 9: "${phoneLast9}"`);
+            // Get unique legacy lead IDs
+            const legacyLeadIds = [...new Set(linkedLeadsViaContacts
+              .filter(ll => ll.lead_id)
+              .map(ll => ll.lead_id)
+            )];
             
-            if (phoneLast9 === last9Digits) {
-              console.log(`    ✅ Phone match found!`);
-              
-              // Find the lead for this contact
-              const { data: leadContacts, error: leadError } = await supabase
-                .from('lead_leadcontact')
-                .select('lead_id')
-                .eq('contact_id', contact.id)
+            // Fetch the actual new leads
+            if (newLeadIds.length > 0) {
+              const { data: newLeadsFromContacts } = await supabase
+                .from('leads')
+                .select('id, name, phone, mobile')
+                .in('id', newLeadIds)
                 .limit(1);
-
-              if (leadError) {
-                console.error('Error fetching lead for contact:', leadError);
-                continue;
+              
+              if (newLeadsFromContacts && newLeadsFromContacts.length > 0 && !directNewLeadMatch) {
+                directNewLeadMatch = newLeadsFromContacts[0];
               }
-
-              if (leadContacts && leadContacts.length > 0) {
-                const leadId = leadContacts[0].lead_id;
-                console.log(`✅ Lead mapping: destination "${destination}" -> contact "${contact.name}" -> lead_id ${leadId}`);
-                return leadId;
-              } else {
-                console.log(`    ❌ No lead found for contact ${contact.id}`);
+            }
+            
+            // Fetch the actual legacy leads
+            if (legacyLeadIds.length > 0) {
+              const { data: legacyLeadsFromContacts } = await supabase
+                .from('leads_lead')
+                .select('id, name, phone, mobile')
+                .in('id', legacyLeadIds)
+                .limit(1);
+              
+              if (legacyLeadsFromContacts && legacyLeadsFromContacts.length > 0 && !directLegacyLeadMatch) {
+                directLegacyLeadMatch = legacyLeadsFromContacts[0];
               }
             }
           }
         }
+        
+        // Also search directly in leads table (new leads) for phone and mobile columns
+        if (!directNewLeadMatch) {
+          const { data: newLeadsMatches } = await supabase
+            .from('leads')
+            .select('id, name, phone, mobile')
+            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
+            .limit(1);
+          
+          if (newLeadsMatches && newLeadsMatches.length > 0) {
+            directNewLeadMatch = newLeadsMatches[0];
+          }
+        }
+        
+        // Also search directly in leads_lead table (legacy leads) for phone and mobile columns
+        if (!directLegacyLeadMatch) {
+          const { data: legacyLeadsMatches } = await supabase
+            .from('leads_lead')
+            .select('id, name, phone, mobile, additional_phones')
+            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`)
+            .limit(1);
+          
+          if (legacyLeadsMatches && legacyLeadsMatches.length > 0) {
+            directLegacyLeadMatch = legacyLeadsMatches[0];
+          }
+        }
+      }
+
+      // STEP 3: Process contact candidates (same logic as WhatsApp)
+      const candidates = Array.from(contactCandidatesMap.values());
+      for (const contact of candidates) {
+        const contactPhones = [
+          contact.phone,
+          contact.mobile,
+          ...this.parseAdditionalPhones(contact.additional_phones || '')
+        ].filter(Boolean);
+
+        const contactNormalizedPhones = contactPhones
+          .map(p => this.normalizePhone(p))
+          .filter(Boolean);
+
+        const hasMatch = contactNormalizedPhones.some(number => normalizedSet.has(number));
+        if (!hasMatch) continue;
+
+        const preferredLink = this.pickPreferredLeadLink(contact.lead_leadcontact || []);
+        let leadData = null;
+        let leadType = null;
+
+        // Try new lead first
+        if (preferredLink && preferredLink.newlead_id) {
+          const { data: newLead } = await supabase
+            .from('leads')
+            .select('id, name, phone, mobile')
+            .eq('id', preferredLink.newlead_id)
+            .maybeSingle();
+          if (newLead) {
+            leadData = newLead;
+            leadType = 'new';
+          }
+        }
+
+        // Try legacy lead if new lead not found
+        if (!leadData && preferredLink && preferredLink.lead_id) {
+          const { data: legacyLead } = await supabase
+            .from('leads_lead')
+            .select('id, name, phone, mobile')
+            .eq('id', preferredLink.lead_id)
+            .maybeSingle();
+          if (legacyLead) {
+            leadData = legacyLead;
+            leadType = 'legacy';
+          }
+        }
+
+        // Fallback: use contact's newlead_id if no preferred link
+        if (!leadData && contact.newlead_id) {
+          const { data: fallbackLead } = await supabase
+            .from('leads')
+            .select('id, name, phone, mobile')
+            .eq('id', contact.newlead_id)
+            .maybeSingle();
+          if (fallbackLead) {
+            leadData = fallbackLead;
+            leadType = 'new';
+          }
+        }
+
+        if (leadData) {
+          console.log(`✅ CONTACT -> ${leadType.toUpperCase()} LEAD match: destination "${destination}" -> contact "${contact.name}" -> ${leadType} lead "${leadData.name}" (ID: ${leadData.id})`);
+          return leadType === 'new' 
+            ? { leadId: null, clientId: leadData.id }
+            : { leadId: leadData.id, clientId: null };
+        }
+      }
+
+      // STEP 4: If no contacts found but we found leads directly, return the first matching lead
+      if (!contactCandidatesMap.size) {
+        if (directNewLeadMatch) {
+          console.log(`✅ DIRECT NEW LEAD match: destination "${destination}" -> new lead "${directNewLeadMatch.name}" (ID: ${directNewLeadMatch.id})`);
+          return { leadId: null, clientId: directNewLeadMatch.id };
+        }
+        
+        if (directLegacyLeadMatch) {
+          console.log(`✅ DIRECT LEGACY LEAD match: destination "${destination}" -> legacy lead "${directLegacyLeadMatch.name}" (ID: ${directLegacyLeadMatch.id})`);
+          return { leadId: directLegacyLeadMatch.id, clientId: null };
+        }
       }
 
       console.log(`❌ No lead mapping found for destination "${destination}"`);
-      return null;
+      return { leadId: null, clientId: null };
     } catch (error) {
       console.error(`Error mapping destination "${destination}":`, error);
-      return null;
+      return { leadId: null, clientId: null };
     }
   }
 
@@ -664,7 +958,7 @@ class OneComSyncService {
         };
       }
 
-      const onecomRecords = onecomResponse.data;
+      let onecomRecords = onecomResponse.data;
       if (!onecomRecords || onecomRecords.length === 0) {
         console.log(`📊 DEBUG: No records found, returning success with 0 synced`);
         return {
@@ -675,7 +969,46 @@ class OneComSyncService {
         };
       }
 
-      console.log(`📊 DEBUG: Found ${onecomRecords.length} call logs from 1com`);
+      console.log(`📊 DEBUG: Found ${onecomRecords.length} call logs from 1com before date filtering`);
+
+      // Filter records by date range (in case API doesn't filter properly or returns all records)
+      if (startDate && endDate) {
+        const start = new Date(startDate + 'T00:00:00');
+        const end = new Date(endDate + 'T23:59:59');
+        
+        onecomRecords = onecomRecords.filter(record => {
+          if (!record.start) return false;
+          
+          try {
+            // Parse the start date from the record (format: "2025-12-13 01:35:47")
+            const recordDate = new Date(record.start.replace(' ', 'T'));
+            
+            // Check if record date is within range
+            const isInRange = recordDate >= start && recordDate <= end;
+            
+            if (!isInRange) {
+              console.log(`📅 Filtering out record ${record.uniqueid} - date ${record.start} is outside range ${startDate} to ${endDate}`);
+            }
+            
+            return isInRange;
+          } catch (error) {
+            console.error(`❌ Error parsing date for record ${record.uniqueid}:`, error);
+            return false;
+          }
+        });
+        
+        console.log(`📊 DEBUG: After date filtering: ${onecomRecords.length} call logs remain`);
+      }
+
+      if (onecomRecords.length === 0) {
+        console.log(`📊 DEBUG: No records found after date filtering`);
+        return {
+          success: true,
+          message: 'No call logs found for the specified date range',
+          synced: 0,
+          skipped: 0
+        };
+      }
 
       // Map and insert records
       let synced = 0;
@@ -847,6 +1180,127 @@ class OneComSyncService {
         total: 0,
         fromOneCom: 0,
         last24Hours: 0
+      };
+    }
+  }
+
+  /**
+   * Process a single call log from webhook
+   * @param {Object} webhookData - Call log data from OneCom webhook
+   * @returns {Promise<Object>}
+   */
+  async processWebhookCallLog(webhookData) {
+    try {
+      console.log('🔔 Processing webhook call log:', webhookData);
+
+      // Validate required fields
+      if (!webhookData.uniqueid && !webhookData.call_id) {
+        return {
+          success: false,
+          error: 'uniqueid or call_id is required'
+        };
+      }
+
+      // Check if record already exists
+      const uniqueId = webhookData.uniqueid || webhookData.call_id;
+      const { data: existingRecord } = await supabase
+        .from('call_logs')
+        .select('id')
+        .eq('onecom_uniqueid', uniqueId)
+        .single();
+
+      if (existingRecord) {
+        console.log(`⏭️ Webhook: Skipping existing record: ${uniqueId}`);
+        return {
+          success: true,
+          skipped: true,
+          message: 'Call log already exists'
+        };
+      }
+
+      // Map webhook data to database schema
+      // The webhook data should match the structure from CSV parsing
+      const dbRecord = await this.mapOneComToDatabase(webhookData);
+      
+      // Insert the record
+      const { error } = await supabase
+        .from('call_logs')
+        .insert([dbRecord]);
+
+      if (error) {
+        console.error(`❌ Webhook: Error inserting record ${uniqueId}:`, error);
+        return {
+          success: false,
+          error: error.message
+        };
+      }
+
+      console.log(`✅ Webhook: Successfully saved call log: ${uniqueId}`);
+      return {
+        success: true,
+        message: 'Call log saved successfully',
+        uniqueid: uniqueId
+      };
+
+    } catch (error) {
+      console.error('❌ Error processing webhook call log:', error);
+      return {
+        success: false,
+        error: error.message || 'Unknown error occurred'
+      };
+    }
+  }
+
+  /**
+   * Process multiple call logs from webhook (batch processing)
+   * @param {Array} webhookDataArray - Array of call log data from OneCom webhook
+   * @returns {Promise<Object>}
+   */
+  async processWebhookCallLogs(webhookDataArray) {
+    try {
+      if (!Array.isArray(webhookDataArray)) {
+        return {
+          success: false,
+          error: 'Expected array of call logs'
+        };
+      }
+
+      console.log(`🔔 Processing ${webhookDataArray.length} call logs from webhook`);
+
+      let synced = 0;
+      let skipped = 0;
+      const errors = [];
+
+      for (const webhookData of webhookDataArray) {
+        const result = await this.processWebhookCallLog(webhookData);
+        
+        if (result.success) {
+          if (result.skipped) {
+            skipped++;
+          } else {
+            synced++;
+          }
+        } else {
+          errors.push({
+            uniqueid: webhookData.uniqueid || webhookData.call_id || 'unknown',
+            error: result.error
+          });
+        }
+      }
+
+      return {
+        success: true,
+        message: `Processed ${webhookDataArray.length} call logs: ${synced} synced, ${skipped} skipped, ${errors.length} errors`,
+        synced,
+        skipped,
+        errors: errors.length > 0 ? errors : undefined
+      };
+
+    } catch (error) {
+      console.error('❌ Error processing webhook call logs:', error);
+      return {
+        success: false,
+        error: error.message || 'Unknown error occurred'
       };
     }
   }

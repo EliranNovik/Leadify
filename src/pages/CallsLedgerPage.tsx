@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { 
+import {
   PhoneIcon,
   UserIcon,
   MagnifyingGlassIcon,
@@ -10,7 +10,7 @@ import {
   ArrowPathIcon,
   CloudArrowDownIcon
 } from '@heroicons/react/24/outline';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { onecomSyncApi } from '../lib/onecomSyncApi';
 import AudioPlayerModal from '../components/AudioPlayerModal';
@@ -39,6 +39,7 @@ interface CallLog {
 
 const CallsLedgerPage: React.FC = () => {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [fromDate, setFromDate] = useState<string>('');
@@ -49,6 +50,8 @@ const CallsLedgerPage: React.FC = () => {
   const [totalDuration, setTotalDuration] = useState(0);
   const [employees, setEmployees] = useState<any[]>([]);
   const [selectedEmployee, setSelectedEmployee] = useState<string>('');
+  const [employeeSearch, setEmployeeSearch] = useState<string>('');
+  const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncProgress, setSyncProgress] = useState<{
     synced: number;
@@ -56,28 +59,73 @@ const CallsLedgerPage: React.FC = () => {
     total: number;
     errors: number;
   } | null>(null);
-  
   // Audio player modal state
   const [isAudioModalOpen, setIsAudioModalOpen] = useState(false);
   const [currentRecordingUrl, setCurrentRecordingUrl] = useState<string>('');
   const [currentCallId, setCurrentCallId] = useState<string>('');
   const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
 
-  // Fetch employees for dropdown
+  // Fetch employees for dropdown - only active users
   const fetchEmployees = async () => {
     try {
-      const { data, error } = await supabase
+      // First, get all employees
+      const { data: allEmployees, error: allEmployeesError } = await supabase
         .from('tenants_employee')
-        .select('id, display_name')
+        .select('id, display_name, user_id')
         .not('display_name', 'is', null)
         .order('display_name', { ascending: true });
 
-      if (error) {
-        console.error('Error fetching employees:', error);
+      if (allEmployeesError) {
+        console.error('Error fetching employees:', allEmployeesError);
         return;
       }
 
-      setEmployees(data || []);
+      if (!allEmployees || allEmployees.length === 0) {
+        setEmployees([]);
+        return;
+      }
+
+      // Get user IDs for employees that have user_id
+      const userIds = allEmployees
+        .map((emp: any) => emp.user_id)
+        .filter((id: any) => id !== null && id !== undefined);
+
+      if (userIds.length === 0) {
+        // If no employees have user_id, return all employees (fallback)
+        setEmployees(allEmployees);
+        return;
+      }
+
+      // Fetch active users
+      const { data: activeUsers, error: usersError } = await supabase
+        .from('users')
+        .select('id, is_active')
+        .in('id', userIds)
+        .eq('is_active', true);
+
+      if (usersError) {
+        console.error('Error fetching active users:', usersError);
+        // Fallback: return all employees if user check fails
+        setEmployees(allEmployees);
+        return;
+      }
+
+      // Create a set of active user IDs for quick lookup
+      const activeUserIds = new Set(
+        (activeUsers || []).map((user: any) => user.id?.toString())
+      );
+
+      // Filter employees to only those with active users
+      const activeEmployees = allEmployees.filter((emp: any) => {
+        // Include employee if they have a user_id that's in the active users list
+        if (emp.user_id) {
+          return activeUserIds.has(emp.user_id.toString());
+        }
+        // If employee has no user_id, exclude them (only show employees with active users)
+        return false;
+      });
+
+      setEmployees(activeEmployees);
     } catch (error) {
       console.error('Error fetching employees:', error);
     }
@@ -94,6 +142,18 @@ const CallsLedgerPage: React.FC = () => {
     // Fetch employees on component mount
     fetchEmployees();
   }, []);
+
+  // Sync employee search display with selected employee
+  useEffect(() => {
+    if (selectedEmployee) {
+      const selectedEmp = employees.find(emp => String(emp.id) === String(selectedEmployee));
+      if (selectedEmp) {
+        setEmployeeSearch(selectedEmp.display_name);
+      }
+    } else {
+      setEmployeeSearch('');
+    }
+  }, [selectedEmployee, employees]);
 
   const fetchCallLogs = async () => {
     if (!appliedFromDate || !appliedToDate) return;
@@ -361,13 +421,13 @@ const CallsLedgerPage: React.FC = () => {
     }
   };
 
-  const handleQuickSyncLastWeek = async () => {
+  const handleQuickSyncLast3Days = async () => {
     setIsSyncing(true);
     setSyncProgress(null);
 
     try {
-      console.log('🔄 Starting quick sync for last week...');
-      const result = await onecomSyncApi.syncLastWeek();
+      console.log('🔄 Starting quick sync for last 3 days...');
+      const result = await onecomSyncApi.syncLast3Days();
 
       if (result.success) {
         toast.success(result.message);
@@ -383,12 +443,12 @@ const CallsLedgerPage: React.FC = () => {
         // Refresh call logs after successful sync
         await fetchCallLogs();
       } else {
-        toast.error(result.message || 'Last week sync failed');
-        console.error('❌ Last week sync failed:', result.error);
+        toast.error(result.message || 'Last 3 days sync failed');
+        console.error('❌ Last 3 days sync failed:', result.error);
       }
     } catch (error) {
-      console.error('❌ Last week sync error:', error);
-      toast.error('Last week sync failed due to an unexpected error');
+      console.error('❌ Last 3 days sync error:', error);
+      toast.error('Last 3 days sync failed due to an unexpected error');
     } finally {
       setIsSyncing(false);
     }
@@ -465,6 +525,19 @@ const CallsLedgerPage: React.FC = () => {
                       <span className="hidden sm:inline">Sync Today</span>
                     </button>
                     <button
+                      className="btn btn-outline btn-sm"
+                      onClick={handleQuickSyncLast3Days}
+                      disabled={isSyncing}
+                      title="Sync calls from 1com for the last 3 days"
+                    >
+                      {isSyncing ? (
+                        <span className="loading loading-spinner loading-xs"></span>
+                      ) : (
+                        <CloudArrowDownIcon className="w-4 h-4" />
+                      )}
+                      <span className="hidden sm:inline">Sync Last 3 Days</span>
+                    </button>
+                    <button
                       className="btn btn-primary btn-sm"
                       onClick={handleSyncFromOneCom}
                       disabled={isSyncing}
@@ -476,6 +549,14 @@ const CallsLedgerPage: React.FC = () => {
                         <ArrowPathIcon className="w-4 h-4" />
                       )}
                       <span className="hidden sm:inline">Sync 1com</span>
+                    </button>
+                    <button
+                      className="btn btn-outline btn-sm btn-info"
+                      onClick={() => navigate('/cti/pop?phone=')}
+                      title="Test CTI Popup Modal"
+                    >
+                      <PhoneIcon className="w-4 h-4" />
+                      <span className="hidden sm:inline">Test CTI Popup</span>
                     </button>
                   </div>
                 </div>
@@ -504,20 +585,61 @@ const CallsLedgerPage: React.FC = () => {
               />
             </div>
 
-            <div className="space-y-2">
+            <div className="space-y-2 relative">
               <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Employee</label>
-              <select 
-                className="select select-bordered w-full"
-                value={selectedEmployee}
-                onChange={(e) => setSelectedEmployee(e.target.value)}
-              >
-                <option value="">All</option>
-                {employees.map((employee) => (
-                  <option key={employee.id} value={employee.id}>
-                    {employee.display_name}
-                  </option>
-                ))}
-              </select>
+              <div className="relative">
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="Search employee..."
+                  value={employeeSearch}
+                  onChange={(e) => {
+                    setEmployeeSearch(e.target.value);
+                    setShowEmployeeDropdown(true);
+                  }}
+                  onFocus={() => setShowEmployeeDropdown(true)}
+                  onBlur={() => {
+                    // Delay to allow click on dropdown item
+                    setTimeout(() => setShowEmployeeDropdown(false), 200);
+                  }}
+                />
+                {showEmployeeDropdown && employees.length > 0 && (
+                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
+                    <div
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        setSelectedEmployee('');
+                        setEmployeeSearch('');
+                        setShowEmployeeDropdown(false);
+                      }}
+                    >
+                      <span className="font-medium">All Employees</span>
+                    </div>
+                    {employees
+                      .filter((employee) =>
+                        employee.display_name?.toLowerCase().includes(employeeSearch.toLowerCase())
+                      )
+                      .map((employee) => (
+                        <div
+                          key={employee.id}
+                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm border-t border-gray-100"
+                          onClick={() => {
+                            setSelectedEmployee(employee.id);
+                            setEmployeeSearch(employee.display_name);
+                            setShowEmployeeDropdown(false);
+                          }}
+                        >
+                          {employee.display_name}
+                        </div>
+                      ))}
+                    {employees.filter((employee) =>
+                      employee.display_name?.toLowerCase().includes(employeeSearch.toLowerCase())
+                    ).length === 0 && (
+                      <div className="px-4 py-2 text-sm text-gray-500">No employees found</div>
+                    )}
+                  </div>
+                )}
+              </div>
             </div>
 
             <div className="space-y-2">
@@ -574,7 +696,7 @@ const CallsLedgerPage: React.FC = () => {
                       <div className="flex items-center gap-2">
                         <UserIcon className="w-4 h-4 text-blue-600" />
                         <span className="text-sm text-blue-600 font-medium">
-                          Filtered by: {employees.find(emp => emp.id === parseInt(selectedEmployee))?.display_name}
+                          Filtered by: {employees.find(emp => String(emp.id) === String(selectedEmployee))?.display_name || 'Unknown'}
                         </span>
                       </div>
                     )}

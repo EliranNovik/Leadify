@@ -38,11 +38,18 @@ interface ExtensionsResponse {
   data: string[];
 }
 
+interface WebhookInfoResponse {
+  success: boolean;
+  message: string;
+  webhookUrl?: string;
+  instructions?: string[];
+}
+
 class OneComSyncApi {
   private baseUrl: string;
 
   constructor() {
-    this.baseUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
+    this.baseUrl = import.meta.env.VITE_BACKEND_URL || 'https://leadify-crm-backend.onrender.com';
   }
 
   /**
@@ -169,11 +176,11 @@ class OneComSyncApi {
   }
 
   /**
-   * Quick sync for last week
+   * Quick sync for last 3 days
    */
-  async syncLastWeek(): Promise<SyncResponse> {
+  async syncLast3Days(): Promise<SyncResponse> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/onecom/sync/last-week`, {
+      const response = await fetch(`${this.baseUrl}/api/onecom/sync/last-3-days`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -183,11 +190,34 @@ class OneComSyncApi {
       const data = await response.json();
       return data;
     } catch (error) {
-      console.error('❌ Error syncing last week:', error);
+      console.error('❌ Error syncing last 3 days:', error);
       return {
         success: false,
-        message: 'Last week sync failed',
+        message: 'Last 3 days sync failed',
         error: error instanceof Error ? error.message : 'Unknown error'
+      };
+    }
+  }
+
+  /**
+   * Get webhook endpoint information
+   */
+  async getWebhookInfo(): Promise<WebhookInfoResponse> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/onecom/webhook`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+
+      const data = await response.json();
+      return data;
+    } catch (error) {
+      console.error('❌ Error getting webhook info:', error);
+      return {
+        success: false,
+        message: 'Failed to get webhook info'
       };
     }
   }
@@ -228,4 +258,4 @@ class OneComSyncApi {
 
 // Export singleton instance
 export const onecomSyncApi = new OneComSyncApi();
-export type { SyncRequest, SyncResponse, ConnectionTestResponse, SyncStatsResponse, ExtensionsResponse };
+export type { SyncRequest, SyncResponse, ConnectionTestResponse, SyncStatsResponse, ExtensionsResponse, WebhookInfoResponse };
