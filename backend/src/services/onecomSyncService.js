@@ -1006,13 +1006,20 @@ class OneComSyncService {
       }
 
       // Filter by extension/phone client-side (OneCom API phone parameter doesn't work reliably)
+      // This matches both extension (2-4 digits) and phone numbers (5+ digits, match last 5)
       if (extensions) {
         const extensionList = extensions.split(',').map(ext => ext.trim()).filter(Boolean);
-        console.log(`📞 DEBUG: Filtering client-side by extensions: ${extensionList.join(', ')}`);
+        console.log(`📞 DEBUG: Filtering client-side by extensions/phones: ${extensionList.join(', ')}`);
+        
+        // Normalize phone numbers (remove all non-digits)
+        const normalizePhone = (phone) => {
+          if (!phone) return '';
+          return phone.toString().replace(/\D/g, '');
+        };
         
         const beforeExtensionFilter = onecomRecords.length;
         onecomRecords = onecomRecords.filter(record => {
-          // Check multiple fields where extension might appear
+          // Check multiple fields where extension/phone might appear
           const checkFields = [
             record.src,
             record.realsrc,
@@ -1023,18 +1030,55 @@ class OneComSyncService {
             record.dstchannel ? record.dstchannel.split('/')[1]?.split('-')[0] : null
           ].filter(Boolean);
           
-          // Check if any extension matches any of the record fields
-          for (const ext of extensionList) {
-            const normalizedExt = ext.toString().trim();
+          // Check if any extension/phone matches any of the record fields
+          for (const searchTerm of extensionList) {
+            const normalizedSearch = normalizePhone(searchTerm);
+            const isExtension = normalizedSearch.length >= 2 && normalizedSearch.length <= 4;
+            
             for (const field of checkFields) {
-              const normalizedField = field.toString().trim();
-              // Exact match or field contains extension (handles cases like "214-decker")
-              if (normalizedField === normalizedExt || 
-                  normalizedField.startsWith(normalizedExt + '-') ||
-                  normalizedField.includes('-' + normalizedExt + '-') ||
-                  normalizedField.endsWith('-' + normalizedExt)) {
-                console.log(`✅ DEBUG: Extension ${ext} matched in field: ${field} (record: ${record.uniqueid})`);
-                return true;
+              const fieldStr = field.toString().trim();
+              const normalizedField = normalizePhone(fieldStr);
+              
+              // Extension matching (2-4 digits): exact match or substring match
+              if (isExtension) {
+                // Exact match
+                if (normalizedField === normalizedSearch) {
+                  console.log(`✅ DEBUG: Extension ${searchTerm} exact matched in field: ${field} (record: ${record.uniqueid})`);
+                  return true;
+                }
+                // Field contains extension (handles cases like "214-decker")
+                if (fieldStr === searchTerm || 
+                    fieldStr.startsWith(searchTerm + '-') ||
+                    fieldStr.includes('-' + searchTerm + '-') ||
+                    fieldStr.endsWith('-' + searchTerm)) {
+                  console.log(`✅ DEBUG: Extension ${searchTerm} substring matched in field: ${field} (record: ${record.uniqueid})`);
+                  return true;
+                }
+                // Normalized partial match (ends with)
+                if (normalizedField.length >= normalizedSearch.length && 
+                    normalizedField.slice(-normalizedSearch.length) === normalizedSearch) {
+                  console.log(`✅ DEBUG: Extension ${searchTerm} normalized partial matched in field: ${field} (record: ${record.uniqueid})`);
+                  return true;
+                }
+              } else {
+                // Phone number matching (5+ digits): match last 5 digits
+                if (normalizedField.length >= 5 && normalizedSearch.length >= 5) {
+                  if (normalizedField.slice(-5) === normalizedSearch.slice(-5)) {
+                    console.log(`✅ DEBUG: Phone ${searchTerm} matched (last 5 digits) in field: ${field} (record: ${record.uniqueid})`);
+                    return true;
+                  }
+                } else if (normalizedField.length >= 4 && normalizedSearch.length >= 4) {
+                  // Fallback to last 4 digits if one is shorter than 5
+                  if (normalizedField.slice(-4) === normalizedSearch.slice(-4)) {
+                    console.log(`✅ DEBUG: Phone ${searchTerm} matched (last 4 digits) in field: ${field} (record: ${record.uniqueid})`);
+                    return true;
+                  }
+                }
+                // Also try exact match for phone numbers
+                if (normalizedField === normalizedSearch) {
+                  console.log(`✅ DEBUG: Phone ${searchTerm} exact matched in field: ${field} (record: ${record.uniqueid})`);
+                  return true;
+                }
               }
             }
           }
@@ -1042,7 +1086,7 @@ class OneComSyncService {
           return false;
         });
         
-        console.log(`📞 DEBUG: After extension filtering: ${onecomRecords.length} call logs remain (filtered from ${beforeExtensionFilter})`);
+        console.log(`📞 DEBUG: After extension/phone filtering: ${onecomRecords.length} call logs remain (filtered from ${beforeExtensionFilter})`);
       }
 
       if (onecomRecords.length === 0) {

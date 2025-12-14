@@ -324,39 +324,123 @@ router.post('/webhook', async (req, res) => {
       } else {
         console.error(`❌ Webhook processing failed:`, result.error);
       }
-    } else if (webhookData.phone || webhookData.extension) {
+    } else if (webhookData.phone || webhookData.extension || webhookData.phone_ext) {
       // Outgoing call notification - just extension/phone number
       // Fetch recent call logs for this extension to get full call data
       // Process this asynchronously to avoid blocking the response
       const processWebhookAsync = async () => {
         try {
           console.log(`🚀 Webhook: Starting async processing for extension notification`);
-          const extension = String(webhookData.phone || webhookData.extension).trim();
-          console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extension}`);
+          const extensionOrPhone = String(webhookData.phone || webhookData.extension || webhookData.phone_ext).trim();
+          console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extensionOrPhone}`);
+          
+          // First, try to find the employee by extension or phone to get all their contact methods
+          // This ensures we can match calls by both extension AND phone number
+          let employeeSearchTerms = [extensionOrPhone];
+          let allSearchTerms = new Set([extensionOrPhone]);
+          
+          try {
+            const { data: employees } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name, phone_ext, phone, mobile, mobile_ext')
+              .not('id', 'is', null);
+            
+            if (employees && employees.length > 0) {
+              // Normalize the search term
+              const normalizePhone = (phone) => {
+                if (!phone) return '';
+                return phone.toString().replace(/\D/g, '');
+              };
+              
+              const normalizedSearch = normalizePhone(extensionOrPhone);
+              const isExtension = normalizedSearch.length >= 2 && normalizedSearch.length <= 4;
+              
+              // Find matching employee(s)
+              for (const employee of employees) {
+                const fields = [
+                  { value: employee.phone_ext, type: 'phone_ext' },
+                  { value: employee.phone, type: 'phone' },
+                  { value: employee.mobile, type: 'mobile' },
+                  { value: employee.mobile_ext, type: 'mobile_ext' }
+                ].filter(f => f.value && f.value !== '' && f.value !== '\\N');
+                
+                for (const field of fields) {
+                  const normalizedField = normalizePhone(field.value);
+                  
+                  let match = false;
+                  if (isExtension) {
+                    // Extension matching
+                    if (normalizedField === normalizedSearch || 
+                        (normalizedField.length >= normalizedSearch.length && normalizedField.slice(-normalizedSearch.length) === normalizedSearch) ||
+                        (normalizedSearch.length >= normalizedField.length && normalizedSearch.slice(-normalizedField.length) === normalizedField)) {
+                      match = true;
+                    }
+                  } else {
+                    // Phone matching (last 5 digits)
+                    if (normalizedField.length >= 5 && normalizedSearch.length >= 5) {
+                      if (normalizedField.slice(-5) === normalizedSearch.slice(-5)) {
+                        match = true;
+                      }
+                    } else if (normalizedField.length >= 4 && normalizedSearch.length >= 4) {
+                      if (normalizedField.slice(-4) === normalizedSearch.slice(-4)) {
+                        match = true;
+                      }
+                    }
+                  }
+                  
+                  if (match) {
+                    console.log(`✅ Webhook: Found matching employee: ${employee.display_name} (ID: ${employee.id})`);
+                    console.log(`   Matched via ${field.type}: ${field.value}`);
+                    
+                    // Add all employee's contact methods to search terms
+                    if (employee.phone_ext) allSearchTerms.add(employee.phone_ext.toString());
+                    if (employee.phone) allSearchTerms.add(employee.phone.toString());
+                    if (employee.mobile) allSearchTerms.add(employee.mobile.toString());
+                    if (employee.mobile_ext) allSearchTerms.add(employee.mobile_ext.toString());
+                    break; // Found the employee, break inner loop
+                  }
+                }
+                
+                if (allSearchTerms.size > 1) break; // Found employee, break outer loop
+              }
+              
+              console.log(`📞 Webhook: Will search for calls matching: ${Array.from(allSearchTerms).join(', ')}`);
+            }
+          } catch (empError) {
+            console.error(`⚠️ Webhook: Error fetching employees, will use original extension/phone only:`, empError);
+          }
           
           // Wait a few seconds to allow OneCom API to process the call
           console.log(`⏳ Webhook: Waiting 3 seconds for OneCom API to process the call...`);
           await new Promise(resolve => setTimeout(resolve, 3000));
           
-          console.log(`📞 Webhook: Wait complete, starting to fetch recent call logs for extension ${extension}...`);
+          console.log(`📞 Webhook: Wait complete, starting to fetch recent call logs...`);
           
-          // Use a wider date range: last 24 hours to catch the call
-          // Also include today and yesterday to handle timezone differences
+          // Use exact same date format as manual sync (YYYY-MM-DD)
+          // For today's sync, use today's date for both start and end
+          const today = new Date();
+          const todayStr = today.toISOString().split('T')[0];
+          
+          // For webhook, use today only (same as manual "sync today")
+          // But extend to last 24 hours to catch calls that might be slightly delayed
           const now = new Date();
           const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
           const startDate = yesterday.toISOString().split('T')[0];
-          const endDate = now.toISOString().split('T')[0];
+          const endDate = todayStr;
           
-          console.log(`📞 Webhook: Syncing call logs from ${startDate} to ${endDate} for extension ${extension}`);
-          console.log(`📞 Webhook: Note: Using 24-hour window to account for API processing delay`);
+          console.log(`📞 Webhook: Syncing call logs from ${startDate} to ${endDate}`);
+          console.log(`📞 Webhook: Using date format: YYYY-MM-DD (matching manual sync)`);
+          console.log(`📞 Webhook: Searching for: ${Array.from(allSearchTerms).join(', ')}`);
           
           // syncCallLogs expects extensions as a comma-separated string
-          console.log(`📞 Webhook: Calling syncCallLogs with params: startDate=${startDate}, endDate=${endDate}, extension=${extension}`);
-          const syncResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
+          // Pass all search terms (extension + phone numbers) for comprehensive matching
+          const searchTermsString = Array.from(allSearchTerms).join(',');
+          console.log(`📞 Webhook: Calling syncCallLogs with params: startDate=${startDate}, endDate=${endDate}, extensions=${searchTermsString}`);
+          const syncResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
           console.log(`📞 Webhook: syncCallLogs returned:`, JSON.stringify({ success: syncResult.success, synced: syncResult.synced, skipped: syncResult.skipped, error: syncResult.error }));
       
           if (syncResult.success) {
-            console.log(`✅ Webhook: Synced call logs for extension ${extension}`);
+            console.log(`✅ Webhook: Synced call logs for ${searchTermsString}`);
             console.log(`   - New records: ${syncResult.synced || 0}`);
             console.log(`   - Skipped (existing): ${syncResult.skipped || 0}`);
             
@@ -367,7 +451,7 @@ router.post('/webhook', async (req, res) => {
               await new Promise(resolve => setTimeout(resolve, 10000));
               
               console.log(`📞 Webhook: Retrying syncCallLogs after 10 second wait...`);
-              const retryResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
+              const retryResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
               console.log(`📞 Webhook: Retry syncCallLogs returned:`, JSON.stringify({ success: retryResult.success, synced: retryResult.synced, skipped: retryResult.skipped, error: retryResult.error }));
               
               if (retryResult.success) {
@@ -401,10 +485,10 @@ router.post('/webhook', async (req, res) => {
                 console.error(`   - Error ${idx + 1}:`, err);
               });
             }
-          } else {
-            console.error(`❌ Webhook: Failed to sync call logs for extension ${extension}:`, syncResult.error);
-            console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
-          }
+              } else {
+                console.error(`❌ Webhook: Failed to sync call logs for ${searchTermsString}:`, syncResult.error);
+                console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
+              }
         } catch (asyncError) {
           console.error(`❌ Webhook: Error processing outgoing call notification:`, asyncError);
           console.error(`❌ Webhook: Error stack:`, asyncError.stack);
