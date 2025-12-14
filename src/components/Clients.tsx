@@ -9734,7 +9734,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
             
             {/* Progress & Follow-up Box */}
-            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-hidden hover:shadow-lg transition-shadow duration-200">
+            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-visible hover:shadow-lg transition-shadow duration-200">
               <div className="h-full flex flex-col">
                 {/* Header with collapse button - no icon on mobile */}
                 <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
@@ -9758,11 +9758,215 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </button>
                 </div>
                 {/* Collapsible content */}
-                <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isProgressCollapsed ? 'max-h-0' : 'max-h-[2000px]'} md:max-h-none`}>
-                  <div className="p-3.5 pt-0 md:pt-3.5">
+                <div className={`overflow-visible transition-all duration-300 ease-in-out ${isProgressCollapsed ? 'max-h-0' : 'max-h-[2000px]'} md:max-h-none`}>
+                  <div className="p-3.5 pt-0 md:pt-3.5" style={{ overflow: 'visible' }}>
                     <ProgressFollowupBox 
                       selectedClient={selectedClient} 
                       getEmployeeDisplayName={getEmployeeDisplayName}
+                      dropdownsContent={
+                        <>
+                          {/* First row: Stages and Actions buttons */}
+                          <div className="flex flex-row gap-3 w-full">
+                            <div className="flex flex-col flex-1 gap-3">
+                              <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+                                <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                                  <span>Stages</span>
+                                  <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+                                </label>
+                                {dropdownItems && (
+                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                                    {dropdownItems}
+                                  </ul>
+                                )}
+                              </div>
+                              
+                              {/* Input fields under Stages button */}
+                              {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                                <div className="flex flex-col items-start gap-1">
+                                  <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
+                                  <div ref={successStageHandlerContainerRef} className="relative w-full">
+                                    <input
+                                      type="text"
+                                      className="input input-bordered w-full"
+                                      placeholder="Not assigned"
+                                      value={successStageHandlerSearch}
+                                      onChange={e => {
+                                        setSuccessStageHandlerSearch(e.target.value);
+                                        setShowSuccessStageHandlerDropdown(true);
+                                      }}
+                                      onFocus={() => {
+                                        setShowSuccessStageHandlerDropdown(true);
+                                        setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                      }}
+                                      autoComplete="off"
+                                      disabled={isUpdatingSuccessStageHandler}
+                                    />
+                                    {showSuccessStageHandlerDropdown && (
+                                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                        <button
+                                          type="button"
+                                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                                          onClick={() => {
+                                            setSuccessStageHandlerSearch('');
+                                            setShowSuccessStageHandlerDropdown(false);
+                                            setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                            void assignSuccessStageHandler(null);
+                                          }}
+                                          disabled={isUpdatingSuccessStageHandler}
+                                        >
+                                          ---------
+                                        </button>
+                                        {filteredSuccessStageHandlerOptions.length > 0 ? (
+                                          filteredSuccessStageHandlerOptions.map(option => (
+                                            <button
+                                              type="button"
+                                              key={option.id}
+                                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                              onClick={() => {
+                                                setSuccessStageHandlerSearch(option.label);
+                                                setShowSuccessStageHandlerDropdown(false);
+                                                setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                                void assignSuccessStageHandler(option);
+                                              }}
+                                              disabled={isUpdatingSuccessStageHandler}
+                                            >
+                                              {option.label}
+                                            </button>
+                                          ))
+                                        ) : (
+                                          <div className="px-4 py-3 text-sm text-base-content/60">
+                                            No handlers found
+                                          </div>
+                                        )}
+                                      </div>
+                                    )}
+                                  </div>
+                                </div>
+                              )}
+                              
+                              {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                                <div className="relative" data-assign-dropdown="true">
+                                  <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                                  <input
+                                    type="text"
+                                    className="input input-bordered w-full"
+                                    placeholder="---"
+                                    value={schedulerSearchTerm}
+                                    onChange={e => {
+                                      setSchedulerSearchTerm(e.target.value);
+                                      setShowSchedulerDropdown(true);
+                                    }}
+                                    onFocus={() => setShowSchedulerDropdown(true)}
+                                  />
+                                  {showSchedulerDropdown && (
+                                    <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                      <button
+                                        type="button"
+                                        className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                                        onClick={() => {
+                                          setSchedulerSearchTerm('');
+                                          setShowSchedulerDropdown(false);
+                                          updateScheduler('');
+                                        }}
+                                      >
+                                        ---------
+                                      </button>
+                                      {filteredSchedulerOptions.length > 0 ? (
+                                        filteredSchedulerOptions.map(option => (
+                                          <button
+                                            type="button"
+                                            key={option}
+                                            className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                            onClick={() => {
+                                              setSchedulerSearchTerm(option);
+                                              setShowSchedulerDropdown(false);
+                                              updateScheduler(option);
+                                            }}
+                                          >
+                                            {option}
+                                          </button>
+                                        ))
+                                      ) : (
+                                        <div className="px-4 py-3 text-sm text-base-content/60">
+                                          No matches found
+                                        </div>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            
+                            <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+                              <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                                <span>Actions</span>
+                                <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+                              </label>
+                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
+                                {(() => {
+                                  const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                                  const isUnactivated = isLegacy
+                                    ? (selectedClient?.status === 10)
+                                    : (selectedClient?.status === 'inactive');
+                                  return isUnactivated;
+                                })() ? (
+                                  <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                                ) : (
+                                  <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                                )}
+                                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                                <li>
+                                  <a
+                                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                    onClick={async () => {
+                                      if (!selectedClient?.id) return;
+                                      
+                                      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                      const leadId = isLegacyLead 
+                                        ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                                        : selectedClient.id;
+                                      const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                                      if (isInHighlightsState) {
+                                        await removeFromHighlights(leadId, isLegacyLead);
+                                      } else {
+                                        await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                      }
+                                      
+                                      (document.activeElement as HTMLElement | null)?.blur();
+                                    }}
+                                  >
+                                    {isInHighlightsState ? (
+                                      <>
+                                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                        <span className="font-medium">Remove from Highlights</span>
+                                      </>
+                                    ) : (
+                                      <>
+                                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                        <span className="font-medium">Add to Highlights</span>
+                                      </>
+                                    )}
+                                  </a>
+                                </li>
+                                <li>
+                                  <a
+                                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                    onClick={() => {
+                                      openEditLeadDrawer();
+                                      (document.activeElement as HTMLElement | null)?.blur();
+                                    }}
+                                  >
+                                    <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                                    <span className="font-medium">Edit lead</span>
+                                  </a>
+                                </li>
+                                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                              </ul>
+                            </div>
+                          </div>
+                        </>
+                      }
                     />
                   </div>
                 </div>
@@ -10204,6 +10408,210 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <ProgressFollowupBox 
                   selectedClient={selectedClient} 
                   getEmployeeDisplayName={getEmployeeDisplayName}
+                  dropdownsContent={
+                    <>
+                      {/* First row: Stages and Actions buttons */}
+                      <div className="flex flex-row gap-3 w-full">
+                        <div className="flex flex-col flex-1 gap-3">
+                          <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+                            <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                              <span>Stages</span>
+                              <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+                            </label>
+                            {dropdownItems && (
+                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                                {dropdownItems}
+                              </ul>
+                            )}
+                          </div>
+                          
+                          {/* Input fields under Stages button */}
+                          {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+                            <div className="flex flex-col items-start gap-1">
+                              <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
+                              <div ref={successStageHandlerContainerRef} className="relative w-full">
+                                <input
+                                  type="text"
+                                  className="input input-bordered w-full"
+                                  placeholder="Not assigned"
+                                  value={successStageHandlerSearch}
+                                  onChange={e => {
+                                    setSuccessStageHandlerSearch(e.target.value);
+                                    setShowSuccessStageHandlerDropdown(true);
+                                  }}
+                                  onFocus={() => {
+                                    setShowSuccessStageHandlerDropdown(true);
+                                    setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                  }}
+                                  autoComplete="off"
+                                  disabled={isUpdatingSuccessStageHandler}
+                                />
+                                {showSuccessStageHandlerDropdown && (
+                                  <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                    <button
+                                      type="button"
+                                      className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                                      onClick={() => {
+                                        setSuccessStageHandlerSearch('');
+                                        setShowSuccessStageHandlerDropdown(false);
+                                        setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                        void assignSuccessStageHandler(null);
+                                      }}
+                                      disabled={isUpdatingSuccessStageHandler}
+                                    >
+                                      ---------
+                                    </button>
+                                    {filteredSuccessStageHandlerOptions.length > 0 ? (
+                                      filteredSuccessStageHandlerOptions.map(option => (
+                                        <button
+                                          type="button"
+                                          key={option.id}
+                                          className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                          onClick={() => {
+                                            setSuccessStageHandlerSearch(option.label);
+                                            setShowSuccessStageHandlerDropdown(false);
+                                            setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                            void assignSuccessStageHandler(option);
+                                          }}
+                                          disabled={isUpdatingSuccessStageHandler}
+                                        >
+                                          {option.label}
+                                        </button>
+                                      ))
+                                    ) : (
+                                      <div className="px-4 py-3 text-sm text-base-content/60">
+                                        No handlers found
+                                      </div>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                          )}
+                          
+                          {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+                            <div className="relative" data-assign-dropdown="true">
+                              <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                              <input
+                                type="text"
+                                className="input input-bordered w-full"
+                                placeholder="---"
+                                value={schedulerSearchTerm}
+                                onChange={e => {
+                                  setSchedulerSearchTerm(e.target.value);
+                                  setShowSchedulerDropdown(true);
+                                }}
+                                onFocus={() => setShowSchedulerDropdown(true)}
+                              />
+                              {showSchedulerDropdown && (
+                                <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                  <button
+                                    type="button"
+                                    className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                                    onClick={() => {
+                                      setSchedulerSearchTerm('');
+                                      setShowSchedulerDropdown(false);
+                                      updateScheduler('');
+                                    }}
+                                  >
+                                    ---------
+                                  </button>
+                                  {filteredSchedulerOptions.length > 0 ? (
+                                    filteredSchedulerOptions.map(option => (
+                                      <button
+                                        type="button"
+                                        key={option}
+                                        className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                        onClick={() => {
+                                          setSchedulerSearchTerm(option);
+                                          setShowSchedulerDropdown(false);
+                                          updateScheduler(option);
+                                        }}
+                                      >
+                                        {option}
+                                      </button>
+                                    ))
+                                  ) : (
+                                    <div className="px-4 py-3 text-sm text-base-content/60">
+                                      No matches found
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                        
+                        <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+                          <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                            <span>Actions</span>
+                            <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+                          </label>
+                          <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
+                          {(() => {
+                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                            const isUnactivated = isLegacy
+                              ? (selectedClient?.status === 10)
+                              : (selectedClient?.status === 'inactive');
+                            return isUnactivated;
+                          })() ? (
+                            <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                          ) : (
+                            <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                          )}
+                          <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                          <li>
+                            <a
+                              className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                              onClick={async () => {
+                                if (!selectedClient?.id) return;
+                                
+                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                const leadId = isLegacyLead 
+                                  ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                                  : selectedClient.id;
+                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                                if (isInHighlightsState) {
+                                  await removeFromHighlights(leadId, isLegacyLead);
+                                } else {
+                                  await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                }
+                                
+                                (document.activeElement as HTMLElement | null)?.blur();
+                              }}
+                            >
+                              {isInHighlightsState ? (
+                                <>
+                                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                  <span className="font-medium">Remove from Highlights</span>
+                                </>
+                              ) : (
+                                <>
+                                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                  <span className="font-medium">Add to Highlights</span>
+                                </>
+                              )}
+                            </a>
+                          </li>
+                          <li>
+                            <a
+                              className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                              onClick={() => {
+                                openEditLeadDrawer();
+                                (document.activeElement as HTMLElement | null)?.blur();
+                              }}
+                            >
+                              <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                              <span className="font-medium">Edit lead</span>
+                            </a>
+                          </li>
+                          <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                        </ul>
+                      </div>
+                      </div>
+                    </>
+                  }
                 />
               </div>
             </div>
@@ -10218,206 +10626,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="w-full">
             {/* Desktop version */}
             <div className="flex flex-col px-4 py-4 gap-4">
-              {/* Stages and Actions buttons - move above tabs when scrollable */}
-              {isTabsScrollable && (
-                <div className="flex items-center gap-3 flex-shrink-0 justify-end">
-                  <div className="dropdown">
-                    <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm saira-regular" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                      <span>Stages</span>
-                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                      {dropdownItems}
-                    </ul>
-                  </div>
-                  
-                  {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-                    <div className="flex flex-col items-start gap-1">
-                      <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                      <div ref={successStageHandlerContainerRef} className="relative w-64">
-                        <input
-                          type="text"
-                          className="input input-bordered w-full"
-                          placeholder="Not assigned"
-                          value={successStageHandlerSearch}
-                          onChange={e => {
-                            setSuccessStageHandlerSearch(e.target.value);
-                            setShowSuccessStageHandlerDropdown(true);
-                          }}
-                          onFocus={() => {
-                            setShowSuccessStageHandlerDropdown(true);
-                            setFilteredSuccessStageHandlerOptions(handlerOptions);
-                          }}
-                          autoComplete="off"
-                          disabled={isUpdatingSuccessStageHandler}
-                        />
-                        {showSuccessStageHandlerDropdown && (
-                          <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                            <button
-                              type="button"
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                              onClick={() => {
-                                setSuccessStageHandlerSearch('');
-                                setShowSuccessStageHandlerDropdown(false);
-                                setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                void assignSuccessStageHandler(null);
-                              }}
-                              disabled={isUpdatingSuccessStageHandler}
-                            >
-                              ---------
-                            </button>
-                            {filteredSuccessStageHandlerOptions.length > 0 ? (
-                              filteredSuccessStageHandlerOptions.map(option => (
-                                <button
-                                  type="button"
-                                  key={option.id}
-                                  className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                  onClick={() => {
-                                    setSuccessStageHandlerSearch(option.label);
-                                    setShowSuccessStageHandlerDropdown(false);
-                                    setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                    void assignSuccessStageHandler(option);
-                                  }}
-                                  disabled={isUpdatingSuccessStageHandler}
-                                >
-                                  {option.label}
-                                </button>
-                              ))
-                            ) : (
-                              <div className="px-4 py-3 text-sm text-base-content/60">
-                                No handlers found
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                  
-                  {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                    <div className="relative" data-assign-dropdown="true">
-                      <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
-                      <input
-                        type="text"
-                        className="input input-bordered w-56"
-                        placeholder="---"
-                        value={schedulerSearchTerm}
-                        onChange={e => {
-                          setSchedulerSearchTerm(e.target.value);
-                          setShowSchedulerDropdown(true);
-                        }}
-                        onFocus={() => setShowSchedulerDropdown(true)}
-                      />
-                      {showSchedulerDropdown && (
-                        <div className="absolute z-[60] mt-1 max-h-60 w-56 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                            onClick={() => {
-                              setSchedulerSearchTerm('');
-                              setShowSchedulerDropdown(false);
-                              updateScheduler('');
-                            }}
-                          >
-                            ---------
-                          </button>
-                          {filteredSchedulerOptions.length > 0 ? (
-                            filteredSchedulerOptions.map(option => (
-                              <button
-                                type="button"
-                                key={option}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                onClick={() => {
-                                  setSchedulerSearchTerm(option);
-                                  setShowSchedulerDropdown(false);
-                                  updateScheduler(option);
-                                }}
-                              >
-                                {option}
-                              </button>
-                            ))
-                          ) : (
-                            <div className="px-4 py-3 text-sm text-base-content/60">
-                              No schedulers found
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  )}
-                  
-                  <div className="dropdown dropdown-end">
-                    <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                      <span>Actions</span>
-                      <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                      {(() => {
-                        const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                        const isUnactivated = isLegacy
-                          ? (selectedClient?.status === 10)
-                          : (selectedClient?.status === 'inactive');
-                        return isUnactivated;
-                      })() ? (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                      ) : (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                      )}
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                          onClick={async () => {
-                            if (!selectedClient?.id) return;
-                            
-                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead 
-                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                              : selectedClient.id;
-                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                            if (isInHighlightsState) {
-                              await removeFromHighlights(leadId, isLegacyLead);
-                            } else {
-                              await addToHighlights(leadId, leadNumber, isLegacyLead);
-                            }
-                            
-                            (document.activeElement as HTMLElement | null)?.blur();
-                          }}
-                        >
-                          {isInHighlightsState ? (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Remove from Highlights</span>
-                            </>
-                          ) : (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Add to Highlights</span>
-                            </>
-                          )}
-                        </a>
-                      </li>
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                          onClick={() => {
-                            openEditLeadDrawer();
-                            (document.activeElement as HTMLElement | null)?.blur();
-                          }}
-                        >
-                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                          <span className="font-medium">Edit lead</span>
-                        </a>
-                      </li>
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                    </ul>
-                  </div>
-                </div>
-              )}
-              
-              <div className="flex items-center gap-4">
-                <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide" style={{ scrollBehavior: 'smooth' }}>
+              <div className="flex items-center gap-4 flex-wrap">
+                <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
                                   {tabs.map((tab) => (
                     <button
                       key={tab.id}
@@ -10445,338 +10655,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </button>
                 ))}
                 </div>
-              
-                {/* Stages and Actions buttons - next to tabs when not scrollable */}
-                {!isTabsScrollable && (
-                  <div className="flex items-center gap-3 flex-shrink-0">
-                <div className="dropdown">
-                  <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm saira-regular" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                    <span>Stages</span>
-                    <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                    {dropdownItems}
-                  </ul>
-                </div>
-                
-                {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-                  <div className="flex flex-col items-start gap-1">
-                    <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                    <div ref={successStageHandlerContainerRef} className="relative w-64">
-                      <input
-                        type="text"
-                        className="input input-bordered w-full"
-                        placeholder="Not assigned"
-                        value={successStageHandlerSearch}
-                        onChange={e => {
-                          setSuccessStageHandlerSearch(e.target.value);
-                          setShowSuccessStageHandlerDropdown(true);
-                        }}
-                        onFocus={() => {
-                          setShowSuccessStageHandlerDropdown(true);
-                          setFilteredSuccessStageHandlerOptions(handlerOptions);
-                        }}
-                        autoComplete="off"
-                        disabled={isUpdatingSuccessStageHandler}
-                      />
-                      {showSuccessStageHandlerDropdown && (
-                        <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                          <button
-                            type="button"
-                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                            onClick={() => {
-                              setSuccessStageHandlerSearch('');
-                              setShowSuccessStageHandlerDropdown(false);
-                              setFilteredSuccessStageHandlerOptions(handlerOptions);
-                              void assignSuccessStageHandler(null);
-                            }}
-                            disabled={isUpdatingSuccessStageHandler}
-                          >
-                            ---------
-                          </button>
-                          {filteredSuccessStageHandlerOptions.length > 0 ? (
-                            filteredSuccessStageHandlerOptions.map(option => (
-                              <button
-                                type="button"
-                                key={option.id}
-                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                onClick={() => {
-                                  setSuccessStageHandlerSearch(option.label);
-                                  setShowSuccessStageHandlerDropdown(false);
-                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                  void assignSuccessStageHandler(option);
-                                }}
-                                disabled={isUpdatingSuccessStageHandler}
-                              >
-                                {option.label}
-                              </button>
-                            ))
-                          ) : (
-                            <div className="px-4 py-3 text-sm text-base-content/60">
-                              No handlers found
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
-                
-                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                  <div className="relative" data-assign-dropdown="true">
-                    <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-56"
-                      placeholder="---"
-                      value={schedulerSearchTerm}
-                      onChange={e => {
-                        setSchedulerSearchTerm(e.target.value);
-                        setShowSchedulerDropdown(true);
-                      }}
-                      onFocus={() => setShowSchedulerDropdown(true)}
-                    />
-                    {showSchedulerDropdown && (
-                      <div className="absolute z-[60] mt-1 max-h-60 w-56 overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                          onClick={() => {
-                            setSchedulerSearchTerm('');
-                            setShowSchedulerDropdown(false);
-                            updateScheduler('');
-                          }}
-                        >
-                          ---------
-                        </button>
-                        {filteredSchedulerOptions.length > 0 ? (
-                          filteredSchedulerOptions.map(option => (
-                            <button
-                              type="button"
-                              key={option}
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                              onClick={() => {
-                                setSchedulerSearchTerm(option);
-                                setShowSchedulerDropdown(false);
-                                updateScheduler(option);
-                              }}
-                            >
-                              {option}
-                            </button>
-                          ))
-                        ) : (
-                          <div className="px-4 py-3 text-sm text-base-content/60">
-                            No matches found
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="dropdown dropdown-end">
-                  <label tabIndex={0} className="btn btn-md bg-white border-2 hover:bg-purple-50 gap-2 text-sm" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                    <span>Actions</span>
-                    <ChevronDownIcon className="w-4 h-4" style={{ color: '#4218CC' }} />
-                  </label>
-                  <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                    {(() => {
-                      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                      const isUnactivated = isLegacy
-                        ? (selectedClient.status === 10)
-                        : (selectedClient.status === 'inactive');
-                      return isUnactivated;
-                    })() ? (
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                    ) : (
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                    )}
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                    <li>
-                      <a
-                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                        onClick={async () => {
-                          if (!selectedClient?.id) return;
-                          
-                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                          const leadId = isLegacyLead 
-                            ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                            : selectedClient.id;
-                          const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                          if (isInHighlightsState) {
-                            await removeFromHighlights(leadId, isLegacyLead);
-                          } else {
-                            await addToHighlights(leadId, leadNumber, isLegacyLead);
-                          }
-                          
-                          (document.activeElement as HTMLElement | null)?.blur();
-                        }}
-                      >
-                        {isInHighlightsState ? (
-                          <>
-                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                            <span className="font-medium">Remove from Highlights</span>
-                          </>
-                        ) : (
-                          <>
-                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                            <span className="font-medium">Add to Highlights</span>
-                          </>
-                        )}
-                      </a>
-                    </li>
-                    <li>
-                      <a
-                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                        onClick={() => {
-                          openEditLeadDrawer();
-                          (document.activeElement as HTMLElement | null)?.blur();
-                        }}
-                      >
-                        <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                        <span className="font-medium">Edit lead</span>
-                      </a>
-                    </li>
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                  </ul>
-                </div>
-              </div>
-              )}
               </div>
             </div>
           </div>
         </div>
         {/* Tabs Navigation - Mobile */}
         <div className="md:hidden px-6 py-4">
-              {/* Mobile Action Buttons - Above tabs */}
-              <div className="flex gap-2 mb-4">
-                <div className="flex-1">
-                  <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white border border-gray-300 hover:bg-gray-50 gap-2 text-sm text-gray-700">
-                      <span>Stages</span>
-                      <ChevronDownIcon className="w-4 h-4 text-gray-600" />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56">
-                      {dropdownItems}
-                    </ul>
-                  </div>
-                </div>
-                {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                  <div className="flex-1 relative" data-assign-dropdown="true">
-                    <label className="block text-sm font-semibold text-primary mb-1">Assign to</label>
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="---"
-                      value={schedulerSearchTerm}
-                      onChange={e => {
-                        setSchedulerSearchTerm(e.target.value);
-                        setShowSchedulerDropdown(true);
-                      }}
-                      onFocus={() => setShowSchedulerDropdown(true)}
-                    />
-                    {showSchedulerDropdown && (
-                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                          onClick={() => {
-                            setSchedulerSearchTerm('');
-                            setShowSchedulerDropdown(false);
-                            updateScheduler('');
-                          }}
-                        >
-                          ---------
-                        </button>
-                        {filteredSchedulerOptions.length > 0 ? (
-                          filteredSchedulerOptions.map(option => (
-                            <button
-                              type="button"
-                              key={option}
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                              onClick={() => {
-                                setSchedulerSearchTerm(option);
-                                setShowSchedulerDropdown(false);
-                                updateScheduler(option);
-                                (document.activeElement as HTMLElement | null)?.blur();
-                              }}
-                            >
-                              {option}
-                            </button>
-                          ))
-                        ) : (
-                          <div className="px-4 py-3 text-sm text-base-content/60">
-                            No matches found
-                    </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-                <div className="flex-1">
-                  <div className="dropdown w-full">
-                    <label tabIndex={0} className="btn btn-sm w-full bg-white border border-gray-300 hover:bg-gray-50 gap-2 text-sm text-gray-700">
-                      <span>Actions</span>
-                      <ChevronDownIcon className="w-4 h-4 text-gray-600" />
-                    </label>
-                    <ul tabIndex={0} className="dropdown-content z-[1] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-lg border border-gray-200">
-                      {(selectedClient.unactivation_reason || areStagesEquivalent(currentStageName, 'unactivated') || areStagesEquivalent(currentStageName, 'dropped_spam_irrelevant')) ? (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                      ) : (
-                        <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                      )}
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                          onClick={async () => {
-                            if (!selectedClient?.id) return;
-                            
-                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                            const leadId = isLegacyLead 
-                              ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                              : selectedClient.id;
-                            const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                            if (isInHighlightsState) {
-                              await removeFromHighlights(leadId, isLegacyLead);
-                            } else {
-                              await addToHighlights(leadId, leadNumber, isLegacyLead);
-                            }
-                            
-                            (document.activeElement as HTMLElement | null)?.blur();
-                          }}
-                        >
-                          {isInHighlightsState ? (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Remove from Highlights</span>
-                            </>
-                          ) : (
-                            <>
-                              <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                              <span className="font-medium">Add to Highlights</span>
-                            </>
-                          )}
-                        </a>
-                      </li>
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                          onClick={() => {
-                            openEditLeadDrawer();
-                            (document.activeElement as HTMLElement | null)?.blur();
-                          }}
-                        >
-                          <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                          <span className="font-medium">Edit lead</span>
-                        </a>
-                      </li>
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                    </ul>
-                  </div>
-                </div>
-              </div>
               
               <div
                 ref={mobileTabsRef}

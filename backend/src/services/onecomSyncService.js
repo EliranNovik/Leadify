@@ -52,12 +52,10 @@ class OneComSyncService {
         console.log('🔍 DEBUG: Adding date filter:', { start: startDate, end: endDate });
       }
 
-      if (extensions) {
-        // OneCom API expects comma-separated phone numbers/extensions
-        // Ensure we're sending it correctly even if it's already comma-separated
-        params.append('phone', extensions);
-        console.log('🔍 DEBUG: Filtering by phone/extensions:', extensions);
-      }
+      // NOTE: We do NOT use the 'phone' parameter here because OneCom API's phone filter
+      // doesn't work reliably for extensions. Instead, we fetch all calls and filter
+      // client-side by matching extensions in src, realsrc, dst, and channel fields.
+      // This is more reliable and works for both extensions and phone numbers.
 
       const url = `${this.baseUrl}?${params.toString()}`;
       console.log('🔗 DEBUG: Full 1com URL:', url);
@@ -976,7 +974,7 @@ class OneComSyncService {
         };
       }
 
-      console.log(`📊 DEBUG: Found ${onecomRecords.length} call logs from 1com before date filtering`);
+      console.log(`📊 DEBUG: Found ${onecomRecords.length} call logs from 1com before filtering`);
 
       // Filter records by date range (in case API doesn't filter properly or returns all records)
       if (startDate && endDate) {
@@ -1005,6 +1003,46 @@ class OneComSyncService {
         });
         
         console.log(`📊 DEBUG: After date filtering: ${onecomRecords.length} call logs remain`);
+      }
+
+      // Filter by extension/phone client-side (OneCom API phone parameter doesn't work reliably)
+      if (extensions) {
+        const extensionList = extensions.split(',').map(ext => ext.trim()).filter(Boolean);
+        console.log(`📞 DEBUG: Filtering client-side by extensions: ${extensionList.join(', ')}`);
+        
+        const beforeExtensionFilter = onecomRecords.length;
+        onecomRecords = onecomRecords.filter(record => {
+          // Check multiple fields where extension might appear
+          const checkFields = [
+            record.src,
+            record.realsrc,
+            record.firstdst,
+            record.dst,
+            record.lastdst,
+            record.srcchannel ? record.srcchannel.split('/')[1]?.split('-')[0] : null, // Extract from SIP/214-decker-...
+            record.dstchannel ? record.dstchannel.split('/')[1]?.split('-')[0] : null
+          ].filter(Boolean);
+          
+          // Check if any extension matches any of the record fields
+          for (const ext of extensionList) {
+            const normalizedExt = ext.toString().trim();
+            for (const field of checkFields) {
+              const normalizedField = field.toString().trim();
+              // Exact match or field contains extension (handles cases like "214-decker")
+              if (normalizedField === normalizedExt || 
+                  normalizedField.startsWith(normalizedExt + '-') ||
+                  normalizedField.includes('-' + normalizedExt + '-') ||
+                  normalizedField.endsWith('-' + normalizedExt)) {
+                console.log(`✅ DEBUG: Extension ${ext} matched in field: ${field} (record: ${record.uniqueid})`);
+                return true;
+              }
+            }
+          }
+          
+          return false;
+        });
+        
+        console.log(`📞 DEBUG: After extension filtering: ${onecomRecords.length} call logs remain (filtered from ${beforeExtensionFilter})`);
       }
 
       if (onecomRecords.length === 0) {

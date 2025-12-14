@@ -4,11 +4,12 @@ import { ChartBarIcon } from '@heroicons/react/24/outline';
 interface ProgressFollowupBoxProps {
   selectedClient: any;
   getEmployeeDisplayName: (employeeId: string | null | undefined) => string;
+  dropdownsContent?: React.ReactNode;
 }
 
-const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClient, getEmployeeDisplayName }) => {
+const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClient, getEmployeeDisplayName, dropdownsContent }) => {
   return (
-    <div className="text-black">
+    <div className="text-black relative" style={{ overflow: 'visible' }}>
       <div className="flex items-center gap-3 mb-4 hidden md:flex">
         <div className="w-10 h-10 rounded-full flex items-center justify-center" style={{ backgroundColor: '#391BC8' }}>
           <ChartBarIcon className="w-5 h-5 text-white" />
@@ -16,7 +17,7 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
         <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
       </div>
 
-      <div className="space-y-3">
+      <div className="space-y-3" style={{ overflow: 'visible' }}>
         {/* Probability */}
         <div className="pb-2 border-b border-gray-200 last:border-b-0">
           <div className="flex items-center justify-between mb-2">
@@ -64,7 +65,7 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
         {/* Handler (if saved) */}
         {(selectedClient?.case_handler_id != null && selectedClient?.case_handler_id !== undefined) || 
          (selectedClient?.handler && selectedClient?.handler.trim() !== '' && selectedClient?.handler !== 'Not assigned') ? (
-          <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
+          <div className="flex justify-between items-center pb-2">
             <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Handler</p>
             <p className="text-sm text-gray-900 text-right">
               {(selectedClient?.handler && selectedClient?.handler.trim() !== '' && selectedClient?.handler !== 'Not assigned')
@@ -73,6 +74,11 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
             </p>
           </div>
         ) : null}
+
+        {/* Stages and Actions dropdowns - Always show */}
+        <div className="pt-3 mt-3 border-t-2 border-gray-300 w-full relative" style={{ overflow: 'visible', zIndex: 1 }}>
+          {dropdownsContent || <div className="text-gray-500 text-sm">Loading dropdowns...</div>}
+        </div>
       </div>
     </div>
   );
