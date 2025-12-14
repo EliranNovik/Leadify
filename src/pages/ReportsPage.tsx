@@ -3906,9 +3906,10 @@ const UnhandledReport = () => <div className="p-6">Unhandled Pipeline Report Con
 const ExpertReport = () => <div className="p-6">Expert Pipeline Report Content</div>;
 const SchedulerSuperPipelineReport = () => {
   const navigate = useNavigate();
+  const today = new Date().toISOString().split('T')[0];
   const [filters, setFilters] = useState({
-    fromDate: '',
-    toDate: '',
+    fromDate: today,
+    toDate: today,
     category: '',
     employee: '',
     language: '',
@@ -3920,6 +3921,15 @@ const SchedulerSuperPipelineReport = () => {
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [editingManagerNotes, setEditingManagerNotes] = useState<Record<string, boolean>>({});
+  const [managerNotesValues, setManagerNotesValues] = useState<Record<string, string>>({});
+  const [savingManagerNotes, setSavingManagerNotes] = useState<Record<string, boolean>>({});
+  const [categorySearch, setCategorySearch] = useState<string>('');
+  const [employeeSearch, setEmployeeSearch] = useState<string>('');
+  const [languageSearch, setLanguageSearch] = useState<string>('');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
+  const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
+  const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -4044,11 +4054,105 @@ const SchedulerSuperPipelineReport = () => {
     return `${symbol} ${amount.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
   };
 
-  const handleSearch = async () => {
+  const formatNoteText = (text: string): string => {
+    if (!text) return '';
+    return text.replace(/\n/g, '<br>');
+  };
+
+  const fetchCurrentUserName = async (): Promise<string> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        if (userRow?.full_name) {
+          return userRow.full_name;
+        }
+        if (user.user_metadata?.full_name) {
+          return user.user_metadata.full_name;
+        }
+        if (user.email) {
+          return user.email;
+        }
+      }
+      return 'Unknown User';
+    } catch (error) {
+      console.error('Error fetching current user name:', error);
+      return 'Unknown User';
+    }
+  };
+
+  const handleSaveManagerNotes = async (lead: any) => {
+    const leadId = lead.id || lead.lead_number;
+    if (!leadId) return;
+
+    setSavingManagerNotes(prev => ({ ...prev, [lead.id || lead.lead_number]: true }));
+    try {
+      const userName = await fetchCurrentUserName();
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const notesText = managerNotesValues[lead.id || lead.lead_number] || '';
+      const updateData: any = {
+        management_notes: formatNoteText(notesText),
+        management_notes_last_edited_by: userName,
+        management_notes_last_edited_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setResults(prev => prev.map(l => 
+        l.id === lead.id 
+          ? { ...l, manager_notes: formatNoteText(notesText) }
+          : l
+      ));
+
+      // Clear editing state
+      setEditingManagerNotes(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+      setManagerNotesValues(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+
+      toast.success('Manager notes saved successfully');
+    } catch (error: any) {
+      console.error('Error saving manager notes:', error);
+      toast.error(`Failed to save manager notes: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setSavingManagerNotes(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+    }
+  };
+
+  const handleSearch = async (applyDateFilters: boolean = true) => {
     setIsSearching(true);
-    setSearchPerformed(true);
+    if (applyDateFilters) {
+      setSearchPerformed(true);
+    }
     try {
       const allLeads: any[] = [];
+
+      // Scheduler pipeline allowed stages: up to stage 40 (Waiting for Mtng sum)
+      const allowedStageIds = ['10', '15', '20', '21', '30', '40'];
 
       // Fetch new leads
       let newLeadsQuery = supabase
@@ -4075,14 +4179,17 @@ const SchedulerSuperPipelineReport = () => {
         `)
         .gte('probability', 80) // Only probability >= 80%
         .not('probability', 'is', null) // Exclude null probabilities
-        .not('scheduler', 'is', null); // Only leads with scheduler assigned
+        .not('scheduler', 'is', null) // Only leads with scheduler assigned
+        .in('stage', allowedStageIds); // Only scheduler stages up to 40
 
-      // Apply date filter
-      if (filters.fromDate) {
-        newLeadsQuery = newLeadsQuery.gte('created_at', filters.fromDate);
-      }
-      if (filters.toDate) {
-        newLeadsQuery = newLeadsQuery.lte('created_at', filters.toDate);
+      // Apply date filter only when explicitly requested (when Show is clicked)
+      if (applyDateFilters) {
+        if (filters.fromDate) {
+          newLeadsQuery = newLeadsQuery.gte('created_at', filters.fromDate);
+        }
+        if (filters.toDate) {
+          newLeadsQuery = newLeadsQuery.lte('created_at', filters.toDate);
+        }
       }
 
       // Apply category filter
@@ -4153,6 +4260,9 @@ const SchedulerSuperPipelineReport = () => {
       }
 
       // Fetch legacy leads
+      // Scheduler pipeline allowed legacy stages: up to stage 40 (Waiting for Mtng sum)
+      const allowedLegacyStageIds = [10, 15, 20, 21, 30, 40];
+      
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
@@ -4176,14 +4286,19 @@ const SchedulerSuperPipelineReport = () => {
         .gte('probability', 80) // Only probability >= 80%
         .not('probability', 'is', null) // Exclude null probabilities
         .not('meeting_scheduler_id', 'is', null) // Only leads with scheduler assigned
-        .eq('status', 0); // Only active leads
+        .eq('status', 0) // Only active leads
+        .in('stage', allowedLegacyStageIds) // Only scheduler stages up to 40
+        .eq('eligibile', 'true') // Only eligible leads for scheduler
+        .not('eligibile', 'is', null); // Explicitly exclude null values
 
-      // Apply date filter
-      if (filters.fromDate) {
-        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
-      }
-      if (filters.toDate) {
-        legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.toDate);
+      // Apply date filter only when explicitly requested (when Show is clicked)
+      if (applyDateFilters) {
+        if (filters.fromDate) {
+          legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
+        }
+        if (filters.toDate) {
+          legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.toDate);
+        }
       }
 
       // Apply category filter
@@ -4347,13 +4462,57 @@ const SchedulerSuperPipelineReport = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array means this runs once on mount
 
+  // Sync search inputs with selected filters
+  useEffect(() => {
+    if (filters.category) {
+      const selectedCategory = allCategories.find(cat => cat.id.toString() === filters.category);
+      setCategorySearch(selectedCategory ? `${selectedCategory.misc_maincategory?.name || ''}, ${selectedCategory.name}`.replace(/^, /, '') : '');
+    } else {
+      setCategorySearch('');
+    }
+  }, [filters.category, allCategories]);
+
+  useEffect(() => {
+    if (filters.employee) {
+      const selectedEmployee = employees.find(emp => emp.id.toString() === filters.employee);
+      setEmployeeSearch(selectedEmployee ? selectedEmployee.name : '');
+    } else {
+      setEmployeeSearch('');
+    }
+  }, [filters.employee, employees]);
+
+  useEffect(() => {
+    if (filters.language) {
+      const selectedLanguage = languages.find(lang => lang.id === filters.language);
+      setLanguageSearch(selectedLanguage ? selectedLanguage.name : '');
+    } else {
+      setLanguageSearch('');
+    }
+  }, [filters.language, languages]);
+
+  // Filter options based on search
+  const filteredCategories = allCategories.filter((cat: any) => {
+    const searchTerm = categorySearch.toLowerCase();
+    const mainCatName = cat.misc_maincategory?.name?.toLowerCase() || '';
+    const catName = cat.name?.toLowerCase() || '';
+    return mainCatName.includes(searchTerm) || catName.includes(searchTerm) || `${mainCatName}, ${catName}`.includes(searchTerm);
+  });
+
+  const filteredEmployees = employees.filter((emp: any) => 
+    emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
+  );
+
+  const filteredLanguages = languages.filter((lang: any) => 
+    lang.name.toLowerCase().includes(languageSearch.toLowerCase())
+  );
+
   return (
     <div className="p-6">
       <h2 className="text-2xl font-bold mb-6">Scheduler Super Pipeline</h2>
       
       {/* Main White Box - Contains Filters and Table */}
       <div className="bg-white rounded-lg shadow-md p-6">
-        {/* Filters */}
+      {/* Filters */}
         <div className="mb-6">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
@@ -4374,55 +4533,148 @@ const SchedulerSuperPipelineReport = () => {
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
               />
             </div>
-            <div>
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-              <select
-                value={filters.category}
-                onChange={(e) => handleFilterChange('category', e.target.value)}
+              <input
+                type="text"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">All Categories</option>
-                {categories.map((cat) => (
-                  <option key={cat.id} value={cat.id}>
-                    {cat.name}
-                  </option>
-                ))}
-              </select>
+                placeholder="Search category..."
+                value={categorySearch}
+                onChange={(e) => {
+                  setCategorySearch(e.target.value);
+                  setShowCategoryDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('category', '');
+                  }
+                }}
+                onFocus={() => setShowCategoryDropdown(true)}
+                onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+              />
+              {showCategoryDropdown && filteredCategories.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('category', '');
+                      setCategorySearch('');
+                      setShowCategoryDropdown(false);
+                    }}
+                  >
+                    All Categories
+                  </div>
+                  {filteredCategories.map((cat) => {
+                    const displayName = cat.misc_maincategory ? `${cat.misc_maincategory.name}, ${cat.name}` : cat.name;
+                    return (
+                      <div
+                        key={cat.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                        onClick={() => {
+                          handleFilterChange('category', cat.id.toString());
+                          setCategorySearch(displayName);
+                          setShowCategoryDropdown(false);
+                        }}
+                      >
+                        {displayName}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <div>
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
-              <select
-                value={filters.employee}
-                onChange={(e) => handleFilterChange('employee', e.target.value)}
+              <input
+                type="text"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">All Employees</option>
-                {employees.map((emp) => (
-                  <option key={emp.id} value={emp.id.toString()}>
-                    {emp.name}
-                  </option>
-                ))}
-              </select>
+                placeholder="Search employee..."
+                value={employeeSearch}
+                onChange={(e) => {
+                  setEmployeeSearch(e.target.value);
+                  setShowEmployeeDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('employee', '');
+                  }
+                }}
+                onFocus={() => setShowEmployeeDropdown(true)}
+                onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
+              />
+              {showEmployeeDropdown && filteredEmployees.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('employee', '');
+                      setEmployeeSearch('');
+                      setShowEmployeeDropdown(false);
+                    }}
+                  >
+                    All Employees
+                  </div>
+                  {filteredEmployees.map((emp) => (
+                    <div
+                      key={emp.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('employee', emp.id.toString());
+                        setEmployeeSearch(emp.name);
+                        setShowEmployeeDropdown(false);
+                      }}
+                    >
+                      {emp.name}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            <div>
+            <div className="relative">
               <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-              <select
-                value={filters.language}
-                onChange={(e) => handleFilterChange('language', e.target.value)}
+              <input
+                type="text"
                 className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              >
-                <option value="">All Languages</option>
-                {languages.map((lang) => (
-                  <option key={lang.id} value={lang.id}>
-                    {lang.name}
-                  </option>
-                ))}
-              </select>
+                placeholder="Search language..."
+                value={languageSearch}
+                onChange={(e) => {
+                  setLanguageSearch(e.target.value);
+                  setShowLanguageDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('language', '');
+                  }
+                }}
+                onFocus={() => setShowLanguageDropdown(true)}
+                onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
+              />
+              {showLanguageDropdown && filteredLanguages.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('language', '');
+                      setLanguageSearch('');
+                      setShowLanguageDropdown(false);
+                    }}
+                  >
+                    All Languages
+                  </div>
+                  {filteredLanguages.map((lang) => (
+                    <div
+                      key={lang.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('language', lang.id);
+                        setLanguageSearch(lang.name);
+                        setShowLanguageDropdown(false);
+                      }}
+                    >
+                      {lang.name}
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
           <div className="mt-4">
             <button
-              onClick={handleSearch}
+              onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
               disabled={isSearching}
               className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               style={{ backgroundColor: '#411CCF' }}
@@ -4492,8 +4744,59 @@ const SchedulerSuperPipelineReport = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {lead.potential_applicants_meeting ?? '---'}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
-                          {lead.manager_notes || '---'}
+                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs">
+                          {editingManagerNotes[lead.id || index] ? (
+                            <div className="flex flex-col gap-2">
+                              <textarea
+                                value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
+                                onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
+                                className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
+                                placeholder="Enter manager notes..."
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleSaveManagerNotes(lead)}
+                                  disabled={savingManagerNotes[lead.id || index]}
+                                  className="btn btn-xs btn-primary"
+                                >
+                                  {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditingManagerNotes(prev => {
+                                      const newState = { ...prev };
+                                      delete newState[lead.id || index];
+                                      return newState;
+                                    });
+                                    setManagerNotesValues(prev => {
+                                      const newState = { ...prev };
+                                      delete newState[lead.id || index];
+                                      return newState;
+                                    });
+                                  }}
+                                  className="btn btn-xs btn-ghost"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 group">
+                              <span className="truncate">{lead.manager_notes || '---'}</span>
+                              <button
+                                onClick={() => {
+                                  setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
+                                  setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
+                                }}
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Edit manager notes"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {formatCurrency(lead.balance, lead.balance_currency)}
@@ -4511,11 +4814,948 @@ const SchedulerSuperPipelineReport = () => {
   );
 };
 
+const CloserSuperPipelineReport = () => {
+  const navigate = useNavigate();
+  const today = new Date().toISOString().split('T')[0];
+  const [filters, setFilters] = useState({
+    fromDate: today,
+    toDate: today,
+    category: '',
+    employee: '',
+    language: '',
+  });
+  const [results, setResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
+  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [editingManagerNotes, setEditingManagerNotes] = useState<Record<string, boolean>>({});
+  const [managerNotesValues, setManagerNotesValues] = useState<Record<string, string>>({});
+  const [savingManagerNotes, setSavingManagerNotes] = useState<Record<string, boolean>>({});
+  const [categorySearch, setCategorySearch] = useState<string>('');
+  const [employeeSearch, setEmployeeSearch] = useState<string>('');
+  const [languageSearch, setLanguageSearch] = useState<string>('');
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
+  const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
+  const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
+
+  useEffect(() => {
+    const fetchOptions = async () => {
+      // Fetch categories
+      const { data: catData } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .order('name');
+      if (catData) {
+        setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
+      }
+
+      // Fetch all categories with their parent main category names using JOINs
+      const { data: categoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        `)
+        .order('name', { ascending: true });
+      
+      if (!categoriesError && categoriesData) {
+        setAllCategories(categoriesData);
+      }
+
+      // Fetch employees
+      const { data: empData } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .order('display_name');
+      if (empData) {
+        setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+      }
+
+      // Fetch languages
+      const { data: langData } = await supabase
+        .from('misc_language')
+        .select('id, name')
+        .order('name');
+      if (langData) {
+        setLanguages(langData.map(lang => ({ id: lang.id.toString(), name: lang.name })));
+      }
+    };
+    fetchOptions();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
+        let foundCategory = null;
+        if (typeof fallbackCategory === 'number') {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.id.toString() === fallbackCategory.toString()
+          );
+        }
+        if (!foundCategory && typeof fallbackCategory === 'string') {
+          foundCategory = allCategories.find((cat: any) => 
+            cat.name?.toLowerCase() === fallbackCategory.toLowerCase()
+          );
+        }
+        if (foundCategory) {
+          const mainCat = foundCategory.misc_maincategory;
+          return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
+        }
+        return String(fallbackCategory);
+      }
+      return '---';
+    }
+
+    const foundCategory = allCategories.find((cat: any) => 
+      cat.id.toString() === categoryId.toString()
+    );
+    
+    if (foundCategory) {
+      const mainCat = foundCategory.misc_maincategory;
+      return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
+    }
+    
+    return fallbackCategory ? String(fallbackCategory) : '---';
+  };
+
+  const getStageName = (stageId: string | number | null | undefined) => {
+    if (!stageId) return '---';
+    // Stage names mapping - you may need to fetch from lead_stages table
+    const stageMap: Record<string, string> = {
+      '0': 'Created',
+      '10': 'Scheduler assigned',
+      '11': 'Precommunication',
+      '15': 'Communication started',
+      '20': 'Meeting scheduled',
+      '21': 'Meeting rescheduling',
+      '30': 'Meeting complete',
+      '35': 'Meeting Irrelevant',
+      '40': 'Waiting for Mtng sum',
+      '50': 'Mtng sum+Agreement sent',
+      '51': 'Client declined price offer',
+      '55': 'Another meeting',
+      '60': 'Client signed agreement',
+      '70': 'Payment request sent',
+      '91': 'Dropped (Spam/Irrelevant)',
+      '100': 'Success',
+      '105': 'Handler Set',
+      '110': 'Handler Started',
+      '150': 'Application submitted',
+      '200': 'Case Closed'
+    };
+    return stageMap[String(stageId)] || String(stageId);
+  };
+
+  const formatCurrency = (amount: number | null | undefined, currency: string | null | undefined) => {
+    if (!amount) return '---';
+    const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : currency === 'NIS' ? '₪' : currency || '';
+    return `${symbol} ${amount.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+  };
+
+  const formatNoteText = (text: string): string => {
+    if (!text) return '';
+    return text.replace(/\n/g, '<br>');
+  };
+
+  const fetchCurrentUserName = async (): Promise<string> => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: userRow } = await supabase
+          .from('users')
+          .select('full_name')
+          .eq('auth_id', user.id)
+          .maybeSingle();
+        if (userRow?.full_name) {
+          return userRow.full_name;
+        }
+        if (user.user_metadata?.full_name) {
+          return user.user_metadata.full_name;
+        }
+        if (user.email) {
+          return user.email;
+        }
+      }
+      return 'Unknown User';
+    } catch (error) {
+      console.error('Error fetching current user name:', error);
+      return 'Unknown User';
+    }
+  };
+
+  const handleSaveManagerNotes = async (lead: any) => {
+    const leadId = lead.id || lead.lead_number;
+    if (!leadId) return;
+
+    setSavingManagerNotes(prev => ({ ...prev, [lead.id || lead.lead_number]: true }));
+    try {
+      const userName = await fetchCurrentUserName();
+      const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
+      const clientId = lead.lead_type === 'legacy' 
+        ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
+        : leadId;
+
+      const notesText = managerNotesValues[lead.id || lead.lead_number] || '';
+      const updateData: any = {
+        management_notes: formatNoteText(notesText),
+        management_notes_last_edited_by: userName,
+        management_notes_last_edited_at: new Date().toISOString(),
+      };
+
+      const { error } = await supabase
+        .from(tableName)
+        .update(updateData)
+        .eq('id', clientId);
+
+      if (error) throw error;
+
+      // Update local state
+      setResults(prev => prev.map(l => 
+        l.id === lead.id 
+          ? { ...l, manager_notes: formatNoteText(notesText) }
+          : l
+      ));
+
+      // Clear editing state
+      setEditingManagerNotes(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+      setManagerNotesValues(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+
+      toast.success('Manager notes saved successfully');
+    } catch (error: any) {
+      console.error('Error saving manager notes:', error);
+      toast.error(`Failed to save manager notes: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setSavingManagerNotes(prev => {
+        const newState = { ...prev };
+        delete newState[lead.id || lead.lead_number];
+        return newState;
+      });
+    }
+  };
+
+  const handleSearch = async (applyDateFilters: boolean = true) => {
+    setIsSearching(true);
+    if (applyDateFilters) {
+      setSearchPerformed(true);
+    }
+    try {
+      const allLeads: any[] = [];
+
+      // Closer pipeline allowed stages: only stage 40 (Waiting for Mtng sum) and 50 (Mtng sum+Agreement sent)
+      const allowedStageIds = ['40', '50'];
+
+      // Fetch new leads
+      let newLeadsQuery = supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          created_at,
+          closer,
+          scheduler,
+          expert,
+          manager,
+          category,
+          category_id,
+          stage,
+          probability,
+          language,
+          number_of_applicants_meeting,
+          potential_applicants_meeting,
+          balance,
+          balance_currency,
+          expert_notes,
+          management_notes,
+          unactivated_at
+        `)
+        .gte('probability', 80) // Only probability >= 80%
+        .not('probability', 'is', null) // Exclude null probabilities
+        .not('closer', 'is', null) // Only leads with closer assigned
+        .is('unactivated_at', null); // Only active leads (closer pipeline doesn't check eligible)
+
+      // Apply stage filter for closers
+      newLeadsQuery = newLeadsQuery.in('stage', allowedStageIds);
+
+      // Apply date filter only when explicitly requested (when Show is clicked)
+      if (applyDateFilters) {
+        if (filters.fromDate) {
+          newLeadsQuery = newLeadsQuery.gte('created_at', filters.fromDate);
+        }
+        if (filters.toDate) {
+          newLeadsQuery = newLeadsQuery.lte('created_at', filters.toDate);
+        }
+      }
+
+      // Apply category filter
+      if (filters.category) {
+        newLeadsQuery = newLeadsQuery.eq('category_id', filters.category);
+      }
+
+      // Apply language filter
+      if (filters.language) {
+        newLeadsQuery = newLeadsQuery.eq('language', filters.language);
+      }
+
+      // Apply employee filter (closer)
+      if (filters.employee) {
+        const employee = employees.find(emp => emp.id.toString() === filters.employee);
+        if (employee) {
+          newLeadsQuery = newLeadsQuery.eq('closer', employee.name);
+        }
+      }
+
+      const { data: newLeads, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads:', newLeadsError);
+        // Continue with empty array - will still try to fetch legacy leads
+      }
+      
+      if (newLeads) {
+        newLeads.forEach((lead: any) => {
+          // Convert expert_notes array to string
+          let expertOpinionText = '---';
+          if (lead.expert_notes) {
+            if (Array.isArray(lead.expert_notes)) {
+              expertOpinionText = lead.expert_notes
+                .map((note: any) => note?.content || note)
+                .filter(Boolean)
+                .join('; ') || '---';
+            } else if (typeof lead.expert_notes === 'string') {
+              expertOpinionText = lead.expert_notes;
+            } else if (lead.expert_notes?.content) {
+              expertOpinionText = lead.expert_notes.content;
+            }
+          }
+
+          // Convert management_notes to string
+          let managerNotesText = '---';
+          if (lead.management_notes) {
+            if (Array.isArray(lead.management_notes)) {
+              managerNotesText = lead.management_notes
+                .map((note: any) => note?.content || note)
+                .filter(Boolean)
+                .join('; ') || '---';
+            } else if (typeof lead.management_notes === 'string') {
+              managerNotesText = lead.management_notes;
+            } else if (lead.management_notes?.content) {
+              managerNotesText = lead.management_notes.content;
+            }
+          }
+
+          allLeads.push({
+            ...lead,
+            lead_type: 'new',
+            stage: getStageName(lead.stage), // Convert stage ID to name
+            expert_opinion: expertOpinionText,
+            manager_notes: managerNotesText,
+            scheduler: lead.scheduler || '---', // Include scheduler for closer pipeline
+          });
+        });
+      }
+
+      // Fetch legacy leads
+      // Closer pipeline allowed legacy stages: only stage 40 (Waiting for Mtng sum) and 50 (Mtng sum+Agreement sent)
+      const allowedLegacyStageIds = [40, 50];
+      
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          cdate,
+          closer_id,
+          meeting_scheduler_id,
+          expert_id,
+          meeting_manager_id,
+          category_id,
+          stage,
+          probability,
+          language_id,
+          no_of_applicants,
+          potential_applicants,
+          total,
+          currency_id,
+          expert_notes,
+          management_notes
+        `)
+        .gte('probability', 80) // Only probability >= 80%
+        .not('probability', 'is', null) // Exclude null probabilities
+        .not('closer_id', 'is', null) // Only leads with closer assigned
+        .eq('status', 0) // Only active leads
+        .in('stage', allowedLegacyStageIds); // Only closer pipeline stages (NO eligible filter for closers)
+
+      // Apply date filter only when explicitly requested (when Show is clicked)
+      if (applyDateFilters) {
+        if (filters.fromDate) {
+          legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
+        }
+        if (filters.toDate) {
+          legacyLeadsQuery = legacyLeadsQuery.lte('cdate', filters.toDate);
+        }
+      }
+
+      // Apply category filter
+      if (filters.category) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('category_id', Number(filters.category));
+      }
+
+      // Apply language filter
+      if (filters.language) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('language_id', Number(filters.language));
+      }
+
+      // Apply employee filter (closer)
+      if (filters.employee) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('closer_id', Number(filters.employee));
+      }
+
+      const { data: legacyLeads, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads:', legacyLeadsError);
+        // Continue with empty array instead of breaking
+        setResults([]);
+        setIsSearching(false);
+        return;
+      }
+      
+      if (legacyLeads) {
+        // Fetch closer names for legacy leads
+        const closerIds = [...new Set(legacyLeads.map((l: any) => l.closer_id).filter(Boolean))];
+        const closerMap: Record<number, string> = {};
+        
+        if (closerIds.length > 0) {
+          const { data: closerData } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .in('id', closerIds);
+          
+          if (closerData) {
+            closerData.forEach((emp: any) => {
+              closerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
+            });
+          }
+        }
+
+        // Fetch scheduler names for legacy leads
+        const schedulerIds = [...new Set(legacyLeads.map((l: any) => l.meeting_scheduler_id).filter(Boolean))];
+        const schedulerMap: Record<number, string> = {};
+        
+        if (schedulerIds.length > 0) {
+          const { data: schedulerData } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .in('id', schedulerIds);
+          
+          if (schedulerData) {
+            schedulerData.forEach((emp: any) => {
+              schedulerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
+            });
+          }
+        }
+
+        // Fetch currency codes
+        const currencyIds = [...new Set(legacyLeads.map((l: any) => l.currency_id).filter(Boolean))];
+        const currencyMap: Record<number, string> = {};
+        
+        if (currencyIds.length > 0) {
+          const { data: currencyData } = await supabase
+            .from('accounting_currencies')
+            .select('id, iso_code')
+            .in('id', currencyIds);
+          
+          if (currencyData) {
+            currencyData.forEach((curr: any) => {
+              currencyMap[curr.id] = curr.iso_code || '';
+            });
+          }
+        }
+
+        // Fetch language names for legacy leads
+        const languageIds = [...new Set(legacyLeads.map((l: any) => l.language_id).filter(Boolean))];
+        const languageMap: Record<number, string> = {};
+        
+        if (languageIds.length > 0) {
+          const { data: languageData } = await supabase
+            .from('misc_language')
+            .select('id, name')
+            .in('id', languageIds);
+          
+          if (languageData) {
+            languageData.forEach((lang: any) => {
+              languageMap[lang.id] = lang.name || '';
+            });
+          }
+        }
+
+        legacyLeads.forEach((lead: any) => {
+          // Convert expert_notes array to string
+          let expertOpinionText = '---';
+          if (lead.expert_notes) {
+            if (Array.isArray(lead.expert_notes)) {
+              expertOpinionText = lead.expert_notes
+                .map((note: any) => note?.content || note)
+                .filter(Boolean)
+                .join('; ') || '---';
+            } else if (typeof lead.expert_notes === 'string') {
+              expertOpinionText = lead.expert_notes;
+            } else if (lead.expert_notes?.content) {
+              expertOpinionText = lead.expert_notes.content;
+            }
+          }
+
+          // Convert management_notes to string
+          let managerNotesText = '---';
+          if (lead.management_notes) {
+            if (Array.isArray(lead.management_notes)) {
+              managerNotesText = lead.management_notes
+                .map((note: any) => note?.content || note)
+                .filter(Boolean)
+                .join('; ') || '---';
+            } else if (typeof lead.management_notes === 'string') {
+              managerNotesText = lead.management_notes;
+            } else if (lead.management_notes?.content) {
+              managerNotesText = lead.management_notes.content;
+            }
+          }
+
+          allLeads.push({
+            id: `legacy_${lead.id}`,
+            lead_number: lead.id?.toString() || '',
+            name: lead.name || '',
+            created_at: lead.cdate || new Date().toISOString(),
+            closer: closerMap[lead.closer_id] || `Employee #${lead.closer_id}`,
+            scheduler: schedulerMap[lead.meeting_scheduler_id] || (lead.meeting_scheduler_id ? `Employee #${lead.meeting_scheduler_id}` : '---'),
+            expert: lead.expert_id ? `Expert #${lead.expert_id}` : null,
+            manager: lead.meeting_manager_id ? `Manager #${lead.meeting_manager_id}` : null,
+            category: getCategoryName(lead.category_id),
+            category_id: lead.category_id,
+            stage: getStageName(lead.stage),
+            probability: lead.probability || 0,
+            language: lead.language_id ? (languageMap[lead.language_id] || `Language #${lead.language_id}`) : null,
+            number_of_applicants_meeting: lead.no_of_applicants || 0,
+            potential_applicants_meeting: lead.potential_applicants || 0,
+            balance: lead.total || 0,
+            balance_currency: currencyMap[lead.currency_id] || null,
+            expert_opinion: expertOpinionText,
+            manager_notes: managerNotesText,
+            lead_type: 'legacy',
+          });
+        });
+      }
+
+      // Sort by probability (highest first), then by created_at (newest first)
+      const sortedLeads = allLeads.sort((a, b) => {
+        const probA = a.probability || 0;
+        const probB = b.probability || 0;
+        if (probB !== probA) {
+          return probB - probA; // Higher probability first
+        }
+        // If probabilities are equal, sort by created_at (newest first)
+        const dateA = new Date(a.created_at || 0).getTime();
+        const dateB = new Date(b.created_at || 0).getTime();
+        return dateB - dateA;
+      });
+      
+      setResults(sortedLeads);
+    } catch (error: any) {
+      console.error('Error in CloserSuperPipelineReport:', error);
+      toast.error(`Error fetching leads: ${error?.message || 'Unknown error'}`);
+      setResults([]); // Set empty results on error
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Automatically load all leads on component mount (without date filters)
+  useEffect(() => {
+    handleSearch(false); // Pass false to skip date filters on initial load
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Empty dependency array means this runs once on mount
+
+  // Sync search inputs with selected filters
+  useEffect(() => {
+    if (filters.category) {
+      const selectedCategory = allCategories.find(cat => cat.id.toString() === filters.category);
+      setCategorySearch(selectedCategory ? `${selectedCategory.misc_maincategory?.name || ''}, ${selectedCategory.name}`.replace(/^, /, '') : '');
+    } else {
+      setCategorySearch('');
+    }
+  }, [filters.category, allCategories]);
+
+  useEffect(() => {
+    if (filters.employee) {
+      const selectedEmployee = employees.find(emp => emp.id.toString() === filters.employee);
+      setEmployeeSearch(selectedEmployee ? selectedEmployee.name : '');
+    } else {
+      setEmployeeSearch('');
+    }
+  }, [filters.employee, employees]);
+
+  useEffect(() => {
+    if (filters.language) {
+      const selectedLanguage = languages.find(lang => lang.id === filters.language);
+      setLanguageSearch(selectedLanguage ? selectedLanguage.name : '');
+    } else {
+      setLanguageSearch('');
+    }
+  }, [filters.language, languages]);
+
+  // Filter options based on search
+  const filteredCategories = allCategories.filter((cat: any) => {
+    const searchTerm = categorySearch.toLowerCase();
+    const mainCatName = cat.misc_maincategory?.name?.toLowerCase() || '';
+    const catName = cat.name?.toLowerCase() || '';
+    return mainCatName.includes(searchTerm) || catName.includes(searchTerm) || `${mainCatName}, ${catName}`.includes(searchTerm);
+  });
+
+  const filteredEmployees = employees.filter((emp: any) => 
+    emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
+  );
+
+  const filteredLanguages = languages.filter((lang: any) => 
+    lang.name.toLowerCase().includes(languageSearch.toLowerCase())
+  );
+
+  return (
+    <div className="p-6">
+      <h2 className="text-2xl font-bold mb-6">Closer Super Pipeline</h2>
+      
+      {/* Main White Box - Contains Filters and Table */}
+      <div className="bg-white rounded-lg shadow-md p-6">
+        {/* Filters */}
+        <div className="mb-6">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+            <input
+              type="date"
+              value={filters.fromDate}
+              onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+              <input
+                type="date"
+                value={filters.toDate}
+                onChange={(e) => handleFilterChange('toDate', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search category..."
+                value={categorySearch}
+                onChange={(e) => {
+                  setCategorySearch(e.target.value);
+                  setShowCategoryDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('category', '');
+                  }
+                }}
+                onFocus={() => setShowCategoryDropdown(true)}
+                onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+              />
+              {showCategoryDropdown && filteredCategories.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('category', '');
+                      setCategorySearch('');
+                      setShowCategoryDropdown(false);
+                    }}
+                  >
+                    All Categories
+                  </div>
+                  {filteredCategories.map((cat) => {
+                    const displayName = cat.misc_maincategory ? `${cat.misc_maincategory.name}, ${cat.name}` : cat.name;
+                    return (
+                      <div
+                        key={cat.id}
+                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                        onClick={() => {
+                          handleFilterChange('category', cat.id.toString());
+                          setCategorySearch(displayName);
+                          setShowCategoryDropdown(false);
+                        }}
+                      >
+                        {displayName}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search employee..."
+                value={employeeSearch}
+                onChange={(e) => {
+                  setEmployeeSearch(e.target.value);
+                  setShowEmployeeDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('employee', '');
+                  }
+                }}
+                onFocus={() => setShowEmployeeDropdown(true)}
+                onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
+              />
+              {showEmployeeDropdown && filteredEmployees.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('employee', '');
+                      setEmployeeSearch('');
+                      setShowEmployeeDropdown(false);
+                    }}
+                  >
+                    All Employees
+                  </div>
+                  {filteredEmployees.map((emp) => (
+                    <div
+                      key={emp.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('employee', emp.id.toString());
+                        setEmployeeSearch(emp.name);
+                        setShowEmployeeDropdown(false);
+                      }}
+                    >
+                      {emp.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search language..."
+                value={languageSearch}
+                onChange={(e) => {
+                  setLanguageSearch(e.target.value);
+                  setShowLanguageDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('language', '');
+                  }
+                }}
+                onFocus={() => setShowLanguageDropdown(true)}
+                onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
+              />
+              {showLanguageDropdown && filteredLanguages.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('language', '');
+                      setLanguageSearch('');
+                      setShowLanguageDropdown(false);
+                    }}
+                  >
+                    All Languages
+                  </div>
+                  {filteredLanguages.map((lang) => (
+                    <div
+                      key={lang.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('language', lang.id);
+                        setLanguageSearch(lang.name);
+                        setShowLanguageDropdown(false);
+                      }}
+                    >
+                      {lang.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="mt-4">
+            <button
+              onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
+              disabled={isSearching}
+              className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+              style={{ backgroundColor: '#411CCF' }}
+            >
+              {isSearching ? 'Searching...' : 'Show'}
+            </button>
+          </div>
+        </div>
+
+        {/* Results Table - Inside same white box */}
+        {searchPerformed && (
+          <div className="border-t border-gray-200 pt-6">
+            <div className="mb-4">
+              <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
+            </div>
+            {results.length === 0 ? (
+              <div className="p-6 text-center text-gray-500">No leads found</div>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
+                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Closer</th>
+                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expert Opinion</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manager Notes</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {results.map((lead, index) => (
+                    <tr key={lead.id || index} className="hover:bg-gray-50">
+                        <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
+                        <div 
+                            className="text-sm font-medium text-blue-600 cursor-pointer hover:underline break-words"
+                          onClick={() => navigate(`/clients/${lead.lead_number}`)}
+                        >
+                          #{lead.lead_number}
+                        </div>
+                          <div className="text-sm text-gray-900 break-words" style={{ 
+                            display: '-webkit-box',
+                            WebkitLineClamp: 3,
+                            WebkitBoxOrient: 'vertical',
+                            overflow: 'hidden',
+                            wordBreak: 'break-word'
+                          }}>{lead.name || '---'}</div>
+                      </td>
+                        <td className="px-2 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.stage || '---'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.probability ? `${lead.probability}%` : '---'}
+                      </td>
+                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                          {lead.closer || '---'}
+                        </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.scheduler || '---'}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
+                        {lead.expert_opinion || '---'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.number_of_applicants_meeting ?? '---'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.potential_applicants_meeting ?? '---'}
+                      </td>
+                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs">
+                          {editingManagerNotes[lead.id || index] ? (
+                            <div className="flex flex-col gap-2">
+                              <textarea
+                                value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
+                                onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
+                                className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
+                                placeholder="Enter manager notes..."
+                              />
+                              <div className="flex gap-2">
+                                <button
+                                  onClick={() => handleSaveManagerNotes(lead)}
+                                  disabled={savingManagerNotes[lead.id || index]}
+                                  className="btn btn-xs btn-primary"
+                                >
+                                  {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
+                                </button>
+                                <button
+                                  onClick={() => {
+                                    setEditingManagerNotes(prev => {
+                                      const newState = { ...prev };
+                                      delete newState[lead.id || index];
+                                      return newState;
+                                    });
+                                    setManagerNotesValues(prev => {
+                                      const newState = { ...prev };
+                                      delete newState[lead.id || index];
+                                      return newState;
+                                    });
+                                  }}
+                                  className="btn btn-xs btn-ghost"
+                                >
+                                  Cancel
+                                </button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div className="flex items-center gap-2 group">
+                              <span className="truncate">{lead.manager_notes || '---'}</span>
+                              <button
+                                onClick={() => {
+                                  setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
+                                  setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
+                                }}
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity"
+                                title="Edit manager notes"
+                              >
+                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                                </svg>
+                              </button>
+                            </div>
+                          )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {formatCurrency(lead.balance, lead.balance_currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
+      </div>
+    </div>
+  );
+};
+
 const SuperPipelineSchedulersReport = () => <div className="p-6">Super Pipeline (Schedulers) Report Content</div>;
 const SchedulersQualityReport = () => <div className="p-6">Schedulers Quality Report Content</div>;
 const PerformanceReport = () => <div className="p-6">Schedulers Performance Report Content</div>;
 const PerformanceByCatReport = () => <div className="p-6">Schedulers Performance by Cat. Report Content</div>;
-const SuperPipelineClosersReport = () => <div className="p-6">Super Pipeline (Closers) Report Content</div>;
+const SuperPipelineClosersReport = CloserSuperPipelineReport;
 const ClosersQualityReport = () => <div className="p-6">Closers Quality Report Content</div>;
 const ExpertsAssignmentReport = () => <div className="p-6">Experts Assignment Report Content</div>;
 const ExpertsResultsReport = () => <div className="p-6">Experts Results Report Content</div>;

@@ -1755,10 +1755,57 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const fetchEmailUnreadCount = useCallback(async () => {
     try {
-      // Fetch unread incoming emails with client_id and legacy_id
+      // Blocked sender emails to ignore (same as EmailThreadLeadPage.tsx)
+      const BLOCKED_SENDER_EMAILS = new Set([
+        'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
+        'wordpress@insolvency-law.com',
+        'wordpress@citizenship-for-children.usa-immigration.lawyer',
+        'lawoffic@israel160.jetserver.net',
+        'list@wordfence.com',
+        'wordpress@usa-immigration.lawyer',
+        'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
+        'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
+        'no-reply@lawzana.com',
+        'support@lawfirms1.com',
+        'no-reply@zoom.us',
+        'info@israel-properties.com',
+        'notifications@invoice4u.co.il',
+        'isetbeforeyou@yahoo.com',
+        'no-reply@support.microsoft.com',
+        'ivy@pipe.hnssd.com',
+        'no-reply@mail.instagram.com',
+        'no_reply@email.apple.com',
+        'noreplay@maskyoo.co.il',
+        'email@german-and-austrian-citizenship.lawoffice.org.il',
+        'noreply@mobilepunch.com',
+        'notification@facebookmail.com',
+        'news@events.imhbusiness.com',
+      ]);
+
+      const BLOCKED_DOMAINS: string[] = [
+        'lawoffice.org.il',
+      ];
+
+      const isEmailBlocked = (email: string): boolean => {
+        const normalizedEmail = email.toLowerCase().trim();
+        if (!normalizedEmail) return true;
+
+        if (BLOCKED_SENDER_EMAILS.has(normalizedEmail)) {
+          return true;
+        }
+
+        const emailDomain = normalizedEmail.split('@')[1];
+        if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
+          return true;
+        }
+
+        return false;
+      };
+
+      // Fetch unread incoming emails with client_id, legacy_id, and sender_email
       const { data: emailsData, error: emailsError } = await supabase
         .from('emails')
-        .select('id, client_id, legacy_id')
+        .select('id, client_id, legacy_id, sender_email')
         .eq('direction', 'incoming')
         .or('is_read.is.null,is_read.eq.false');
 
@@ -1773,17 +1820,28 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
-      // If we don't have user data, count all emails
-      if (!currentUserEmployee?.id && !currentUser?.employee_id && !userFullName) {
-        setEmailUnreadCount(emailsData.length);
+      // Filter out blocked sender emails and domains
+      const filteredEmailsData = emailsData.filter((email: any) => {
+        const senderEmail = email.sender_email?.toLowerCase() || '';
+        return senderEmail && !isEmailBlocked(senderEmail);
+      });
+
+      if (filteredEmailsData.length === 0) {
+        setEmailUnreadCount(0);
         return;
       }
 
-      // Get unique client IDs (new leads) and legacy IDs
+      // If we don't have user data, count all filtered emails
+      if (!currentUserEmployee?.id && !currentUser?.employee_id && !userFullName) {
+        setEmailUnreadCount(filteredEmailsData.length);
+        return;
+      }
+
+      // Get unique client IDs (new leads) and legacy IDs from filtered emails
       const uniqueClientIds = new Set<string>();
       const uniqueLegacyIds = new Set<number>();
       
-      emailsData.forEach((email: any) => {
+      filteredEmailsData.forEach((email: any) => {
         if (email.client_id) {
           uniqueClientIds.add(String(email.client_id));
         }
@@ -1853,8 +1911,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
 
-      // Count emails that belong to matching leads
-      const count = emailsData.filter((email: any) => {
+      // Count emails that belong to matching leads (using filtered emails)
+      const count = filteredEmailsData.filter((email: any) => {
         if (email.client_id && matchingLeadIds.has(String(email.client_id))) {
           return true;
         }
@@ -1873,6 +1931,53 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const fetchEmailLeadMessages = useCallback(async () => {
     try {
+      // Blocked sender emails to ignore (same as EmailThreadLeadPage.tsx)
+      const BLOCKED_SENDER_EMAILS = new Set([
+        'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
+        'wordpress@insolvency-law.com',
+        'wordpress@citizenship-for-children.usa-immigration.lawyer',
+        'lawoffic@israel160.jetserver.net',
+        'list@wordfence.com',
+        'wordpress@usa-immigration.lawyer',
+        'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
+        'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
+        'no-reply@lawzana.com',
+        'support@lawfirms1.com',
+        'no-reply@zoom.us',
+        'info@israel-properties.com',
+        'notifications@invoice4u.co.il',
+        'isetbeforeyou@yahoo.com',
+        'no-reply@support.microsoft.com',
+        'ivy@pipe.hnssd.com',
+        'no-reply@mail.instagram.com',
+        'no_reply@email.apple.com',
+        'noreplay@maskyoo.co.il',
+        'email@german-and-austrian-citizenship.lawoffice.org.il',
+        'noreply@mobilepunch.com',
+        'notification@facebookmail.com',
+        'news@events.imhbusiness.com',
+      ]);
+
+      const BLOCKED_DOMAINS: string[] = [
+        'lawoffice.org.il',
+      ];
+
+      const isEmailBlocked = (email: string): boolean => {
+        const normalizedEmail = email.toLowerCase().trim();
+        if (!normalizedEmail) return true;
+
+        if (BLOCKED_SENDER_EMAILS.has(normalizedEmail)) {
+          return true;
+        }
+
+        const emailDomain = normalizedEmail.split('@')[1];
+        if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
+          return true;
+        }
+
+        return false;
+      };
+
       const { data, error } = await supabase
         .from('emails')
         .select('id, sender_name, sender_email, subject, body_preview, body_html, sent_at, recipient_list')
@@ -1889,6 +1994,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         return;
       }
 
+      // Filter out blocked sender emails and domains
+      const filteredData = (data || []).filter((email: any) => {
+        const senderEmail = email.sender_email?.toLowerCase() || '';
+        return senderEmail && !isEmailBlocked(senderEmail);
+      });
+
       const groupedMap = new Map<string, {
         id: string;
         sender_email: string | null;
@@ -1900,7 +2011,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         message_ids: number[];
       }>();
 
-      (data || []).forEach(email => {
+      filteredData.forEach(email => {
         const key = (email.sender_email || `unknown-${email.id}`).toLowerCase();
         const previewText = email.body_preview || email.body_html || '';
         if (!groupedMap.has(key)) {
