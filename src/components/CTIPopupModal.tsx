@@ -149,12 +149,12 @@ const CTIPopupModal: React.FC = () => {
   }, [phone]);
 
   const handleClose = () => {
+    // Remove phone parameter and close modal
+    setSearchParams({});
     // If on CTI pop route, navigate to home instead of just closing
     if (isOnCTIPopRoute) {
       navigate('/');
     } else {
-      // Remove phone parameter and close modal
-      setSearchParams({});
       window.history.replaceState({}, '', window.location.pathname);
     }
   };
@@ -305,23 +305,30 @@ const CTIPopupModal: React.FC = () => {
                         );
                       };
 
-                      const handleLeadClick = () => {
+                      const handleLeadClick = (e: React.MouseEvent) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        
                         // Legacy leads: use id column only (no prefix)
                         // New leads: use lead_number column only (no prefix)
                         if (lead.leadType === 'legacy') {
                           const legacyId = lead.id?.toString();
                           if (legacyId) {
-                            console.log('Navigating to legacy lead:', legacyId);
-                            navigate(`/clients/${legacyId}`);
-                            handleClose();
+                            console.log('CTI Modal: Navigating to legacy lead:', legacyId);
+                            // Navigate directly - don't call handleClose() as it navigates to / on /cti/pop route
+                            navigate(`/clients/${legacyId}`, { replace: true });
+                          } else {
+                            console.error('CTI Modal: No ID found for legacy lead', lead);
                           }
                         } else {
                           // New leads use lead_number
                           const leadNumber = lead.lead_number;
                           if (leadNumber) {
-                            console.log('Navigating to new lead:', leadNumber);
-                            navigate(`/clients/${leadNumber}`);
-                            handleClose();
+                            console.log('CTI Modal: Navigating to new lead:', leadNumber);
+                            // Navigate directly - don't call handleClose() as it navigates to / on /cti/pop route
+                            navigate(`/clients/${leadNumber}`, { replace: true });
+                          } else {
+                            console.error('CTI Modal: No lead_number found for new lead', lead);
                           }
                         }
                       };
@@ -555,21 +562,25 @@ const CTIPopupModal: React.FC = () => {
             </button>
             {leads.length === 1 && (
               <button
-                onClick={() => {
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
                   const lead = leads[0];
                   // Legacy leads: use id column only (no prefix)
                   // New leads: use lead_number column only (no prefix)
                   if (lead.leadType === 'legacy') {
                     const legacyId = lead.id?.toString();
                     if (legacyId) {
-                      navigate(`/clients/${legacyId}`);
-                      handleClose();
+                      console.log('CTI Modal Footer: Navigating to legacy lead:', legacyId);
+                      // Navigate directly - don't call handleClose() as it navigates to / on /cti/pop route
+                      navigate(`/clients/${legacyId}`, { replace: true });
                     }
                   } else {
                     const leadNumber = lead.lead_number;
                     if (leadNumber) {
-                      navigate(`/clients/${leadNumber}`);
-                      handleClose();
+                      console.log('CTI Modal Footer: Navigating to new lead:', leadNumber);
+                      // Navigate directly - don't call handleClose() as it navigates to / on /cti/pop route
+                      navigate(`/clients/${leadNumber}`, { replace: true });
                     }
                   }
                 }}
