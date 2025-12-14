@@ -327,69 +327,100 @@ router.post('/webhook', async (req, res) => {
     } else if (webhookData.phone || webhookData.extension) {
       // Outgoing call notification - just extension/phone number
       // Fetch recent call logs for this extension to get full call data
-      const extension = String(webhookData.phone || webhookData.extension).trim();
-      console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extension}`);
-      
-      // Wait a few seconds to allow OneCom API to process the call
-      console.log(`⏳ Webhook: Waiting 3 seconds for OneCom API to process the call...`);
-      await new Promise(resolve => setTimeout(resolve, 3000));
-      
-      console.log(`📞 Fetching recent call logs for extension ${extension}...`);
-      
-      // Use a wider date range: last 24 hours to catch the call
-      // Also include today and yesterday to handle timezone differences
-      const now = new Date();
-      const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-      const startDate = yesterday.toISOString().split('T')[0];
-      const endDate = now.toISOString().split('T')[0];
-      
-      console.log(`📞 Syncing call logs from ${startDate} to ${endDate} for extension ${extension}`);
-      console.log(`📞 Note: Using 24-hour window to account for API processing delay`);
-      
-      // syncCallLogs expects extensions as a comma-separated string
-      const syncResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
-      
-      if (syncResult.success) {
-        console.log(`✅ Webhook: Synced call logs for extension ${extension}`);
-        console.log(`   - New records: ${syncResult.synced || 0}`);
-        console.log(`   - Skipped (existing): ${syncResult.skipped || 0}`);
-        
-        // If no records found, try again after a longer delay (call might still be processing)
-        if (syncResult.synced === 0 && syncResult.skipped === 0) {
-          console.log(`⏳ Webhook: No records found, waiting additional 10 seconds and retrying...`);
-          console.log(`📞 This delay accounts for OneCom CDRS processing time (calls may take 10-30 seconds to appear)`);
-          await new Promise(resolve => setTimeout(resolve, 10000));
+      // Process this asynchronously to avoid blocking the response
+      const processWebhookAsync = async () => {
+        try {
+          console.log(`🚀 Webhook: Starting async processing for extension notification`);
+          const extension = String(webhookData.phone || webhookData.extension).trim();
+          console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extension}`);
           
-          const retryResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
-          if (retryResult.success) {
-            console.log(`✅ Webhook (retry): Synced call logs for extension ${extension}`);
-            console.log(`   - New records: ${retryResult.synced || 0}`);
-            console.log(`   - Skipped (existing): ${retryResult.skipped || 0}`);
+          // Wait a few seconds to allow OneCom API to process the call
+          console.log(`⏳ Webhook: Waiting 3 seconds for OneCom API to process the call...`);
+          await new Promise(resolve => setTimeout(resolve, 3000));
+          
+          console.log(`📞 Webhook: Wait complete, starting to fetch recent call logs for extension ${extension}...`);
+          
+          // Use a wider date range: last 24 hours to catch the call
+          // Also include today and yesterday to handle timezone differences
+          const now = new Date();
+          const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          const startDate = yesterday.toISOString().split('T')[0];
+          const endDate = now.toISOString().split('T')[0];
+          
+          console.log(`📞 Webhook: Syncing call logs from ${startDate} to ${endDate} for extension ${extension}`);
+          console.log(`📞 Webhook: Note: Using 24-hour window to account for API processing delay`);
+          
+          // syncCallLogs expects extensions as a comma-separated string
+          console.log(`📞 Webhook: Calling syncCallLogs with params: startDate=${startDate}, endDate=${endDate}, extension=${extension}`);
+          const syncResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
+          console.log(`📞 Webhook: syncCallLogs returned:`, JSON.stringify({ success: syncResult.success, synced: syncResult.synced, skipped: syncResult.skipped, error: syncResult.error }));
+      
+          if (syncResult.success) {
+            console.log(`✅ Webhook: Synced call logs for extension ${extension}`);
+            console.log(`   - New records: ${syncResult.synced || 0}`);
+            console.log(`   - Skipped (existing): ${syncResult.skipped || 0}`);
             
-            // If still no records after retry, try fetching all calls and filtering client-side
-            // This helps diagnose if the phone filter is the issue
-            if (retryResult.synced === 0 && retryResult.skipped === 0) {
-              console.log(`⚠️ Webhook: Still no records found after retry. Trying without phone filter to check if calls exist in date range...`);
-              const noFilterResult = await onecomSync.syncCallLogs(startDate, endDate, null);
-              if (noFilterResult.success && noFilterResult.synced > 0) {
-                console.log(`📊 Webhook: Found ${noFilterResult.synced} calls in date range without phone filter`);
-                console.log(`⚠️ This suggests the phone filter might not be matching correctly, or the call is from a different extension`);
-              } else if (noFilterResult.success && noFilterResult.synced === 0) {
-                console.log(`📊 Webhook: No calls found in date range at all - call may not be in OneCom CDRS yet`);
-                console.log(`💡 Note: OneCom CDRS can take 30-60 seconds to process calls. Consider manual sync if urgent.`);
+            // If no records found, try again after a longer delay (call might still be processing)
+            if (syncResult.synced === 0 && syncResult.skipped === 0) {
+              console.log(`⏳ Webhook: No records found, waiting additional 10 seconds and retrying...`);
+              console.log(`📞 Webhook: This delay accounts for OneCom CDRS processing time (calls may take 10-30 seconds to appear)`);
+              await new Promise(resolve => setTimeout(resolve, 10000));
+              
+              console.log(`📞 Webhook: Retrying syncCallLogs after 10 second wait...`);
+              const retryResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
+              console.log(`📞 Webhook: Retry syncCallLogs returned:`, JSON.stringify({ success: retryResult.success, synced: retryResult.synced, skipped: retryResult.skipped, error: retryResult.error }));
+              
+              if (retryResult.success) {
+                console.log(`✅ Webhook (retry): Synced call logs for extension ${extension}`);
+                console.log(`   - New records: ${retryResult.synced || 0}`);
+                console.log(`   - Skipped (existing): ${retryResult.skipped || 0}`);
+                
+                // If still no records after retry, try fetching all calls and filtering client-side
+                // This helps diagnose if the phone filter is the issue
+                if (retryResult.synced === 0 && retryResult.skipped === 0) {
+                  console.log(`⚠️ Webhook: Still no records found after retry. Trying without phone filter to check if calls exist in date range...`);
+                  const noFilterResult = await onecomSync.syncCallLogs(startDate, endDate, null);
+                  console.log(`📞 Webhook: No-filter syncCallLogs returned:`, JSON.stringify({ success: noFilterResult.success, synced: noFilterResult.synced, skipped: noFilterResult.skipped, error: noFilterResult.error }));
+                  
+                  if (noFilterResult.success && noFilterResult.synced > 0) {
+                    console.log(`📊 Webhook: Found ${noFilterResult.synced} calls in date range without phone filter`);
+                    console.log(`⚠️ This suggests the phone filter might not be matching correctly, or the call is from a different extension`);
+                  } else if (noFilterResult.success && noFilterResult.synced === 0) {
+                    console.log(`📊 Webhook: No calls found in date range at all - call may not be in OneCom CDRS yet`);
+                    console.log(`💡 Note: OneCom CDRS can take 30-60 seconds to process calls. Consider manual sync if urgent.`);
+                  }
+                }
+              } else {
+                console.error(`❌ Webhook (retry): Failed to sync call logs for extension ${extension}:`, retryResult.error);
               }
             }
+            
+            if (syncResult.errors && syncResult.errors.length > 0) {
+              console.error(`   - Errors: ${syncResult.errors.length}`);
+              syncResult.errors.forEach((err, idx) => {
+                console.error(`   - Error ${idx + 1}:`, err);
+              });
+            }
           } else {
-            console.error(`❌ Webhook (retry): Failed to sync call logs for extension ${extension}:`, retryResult.error);
+            console.error(`❌ Webhook: Failed to sync call logs for extension ${extension}:`, syncResult.error);
+            console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
           }
+        } catch (asyncError) {
+          console.error(`❌ Webhook: Error processing outgoing call notification:`, asyncError);
+          console.error(`❌ Webhook: Error stack:`, asyncError.stack);
+          console.error(`❌ Webhook: Error details:`, JSON.stringify({
+            message: asyncError.message,
+            name: asyncError.name,
+            extension: webhookData.phone || webhookData.extension
+          }, null, 2));
         }
-        
-        if (syncResult.errors && syncResult.errors.length > 0) {
-          console.error(`   - Errors: ${syncResult.errors.length}`);
-        }
-      } else {
-        console.error(`❌ Webhook: Failed to sync call logs for extension ${extension}:`, syncResult.error);
-      }
+      };
+      
+      // Execute immediately and handle any unhandled rejections
+      processWebhookAsync().catch(err => {
+        console.error(`❌ Webhook: Unhandled rejection in async processing:`, err);
+        console.error(`❌ Webhook: Stack:`, err.stack);
+      });
     } else if (webhookData.data && Array.isArray(webhookData.data)) {
       // Nested data array format
       const result = await onecomSync.processWebhookCallLogs(webhookData.data);

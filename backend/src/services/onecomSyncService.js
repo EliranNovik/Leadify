@@ -35,10 +35,11 @@ class OneComSyncService {
       console.log('🔍 DEBUG: Extensions:', extensions);
 
       // Build API parameters with date filtering
+      // According to OneCom API docs, use uppercase CDRS
       const params = new URLSearchParams({
         key: this.apiKey,
         reqtype: 'INFO',
-        info: 'cdrs',
+        info: 'CDRS',
         tenant: this.tenant,
         format: 'csv'
       });

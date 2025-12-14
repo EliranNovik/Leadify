@@ -212,6 +212,57 @@ const EmailThreadLeadPage: React.FC = () => {
     loadCurrentUser();
   }, []);
 
+  // Blocked sender emails to ignore
+  const BLOCKED_SENDER_EMAILS = new Set([
+    'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
+    'wordpress@insolvency-law.com',
+    'wordpress@citizenship-for-children.usa-immigration.lawyer',
+    'lawoffic@israel160.jetserver.net',
+    'list@wordfence.com',
+    'wordpress@usa-immigration.lawyer',
+    'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
+    'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
+    'no-reply@lawzana.com',
+    'support@lawfirms1.com',
+    'no-reply@zoom.us',
+    'info@israel-properties.com',
+    'notifications@invoice4u.co.il',
+    'isetbeforeyou@yahoo.com',
+    'no-reply@support.microsoft.com',
+    'ivy@pipe.hnssd.com',
+    'no-reply@mail.instagram.com',
+    'no_reply@email.apple.com',
+    'noreplay@maskyoo.co.il',
+    'email@german-and-austrian-citizenship.lawoffice.org.il',
+    'noreply@mobilepunch.com',
+    'notification@facebookmail.com',
+    'news@events.imhbusiness.com',
+  ]);
+
+  // Blocked domains to ignore (add domain names here, e.g., 'example.com')
+  const BLOCKED_DOMAINS: string[] = [
+    'lawoffice.org.il',
+  ];
+
+  // Helper function to check if an email should be blocked
+  const isEmailBlocked = (email: string): boolean => {
+    const normalizedEmail = email.toLowerCase().trim();
+    if (!normalizedEmail) return true;
+
+    // Check if email is in blocked list
+    if (BLOCKED_SENDER_EMAILS.has(normalizedEmail)) {
+      return true;
+    }
+
+    // Check if email domain is blocked
+    const emailDomain = normalizedEmail.split('@')[1];
+    if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
+      return true;
+    }
+
+    return false;
+  };
+
   // Fetch email leads (grouped by sender email)
   useEffect(() => {
     const fetchEmailLeads = async () => {
@@ -238,6 +289,11 @@ const EmailThreadLeadPage: React.FC = () => {
         (emailsData || []).forEach((email: any) => {
           const senderEmail = email.sender_email?.toLowerCase() || '';
           if (!senderEmail) return;
+
+          // Skip blocked sender emails and domains
+          if (isEmailBlocked(senderEmail)) {
+            return;
+          }
 
           if (!leadsMap.has(senderEmail)) {
             leadsMap.set(senderEmail, {
