@@ -328,7 +328,10 @@ class OneComSyncService {
       status = 'redirected';
     }
 
-    // Map employee_id from cleaned source extension and incoming DID
+    // Map employee_id from cleaned source extension/phone and incoming DID
+    // This handles both cases:
+    // 1. Source field contains extension (e.g., "214") - matches by extension
+    // 2. Source field contains phone number (e.g., "0507825939") - matches by last 5 digits
     const employeeId = await this.mapExtensionToEmployeeId(cleanSourceField, cleanIncomingDidField);
     
     // Map lead_id from destination number (call_logs table only supports legacy lead_id, not client_id)

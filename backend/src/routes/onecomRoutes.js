@@ -312,7 +312,7 @@ router.post('/webhook', async (req, res) => {
         console.error(`❌ Webhook batch processing failed:`, result.error);
       }
     } else if (webhookData.uniqueid || webhookData.call_id) {
-      // Single call log
+      // Single call log with full data
       const result = await onecomSync.processWebhookCallLog(webhookData);
       
       if (result.success) {
@@ -323,6 +323,35 @@ router.post('/webhook', async (req, res) => {
         }
       } else {
         console.error(`❌ Webhook processing failed:`, result.error);
+      }
+    } else if (webhookData.phone || webhookData.extension) {
+      // Outgoing call notification - just extension/phone number
+      // Fetch recent call logs for this extension to get full call data
+      const extension = String(webhookData.phone || webhookData.extension).trim();
+      console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extension}`);
+      console.log(`📞 Fetching recent call logs for extension ${extension}...`);
+      
+      // Fetch call logs from last hour to catch the call
+      // Use today's date as both start and end to get all calls from today
+      const now = new Date();
+      const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
+      const startDate = oneHourAgo.toISOString().split('T')[0];
+      const endDate = now.toISOString().split('T')[0];
+      
+      console.log(`📞 Syncing call logs from ${startDate} to ${endDate} for extension ${extension}`);
+      
+      // syncCallLogs expects extensions as a comma-separated string
+      const syncResult = await onecomSync.syncCallLogs(startDate, endDate, extension);
+      
+      if (syncResult.success) {
+        console.log(`✅ Webhook: Synced call logs for extension ${extension}`);
+        console.log(`   - New records: ${syncResult.synced || 0}`);
+        console.log(`   - Skipped (existing): ${syncResult.skipped || 0}`);
+        if (syncResult.errors && syncResult.errors.length > 0) {
+          console.error(`   - Errors: ${syncResult.errors.length}`);
+        }
+      } else {
+        console.error(`❌ Webhook: Failed to sync call logs for extension ${extension}:`, syncResult.error);
       }
     } else if (webhookData.data && Array.isArray(webhookData.data)) {
       // Nested data array format
@@ -335,6 +364,7 @@ router.post('/webhook', async (req, res) => {
       }
     } else {
       console.warn('⚠️ Webhook: Unknown data format, could not process:', JSON.stringify(webhookData, null, 2));
+      console.warn('⚠️ Expected format: {uniqueid/call_id}, {phone/extension}, or array of call logs');
     }
 
   } catch (error) {

@@ -271,6 +271,9 @@ interface EmailTemplate {
   content: string;
   rawContent: string;
   languageId: string | null;
+  languageName: string | null;
+  placementId: number | null;
+  placementName: string | null;
 }
 
 const contactMethods = [
@@ -717,11 +720,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState('');
   const [composeBody, setComposeBody] = useState('');
+  const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
   const [composeToRecipients, setComposeToRecipients] = useState<string[]>([]);
   const [composeCcRecipients, setComposeCcRecipients] = useState<string[]>([]);
   const [composeToInput, setComposeToInput] = useState('');
   const [composeCcInput, setComposeCcInput] = useState('');
   const [composeRecipientError, setComposeRecipientError] = useState<string | null>(null);
+  
+  // Employee autocomplete state for compose
+  const [composeEmployees, setComposeEmployees] = useState<Array<{ email: string; name: string }>>([]);
+  const [composeToSuggestions, setComposeToSuggestions] = useState<Array<{ email: string; name: string }>>([]);
+  const [composeCcSuggestions, setComposeCcSuggestions] = useState<Array<{ email: string; name: string }>>([]);
+  const [showComposeToSuggestions, setShowComposeToSuggestions] = useState(false);
+  const [showComposeCcSuggestions, setShowComposeCcSuggestions] = useState(false);
+  const composeToSuggestionsRef = useRef<HTMLDivElement>(null);
+  const composeCcSuggestionsRef = useRef<HTMLDivElement>(null);
   
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
@@ -734,6 +747,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeTemplateDropdownOpen, setComposeTemplateDropdownOpen] = useState(false);
   const [selectedComposeTemplateId, setSelectedComposeTemplateId] = useState<number | null>(null);
   const composeTemplateDropdownRef = useRef<HTMLDivElement | null>(null);
+  
+  // Template filters
+  const [composeTemplateLanguageFilter, setComposeTemplateLanguageFilter] = useState<string | null>(null);
+  const [composeTemplatePlacementFilter, setComposeTemplatePlacementFilter] = useState<number | null>(null);
+  const [availableLanguages, setAvailableLanguages] = useState<Array<{ id: string; name: string }>>([]);
+  const [availablePlacements, setAvailablePlacements] = useState<Array<{ id: number; name: string }>>([]);
   const [sending, setSending] = useState(false);
   const [isEmailModalOpen, setIsEmailModalOpen] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
@@ -858,10 +877,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [userId, location.pathname]);
 
   const filteredComposeTemplates = useMemo(() => {
+    let filtered = composeTemplates;
+    
+    // Filter by language
+    if (composeTemplateLanguageFilter) {
+      filtered = filtered.filter(template => template.languageId === composeTemplateLanguageFilter);
+    }
+    
+    // Filter by placement
+    if (composeTemplatePlacementFilter !== null) {
+      filtered = filtered.filter(template => template.placementId === composeTemplatePlacementFilter);
+    }
+    
+    // Filter by search query
     const query = composeTemplateSearch.trim().toLowerCase();
-    if (!query) return composeTemplates;
-    return composeTemplates.filter(template => template.name.toLowerCase().includes(query));
-  }, [composeTemplates, composeTemplateSearch]);
+    if (query) {
+      filtered = filtered.filter(template => template.name.toLowerCase().includes(query));
+    }
+    
+    return filtered;
+  }, [composeTemplates, composeTemplateSearch, composeTemplateLanguageFilter, composeTemplatePlacementFilter]);
 
   const pushComposeRecipient = (list: string[], address: string) => {
     const normalized = address.trim();
@@ -883,11 +918,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         pushComposeRecipient(updated, value);
         setComposeToRecipients(updated);
         setComposeToInput('');
+        setShowComposeToSuggestions(false);
+        setComposeToSuggestions([]);
       } else {
         const updated = [...composeCcRecipients];
         pushComposeRecipient(updated, value);
         setComposeCcRecipients(updated);
         setComposeCcInput('');
+        setShowComposeCcSuggestions(false);
+        setComposeCcSuggestions([]);
       }
       setComposeRecipientError(null);
     } catch (error) {
@@ -903,8 +942,43 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   };
 
+  // Search employees locally for compose
+  const searchComposeEmployees = (searchText: string): Array<{ email: string; name: string }> => {
+    if (!searchText || searchText.trim().length < 1) return [];
+    
+    const searchLower = searchText.trim().toLowerCase();
+    return composeEmployees
+      .filter(emp => 
+        emp.name.toLowerCase().includes(searchLower) || 
+        emp.email.toLowerCase().includes(searchLower)
+      )
+      .slice(0, 10); // Limit to 10 results
+  };
+
   const handleComposeRecipientKeyDown = (type: 'to' | 'cc') => (event: React.KeyboardEvent<HTMLInputElement>) => {
     const value = type === 'to' ? composeToInput : composeCcInput;
+    const suggestions = type === 'to' ? composeToSuggestions : composeCcSuggestions;
+    const showSuggestions = type === 'to' ? showComposeToSuggestions : showComposeCcSuggestions;
+    
+    if (event.key === 'ArrowDown' && showSuggestions && suggestions.length > 0) {
+      event.preventDefault();
+      // Select first suggestion
+      const firstSuggestion = suggestions[0];
+      if (firstSuggestion) {
+        addComposeRecipient(type, firstSuggestion.email);
+      }
+      return;
+    }
+    
+    if (event.key === 'Escape') {
+      if (type === 'to') {
+        setShowComposeToSuggestions(false);
+      } else {
+        setShowComposeCcSuggestions(false);
+      }
+      return;
+    }
+    
     const keys = ['Enter', ',', ';'];
     if (keys.includes(event.key)) {
       event.preventDefault();
@@ -926,41 +1000,113 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     const value = type === 'to' ? composeToInput : composeCcInput;
     const setValue = type === 'to' ? setComposeToInput : setComposeCcInput;
     const placeholder = type === 'to' ? 'Add recipient and press Enter' : 'Add CC and press Enter';
+    const suggestions = type === 'to' ? composeToSuggestions : composeCcSuggestions;
+    const showSuggestions = type === 'to' ? showComposeToSuggestions : showComposeCcSuggestions;
+    const suggestionsRef = type === 'to' ? composeToSuggestionsRef : composeCcSuggestionsRef;
 
     return (
-      <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
-        {items.map(email => (
-          <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
-            {email}
-            <button
-              type="button"
-              onClick={() => removeComposeRecipient(type, email)}
-              className="text-primary hover:text-primary-focus"
-            >
-              <XMarkIcon className="w-4 h-4" />
-            </button>
-          </span>
-        ))}
-        <input
-          className="flex-1 min-w-[160px] outline-none bg-transparent"
-          value={value}
-          onChange={event => {
-            setValue(event.target.value);
-            if (composeRecipientError) {
-              setComposeRecipientError(null);
-            }
-          }}
-          onKeyDown={handleComposeRecipientKeyDown(type)}
-          placeholder={placeholder}
-        />
-        <button
-          type="button"
-          className="btn btn-xs btn-outline"
-          onClick={() => addComposeRecipient(type, value)}
-          disabled={!value.trim()}
-        >
-          <PlusIcon className="w-3 h-3" />
-        </button>
+      <div className="relative">
+        <div className="border border-base-300 rounded-lg px-3 py-2 flex flex-wrap gap-2">
+          {items.map(email => (
+            <span key={`${type}-${email}`} className="bg-primary/10 text-primary px-2 py-1 rounded-full text-sm flex items-center gap-1">
+              {email}
+              <button
+                type="button"
+                onClick={() => removeComposeRecipient(type, email)}
+                className="text-primary hover:text-primary-focus"
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            </span>
+          ))}
+          <input
+            className="flex-1 min-w-[160px] outline-none bg-transparent"
+            value={value}
+            onChange={event => {
+              const newValue = event.target.value;
+              setValue(newValue);
+              if (composeRecipientError) {
+                setComposeRecipientError(null);
+              }
+              
+              // Search employees immediately as user types
+              if (newValue.trim().length > 0) {
+                const results = searchComposeEmployees(newValue.trim());
+                if (type === 'to') {
+                  setComposeToSuggestions(results);
+                  setShowComposeToSuggestions(results.length > 0);
+                } else {
+                  setComposeCcSuggestions(results);
+                  setShowComposeCcSuggestions(results.length > 0);
+                }
+              } else {
+                if (type === 'to') {
+                  setComposeToSuggestions([]);
+                  setShowComposeToSuggestions(false);
+                } else {
+                  setComposeCcSuggestions([]);
+                  setShowComposeCcSuggestions(false);
+                }
+              }
+            }}
+            onFocus={() => {
+              // Show suggestions if we have them or search again
+              if (value.trim().length > 0) {
+                const results = searchComposeEmployees(value.trim());
+                if (type === 'to') {
+                  setComposeToSuggestions(results);
+                  setShowComposeToSuggestions(results.length > 0);
+                } else {
+                  setComposeCcSuggestions(results);
+                  setShowComposeCcSuggestions(results.length > 0);
+                }
+              }
+            }}
+            onBlur={() => {
+              // Delay hiding to allow clicking on suggestions
+              setTimeout(() => {
+                if (type === 'to') {
+                  setShowComposeToSuggestions(false);
+                } else {
+                  setShowComposeCcSuggestions(false);
+                }
+              }, 200);
+            }}
+            onKeyDown={handleComposeRecipientKeyDown(type)}
+            placeholder={placeholder}
+          />
+          <button
+            type="button"
+            className="btn btn-xs btn-outline"
+            onClick={() => addComposeRecipient(type, value)}
+            disabled={!value.trim()}
+          >
+            <PlusIcon className="w-3 h-3" />
+          </button>
+        </div>
+        
+        {/* Autocomplete Suggestions Dropdown */}
+        {showSuggestions && suggestions.length > 0 && (
+          <div
+            ref={suggestionsRef}
+            className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto"
+            onMouseDown={(e) => e.preventDefault()} // Prevent input blur on click
+          >
+            {suggestions.map((suggestion, index) => (
+              <div
+                key={`${type}-suggestion-${index}-${suggestion.email}`}
+                className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  addComposeRecipient(type, suggestion.email);
+                }}
+              >
+                <div className="font-medium text-gray-900">{suggestion.name}</div>
+                <div className="text-xs text-gray-500">{suggestion.email}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
   };
@@ -1008,14 +1154,35 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     handleCancelComposeLink();
   };
 
+  // Helper function to check if text contains Hebrew
+  const containsHebrew = (text: string): boolean => {
+    return /[\u0590-\u05FF]/.test(text);
+  };
+
+  // Helper function to check if language is Hebrew
+  const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
+    if (!languageId && !languageName) return false;
+    const langId = languageId?.toString().toLowerCase() || '';
+    const langName = languageName?.toString().toLowerCase() || '';
+    return langId.includes('he') || langName.includes('hebrew') || langName.includes('עברית');
+  };
+
   const handleComposeTemplateSelect = async (template: EmailTemplate) => {
     setSelectedComposeTemplateId(template.id);
     const templatedBody = await replaceTemplateTokens(template.content, client);
+    const finalBody = templatedBody || template.content || template.rawContent;
+    
     if (template.subject && template.subject.trim()) {
       const templatedSubject = await replaceTemplateTokens(template.subject, client);
       setComposeSubject(templatedSubject || template.subject);
     }
-    setComposeBody(templatedBody || template.content || template.rawContent);
+    
+    setComposeBody(finalBody);
+    
+    // Check if template is Hebrew based on language or content
+    const isHebrew = isHebrewLanguage(template.languageId, template.languageName) || containsHebrew(finalBody);
+    setComposeBodyIsRTL(isHebrew);
+    
     setComposeTemplateSearch(template.name);
     setComposeTemplateDropdownOpen(false);
   };
@@ -3668,6 +3835,69 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   }, [isWhatsAppOpen, activeWhatsAppId]);
 
+  // Fetch employees for autocomplete when compose modal opens
+  useEffect(() => {
+    const fetchComposeEmployees = async () => {
+      try {
+        const [employeesResult, usersResult] = await Promise.all([
+          supabase
+            .from('tenants_employee')
+            .select('id, display_name')
+            .not('display_name', 'is', null),
+          supabase
+            .from('users')
+            .select('employee_id, email')
+            .not('email', 'is', null)
+        ]);
+
+        if (employeesResult.error || usersResult.error) {
+          console.error('Error fetching employees:', employeesResult.error || usersResult.error);
+          return;
+        }
+
+        // Create employee_id to email mapping
+        const employeeIdToEmail = new Map<number, string>();
+        usersResult.data?.forEach((user: any) => {
+          if (user.employee_id && user.email) {
+            employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
+          }
+        });
+
+        // Build employee list with email and name
+        const employeeList: Array<{ email: string; name: string }> = [];
+        employeesResult.data?.forEach((emp: any) => {
+          if (!emp.display_name) return;
+          
+          // Method 1: Use email from users table
+          const emailFromUsers = employeeIdToEmail.get(emp.id);
+          if (emailFromUsers) {
+            employeeList.push({ email: emailFromUsers, name: emp.display_name });
+          }
+          
+          // Method 2: Also add pattern email
+          const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
+          // Only add if it's different from the actual email
+          if (!emailFromUsers || emailFromUsers !== patternEmail) {
+            employeeList.push({ email: patternEmail, name: emp.display_name });
+          }
+        });
+
+        // Remove duplicates based on email
+        const uniqueEmployees = Array.from(
+          new Map(employeeList.map(emp => [emp.email, emp])).values()
+        );
+        
+        setComposeEmployees(uniqueEmployees);
+      } catch (error) {
+        console.error('Error fetching employees:', error);
+      }
+    };
+
+    if (showCompose) {
+      fetchComposeEmployees();
+    }
+  }, [showCompose]);
+
   useEffect(() => {
     if (!isEmailModalOpen) return;
     
@@ -3684,6 +3914,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setComposeLinkUrl('');
     setSelectedComposeTemplateId(null);
     setComposeTemplateSearch('');
+    setComposeTemplateLanguageFilter(null);
+    setComposeTemplatePlacementFilter(null);
   }, [isEmailModalOpen, client.email, selectedContactForEmail]);
 
   useEffect(() => {
@@ -3692,23 +3924,80 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     let isMounted = true;
     const loadTemplates = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_emailtemplate')
-              .select('*')
-              .eq('active', 't')
-              .order('name', { ascending: true });
+        // First, fetch languages and placements to create lookup maps
+        const [languagesResult, placementsResult, templatesResult] = await Promise.all([
+          supabase
+            .from('misc_language')
+            .select('id, name')
+            .order('name', { ascending: true }),
+          supabase
+            .from('email_templates_placement')
+            .select('id, name')
+            .order('name', { ascending: true }),
+          supabase
+            .from('misc_emailtemplate')
+            .select(`
+              *,
+              email_templates_placement!placement_id (
+                id,
+                name
+              )
+            `)
+            .eq('active', 't')
+            .order('name', { ascending: true })
+        ]);
 
-        if (error) throw error;
+        if (templatesResult.error) {
+          console.error('Error fetching templates:', templatesResult.error);
+          throw templatesResult.error;
+        }
         if (!isMounted) return;
 
-        const parsed = (data || []).map((template: any) => ({
-          id: typeof template.id === 'number' ? template.id : Number(template.id),
-          name: template.name || `Template ${template.id}`,
-          subject: typeof template.subject === 'string' ? template.subject : null,
-          content: parseTemplateContent(template.content),
-          rawContent: template.content || '',
-          languageId: template.language_id ?? null,
-        }));
+        // Create lookup maps for languages and placements
+        const languageMap = new Map<string, string>();
+        if (!languagesResult.error && languagesResult.data) {
+          languagesResult.data.forEach((lang: any) => {
+            languageMap.set(String(lang.id), lang.name || 'Unknown');
+          });
+          setAvailableLanguages(languagesResult.data.map((lang: any) => ({
+            id: String(lang.id),
+            name: lang.name || 'Unknown'
+          })));
+        }
+
+        const placementMap = new Map<number, string>();
+        if (!placementsResult.error && placementsResult.data) {
+          placementsResult.data.forEach((placement: any) => {
+            const placementId = typeof placement.id === 'number' ? placement.id : Number(placement.id);
+            placementMap.set(placementId, placement.name || 'Unknown');
+          });
+          setAvailablePlacements(placementsResult.data.map((placement: any) => ({
+            id: typeof placement.id === 'number' ? placement.id : Number(placement.id),
+            name: placement.name || 'Unknown'
+          })));
+        }
+
+        // Parse templates and match with language/placement names
+        const parsed = (templatesResult.data || []).map((template: any) => {
+          const placement = Array.isArray(template.email_templates_placement) 
+            ? template.email_templates_placement[0] 
+            : template.email_templates_placement;
+          
+          const languageId = template.language_id ? String(template.language_id) : null;
+          const languageName = languageId ? languageMap.get(languageId) || null : null;
+          
+          return {
+            id: typeof template.id === 'number' ? template.id : Number(template.id),
+            name: template.name || `Template ${template.id}`,
+            subject: typeof template.subject === 'string' ? template.subject : null,
+            content: parseTemplateContent(template.content),
+            rawContent: template.content || '',
+            languageId: languageId,
+            languageName: languageName,
+            placementId: placement?.id ? (typeof placement.id === 'number' ? placement.id : Number(placement.id)) : null,
+            placementName: placement?.name || null,
+          };
+        });
 
         setComposeTemplates(parsed);
       } catch (error) {
@@ -4650,64 +4939,128 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         </div>
                         {composeRecipientError && <p className="text-sm text-error">{composeRecipientError}</p>}
 
-                        <div className="flex flex-wrap items-center gap-3" ref={composeTemplateDropdownRef}>
-                          <label className="text-sm font-semibold">Template</label>
-                          <div className="relative w-full sm:w-64">
-                            <input
-                              type="text"
-                              className="input input-bordered w-full pr-8"
-                              placeholder="Search templates..."
-                              value={composeTemplateSearch}
-                              onChange={event => {
-                                setComposeTemplateSearch(event.target.value);
-                                if (!composeTemplateDropdownOpen) {
-                                  setComposeTemplateDropdownOpen(true);
-                                }
-                              }}
-                              onFocus={() => {
-                                if (!composeTemplateDropdownOpen) {
-                                  setComposeTemplateDropdownOpen(true);
-                                }
-                              }}
-                              onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
-                            />
-                            <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                            {composeTemplateDropdownOpen && (
-                              <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                                {filteredComposeTemplates.length === 0 ? (
-                                  <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
-                                ) : (
-                                  filteredComposeTemplates.map(template => (
-                                    <div
-                                      key={template.id}
-                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                                      onMouseDown={e => e.preventDefault()}
-                                      onClick={() => handleComposeTemplateSelect(template)}
-                                    >
-                                      {template.name}
-                                    </div>
-                                  ))
-                                )}
-                              </div>
+                        <div className="space-y-3" ref={composeTemplateDropdownRef}>
+                          <div className="flex flex-wrap items-center gap-3">
+                            <label className="text-sm font-semibold">Template</label>
+                            <div className="relative w-full sm:w-64">
+                              <input
+                                type="text"
+                                className="input input-bordered w-full pr-8"
+                                placeholder="Search templates..."
+                                value={composeTemplateSearch}
+                                onChange={event => {
+                                  setComposeTemplateSearch(event.target.value);
+                                  if (!composeTemplateDropdownOpen) {
+                                    setComposeTemplateDropdownOpen(true);
+                                  }
+                                }}
+                                onFocus={() => {
+                                  if (!composeTemplateDropdownOpen) {
+                                    setComposeTemplateDropdownOpen(true);
+                                  }
+                                }}
+                                onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
+                              />
+                              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                              {composeTemplateDropdownOpen && (
+                                <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                                  {filteredComposeTemplates.length === 0 ? (
+                                    <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                                  ) : (
+                                    filteredComposeTemplates.map(template => (
+                                      <div
+                                        key={template.id}
+                                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                                        onMouseDown={e => e.preventDefault()}
+                                        onClick={() => handleComposeTemplateSelect(template)}
+                                      >
+                                        <div className="font-medium">{template.name}</div>
+                                        {(template.placementName || template.languageName) && (
+                                          <div className="text-xs text-gray-500 mt-1">
+                                            {template.placementName && <span>{template.placementName}</span>}
+                                            {template.placementName && template.languageName && <span> • </span>}
+                                            {template.languageName && <span>{template.languageName}</span>}
+                                          </div>
+                                        )}
+                                      </div>
+                                    ))
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                            {selectedComposeTemplateId !== null && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => {
+                                  setSelectedComposeTemplateId(null);
+                                  setComposeTemplateSearch('');
+                    setComposeBody('');
+                    setComposeBodyIsRTL(false);
+                    // Use selected contact's name if available, otherwise use client name
+                    const nameToUse = selectedContactForEmail?.contact.name || client.name;
+                    const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
+                    setComposeSubject(defaultSubjectValue);
+                  }}
+                >
+                  Clear
+                </button>
+              )}
+            </div>
+                          
+                          {/* Language and Placement Filters */}
+                          <div className="flex flex-wrap items-center gap-3">
+                            <div className="relative w-full sm:w-48">
+                              <select
+                                className="select select-bordered w-full text-sm"
+                                value={composeTemplateLanguageFilter || ''}
+                                onChange={(e) => {
+                                  setComposeTemplateLanguageFilter(e.target.value || null);
+                                  if (!composeTemplateDropdownOpen) {
+                                    setComposeTemplateDropdownOpen(true);
+                                  }
+                                }}
+                              >
+                                <option value="">All Languages</option>
+                                {availableLanguages.map(lang => (
+                                  <option key={lang.id} value={lang.id}>
+                                    {lang.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div className="relative w-full sm:w-48">
+                              <select
+                                className="select select-bordered w-full text-sm"
+                                value={composeTemplatePlacementFilter || ''}
+                                onChange={(e) => {
+                                  setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
+                                  if (!composeTemplateDropdownOpen) {
+                                    setComposeTemplateDropdownOpen(true);
+                                  }
+                                }}
+                              >
+                                <option value="">All Placements</option>
+                                {availablePlacements.map(placement => (
+                                  <option key={placement.id} value={placement.id}>
+                                    {placement.name}
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            {(composeTemplateLanguageFilter || composeTemplatePlacementFilter !== null) && (
+                              <button
+                                type="button"
+                                className="btn btn-ghost btn-sm"
+                                onClick={() => {
+                                  setComposeTemplateLanguageFilter(null);
+                                  setComposeTemplatePlacementFilter(null);
+                                }}
+                              >
+                                Clear Filters
+                              </button>
                             )}
                           </div>
-                          {selectedComposeTemplateId !== null && (
-                            <button
-                              type="button"
-                              className="btn btn-ghost btn-sm"
-                              onClick={() => {
-                                setSelectedComposeTemplateId(null);
-                                setComposeTemplateSearch('');
-                                setComposeBody('');
-                                // Use selected contact's name if available, otherwise use client name
-                                const nameToUse = selectedContactForEmail?.contact.name || client.name;
-                                const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
-                                setComposeSubject(defaultSubjectValue);
-                              }}
-                            >
-                              Clear
-                            </button>
-                          )}
                         </div>
 
                   <input
@@ -4807,9 +5160,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   <textarea
                     placeholder="Type your message..."
                     value={composeBody}
-                    onChange={(e) => setComposeBody(e.target.value)}
-                          className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
-                          rows={10}
+                    onChange={(e) => {
+                      setComposeBody(e.target.value);
+                      // Dynamically detect Hebrew as user types
+                      setComposeBodyIsRTL(containsHebrew(e.target.value));
+                    }}
+                    dir={composeBodyIsRTL ? 'rtl' : 'ltr'}
+                    style={{
+                      textAlign: composeBodyIsRTL ? 'right' : 'left',
+                      direction: composeBodyIsRTL ? 'rtl' : 'ltr'
+                    }}
+                    className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
+                    rows={10}
                   />
                   
                   {composeAttachments.length > 0 && (
@@ -4908,6 +5270,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     setComposeLinkUrl('');
                     setSelectedComposeTemplateId(null);
                     setComposeTemplateSearch('');
+                    setComposeTemplateLanguageFilter(null);
+                    setComposeTemplatePlacementFilter(null);
                     // Use selected contact's name if available, otherwise use client name
                     const nameToUse = selectedContactForEmail?.contact.name || client.name;
                     const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;

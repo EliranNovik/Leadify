@@ -104,6 +104,9 @@ interface EmailTemplate {
   content: string;
   rawContent: string;
   languageId: string | null;
+  languageName: string | null;
+  placementId: number | null;
+  placementName: string | null;
 }
 
 const parseTemplateContent = (rawContent: string | null | undefined): string => {
@@ -390,6 +393,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [showCompose, setShowCompose] = useState(false);
   const [composeSubject, setComposeSubject] = useState("");
   const [composeBody, setComposeBody] = useState("");
+  const [composeBodyIsRTL, setComposeBodyIsRTL] = useState(false);
   const [composeAttachments, setComposeAttachments] = useState<File[]>([]);
   const [sending, setSending] = useState(false);
   const [currentUserFullName, setCurrentUserFullName] = useState('');
@@ -400,6 +404,15 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [toInput, setToInput] = useState('');
   const [ccInput, setCcInput] = useState('');
   const [recipientError, setRecipientError] = useState<string | null>(null);
+  
+  // Employee autocomplete state
+  const [employees, setEmployees] = useState<Array<{ email: string; name: string }>>([]);
+  const [toSuggestions, setToSuggestions] = useState<Array<{ email: string; name: string }>>([]);
+  const [ccSuggestions, setCcSuggestions] = useState<Array<{ email: string; name: string }>>([]);
+  const [showToSuggestions, setShowToSuggestions] = useState(false);
+  const [showCcSuggestions, setShowCcSuggestions] = useState(false);
+  const toSuggestionsRef = useRef<HTMLDivElement>(null);
+  const ccSuggestionsRef = useRef<HTMLDivElement>(null);
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
@@ -409,11 +422,34 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const templateDropdownRef = useRef<HTMLDivElement | null>(null);
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  
+  // Template filters
+  const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
+  const [templatePlacementFilter, setTemplatePlacementFilter] = useState<number | null>(null);
+  const [availableLanguages, setAvailableLanguages] = useState<Array<{ id: string; name: string }>>([]);
+  const [availablePlacements, setAvailablePlacements] = useState<Array<{ id: number; name: string }>>([]);
+  
   const filteredTemplates = useMemo(() => {
+    let filtered = templates;
+    
+    // Filter by language
+    if (templateLanguageFilter) {
+      filtered = filtered.filter(template => template.languageId === templateLanguageFilter);
+    }
+    
+    // Filter by placement
+    if (templatePlacementFilter !== null) {
+      filtered = filtered.filter(template => template.placementId === templatePlacementFilter);
+    }
+    
+    // Filter by search query
     const query = templateSearch.trim().toLowerCase();
-    if (!query) return templates;
-    return templates.filter(template => template.name.toLowerCase().includes(query));
-  }, [templates, templateSearch]);
+    if (query) {
+      filtered = filtered.filter(template => template.name.toLowerCase().includes(query));
+    }
+    
+    return filtered;
+  }, [templates, templateSearch, templateLanguageFilter, templatePlacementFilter]);
   const [userId, setUserId] = useState<string | null>(null);
   const [userEmail, setUserEmail] = useState<string>('');
   const [mailboxStatus, setMailboxStatus] = useState<{ connected: boolean; lastSync?: string | null; error?: string | null }>({
@@ -620,6 +656,8 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     setRecipientError(null);
     setSelectedTemplateId(null);
     setTemplateSearch('');
+    setTemplateLanguageFilter(null);
+    setTemplatePlacementFilter(null);
     setShowLinkForm(false);
     setLinkLabel('');
     setLinkUrl('');
@@ -663,23 +701,80 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     let isMounted = true;
     const loadTemplates = async () => {
       try {
-        const { data, error } = await supabase
-          .from('misc_emailtemplate')
-          .select('*')
-          .eq('active', 't')
-          .order('name', { ascending: true });
+        // First, fetch languages and placements to create lookup maps
+        const [languagesResult, placementsResult, templatesResult] = await Promise.all([
+          supabase
+            .from('misc_language')
+            .select('id, name')
+            .order('name', { ascending: true }),
+          supabase
+            .from('email_templates_placement')
+            .select('id, name')
+            .order('name', { ascending: true }),
+          supabase
+            .from('misc_emailtemplate')
+            .select(`
+              *,
+              email_templates_placement!placement_id (
+                id,
+                name
+              )
+            `)
+            .eq('active', 't')
+            .order('name', { ascending: true })
+        ]);
 
-        if (error) throw error;
+        if (templatesResult.error) {
+          console.error('Error fetching templates:', templatesResult.error);
+          throw templatesResult.error;
+        }
         if (!isMounted) return;
 
-        const parsed = (data || []).map((template: any) => ({
-          id: typeof template.id === 'number' ? template.id : Number(template.id),
-          name: template.name || `Template ${template.id}`,
-          subject: typeof template.subject === 'string' ? template.subject : null,
-          content: parseTemplateContent(template.content),
-          rawContent: template.content || '',
-          languageId: template.language_id ?? null,
-        }));
+        // Create lookup maps for languages and placements
+        const languageMap = new Map<string, string>();
+        if (!languagesResult.error && languagesResult.data) {
+          languagesResult.data.forEach((lang: any) => {
+            languageMap.set(String(lang.id), lang.name || 'Unknown');
+          });
+          setAvailableLanguages(languagesResult.data.map((lang: any) => ({
+            id: String(lang.id),
+            name: lang.name || 'Unknown'
+          })));
+        }
+
+        const placementMap = new Map<number, string>();
+        if (!placementsResult.error && placementsResult.data) {
+          placementsResult.data.forEach((placement: any) => {
+            const placementId = typeof placement.id === 'number' ? placement.id : Number(placement.id);
+            placementMap.set(placementId, placement.name || 'Unknown');
+          });
+          setAvailablePlacements(placementsResult.data.map((placement: any) => ({
+            id: typeof placement.id === 'number' ? placement.id : Number(placement.id),
+            name: placement.name || 'Unknown'
+          })));
+        }
+
+        // Parse templates and match with language/placement names
+        const parsed = (templatesResult.data || []).map((template: any) => {
+          const placement = Array.isArray(template.email_templates_placement) 
+            ? template.email_templates_placement[0] 
+            : template.email_templates_placement;
+          
+          const languageId = template.language_id ? String(template.language_id) : null;
+          const languageName = languageId ? languageMap.get(languageId) || null : null;
+          
+          return {
+            id: typeof template.id === 'number' ? template.id : Number(template.id),
+            name: template.name || `Template ${template.id}`,
+            subject: typeof template.subject === 'string' ? template.subject : null,
+            content: parseTemplateContent(template.content),
+            rawContent: template.content || '',
+            languageId: languageId,
+            languageName: languageName,
+            placementId: placement?.id ? (typeof placement.id === 'number' ? placement.id : Number(placement.id)) : null,
+            placementName: placement?.name || null,
+          };
+        });
 
         setTemplates(parsed);
       } catch (error) {
@@ -1148,6 +1243,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     // Reset compose UI immediately
     toast.success('Email queued to send');
     setComposeBody('');
+    setComposeBodyIsRTL(false);
     setComposeAttachments([]);
     const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
     setComposeSubject(defaultSubject);
@@ -1232,52 +1328,190 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
 
   if (!isOpen) return null;
 
+  // Search employees locally
+  const searchEmployees = (searchText: string): Array<{ email: string; name: string }> => {
+    if (!searchText || searchText.trim().length < 1) return [];
+    
+    const searchLower = searchText.trim().toLowerCase();
+    return employees
+      .filter(emp => 
+        emp.name.toLowerCase().includes(searchLower) || 
+        emp.email.toLowerCase().includes(searchLower)
+      )
+      .slice(0, 10); // Limit to 10 results
+  };
+
   const renderRecipients = (type: 'to' | 'cc') => {
     const recipients = type === 'to' ? toRecipients : ccRecipients;
     const inputValue = type === 'to' ? toInput : ccInput;
     const setInputValue = type === 'to' ? setToInput : setCcInput;
     const setRecipients = type === 'to' ? setToRecipients : setCcRecipients;
+    const suggestions = type === 'to' ? toSuggestions : ccSuggestions;
+    const showSuggestions = type === 'to' ? showToSuggestions : showCcSuggestions;
+    const suggestionsRef = type === 'to' ? toSuggestionsRef : ccSuggestionsRef;
+
+    const addRecipient = (email: string) => {
+      if (email && emailRegex.test(email)) {
+        setRecipients(prev => [...prev, email]);
+        setInputValue('');
+        if (type === 'to') {
+          setShowToSuggestions(false);
+          setToSuggestions([]);
+        } else {
+          setShowCcSuggestions(false);
+          setCcSuggestions([]);
+        }
+      }
+    };
 
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        <input
-          type="text"
-          className="input input-bordered w-full"
-          placeholder={`Add ${type} recipient (e.g., name@example.com)`}
-          value={inputValue}
-          onChange={event => setInputValue(event.target.value)}
-          onKeyPress={event => {
-            if (event.key === 'Enter') {
-              const newRecipient = inputValue.trim();
-              if (newRecipient && emailRegex.test(newRecipient)) {
-                setRecipients(prev => [...prev, newRecipient]);
-                setInputValue('');
+      <div className="relative">
+        <div className="flex flex-wrap items-center gap-2">
+          <input
+            type="text"
+            className="input input-bordered w-full"
+            placeholder={`Add ${type} recipient (e.g., name@example.com)`}
+            value={inputValue}
+            onChange={event => {
+              const newValue = event.target.value;
+              setInputValue(newValue);
+              
+              // Search employees immediately as user types
+              if (newValue.trim().length > 0) {
+                const results = searchEmployees(newValue.trim());
+                if (type === 'to') {
+                  setToSuggestions(results);
+                  setShowToSuggestions(results.length > 0);
+                } else {
+                  setCcSuggestions(results);
+                  setShowCcSuggestions(results.length > 0);
+                }
+              } else {
+                if (type === 'to') {
+                  setToSuggestions([]);
+                  setShowToSuggestions(false);
+                } else {
+                  setCcSuggestions([]);
+                  setShowCcSuggestions(false);
+                }
               }
-            }
-          }}
-        />
-        <div className="flex flex-wrap gap-1">
-          {recipients.map((recipient, index) => (
-            <span key={index} className="flex items-center bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
-              {recipient}
-              <button
-                type="button"
-                onClick={() => setRecipients(prev => prev.filter((_, i) => i !== index))}
-                className="ml-1 text-blue-800 hover:text-blue-900"
-              >
-                ×
-              </button>
-            </span>
-          ))}
+            }}
+            onFocus={() => {
+              // Show suggestions if we have them or search again
+              if (inputValue.trim().length > 0) {
+                const results = searchEmployees(inputValue.trim());
+                if (type === 'to') {
+                  setToSuggestions(results);
+                  setShowToSuggestions(results.length > 0);
+                } else {
+                  setCcSuggestions(results);
+                  setShowCcSuggestions(results.length > 0);
+                }
+              }
+            }}
+            onBlur={() => {
+              // Delay hiding to allow clicking on suggestions
+              setTimeout(() => {
+                if (type === 'to') {
+                  setShowToSuggestions(false);
+                } else {
+                  setShowCcSuggestions(false);
+                }
+              }, 200);
+            }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                // If there are suggestions, use the first one, otherwise use the input value
+                if (showSuggestions && suggestions.length > 0) {
+                  addRecipient(suggestions[0].email);
+                } else {
+                  const newRecipient = inputValue.trim();
+                  if (newRecipient && emailRegex.test(newRecipient)) {
+                    addRecipient(newRecipient);
+                  }
+                }
+              } else if (event.key === 'ArrowDown' && showSuggestions && suggestions.length > 0) {
+                event.preventDefault();
+                addRecipient(suggestions[0].email);
+              } else if (event.key === 'Escape') {
+                if (type === 'to') {
+                  setShowToSuggestions(false);
+                } else {
+                  setShowCcSuggestions(false);
+                }
+              }
+            }}
+          />
         </div>
+        
+        {/* Recipient tags */}
+        {recipients.length > 0 && (
+          <div className="flex flex-wrap gap-1 mt-2">
+            {recipients.map((recipient, index) => (
+              <span key={index} className="flex items-center bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-0.5 rounded-full">
+                {recipient}
+                <button
+                  type="button"
+                  onClick={() => setRecipients(prev => prev.filter((_, i) => i !== index))}
+                  className="ml-1 text-blue-800 hover:text-blue-900"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+        
+        {/* Autocomplete Suggestions Dropdown */}
+        {showSuggestions && suggestions.length > 0 && (
+          <div
+            ref={suggestionsRef}
+            className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto"
+            onMouseDown={(e) => e.preventDefault()} // Prevent input blur on click
+          >
+            {suggestions.map((suggestion, index) => (
+              <div
+                key={`${type}-suggestion-${index}-${suggestion.email}`}
+                className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm border-b border-gray-100 last:border-b-0"
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  addRecipient(suggestion.email);
+                }}
+              >
+                <div className="font-medium text-gray-900">{suggestion.name}</div>
+                <div className="text-xs text-gray-500">{suggestion.email}</div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     );
+  };
+
+  // Helper function to check if text contains Hebrew
+  const containsHebrew = (text: string): boolean => {
+    return /[\u0590-\u05FF]/.test(text);
+  };
+
+  // Helper function to check if language is Hebrew
+  const isHebrewLanguage = (languageId: string | null, languageName: string | null): boolean => {
+    if (!languageId && !languageName) return false;
+    const langId = languageId?.toString().toLowerCase() || '';
+    const langName = languageName?.toString().toLowerCase() || '';
+    return langId.includes('he') || langName.includes('hebrew') || langName.includes('עברית');
   };
 
   const handleTemplateSelect = (template: EmailTemplate) => {
     setSelectedTemplateId(template.id);
     // Use parsed content which preserves line breaks from DB
-    setComposeBody(template.content);
+    const finalBody = template.content || '';
+    setComposeBody(finalBody);
+    
+    // Check if template is Hebrew based on language or content
+    const isHebrew = isHebrewLanguage(template.languageId, template.languageName) || containsHebrew(finalBody);
+    setComposeBodyIsRTL(isHebrew);
+    
     setComposeSubject(template.subject || `[${client?.lead_number}] - ${client?.name} - ${client?.topic || ''}]`);
     setShowLinkForm(false);
     setLinkLabel('');
@@ -1726,64 +1960,128 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               </div>
               {recipientError && <p className="text-sm text-error">{recipientError}</p>}
 
-              <div className="flex flex-wrap items-center gap-3" ref={templateDropdownRef}>
-                <label className="text-sm font-semibold">Template</label>
-                <div className="relative w-full sm:w-64">
-                  <input
-                    type="text"
-                    className="input input-bordered w-full pr-8"
-                    placeholder="Search templates..."
-                    value={templateSearch}
-                    onChange={event => {
-                      setTemplateSearch(event.target.value);
-                      if (!templateDropdownOpen) {
-                        setTemplateDropdownOpen(true);
-                      }
-                    }}
-                    onFocus={() => {
-                      if (!templateDropdownOpen) {
-                        setTemplateDropdownOpen(true);
-                      }
-                    }}
-                    onBlur={() => setTimeout(() => setTemplateDropdownOpen(false), 150)}
-                  />
-                  <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                  {templateDropdownOpen && (
-                    <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                      {filteredTemplates.length === 0 ? (
-                        <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
-                      ) : (
-                        filteredTemplates.map(template => (
-                          <div
-                            key={template.id}
-                            className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                            onMouseDown={e => e.preventDefault()}
-                            onClick={() => handleTemplateSelect(template)}
-                          >
-                            {template.name}
-                          </div>
-                        ))
-                      )}
-                    </div>
-                  )}
-                </div>
-                {selectedTemplateId !== null && (
-                  <button
-                    type="button"
-                    className="btn btn-ghost btn-sm"
-                    onClick={() => {
+              <div className="space-y-3" ref={templateDropdownRef}>
+                <div className="flex flex-wrap items-center gap-3">
+                  <label className="text-sm font-semibold">Template</label>
+                  <div className="relative w-full sm:w-64">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full pr-8"
+                      placeholder="Search templates..."
+                      value={templateSearch}
+                      onChange={event => {
+                        setTemplateSearch(event.target.value);
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                      onFocus={() => {
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                      onBlur={() => setTimeout(() => setTemplateDropdownOpen(false), 150)}
+                    />
+                    <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    {templateDropdownOpen && (
+                      <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                        {filteredTemplates.length === 0 ? (
+                          <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                        ) : (
+                          filteredTemplates.map(template => (
+                            <div
+                              key={template.id}
+                              className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => handleTemplateSelect(template)}
+                            >
+                              <div className="font-medium">{template.name}</div>
+                              {(template.placementName || template.languageName) && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {template.placementName && <span>{template.placementName}</span>}
+                                  {template.placementName && template.languageName && <span> • </span>}
+                                  {template.languageName && <span>{template.languageName}</span>}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  {selectedTemplateId !== null && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
                       setSelectedTemplateId(null);
                       setTemplateSearch('');
                       setComposeBody('');
+                      setComposeBodyIsRTL(false);
                       if (client) {
                         const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
                         setComposeSubject(defaultSubject);
                       }
-                    }}
-                  >
-                    Clear
-                  </button>
-                )}
+                      }}
+                    >
+                      Clear
+                    </button>
+                  )}
+                </div>
+                
+                {/* Language and Placement Filters */}
+                <div className="flex flex-wrap items-center gap-3">
+                  <div className="relative w-full sm:w-48">
+                    <select
+                      className="select select-bordered w-full text-sm"
+                      value={templateLanguageFilter || ''}
+                      onChange={(e) => {
+                        setTemplateLanguageFilter(e.target.value || null);
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                    >
+                      <option value="">All Languages</option>
+                      {availableLanguages.map(lang => (
+                        <option key={lang.id} value={lang.id}>
+                          {lang.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div className="relative w-full sm:w-48">
+                    <select
+                      className="select select-bordered w-full text-sm"
+                      value={templatePlacementFilter || ''}
+                      onChange={(e) => {
+                        setTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                    >
+                      <option value="">All Placements</option>
+                      {availablePlacements.map(placement => (
+                        <option key={placement.id} value={placement.id}>
+                          {placement.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  {(templateLanguageFilter || templatePlacementFilter !== null) && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm"
+                      onClick={() => {
+                        setTemplateLanguageFilter(null);
+                        setTemplatePlacementFilter(null);
+                      }}
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                </div>
               </div>
 
               <input
@@ -1846,7 +2144,16 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               <textarea
                 placeholder="Type your message..."
                 value={composeBody}
-                onChange={(e) => setComposeBody(e.target.value)}
+                onChange={(e) => {
+                  setComposeBody(e.target.value);
+                  // Dynamically detect Hebrew as user types
+                  setComposeBodyIsRTL(containsHebrew(e.target.value));
+                }}
+                dir={composeBodyIsRTL ? 'rtl' : 'ltr'}
+                style={{
+                  textAlign: composeBodyIsRTL ? 'right' : 'left',
+                  direction: composeBodyIsRTL ? 'rtl' : 'ltr'
+                }}
                 className="w-full px-4 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500 resize-y min-h-[320px]"
               />
 
