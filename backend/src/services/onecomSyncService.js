@@ -52,7 +52,10 @@ class OneComSyncService {
       }
 
       if (extensions) {
+        // OneCom API expects comma-separated phone numbers/extensions
+        // Ensure we're sending it correctly even if it's already comma-separated
         params.append('phone', extensions);
+        console.log('🔍 DEBUG: Filtering by phone/extensions:', extensions);
       }
 
       const url = `${this.baseUrl}?${params.toString()}`;

@@ -359,16 +359,29 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   };
 
   // Helper function to detect if message contains only emojis
+  const containsHebrew = (text: string): boolean => {
+    if (!text) return false;
+    return /[\u0590-\u05FF]/.test(text);
+  };
+
   const isEmojiOnly = (text: string): boolean => {
     // Simple approach: check if the text length is very short and contains emoji-like characters
     const cleanText = text.trim();
     if (cleanText.length === 0) return false;
     
+    // Exclude Hebrew text (Unicode range \u0590-\u05FF) - it should not be treated as emoji
+    const hasHebrew = /[\u0590-\u05FF]/.test(cleanText);
+    if (hasHebrew) return false;
+    
     // Check if the message is very short (likely emoji-only) and contains non-ASCII characters
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5; // Most emojis are 1-3 characters
     
-    return hasNonAscii && isShort;
+    // Emoji detection: check for emoji Unicode ranges
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
+    const hasEmoji = emojiRegex.test(cleanText);
+    
+    return hasEmoji && isShort && !hasHebrew;
   };
 
   // Helper function to render clickable links in messages
@@ -5149,7 +5162,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         </div>
                       ) : isEmojiOnly(message.content || '') ? (
-                        <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                        <div 
+                          className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}
+                          dir={containsHebrew(message.content || '') ? 'rtl' : 'ltr'}
+                        >
                           <div className="text-6xl">
                             {renderMessageContent(message.content || '', isOwn)}
                           </div>
@@ -5221,16 +5237,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               >
                               {/* Message content */}
                               {message.content && (
-                                <p className="break-words">
-                                  <span 
-                                    className="emoji-message" 
-                                    style={{ 
-                                      fontSize: isEmojiOnly(message.content) ? '4em' : '1.1em',
-                                      lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
-                                    }}
-                                  >
-                                    {renderMessageContent(message.content, isOwn)}
-                                  </span>
+                                <p 
+                                  className="break-words text-base"
+                                  dir={containsHebrew(message.content) ? 'rtl' : 'ltr'}
+                                  style={{ 
+                                    textAlign: containsHebrew(message.content) ? 'right' : 'left',
+                                    direction: containsHebrew(message.content) ? 'rtl' : 'ltr',
+                                    fontSize: '1rem',
+                                    lineHeight: '1.5',
+                                    wordBreak: 'break-word',
+                                    overflowWrap: 'break-word'
+                                  }}
+                                >
+                                  {renderMessageContent(message.content, isOwn)}
                                 </p>
                               )}
                               
@@ -6128,7 +6147,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         </div>
                       </div>
                     ) : isEmojiOnly(message.content || '') ? (
-                      <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                      <div 
+                        className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
+                        dir={containsHebrew(message.content || '') ? 'rtl' : 'ltr'}
+                      >
                         <div className="text-6xl">
                           {renderMessageContent(message.content || '', isOwn)}
                         </div>
@@ -6199,16 +6221,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             >
                             {/* Message content */}
                             {message.content && (
-                              <p className="break-words">
-                                <span 
-                                  className="emoji-message" 
-                                    style={{ 
-                                      fontSize: isEmojiOnly(message.content) ? '4em' : '1.1em',
-                                      lineHeight: isEmojiOnly(message.content) ? '1.2' : 'normal'
-                                    }}
-                                >
-                                  {renderMessageContent(message.content, isOwn)}
-                                </span>
+                              <p 
+                                className="break-words text-base"
+                                dir={containsHebrew(message.content) ? 'rtl' : 'ltr'}
+                                style={{ 
+                                  textAlign: containsHebrew(message.content) ? 'right' : 'left',
+                                  direction: containsHebrew(message.content) ? 'rtl' : 'ltr',
+                                  fontSize: '1rem',
+                                  lineHeight: '1.5',
+                                  wordBreak: 'break-word',
+                                  overflowWrap: 'break-word'
+                                }}
+                              >
+                                {renderMessageContent(message.content, isOwn)}
                               </p>
                             )}
                             

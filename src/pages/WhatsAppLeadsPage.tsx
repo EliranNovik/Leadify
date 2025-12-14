@@ -2430,7 +2430,15 @@ const WhatsAppLeadsPage: React.FC = () => {
                         )}
                         
                         {/* Image or Emoji-only messages - render outside bubble */}
-                        {(message.message_type === 'image' || (message.message_type === 'text' && message.message && /^[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/u.test(message.message.trim()) && message.message.trim().length <= 5)) ? (
+                        {(message.message_type === 'image' || (message.message_type === 'text' && message.message && (() => {
+                          const cleanText = message.message.trim();
+                          if (cleanText.length === 0 || cleanText.length > 5) return false;
+                          // Exclude Hebrew text (Unicode range \u0590-\u05FF)
+                          if (/[\u0590-\u05FF]/.test(cleanText)) return false;
+                          // Check for emoji Unicode ranges
+                          const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
+                          return emojiRegex.test(cleanText);
+                        })())) ? (
                           <div className={`flex flex-col ${message.direction === 'out' ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
                             {/* Image content */}
                             {message.message_type === 'image' && message.media_url && (
@@ -2463,7 +2471,15 @@ const WhatsAppLeadsPage: React.FC = () => {
                             )}
 
                             {/* Emoji-only content */}
-                            {message.message_type === 'text' && message.message && /^[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]/u.test(message.message.trim()) && message.message.trim().length <= 5 && (
+                            {message.message_type === 'text' && message.message && (() => {
+                              const cleanText = message.message.trim();
+                              if (cleanText.length === 0 || cleanText.length > 5) return false;
+                              // Exclude Hebrew text (Unicode range \u0590-\u05FF)
+                              if (/[\u0590-\u05FF]/.test(cleanText)) return false;
+                              // Check for emoji Unicode ranges
+                              const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
+                              return emojiRegex.test(cleanText);
+                            })() && (
                               <div className="text-6xl leading-tight">
                                 {message.message}
                               </div>

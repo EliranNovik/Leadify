@@ -393,9 +393,19 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
   const isEmojiOnly = (text: string): boolean => {
     const cleanText = text.trim();
     if (cleanText.length === 0) return false;
+    
+    // Exclude Hebrew text (Unicode range \u0590-\u05FF) - it should not be treated as emoji
+    const hasHebrew = /[\u0590-\u05FF]/.test(cleanText);
+    if (hasHebrew) return false;
+    
     const hasNonAscii = /[^\x00-\x7F]/.test(cleanText);
     const isShort = cleanText.length <= 5;
-    return hasNonAscii && isShort;
+    
+    // Emoji detection: check for emoji Unicode ranges
+    const emojiRegex = /[\u{1F300}-\u{1F9FF}]|[\u{2600}-\u{26FF}]|[\u{2700}-\u{27BF}]|[\u{1F600}-\u{1F64F}]|[\u{1F680}-\u{1F6FF}]|[\u{1F1E0}-\u{1F1FF}]/u;
+    const hasEmoji = emojiRegex.test(cleanText);
+    
+    return hasEmoji && isShort && !hasHebrew;
   };
 
   // Helper function to normalize language codes (en and en_US both become 'en')
