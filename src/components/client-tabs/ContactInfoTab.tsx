@@ -3043,8 +3043,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   return (
     <Fragment>
-      <div className="w-full overflow-x-hidden">
-        <div className="p-2 sm:p-4 md:p-6">
+      <div className="w-full overflow-x-hidden overflow-y-auto">
+        <div className="p-2 sm:p-4 md:p-6 max-w-full">
           <div className="flex items-center gap-3 mb-8">
             <div className="w-8 h-8 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg flex items-center justify-center">
               <UserIcon className="w-6 h-6 text-white" />

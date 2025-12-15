@@ -41,7 +41,7 @@ const DropdownPortal: React.FC<{
     if (!open) return;
     const handle = (e: MouseEvent) => {
       // Temporarily disable to test
-      return;
+      // return;
       
       const target = e.target as Element;
       const isInsideDropdown = target.closest('.dropdown-content') || target.closest('.handler-dropdown') || target.closest('[data-dropdown]');

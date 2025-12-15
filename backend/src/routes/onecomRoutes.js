@@ -326,185 +326,116 @@ router.post('/webhook', async (req, res) => {
       }
     } else if (webhookData.phone || webhookData.extension || webhookData.phone_ext || webhookData.mobile_ext) {
       // Outgoing call notification - just extension/phone number
-      // Fetch recent call logs for this extension to get full call data
-      // Process this asynchronously to avoid blocking the response
+      // Simplified approach: Fetch ALL call logs for today, then filter out existing ones
+      // This is safer and won't miss any calls due to filtering logic issues
       const processWebhookAsync = async () => {
         try {
           console.log(`🚀 Webhook: Starting async processing for extension notification`);
           const extensionOrPhone = String(webhookData.phone || webhookData.extension || webhookData.phone_ext || webhookData.mobile_ext).trim();
           console.log(`📞 Webhook: Received outgoing call notification for extension/phone/mobile_ext: ${extensionOrPhone}`);
           
-          // First, try to find the employee by extension or phone to get all their contact methods
-          // This ensures we can match calls by both extension AND phone number
-          let employeeSearchTerms = [extensionOrPhone];
-          let allSearchTerms = new Set([extensionOrPhone]);
-          
-          try {
-            const { data: employees } = await supabase
-              .from('tenants_employee')
-              .select('id, display_name, phone_ext, phone, mobile, mobile_ext')
-              .not('id', 'is', null);
-            
-            if (employees && employees.length > 0) {
-              // Normalize the search term
-              const normalizePhone = (phone) => {
-                if (!phone) return '';
-                return phone.toString().replace(/\D/g, '');
-              };
-              
-              const normalizedSearch = normalizePhone(extensionOrPhone);
-              const isExtension = normalizedSearch.length >= 2 && normalizedSearch.length <= 4;
-              
-              // Find matching employee(s)
-              for (const employee of employees) {
-                const fields = [
-                  { value: employee.phone_ext, type: 'phone_ext' },
-                  { value: employee.phone, type: 'phone' },
-                  { value: employee.mobile, type: 'mobile' },
-                  { value: employee.mobile_ext, type: 'mobile_ext' }
-                ].filter(f => f.value && f.value !== '' && f.value !== '\\N');
-                
-                for (const field of fields) {
-                  const normalizedField = normalizePhone(field.value);
-                  
-                  let match = false;
-                  if (isExtension) {
-                    // Extension matching
-                    if (normalizedField === normalizedSearch || 
-                        (normalizedField.length >= normalizedSearch.length && normalizedField.slice(-normalizedSearch.length) === normalizedSearch) ||
-                        (normalizedSearch.length >= normalizedField.length && normalizedSearch.slice(-normalizedField.length) === normalizedField)) {
-                      match = true;
-                    }
-                  } else {
-                    // Phone matching (last 5 digits)
-                    if (normalizedField.length >= 5 && normalizedSearch.length >= 5) {
-                      if (normalizedField.slice(-5) === normalizedSearch.slice(-5)) {
-                        match = true;
-                      }
-                    } else if (normalizedField.length >= 4 && normalizedSearch.length >= 4) {
-                      if (normalizedField.slice(-4) === normalizedSearch.slice(-4)) {
-                        match = true;
-                      }
-                    }
-                  }
-                  
-                  if (match) {
-                    console.log(`✅ Webhook: Found matching employee: ${employee.display_name} (ID: ${employee.id})`);
-                    console.log(`   Matched via ${field.type}: ${field.value}`);
-                    
-                    // Add all employee's contact methods to search terms
-                    if (employee.phone_ext) allSearchTerms.add(employee.phone_ext.toString());
-                    if (employee.phone) allSearchTerms.add(employee.phone.toString());
-                    if (employee.mobile) allSearchTerms.add(employee.mobile.toString());
-                    if (employee.mobile_ext) allSearchTerms.add(employee.mobile_ext.toString());
-                    break; // Found the employee, break inner loop
-                  }
-                }
-                
-                if (allSearchTerms.size > 1) break; // Found employee, break outer loop
-              }
-              
-              console.log(`📞 Webhook: Will search for calls matching: ${Array.from(allSearchTerms).join(', ')}`);
-            }
-          } catch (empError) {
-            console.error(`⚠️ Webhook: Error fetching employees, will use original extension/phone only:`, empError);
-          }
-          
           // Wait a few seconds to allow OneCom API to process the call
-          console.log(`⏳ Webhook: Waiting 3 seconds for OneCom API to process the call...`);
-          await new Promise(resolve => setTimeout(resolve, 3000));
+          // OneCom CDRS can take 10-30 seconds to process calls
+          console.log(`⏳ Webhook: Waiting 5 seconds for OneCom CDRS to process the call...`);
+          await new Promise(resolve => setTimeout(resolve, 5000));
           
           console.log(`📞 Webhook: Wait complete, starting to fetch recent call logs...`);
           
-          // Use exact same date format as manual sync (YYYY-MM-DD)
-          // For webhook, sync from today to today to catch today's calls
-          // Also include yesterday to catch any calls that might have been delayed
+          // For webhooks, we only need to fetch recent calls (last 2 hours)
+          // This is much faster since we expect only 1 new call
+          // We fetch today's calls and filter to last 2 hours client-side
+          // (OneCom API only supports date-level filtering, not time)
+          const now = new Date();
+          const twoHoursAgo = new Date(now.getTime() - 2 * 60 * 60 * 1000); // 2 hours ago
           const today = new Date();
-          const todayStr = today.toISOString().split('T')[0];
-          
-          // Include yesterday to catch any delayed calls
-          const yesterday = new Date(today);
-          yesterday.setDate(yesterday.getDate() - 1);
-          const yesterdayStr = yesterday.toISOString().split('T')[0];
-          
-          // Use tomorrow as end date to ensure we get all of today's calls
-          // (OneCom API might interpret end date as exclusive or need buffer)
           const tomorrow = new Date(today);
-          tomorrow.setDate(tomorrow.getDate() + 1);
-          const tomorrowStr = tomorrow.toISOString().split('T')[0];
+          tomorrow.setDate(today.getDate() + 1);
           
-          // Use yesterday as start and tomorrow as end to ensure we get all calls including today
-          const startDate = yesterdayStr;
-          const endDate = tomorrowStr;
+          // Use today and tomorrow for API (to handle timezone edge cases)
+          const startDate = today.toISOString().split('T')[0]; // Today
+          const endDate = tomorrow.toISOString().split('T')[0]; // Tomorrow
           
-          console.log(`📞 Webhook: Date range: ${startDate} to ${endDate} (includes yesterday, today, and tomorrow to ensure today's calls are captured)`);
+          console.log(`📞 Webhook: Fetching call logs from ${startDate} to ${endDate} (today and tomorrow)`);
+          console.log(`📞 Webhook: Will filter to calls from last 2 hours (since ${twoHoursAgo.toISOString()})`);
+          console.log(`📞 Webhook: No extension/phone filtering - will fetch all calls and filter duplicates in database`);
           
-          console.log(`📞 Webhook: Syncing call logs from ${startDate} to ${endDate}`);
-          console.log(`📞 Webhook: Using date format: YYYY-MM-DD (matching manual sync)`);
-          console.log(`📞 Webhook: Searching for: ${Array.from(allSearchTerms).join(', ')}`);
-          
-          // syncCallLogs expects extensions as a comma-separated string
-          // Pass all search terms (extension + phone numbers) for comprehensive matching
-          const searchTermsString = Array.from(allSearchTerms).join(',');
-          console.log(`📞 Webhook: Calling syncCallLogs with params: startDate=${startDate}, endDate=${endDate}, extensions=${searchTermsString}`);
-          const syncResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
+          // Call syncCallLogs with null extensions to fetch ALL calls for the date range
+          // The syncCallLogs function will filter out duplicates based on onecom_uniqueid
+          // We pass twoHoursAgo as an optional parameter to filter to recent calls only
+          let syncResult = await onecomSync.syncCallLogs(startDate, endDate, null, twoHoursAgo);
           console.log(`📞 Webhook: syncCallLogs returned:`, JSON.stringify({ success: syncResult.success, synced: syncResult.synced, skipped: syncResult.skipped, error: syncResult.error }));
       
           if (syncResult.success) {
-            console.log(`✅ Webhook: Synced call logs for ${searchTermsString}`);
-            console.log(`   - New records: ${syncResult.synced || 0}`);
-            console.log(`   - Skipped (existing): ${syncResult.skipped || 0}`);
+            console.log(`✅ Webhook: Processed call logs for ${startDate} to ${endDate}`);
+            console.log(`   - New records inserted: ${syncResult.synced || 0}`);
+            console.log(`   - Skipped (already in database): ${syncResult.skipped || 0}`);
             
-            // If no records found, try again after a longer delay (call might still be processing)
-            if (syncResult.synced === 0 && syncResult.skipped === 0) {
-              console.log(`⏳ Webhook: No records found, waiting additional 10 seconds and retrying...`);
-              console.log(`📞 Webhook: This delay accounts for OneCom CDRS processing time (calls may take 10-30 seconds to appear)`);
+            if (syncResult.synced > 0) {
+              console.log(`✅ Webhook: Successfully inserted ${syncResult.synced} new call log record(s)`);
+            } else if (syncResult.skipped > 0) {
+              console.log(`ℹ️  Webhook: Found ${syncResult.skipped} call log(s), but all were already in database`);
+              console.log(`💡 This is normal - the new call that triggered this webhook may already be in the database.`);
+            } else {
+              console.log(`⚠️  Webhook: No call logs found for ${startDate} to ${endDate} - the call may not be in OneCom CDRS yet`);
+              console.log(`💡 OneCom CDRS can take 10-30 seconds to process calls. Retrying after delay...`);
+              
+              // Retry after additional delay if no calls found
               await new Promise(resolve => setTimeout(resolve, 10000));
+              const retryTwoHoursAgo = new Date(new Date().getTime() - 2 * 60 * 60 * 1000);
+              console.log(`📞 Webhook: Retrying fetch for ${startDate} to ${endDate} after 10 second wait (last 2 hours)...`);
+              syncResult = await onecomSync.syncCallLogs(startDate, endDate, null, retryTwoHoursAgo);
               
-              console.log(`📞 Webhook: Retrying syncCallLogs after 10 second wait...`);
-              const retryResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
-              console.log(`📞 Webhook: Retry syncCallLogs returned:`, JSON.stringify({ success: retryResult.success, synced: retryResult.synced, skipped: retryResult.skipped, error: retryResult.error }));
-              
-              if (retryResult.success) {
-                console.log(`✅ Webhook (retry): Synced call logs for extension ${extensionOrPhone}`);
-                console.log(`   - New records: ${retryResult.synced || 0}`);
-                console.log(`   - Skipped (existing): ${retryResult.skipped || 0}`);
+              if (syncResult.success) {
+                console.log(`✅ Webhook (retry): Processed call logs for ${startDate} to ${endDate}`);
+                console.log(`   - New records inserted: ${syncResult.synced || 0}`);
+                console.log(`   - Skipped (already in database): ${syncResult.skipped || 0}`);
                 
-                // If still no records after retry, try fetching all calls and filtering client-side
-                // This helps diagnose if the phone filter is the issue
-                if (retryResult.synced === 0 && retryResult.skipped === 0) {
-                  console.log(`⚠️ Webhook: Still no records found after retry. Trying without phone filter to check if calls exist in date range...`);
-                  const noFilterResult = await onecomSync.syncCallLogs(startDate, endDate, null);
-                  console.log(`📞 Webhook: No-filter syncCallLogs returned:`, JSON.stringify({ success: noFilterResult.success, synced: noFilterResult.synced, skipped: noFilterResult.skipped, error: noFilterResult.error }));
+                // If still no calls found, try one more time after another delay
+                if (syncResult.synced === 0 && syncResult.skipped === 0) {
+                  console.log(`⚠️  Webhook: Still no calls found. One more retry after 15 seconds...`);
+                  await new Promise(resolve => setTimeout(resolve, 15000));
+                  const finalRetryTwoHoursAgo = new Date(new Date().getTime() - 2 * 60 * 60 * 1000);
+                  console.log(`📞 Webhook: Final retry for ${startDate} to ${endDate} (last 2 hours)...`);
+                  const finalRetryResult = await onecomSync.syncCallLogs(startDate, endDate, null, finalRetryTwoHoursAgo);
                   
-                  if (noFilterResult.success && noFilterResult.synced > 0) {
-                    console.log(`📊 Webhook: Found ${noFilterResult.synced} calls in date range without phone filter`);
-                    console.log(`⚠️ This suggests the phone filter might not be matching correctly, or the call is from a different extension`);
-                  } else if (noFilterResult.success && noFilterResult.synced === 0) {
-                    console.log(`📊 Webhook: No calls found in date range at all - call may not be in OneCom CDRS yet`);
-                    console.log(`💡 Note: OneCom CDRS can take 30-60 seconds to process calls. Consider manual sync if urgent.`);
+                  if (finalRetryResult.success) {
+                    console.log(`✅ Webhook (final retry): Processed call logs for ${startDate} to ${endDate}`);
+                    console.log(`   - New records inserted: ${finalRetryResult.synced || 0}`);
+                    console.log(`   - Skipped (already in database): ${finalRetryResult.skipped || 0}`);
+                  } else {
+                    console.error(`❌ Webhook (final retry): Failed to sync call logs:`, finalRetryResult.error);
                   }
                 }
               } else {
-                console.error(`❌ Webhook (retry): Failed to sync call logs for extension ${extensionOrPhone}:`, retryResult.error);
+                console.error(`❌ Webhook (retry): Failed to sync call logs:`, syncResult.error);
               }
             }
             
             if (syncResult.errors && syncResult.errors.length > 0) {
               console.error(`   - Errors: ${syncResult.errors.length}`);
-              syncResult.errors.forEach((err, idx) => {
+              syncResult.errors.slice(0, 5).forEach((err, idx) => {
                 console.error(`   - Error ${idx + 1}:`, err);
               });
+              if (syncResult.errors.length > 5) {
+                console.error(`   - ... and ${syncResult.errors.length - 5} more errors`);
+              }
             }
           } else {
-            console.error(`❌ Webhook: Failed to sync call logs for ${searchTermsString}:`, syncResult.error);
+            console.error(`❌ Webhook: Failed to sync call logs:`, syncResult.error);
             console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
             
             // If sync failed, try one more time after a delay as a last resort
-            console.log(`⏳ Webhook: Sync failed, waiting 5 seconds and retrying once more...`);
+            const today = new Date();
+            const tomorrow = new Date(today);
+            tomorrow.setDate(today.getDate() + 1);
+            const startDate = today.toISOString().split('T')[0];
+            const endDate = tomorrow.toISOString().split('T')[0];
+            const fallbackTwoHoursAgo = new Date(new Date().getTime() - 2 * 60 * 60 * 1000);
+            
+            console.log(`⏳ Webhook: Sync failed, waiting 5 seconds and retrying once more for ${startDate} to ${endDate} (last 2 hours)...`);
             await new Promise(resolve => setTimeout(resolve, 5000));
             
-            const finalRetryResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
+            const finalRetryResult = await onecomSync.syncCallLogs(startDate, endDate, null, fallbackTwoHoursAgo);
             if (finalRetryResult.success) {
               console.log(`✅ Webhook (final retry): Successfully synced ${finalRetryResult.synced || 0} records`);
             } else {

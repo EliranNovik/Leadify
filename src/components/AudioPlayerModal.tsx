@@ -28,52 +28,65 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
 
   useEffect(() => {
     if (isOpen && audioUrl) {
-      initializeAudio();
+      // Reset state when modal opens
+      setIsPlaying(false);
+      setCurrentTime(0);
+      setDuration(0);
       
-      // Test canvas immediately and start visualization
-      setTimeout(() => {
-        if (canvasRef.current) {
-          const canvas = canvasRef.current;
-          const ctx = canvas.getContext('2d');
-          if (ctx) {
-            console.log('🧪 Testing canvas with simple drawing...');
-            ctx.fillStyle = '#3f2bcd';
-            ctx.fillRect(10, 10, 50, 50);
-            ctx.fillStyle = '#6366f1';
-            ctx.fillRect(70, 10, 50, 50);
-            ctx.fillStyle = '#8b5cf6';
-            ctx.fillRect(130, 10, 50, 50);
-            console.log('✅ Canvas test drawing completed');
-            
-            // Start visualization immediately
-            console.log('🎨 Starting initial visualization...');
-            visualize();
-            
-            // Auto-play the audio when modal opens
-            setTimeout(async () => {
-              console.log('🎵 Auto-playing audio...');
-              try {
-                // First, set up the audio context if not already done
-                if (!audioContextRef.current) {
-                  const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
-                  const audioContext = new AudioContext();
-                  audioContextRef.current = audioContext;
-                  
-                  if (audioContext.state === 'suspended') {
-                    await audioContext.resume();
-                    console.log('🔊 Audio context resumed for auto-play');
+      // Initialize audio and wait for it to be ready
+      initializeAudio().then(() => {
+        // Test canvas and start visualization after audio is initialized
+        setTimeout(() => {
+          if (canvasRef.current) {
+            const canvas = canvasRef.current;
+            const ctx = canvas.getContext('2d');
+            if (ctx) {
+              console.log('🧪 Testing canvas with simple drawing...');
+              ctx.fillStyle = '#3f2bcd';
+              ctx.fillRect(10, 10, 50, 50);
+              ctx.fillStyle = '#6366f1';
+              ctx.fillRect(70, 10, 50, 50);
+              ctx.fillStyle = '#8b5cf6';
+              ctx.fillRect(130, 10, 50, 50);
+              console.log('✅ Canvas test drawing completed');
+              
+              // Start visualization immediately
+              console.log('🎨 Starting initial visualization...');
+              visualize();
+              
+              // Auto-play after audio is ready (with user interaction context)
+              if (audioRef.current && audioRef.current.readyState >= HTMLMediaElement.HAVE_METADATA) {
+                setTimeout(async () => {
+                  console.log('🎵 Auto-playing audio...');
+                  try {
+                    // Set up audio context if not already done
+                    if (!audioContextRef.current) {
+                      const AudioContext = window.AudioContext || (window as any).webkitAudioContext;
+                      const audioContext = new AudioContext();
+                      audioContextRef.current = audioContext;
+                      
+                      if (audioContext.state === 'suspended') {
+                        await audioContext.resume();
+                        console.log('🔊 Audio context resumed for auto-play');
+                      }
+                    }
+                    
+                    // Only auto-play if audio is ready
+                    if (audioRef.current && audioRef.current.readyState >= HTMLMediaElement.HAVE_FUTURE_DATA) {
+                      await togglePlayPause();
+                    }
+                  } catch (error) {
+                    console.error('❌ Auto-play failed:', error);
+                    // Don't show alert for auto-play failures, user can click play manually
                   }
-                }
-                
-                // Now try to play
-                await togglePlayPause();
-              } catch (error) {
-                console.error('❌ Auto-play failed:', error);
+                }, 500);
               }
-            }, 1000); // Longer delay to ensure everything is ready
+            }
           }
-        }
-      }, 100);
+        }, 100);
+      }).catch((error) => {
+        console.error('❌ Failed to initialize audio:', error);
+      });
     }
 
     return () => {
@@ -81,58 +94,107 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
     };
   }, [isOpen, audioUrl]);
 
-  const initializeAudio = async () => {
-    try {
-      // Create audio element
-      const audio = new Audio();
-      audio.crossOrigin = 'anonymous'; // Enable CORS
-      audio.src = audioUrl;
-      audioRef.current = audio;
-
-      // Audio event listeners
-      audio.addEventListener('loadedmetadata', () => {
-        console.log('Audio metadata loaded, duration:', audio.duration);
-        setDuration(audio.duration);
-      });
-
-      audio.addEventListener('timeupdate', () => {
-        setCurrentTime(audio.currentTime);
-      });
-
-      audio.addEventListener('ended', () => {
-        console.log('Audio playback ended');
-        setIsPlaying(false);
-        setCurrentTime(0);
-        if (animationRef.current) {
-          cancelAnimationFrame(animationRef.current);
+  const initializeAudio = async (): Promise<void> => {
+    return new Promise((resolve, reject) => {
+      try {
+        // Clean up any existing audio first
+        if (audioRef.current) {
+          audioRef.current.pause();
+          audioRef.current = null;
         }
-      });
 
-      audio.addEventListener('error', (e) => {
-        console.error('Audio error:', e);
-        console.error('Audio error details:', {
-          error: audio.error,
-          src: audio.src,
-          networkState: audio.networkState,
-          readyState: audio.readyState
+        // Create audio element
+        const audio = new Audio();
+        audio.crossOrigin = 'anonymous'; // Enable CORS
+        audio.src = audioUrl;
+        audioRef.current = audio;
+
+        let hasResolved = false;
+
+        // Audio event listeners
+        audio.addEventListener('loadedmetadata', () => {
+          console.log('Audio metadata loaded, duration:', audio.duration);
+          setDuration(audio.duration);
         });
-      });
 
-      audio.addEventListener('canplay', () => {
-        console.log('Audio can play');
-      });
+        audio.addEventListener('timeupdate', () => {
+          setCurrentTime(audio.currentTime);
+        });
 
-      audio.addEventListener('playing', () => {
-        console.log('Audio is playing');
-      });
+        audio.addEventListener('ended', () => {
+          console.log('Audio playback ended');
+          setIsPlaying(false);
+          setCurrentTime(0);
+          if (animationRef.current) {
+            cancelAnimationFrame(animationRef.current);
+          }
+        });
 
-      audio.volume = volume;
+        audio.addEventListener('error', (e) => {
+          console.error('Audio error:', e);
+          const errorDetails = {
+            error: audio.error,
+            src: audio.src,
+            networkState: audio.networkState,
+            readyState: audio.readyState
+          };
+          console.error('Audio error details:', errorDetails);
+          
+          // Handle 404 errors gracefully
+          if (audio.error?.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || 
+              audio.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) {
+            console.warn('⚠️ Recording not available (404 or unsupported format)');
+            // Don't reject, just resolve so UI can still show
+            if (!hasResolved) {
+              hasResolved = true;
+              resolve();
+            }
+          } else {
+            if (!hasResolved) {
+              hasResolved = true;
+              reject(new Error(`Audio load failed: ${audio.error?.message || 'Unknown error'}`));
+            }
+          }
+        });
 
-      // Load the audio
-      audio.load();
-    } catch (error) {
-      console.error('Error initializing audio:', error);
-    }
+        audio.addEventListener('canplay', () => {
+          console.log('Audio can play');
+          if (!hasResolved) {
+            hasResolved = true;
+            resolve();
+          }
+        });
+
+        audio.addEventListener('canplaythrough', () => {
+          console.log('Audio can play through');
+          if (!hasResolved) {
+            hasResolved = true;
+            resolve();
+          }
+        });
+
+        audio.addEventListener('playing', () => {
+          console.log('Audio is playing');
+        });
+
+        audio.volume = volume;
+
+        // Load the audio
+        audio.load();
+        
+        // Timeout fallback - resolve after 3 seconds even if canplay doesn't fire
+        setTimeout(() => {
+          if (!hasResolved) {
+            console.warn('⚠️ Audio initialization timeout, proceeding anyway');
+            hasResolved = true;
+            resolve();
+          }
+        }, 3000);
+      } catch (error) {
+        console.error('Error initializing audio:', error);
+        reject(error);
+      }
+    });
   };
 
   const cleanup = () => {
@@ -142,11 +204,21 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
       animationRef.current = null;
     }
     if (audioRef.current) {
-      audioRef.current.pause();
+      try {
+        audioRef.current.pause();
+        audioRef.current.src = '';
+        audioRef.current.load();
+      } catch (error) {
+        console.warn('Error cleaning up audio:', error);
+      }
       audioRef.current = null;
     }
     if (audioContextRef.current) {
-      audioContextRef.current.close();
+      try {
+        audioContextRef.current.close();
+      } catch (error) {
+        console.warn('Error closing audio context:', error);
+      }
       audioContextRef.current = null;
     }
     if (analyserRef.current) {
@@ -160,7 +232,22 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
   const togglePlayPause = async () => {
     if (!audioRef.current) {
       console.error('No audio reference found');
-      return;
+      // Try to reinitialize if audio ref is missing
+      if (isOpen && audioUrl) {
+        console.log('Attempting to reinitialize audio...');
+        try {
+          await initializeAudio();
+          if (!audioRef.current) {
+            console.error('Failed to reinitialize audio');
+            return;
+          }
+        } catch (error) {
+          console.error('Error reinitializing audio:', error);
+          return;
+        }
+      } else {
+        return;
+      }
     }
 
     if (isPlaying) {
@@ -172,6 +259,82 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
       }
     } else {
       try {
+        // Check if audio has already failed
+        if (audioRef.current.error) {
+          const errorCode = audioRef.current.error.code;
+          if (errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || 
+              errorCode === MediaError.MEDIA_ERR_NETWORK ||
+              audioRef.current.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) {
+            throw new Error('Recording not available (404 or network error)');
+          }
+        }
+        
+        // Check if audio is ready to play
+        if (audioRef.current.readyState < HTMLMediaElement.HAVE_FUTURE_DATA) {
+          console.log('Audio not ready, waiting for canplay...');
+          await new Promise<void>((resolve, reject) => {
+            // Check immediately if there's already an error
+            if (audioRef.current?.error) {
+              const errorCode = audioRef.current.error.code;
+              if (errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || 
+                  errorCode === MediaError.MEDIA_ERR_NETWORK) {
+                reject(new Error('Recording not available'));
+                return;
+              }
+            }
+            
+            const timeout = setTimeout(() => {
+              // Check error state before rejecting
+              if (audioRef.current?.error) {
+                const errorCode = audioRef.current.error.code;
+                if (errorCode === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || 
+                    errorCode === MediaError.MEDIA_ERR_NETWORK) {
+                  reject(new Error('Recording not available (timeout with error)'));
+                } else {
+                  reject(new Error('Audio load timeout'));
+                }
+              } else {
+                reject(new Error('Audio load timeout'));
+              }
+            }, 3000); // Reduced timeout to 3 seconds
+            
+            const canPlayHandler = () => {
+              clearTimeout(timeout);
+              audioRef.current?.removeEventListener('canplay', canPlayHandler);
+              audioRef.current?.removeEventListener('error', errorHandler);
+              audioRef.current?.removeEventListener('loadstart', loadStartHandler);
+              resolve();
+            };
+            
+            const errorHandler = (e: Event) => {
+              clearTimeout(timeout);
+              audioRef.current?.removeEventListener('canplay', canPlayHandler);
+              audioRef.current?.removeEventListener('error', errorHandler);
+              audioRef.current?.removeEventListener('loadstart', loadStartHandler);
+              
+              const error = audioRef.current?.error;
+              if (error) {
+                if (error.code === MediaError.MEDIA_ERR_SRC_NOT_SUPPORTED || 
+                    error.code === MediaError.MEDIA_ERR_NETWORK) {
+                  reject(new Error('Recording not available (404 or network error)'));
+                } else {
+                  reject(new Error(`Audio load error: ${error.message || 'Unknown error'}`));
+                }
+              } else {
+                reject(new Error('Audio load error'));
+              }
+            };
+            
+            const loadStartHandler = () => {
+              console.log('Audio load started');
+            };
+            
+            audioRef.current?.addEventListener('canplay', canPlayHandler);
+            audioRef.current?.addEventListener('error', errorHandler);
+            audioRef.current?.addEventListener('loadstart', loadStartHandler);
+          });
+        }
+        
         console.log('Attempting to play audio from:', audioRef.current.src);
         
         // Set up audio context for visualization only when playing
@@ -221,7 +384,25 @@ const AudioPlayerModal: React.FC<AudioPlayerModalProps> = ({
         visualize();
       } catch (error) {
         console.error('Error playing audio:', error);
-        alert('Failed to play recording. Error: ' + (error as Error).message);
+        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+        
+        // Check if it's a 404 or media error
+        if (errorMessage.includes('404') || 
+            errorMessage.includes('not suitable') ||
+            errorMessage.includes('not available') ||
+            errorMessage.includes('MEDIA_ERR_SRC_NOT_SUPPORTED') ||
+            errorMessage.includes('network error')) {
+          alert('This recording is not available. It may have been deleted or is from an older system.');
+        } else if (errorMessage.includes('timeout')) {
+          // Check if there's an actual error in the audio element
+          if (audioRef.current?.error) {
+            alert('This recording is not available. It may have been deleted or is from an older system.');
+          } else {
+            alert('Failed to load recording. Please try again.');
+          }
+        } else {
+          alert('Failed to play recording. Error: ' + errorMessage);
+        }
       }
     }
   };

@@ -8,7 +8,8 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   ArrowPathIcon,
-  CloudArrowDownIcon
+  CloudArrowDownIcon,
+  XMarkIcon
 } from '@heroicons/react/24/outline';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -590,7 +591,7 @@ const CallsLedgerPage: React.FC = () => {
               <div className="relative">
                 <input
                   type="text"
-                  className="input input-bordered w-full"
+                  className="input input-bordered w-full pr-10"
                   placeholder="Search employee..."
                   value={employeeSearch}
                   onChange={(e) => {
@@ -603,6 +604,22 @@ const CallsLedgerPage: React.FC = () => {
                     setTimeout(() => setShowEmployeeDropdown(false), 200);
                   }}
                 />
+                {selectedEmployee && (
+                  <button
+                    type="button"
+                    className="absolute right-2 top-1/2 -translate-y-1/2 btn btn-ghost btn-xs btn-circle hover:bg-gray-200"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      setSelectedEmployee('');
+                      setEmployeeSearch('');
+                      setShowEmployeeDropdown(false);
+                    }}
+                    title="Clear employee filter"
+                  >
+                    <XMarkIcon className="w-4 h-4" />
+                  </button>
+                )}
                 {showEmployeeDropdown && employees.length > 0 && (
                   <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-60 overflow-auto">
                     <div

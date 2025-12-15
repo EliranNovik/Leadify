@@ -4839,7 +4839,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               <div className="mb-2">
                                 <div 
                                   className="text-sm font-semibold text-gray-900" 
-                                  dir="auto"
+                                  dir={containsRTL(message.subject || '') ? 'rtl' : 'ltr'}
+                                  style={{ textAlign: containsRTL(message.subject || '') ? 'right' : 'left' }}
                                 >
                                   {message.subject || '(no subject)'}
                                 </div>
@@ -4854,12 +4855,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     wordBreak: 'break-word', 
                                     overflowWrap: 'anywhere',
                                     whiteSpace: 'normal', // Use normal wrapping since we handle breaks with <br> tags
-                                    lineHeight: '1.6' // Ensure proper line spacing
+                                    lineHeight: '1.6', // Ensure proper line spacing
+                                    textAlign: containsRTL(message.bodyPreview) ? 'right' : 'left'
                                   }}
-                                  dir={containsRTL(message.bodyPreview) ? 'rtl' : 'auto'}
+                                  dir={containsRTL(message.bodyPreview) ? 'rtl' : 'ltr'}
                                 />
                               ) : (
-                                <div className="text-gray-500 italic">No content available</div>
+                                <div className="text-gray-500 italic" dir="ltr" style={{ textAlign: 'left' }}>No content available</div>
                               )}
 
                               {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (

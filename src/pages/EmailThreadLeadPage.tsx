@@ -353,6 +353,8 @@ const EmailThreadLeadPage: React.FC = () => {
 
     try {
       setChatLoading(true);
+      
+      // Fetch incoming messages
       const incomingPromise = supabase
         .from('emails')
         .select(
@@ -364,6 +366,7 @@ const EmailThreadLeadPage: React.FC = () => {
         .order('sent_at', { ascending: true })
         .limit(200);
 
+      // Fetch outgoing messages
       const outgoingPromise = userEmail
         ? supabase
             .from('emails')
@@ -390,7 +393,7 @@ const EmailThreadLeadPage: React.FC = () => {
 
       const outgoingData = outgoingRaw || [];
 
-      const formatMessage = (email: any): EmailMessage => {
+      const formatMessage = (email: any, dbId: string | number): EmailMessage & { _dbId: string | number } => {
         // Parse attachments from JSONB - it might be a string or already an array
         let parsedAttachments: any[] = [];
         if (email.attachments) {
@@ -435,11 +438,97 @@ const EmailThreadLeadPage: React.FC = () => {
           sent_at: email.sent_at,
           direction: email.direction === 'outgoing' ? 'outgoing' : 'incoming',
           attachments: parsedAttachments,
+          _dbId: dbId, // Store database ID for deduplication
         };
       };
 
-      const combinedMessages = [...(incomingData || []), ...outgoingData]
-        .map(formatMessage)
+      const formattedMessages = [
+        ...(incomingData || []).map((email: any) => formatMessage(email, email.id)),
+        ...(outgoingData || []).map((email: any) => formatMessage(email, email.id))
+      ];
+
+      // Deduplicate messages - prioritize same timestamp + sender as duplicate
+      // Primary key: sender_email + sent_at (same sender + same time = duplicate)
+      // Secondary: message_id (if available)
+      const messageMap = new Map<string, EmailMessage & { _dbId: string | number }>();
+      const duplicateLog: Array<{ key: string; count: number; message_ids: string[] }> = [];
+      
+      formattedMessages.forEach((message) => {
+        // Create a unique key for deduplication
+        // PRIMARY: Use sender_email + sent_at (normalized timestamp) as the main deduplication key
+        // This ensures same sender + same time = same email, regardless of message_id
+        const sentAt = message.sent_at ? new Date(message.sent_at).toISOString() : '';
+        const normalizedSender = (message.sender_email || '').toLowerCase().trim();
+        
+        // Primary deduplication key: sender + timestamp
+        // Round timestamp to nearest second to handle microsecond differences
+        let timestampKey = sentAt;
+        if (sentAt) {
+          try {
+            const date = new Date(sentAt);
+            // Round to nearest second
+            date.setMilliseconds(0);
+            timestampKey = date.toISOString();
+          } catch (e) {
+            // Keep original if parsing fails
+            timestampKey = sentAt;
+          }
+        }
+        
+        const uniqueKey = `${normalizedSender}_${timestampKey}`;
+        
+        // Track duplicates for logging
+        const existingMessage = messageMap.get(uniqueKey);
+        if (existingMessage) {
+          const existingEntry = duplicateLog.find(d => d.key === uniqueKey);
+          if (existingEntry) {
+            existingEntry.count++;
+            existingEntry.message_ids.push(String(message._dbId));
+          } else {
+            duplicateLog.push({
+              key: uniqueKey,
+              count: 2,
+              message_ids: [String(existingMessage._dbId), String(message._dbId)]
+            });
+          }
+        }
+        
+        // If we already have this message (same sender + timestamp), keep the one with more complete data
+        if (!existingMessage) {
+          messageMap.set(uniqueKey, message);
+        } else {
+          // Prefer message with message_id, or with more complete body_html
+          const existingHasMessageId = existingMessage.message_id && existingMessage.message_id.trim();
+          const currentHasMessageId = message.message_id && message.message_id.trim();
+          
+          if (currentHasMessageId && !existingHasMessageId) {
+            messageMap.set(uniqueKey, message);
+          } else if (existingHasMessageId && !currentHasMessageId) {
+            // Keep existing
+          } else {
+            // Both have or don't have message_id, prefer the one with more complete body
+            const existingBodyLength = (existingMessage.body_html || existingMessage.body_preview || '').length;
+            const currentBodyLength = (message.body_html || message.body_preview || '').length;
+            
+            // If body lengths are equal, prefer the one with later database ID (more recent insert)
+            if (currentBodyLength > existingBodyLength) {
+              messageMap.set(uniqueKey, message);
+            } else if (currentBodyLength === existingBodyLength) {
+              // Compare database IDs - keep the one with higher ID (more recent)
+              const existingDbId = typeof existingMessage._dbId === 'string' ? parseInt(existingMessage._dbId) : existingMessage._dbId;
+              const currentDbId = typeof message._dbId === 'string' ? parseInt(message._dbId) : message._dbId;
+              if (currentDbId > existingDbId) {
+                messageMap.set(uniqueKey, message);
+              }
+            }
+            // Otherwise keep existing
+          }
+        }
+      });
+
+      // Remove _dbId before setting state (it's only for deduplication)
+      const combinedMessages = Array.from(messageMap.values())
+        .map(({ _dbId, ...message }) => message as EmailMessage)
         .sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
 
       // Debug: Log messages with attachments
@@ -457,6 +546,29 @@ const EmailThreadLeadPage: React.FC = () => {
         });
       } else {
         console.log('📎 No messages with attachments found. Sample email data:', incomingData?.[0]);
+      }
+
+      // Log deduplication info with details
+      if (formattedMessages.length !== combinedMessages.length) {
+        console.log(`🔍 Deduplicated ${formattedMessages.length} messages down to ${combinedMessages.length} unique messages`);
+        if (duplicateLog.length > 0) {
+          console.log('📋 Duplicate details:', duplicateLog);
+          duplicateLog.forEach(dup => {
+            console.log(`  - Found ${dup.count} duplicates for key: ${dup.key.substring(0, 50)}... (DB IDs: ${dup.message_ids.join(', ')})`);
+          });
+        }
+      }
+      
+      // Also log if we see duplicate message_ids in the raw data
+      const messageIdCounts = new Map<string, number>();
+      formattedMessages.forEach(msg => {
+        if (msg.message_id) {
+          messageIdCounts.set(msg.message_id, (messageIdCounts.get(msg.message_id) || 0) + 1);
+        }
+      });
+      const duplicateMessageIds = Array.from(messageIdCounts.entries()).filter(([_, count]) => count > 1);
+      if (duplicateMessageIds.length > 0) {
+        console.warn(`⚠️ Found ${duplicateMessageIds.length} message_id(s) with duplicates in database:`, duplicateMessageIds.map(([id, count]) => `${id.substring(0, 30)}... (${count}x)`));
       }
 
       setMessages(combinedMessages);
@@ -1386,9 +1498,9 @@ const EmailThreadLeadPage: React.FC = () => {
 
         <div className="flex-1 flex overflow-hidden">
           {/* Left Panel - Leads List */}
-          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''}`}>
+          <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col ${isMobile && showChat ? 'hidden' : ''} overflow-hidden`}>
             {/* Search Bar */}
-            <div className="p-3 border-b border-gray-200">
+            <div className="p-3 border-b border-gray-200 flex-shrink-0">
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
                 <input
@@ -1402,7 +1514,7 @@ const EmailThreadLeadPage: React.FC = () => {
             </div>
 
             {/* Leads List */}
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto overflow-x-hidden">
               {loading ? (
                 <div className="flex items-center justify-center h-32">
                   <div className="loading loading-spinner loading-lg text-blue-600"></div>
@@ -1428,11 +1540,11 @@ const EmailThreadLeadPage: React.FC = () => {
                           setShowChat(true);
                         }
                       }}
-                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors ${
+                      className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer hover:bg-gray-50 transition-colors overflow-hidden ${
                         isSelected ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
                       }`}
                     >
-                      <div className="flex items-start gap-3">
+                      <div className="flex items-start gap-3 min-w-0 w-full">
                         {/* Avatar */}
                         <div className="w-10 h-10 md:w-12 md:h-12 rounded-full flex items-center justify-center flex-shrink-0 relative border bg-blue-100 border-blue-200 text-blue-700">
                           {lead.sender_name && lead.sender_name !== lead.sender_email ? (
@@ -1445,29 +1557,27 @@ const EmailThreadLeadPage: React.FC = () => {
                         </div>
 
                         {/* Lead Info */}
-                        <div className="flex-1 min-w-0">
-                          <div className="flex items-center justify-between mb-1">
-                            <div className="flex flex-col">
-                              <h3 className="font-semibold text-gray-900 truncate max-w-[160px]">
+                        <div className="flex-1 min-w-0 overflow-hidden">
+                          <div className="flex items-center justify-between gap-2 mb-1 min-w-0">
+                            <div className="flex flex-col min-w-0 flex-1">
+                              <h3 className="font-semibold text-gray-900 truncate">
                                 {lead.sender_name && lead.sender_name !== lead.sender_email 
                                   ? lead.sender_name 
                                   : lead.sender_email || 'Unknown Sender'}
                               </h3>
                               {lead.sender_name && lead.sender_name !== lead.sender_email && (
-                                <p className="text-xs text-gray-500 truncate max-w-[180px]">
+                                <p className="text-xs text-gray-500 truncate">
                                   {lead.sender_email}
                                 </p>
                               )}
                             </div>
                             <div className="flex items-center gap-1 flex-shrink-0">
-                              <span className="text-xs text-gray-500">
+                              <span className="text-xs text-gray-500 whitespace-nowrap">
                                 {formatTime(lead.last_message_at)}
                               </span>
-                              {lead.unread_count && lead.unread_count > 0 && (
-                                <span className="bg-blue-500 text-white text-xs rounded-full px-1.5 py-0.5 min-w-[16px] text-center">
-                                  {lead.unread_count}
-                                </span>
-                              )}
+                              <span className={`text-xs rounded-full px-1.5 py-0.5 min-w-[20px] h-5 flex items-center justify-center flex-shrink-0 ${lead.unread_count && lead.unread_count > 0 ? 'bg-blue-500 text-white' : 'invisible'}`}>
+                                {lead.unread_count && lead.unread_count > 0 ? lead.unread_count : '0'}
+                              </span>
                             </div>
                           </div>
                           
@@ -1653,8 +1763,11 @@ const EmailThreadLeadPage: React.FC = () => {
                         new Date(message.sent_at).toDateString() !== new Date(messages[index - 1].sent_at).toDateString();
                       const isOutgoing = message.direction === 'outgoing';
                       
+                      // Create a unique key combining message_id, direction, and sent_at to ensure uniqueness
+                      const uniqueKey = `${message.message_id || message.id || 'msg'}_${message.direction}_${message.sent_at}_${index}`;
+                      
                       return (
-                        <React.Fragment key={message.id || index}>
+                        <React.Fragment key={uniqueKey}>
                           {showDateSeparator && (
                             <div className="flex justify-center my-4">
                               <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">

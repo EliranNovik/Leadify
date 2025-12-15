@@ -243,11 +243,36 @@ class OneComSyncService {
    * @param {Object} onecomRecord - Raw 1com record
    * @returns {Object}
    */
-  async mapOneComToDatabase(onecomRecord) {
-    // Parse the start date/time
-    const startDateTime = new Date(onecomRecord.start);
-    const date = startDateTime.toISOString().split('T')[0];
-    const time = startDateTime.toTimeString().substring(0, 8);
+  async mapOneComToDatabase(onecomRecord, cachedEmployeesList = null) {
+    // Parse the start date/time from OneCom record
+    // OneCom returns dates in format: "YYYY-MM-DD HH:MM:SS" (local time)
+    // Extract date directly to avoid timezone conversion issues
+    let date, time;
+    if (onecomRecord.start && typeof onecomRecord.start === 'string') {
+      // Extract date and time directly from the string format "YYYY-MM-DD HH:MM:SS"
+      const dateTimeMatch = onecomRecord.start.match(/^(\d{4}-\d{2}-\d{2})\s+(\d{2}:\d{2}:\d{2})/);
+      if (dateTimeMatch) {
+        date = dateTimeMatch[1]; // YYYY-MM-DD
+        time = dateTimeMatch[2]; // HH:MM:SS
+      } else {
+        // Fallback to Date parsing if format is different
+        const startDateTime = new Date(onecomRecord.start);
+        // Use local date instead of UTC to preserve the correct date
+        const year = startDateTime.getFullYear();
+        const month = String(startDateTime.getMonth() + 1).padStart(2, '0');
+        const day = String(startDateTime.getDate()).padStart(2, '0');
+        date = `${year}-${month}-${day}`;
+        time = startDateTime.toTimeString().substring(0, 8);
+      }
+    } else {
+      // Fallback if start is not available
+      const now = new Date();
+      const year = now.getFullYear();
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const day = String(now.getDate()).padStart(2, '0');
+      date = `${year}-${month}-${day}`;
+      time = now.toTimeString().substring(0, 8);
+    }
 
     // Clean source data - remove "-decker" suffix and other common suffixes
     const cleanSource = (source) => {
@@ -355,11 +380,40 @@ class OneComSyncService {
       status = 'redirected';
     }
 
-    // Map employee_id from cleaned source extension/phone and incoming DID
-    // This handles both cases:
-    // 1. Source field contains extension (e.g., "214") - matches by extension
-    // 2. Source field contains phone number (e.g., "0507825939") - matches by last 5 digits
-    const employeeId = await this.mapExtensionToEmployeeId(cleanSourceField, cleanIncomingDidField);
+    // Map employee_id by checking ALL call log fields (source, destination, incoming DID, etc.)
+    // against ALL employee fields (phone_ext, phone, mobile, mobile_ext)
+    // This ensures we don't miss any matches
+    const callLogFields = [
+      cleanSourceField,
+      cleanDestinationField,
+      cleanIncomingDidField,
+      // Also check original fields before cleaning
+      onecomRecord.realsrc || onecomRecord.src || '',
+      onecomRecord.lastdst || onecomRecord.dst || '',
+      onecomRecord.clid || '',
+      // Check firstdst as well
+      onecomRecord.firstdst || ''
+    ].filter(field => field && field !== '' && field !== '---');
+
+    // Remove duplicates from call log fields
+    const uniqueCallLogFields = [...new Set(callLogFields.map(f => f.toString().trim()))];
+    
+    console.log(`🔍 Mapping employee for call ${onecomRecord.uniqueid} using fields: ${uniqueCallLogFields.join(', ')}`);
+    
+    // Try to match employee using all call log fields
+    // Pass cached employees list to avoid repeated database queries
+    let employeeId = null;
+    for (const callLogField of uniqueCallLogFields) {
+      employeeId = await this.mapExtensionToEmployeeId(callLogField, null, cachedEmployeesList);
+      if (employeeId) {
+        console.log(`✅ Matched employee ID ${employeeId} using call log field: ${callLogField}`);
+        break; // Found a match, stop searching
+      }
+    }
+    
+    if (!employeeId) {
+      console.log(`⚠️  No employee match found for call ${onecomRecord.uniqueid} using fields: ${uniqueCallLogFields.join(', ')}`);
+    }
     
     // Map lead_id from destination number (call_logs table only supports legacy lead_id, not client_id)
     const leadMapping = await this.mapDestinationToLeadId(cleanDestinationField);
@@ -545,11 +599,8 @@ class OneComSyncService {
       }
 
       // Comprehensive matching logic: 2-4 digits = extension, 5+ digits = phone number
-      console.log(`🔍 Starting matching process with ${allEmployees.length} employees`);
-      
+      // Check ALL employee fields (phone_ext, phone, mobile, mobile_ext) against search terms
       for (const employee of allEmployees) {
-        console.log(`\n👤 Checking employee: ${employee.display_name} (ID: ${employee.id})`);
-        
         const employeeFields = [
           { value: employee.phone_ext, type: 'phone_ext' },
           { value: employee.phone, type: 'phone' },
@@ -557,76 +608,56 @@ class OneComSyncService {
           { value: employee.mobile_ext, type: 'mobile_ext' }
         ].filter(field => field.value && field.value !== '' && field.value !== '\\N');
 
-        console.log(`  Available fields: ${employeeFields.map(f => `${f.type}="${f.value}"`).join(', ')}`);
-
         for (const searchTerm of searchTerms) {
-          console.log(`\n  🔍 Searching for: "${searchTerm}"`);
-          
           // Normalize and clean the search term
           const normalizedSearch = this.normalizePhoneNumber(searchTerm);
-          console.log(`    Normalized search: "${normalizedSearch}" (length: ${normalizedSearch.length})`);
           
           // Determine if this is an extension (2-4 digits) or phone number (5+ digits)
           const isExtension = normalizedSearch.length >= 2 && normalizedSearch.length <= 4;
-          console.log(`    Type: ${isExtension ? `EXTENSION (${normalizedSearch.length} digits)` : `PHONE NUMBER (${normalizedSearch.length} digits)`}`);
           
           for (const field of employeeFields) {
             const normalizedField = this.normalizePhoneNumber(field.value);
-            console.log(`    Testing ${field.type}: "${field.value}" -> normalized: "${normalizedField}" (length: ${normalizedField.length})`);
             
             if (isExtension) {
               // Extension matching: 2-4 digits, exact match or partial match
               // Try exact match first
               if (normalizedField === normalizedSearch) {
-                console.log(`      ✅ EXTENSION EXACT MATCH: "${searchTerm}" matches "${field.value}"`);
-                console.log(`✅ Extension exact match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                console.log(`✅ Employee matched: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                 return employee.id;
               }
               // Try partial match: check if search term is contained in field or vice versa
               if (normalizedField.length >= normalizedSearch.length && normalizedField.slice(-normalizedSearch.length) === normalizedSearch) {
-                console.log(`      ✅ EXTENSION PARTIAL MATCH (ends with): "${searchTerm}" matches end of "${field.value}"`);
-                console.log(`✅ Extension partial match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                console.log(`✅ Employee matched (partial): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                 return employee.id;
               }
               if (normalizedSearch.length >= normalizedField.length && normalizedSearch.slice(-normalizedField.length) === normalizedField) {
-                console.log(`      ✅ EXTENSION PARTIAL MATCH (contained): "${searchTerm}" contains "${field.value}"`);
-                console.log(`✅ Extension partial match: ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                console.log(`✅ Employee matched (reverse partial): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                 return employee.id;
               }
             } else {
-              // Phone number matching: 5+ digits, match last 5 digits (less restrictive)
+              // Phone number matching: 5+ digits, match last 5 digits
               if (normalizedField.length >= 5 && normalizedSearch.length >= 5) {
-                const searchLast5 = normalizedSearch.slice(-5);
-                const fieldLast5 = normalizedField.slice(-5);
-                console.log(`      Comparing last 5: "${searchLast5}" vs "${fieldLast5}"`);
-                
-                if (searchLast5 === fieldLast5) {
-                  console.log(`      ✅ PHONE NUMBER MATCH (last 5 digits): "${searchTerm}" matches "${field.value}"`);
-                  console.log(`✅ Phone number match (last 5 digits): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                if (normalizedField.slice(-5) === normalizedSearch.slice(-5)) {
+                  console.log(`✅ Employee matched (phone last 5): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                   return employee.id;
-                } else {
-                  console.log(`      ❌ Phone number no match: "${searchLast5}" !== "${fieldLast5}"`);
                 }
               } else if (normalizedField.length >= 4 && normalizedSearch.length >= 4) {
                 // Fallback to last 4 digits if one is shorter than 5
-                const searchLast4 = normalizedSearch.slice(-4);
-                const fieldLast4 = normalizedField.slice(-4);
-                console.log(`      Comparing last 4 (fallback): "${searchLast4}" vs "${fieldLast4}"`);
-                
-                if (searchLast4 === fieldLast4) {
-                  console.log(`      ✅ PHONE NUMBER MATCH (last 4 digits fallback): "${searchTerm}" matches "${field.value}"`);
-                  console.log(`✅ Phone number match (last 4 digits fallback): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                if (normalizedField.slice(-4) === normalizedSearch.slice(-4)) {
+                  console.log(`✅ Employee matched (phone last 4): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
                   return employee.id;
                 }
-              } else {
-                console.log(`      ⏭️ Skipping ${field.type} (too short: search=${normalizedSearch.length}, field=${normalizedField.length})`);
+              }
+              // Also try exact match for phone numbers
+              if (normalizedField === normalizedSearch) {
+                console.log(`✅ Employee matched (phone exact): ${searchTerm} -> ${employee.display_name} (ID: ${employee.id}) via ${field.type}: ${field.value}`);
+                return employee.id;
               }
             }
           }
         }
       }
 
-      console.log(`❌ No automatic mapping found for ${source} (searched ${searchTerms.length} terms across ${allEmployees.length} employees)`);
       return null;
     } catch (error) {
       console.error(`Error mapping ${source}:`, error);
@@ -964,9 +995,10 @@ class OneComSyncService {
    * @param {string} startDate - Start date in YYYY-MM-DD format
    * @param {string} endDate - End date in YYYY-MM-DD format
    * @param {string} extensions - Comma-separated list of extensions (optional)
+   * @param {Date} minimumTime - Optional: Only process calls after this time (for webhook optimization)
    * @returns {Promise<Object>}
    */
-  async syncCallLogs(startDate, endDate, extensions = null) {
+  async syncCallLogs(startDate, endDate, extensions = null, minimumTime = null) {
     try {
       console.log(`🔄 DEBUG: Starting call logs sync from ${startDate} to ${endDate}`);
       console.log(`🔄 DEBUG: Extensions: ${extensions}`);
@@ -1004,11 +1036,63 @@ class OneComSyncService {
 
       console.log(`📊 DEBUG: Found ${onecomRecords.length} call logs from 1com before filtering`);
 
+      // Check what's already in the database for today (for comparison)
+      const today = new Date().toISOString().split('T')[0];
+      try {
+        const { data: dbTodayCalls, error: dbError } = await supabase
+          .from('call_logs')
+          .select('id, onecom_uniqueid, date, time, cdate')
+          .eq('date', today)
+          .limit(10);
+        
+        if (!dbError && dbTodayCalls) {
+          console.log(`💾 DEBUG: Found ${dbTodayCalls.length} call log(s) in database for today (${today}) - sample shown`);
+          if (dbTodayCalls.length > 0) {
+            console.log(`💾 DEBUG: Sample DB records for today:`, dbTodayCalls.slice(0, 3).map(r => ({
+              uniqueid: r.onecom_uniqueid,
+              date: r.date,
+              time: r.time,
+              has_cdate: !!r.cdate
+            })));
+          }
+        }
+      } catch (dbCheckError) {
+        console.error(`⚠️ Error checking DB for today's calls:`, dbCheckError);
+      }
+
+      // Analyze date distribution in the response - check ALL records, not just first 50
+      if (onecomRecords.length > 0) {
+        const dateCounts = {};
+        let todayCount = 0;
+        
+        onecomRecords.forEach(record => {
+          if (record.start) {
+            const dateOnly = record.start.split(' ')[0]; // Extract YYYY-MM-DD
+            dateCounts[dateOnly] = (dateCounts[dateOnly] || 0) + 1;
+            if (dateOnly === today) {
+              todayCount++;
+            }
+          }
+        });
+        
+        console.log(`📅 DEBUG: Date distribution (all ${onecomRecords.length} records):`, dateCounts);
+        console.log(`📅 DEBUG: Calls from today (${today}) in API response: ${todayCount} out of ${onecomRecords.length}`);
+        
+        // Show sample of today's calls if any
+        if (todayCount > 0) {
+          const todayCalls = onecomRecords.filter(r => r.start && r.start.startsWith(today)).slice(0, 5);
+          console.log(`📅 DEBUG: Sample of today's calls from API (first 5):`, todayCalls.map(r => ({ uniqueid: r.uniqueid, start: r.start })));
+        } else {
+          console.log(`⚠️  DEBUG: OneCom API returned 0 calls for today (${today}), but calls may exist in database from previous syncs`);
+        }
+      }
+
       // Filter records by date range (in case API doesn't filter properly or returns all records)
       if (startDate && endDate) {
         const start = new Date(startDate + 'T00:00:00');
         const end = new Date(endDate + 'T23:59:59');
         
+        let filteredOut = 0;
         onecomRecords = onecomRecords.filter(record => {
           if (!record.start) return false;
           
@@ -1020,7 +1104,10 @@ class OneComSyncService {
             const isInRange = recordDate >= start && recordDate <= end;
             
             if (!isInRange) {
-              console.log(`📅 Filtering out record ${record.uniqueid} - date ${record.start} is outside range ${startDate} to ${endDate}`);
+              filteredOut++;
+              if (filteredOut <= 5) { // Only log first 5 to avoid spam
+                console.log(`📅 Filtering out record ${record.uniqueid} - date ${record.start} is outside range ${startDate} to ${endDate}`);
+              }
             }
             
             return isInRange;
@@ -1030,7 +1117,40 @@ class OneComSyncService {
           }
         });
         
-        console.log(`📊 DEBUG: After date filtering: ${onecomRecords.length} call logs remain`);
+        if (filteredOut > 5) {
+          console.log(`📅 ... and ${filteredOut - 5} more records filtered out`);
+        }
+        
+        console.log(`📊 DEBUG: After date filtering: ${onecomRecords.length} call logs remain (${filteredOut} filtered out)`);
+      }
+
+      // Filter by minimum time if provided (for webhook optimization - only process recent calls)
+      if (minimumTime) {
+        const beforeTimeFilter = onecomRecords.length;
+        let timeFilteredOut = 0;
+        
+        onecomRecords = onecomRecords.filter(record => {
+          if (!record.start) return false;
+          
+          try {
+            // Parse the start date/time from the record (format: "2025-12-13 01:35:47")
+            const recordDate = new Date(record.start.replace(' ', 'T'));
+            
+            // Only include records after minimumTime
+            const isAfterMinTime = recordDate >= minimumTime;
+            
+            if (!isAfterMinTime) {
+              timeFilteredOut++;
+            }
+            
+            return isAfterMinTime;
+          } catch (error) {
+            console.error(`❌ Error parsing date for time filter record ${record.uniqueid}:`, error);
+            return false;
+          }
+        });
+        
+        console.log(`⏰ DEBUG: After time filtering (last 2 hours since ${minimumTime.toISOString()}): ${onecomRecords.length} call logs remain (${timeFilteredOut} filtered out from ${beforeTimeFilter} total)`);
       }
 
       // Filter by extension/phone client-side (OneCom API phone parameter doesn't work reliably)
@@ -1138,19 +1258,65 @@ class OneComSyncService {
       let synced = 0;
       let skipped = 0;
       const errors = [];
+      
+      // Get today's date for tracking (reused in summary)
+      const todayDateStr = new Date().toISOString().split('T')[0];
+      
+      // Track today's calls specifically
+      let todaySkipped = 0;
+      let todaySynced = 0;
+      
+      // Log summary before processing
+      console.log(`📊 DEBUG: Processing ${onecomRecords.length} filtered call logs for insertion/update check`);
 
+      // Cache employee list to avoid fetching multiple times during mapping
+      // This improves performance when processing many call logs
+      let cachedEmployees = null;
+      const getCachedEmployees = async () => {
+        if (cachedEmployees === null) {
+          const { data: allEmployees, error: empError } = await supabase
+            .from('tenants_employee')
+            .select('id, display_name, phone_ext, phone, mobile, mobile_ext')
+            .not('id', 'is', null);
+          
+          if (empError) {
+            console.error('Error fetching employees for caching:', empError);
+            cachedEmployees = [];
+          } else {
+            cachedEmployees = allEmployees || [];
+            console.log(`📋 Cached ${cachedEmployees.length} employees for matching`);
+          }
+        }
+        return cachedEmployees;
+      };
+      
       for (const onecomRecord of onecomRecords) {
         try {
+          const isTodayCall = onecomRecord.start && onecomRecord.start.startsWith(todayDateStr);
+          
           // Check if record already exists
-          const existingRecord = await supabase
+          const { data: existingRecord, error: checkError } = await supabase
             .from('call_logs')
-            .select('id')
+            .select('id, cdate, date, time, source, destination')
             .eq('onecom_uniqueid', onecomRecord.uniqueid)
             .single();
 
-          if (existingRecord.data) {
-            console.log(`⏭️ Skipping existing record: ${onecomRecord.uniqueid}`);
+          if (checkError && checkError.code !== 'PGRST116') {
+            // PGRST116 = no rows found (expected for new records)
+            console.error(`⚠️ Error checking for existing record ${onecomRecord.uniqueid}:`, checkError);
+          }
+
+          if (existingRecord) {
+            // Log first few skipped records with details, then summarize
+            if (skipped < 5) {
+              console.log(`⏭️ Skipping existing record: ${onecomRecord.uniqueid} (db date: ${existingRecord.date || 'NULL'}, db time: ${existingRecord.time || 'NULL'}, call date: ${onecomRecord.start || 'N/A'})`);
+            } else if (skipped === 5) {
+              console.log(`⏭️ ... (skipping remaining existing records, will show summary at end)`);
+            }
             skipped++;
+            if (isTodayCall) {
+              todaySkipped++;
+            }
             continue;
           }
 
@@ -1163,13 +1329,19 @@ class OneComSyncService {
 
           if (error) {
             console.error(`❌ Error inserting record ${onecomRecord.uniqueid}:`, error);
+            if (isTodayCall) {
+              console.error(`   ⚠️ This was a call from today (${todayDateStr})`);
+            }
             errors.push({
               uniqueid: onecomRecord.uniqueid,
               error: error.message
             });
           } else {
-            console.log(`✅ Synced record: ${onecomRecord.uniqueid}`);
+            console.log(`✅ Synced record: ${onecomRecord.uniqueid}${isTodayCall ? ` (today: ${todayDateStr})` : ''}`);
             synced++;
+            if (isTodayCall) {
+              todaySynced++;
+            }
           }
         } catch (recordError) {
           console.error(`❌ Error processing record ${onecomRecord.uniqueid}:`, recordError);
@@ -1177,6 +1349,71 @@ class OneComSyncService {
             uniqueid: onecomRecord.uniqueid,
             error: recordError.message
           });
+        }
+      }
+
+      // Log final summary with more details
+      console.log(`\n${'='.repeat(80)}`);
+      console.log(`📊 SYNC SUMMARY`);
+      console.log(`${'='.repeat(80)}`);
+      console.log(`✅ Synced (new records inserted): ${synced}`);
+      console.log(`⏭️  Skipped (already in database): ${skipped}`);
+      console.log(`❌ Errors: ${errors.length}`);
+      
+      // Show breakdown for today's calls
+      const todayCallsInResponse = onecomRecords.filter(r => r.start && r.start.startsWith(todayDateStr)).length;
+      if (todayCallsInResponse > 0) {
+        console.log(`\n📅 TODAY'S CALLS BREAKDOWN (${todayDateStr}):`);
+        console.log(`   - Total in API response: ${todayCallsInResponse}`);
+        console.log(`   - New records inserted: ${todaySynced}`);
+        console.log(`   - Skipped (already in DB): ${todaySkipped}`);
+        if (todaySynced === 0 && todaySkipped === todayCallsInResponse) {
+          console.log(`   ⚠️  All ${todayCallsInResponse} calls from today were already in the database`);
+        } else if (todaySynced > 0) {
+          console.log(`   ✅ Successfully inserted ${todaySynced} new call(s) from today`);
+        }
+      }
+      
+      console.log(`${'='.repeat(80)}\n`);
+      
+      if (synced === 0 && skipped > 0) {
+        console.log(`ℹ️  All ${skipped} call log(s) from API were already in database (no duplicates inserted)`);
+        
+        // Check if there were any calls from today in the API response
+        const todayCheck = new Date().toISOString().split('T')[0];
+        const todayCallsInApi = onecomRecords.filter(r => r.start && r.start.startsWith(todayCheck)).length;
+        
+        if (todayCallsInApi === 0) {
+          // Check DB for today's calls to compare
+          try {
+            const { count: dbTodayCount } = await supabase
+              .from('call_logs')
+              .select('*', { count: 'exact', head: true })
+              .eq('date', todayCheck);
+            
+            if (dbTodayCount && dbTodayCount > 0) {
+              console.log(`💡 OneCom API returned 0 calls for today (${todayCheck}), but ${dbTodayCount} call(s) already exist in database`);
+              console.log(`💡 This is expected - OneCom's API may not return today's calls immediately, or only returns completed days`);
+              console.log(`💡 The existing calls in DB were likely saved earlier when they were available from the API`);
+            }
+          } catch (dbCheckErr) {
+            // Ignore error, just log the API situation
+            console.log(`💡 OneCom API returned 0 calls for today - they may not be available yet in the API`);
+          }
+        } else {
+          console.log(`💡 This is normal if calls were synced previously.`);
+        }
+      }
+      if (synced > 0) {
+        console.log(`✅ Successfully inserted ${synced} new call log record(s)`);
+      }
+      if (errors.length > 0) {
+        console.error(`❌ Encountered ${errors.length} error(s) during sync`);
+        errors.slice(0, 5).forEach((err, idx) => {
+          console.error(`   Error ${idx + 1}: ${err.uniqueid || 'unknown'} - ${err.error}`);
+        });
+        if (errors.length > 5) {
+          console.error(`   ... and ${errors.length - 5} more errors`);
         }
       }
 
