@@ -8,6 +8,8 @@ import {
   PhoneIcon,
   ArrowUturnRightIcon,
   ArrowUturnLeftIcon,
+  ArrowDownIcon,
+  ArrowUpIcon,
   PencilSquareIcon,
   PaperClipIcon,
   XMarkIcon,
@@ -672,6 +674,28 @@ function sanitizeEmailHtml(html: string): string {
 const FETCH_BATCH_SIZE = 500;
 const EMAIL_MODAL_LIMIT = 200;
 
+// Helper component to handle employee avatar with image error fallback
+const EmployeeAvatar: React.FC<{ photo: string | null; name: string; initials: string; avatarBg: string }> = ({ photo, name, initials, avatarBg }) => {
+  const [imageError, setImageError] = React.useState(false);
+  
+  if (photo && !imageError) {
+    return (
+      <img
+        src={photo}
+        alt={name}
+        className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full object-cover shadow-lg ring-2 ring-white`}
+        onError={() => setImageError(true)}
+      />
+    );
+  }
+  
+  return (
+    <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold shadow-lg ring-2 ring-white ${avatarBg} text-white text-sm sm:text-base`}>
+      {initials}
+    </div>
+  );
+};
+
 const InteractionsTab: React.FC<ClientTabProps> = ({
   client,
   onClientUpdate,
@@ -687,6 +711,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
   
   const [interactions, setInteractions] = useState<Interaction[]>([]);
+  const [employeePhoneMap, setEmployeePhoneMap] = useState<Map<string, string>>(new Map()); // phone/ext -> display_name
+  const [employeePhotoMap, setEmployeePhotoMap] = useState<Map<string, string>>(new Map()); // display_name -> photo_url
   const [editIndex, setEditIndex] = useState<number|null>(null);
   const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '' });
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -2380,7 +2406,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   url,
                   direction,
                   tenants_employee!employee_id (
-                    display_name
+                    display_name,
+                    photo_url
                   )
                 `)
                 .limit(FETCH_BATCH_SIZE);
@@ -2575,13 +2602,281 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             const callTime = callLog.time || '00:00';
             const direction = callLog.direction?.toLowerCase().includes('incoming') ? 'in' : 'out';
             
-            // Get employee name from JOIN or fallback
-            let employeeName = client.name;
-            if (direction === 'out' && callLog.tenants_employee) {
+            // Normalize phone number helper (shared for both employee and client matching)
+            const normalizePhone = (p: string): string => {
+              if (!p) return '';
+              let cleaned = p.replace(/[^\d]/g, '');
+              if (cleaned.startsWith('00972')) {
+                cleaned = '0' + cleaned.substring(5);
+              } else if (cleaned.startsWith('972')) {
+                cleaned = '0' + cleaned.substring(3);
+              } else if (cleaned.startsWith('00') && cleaned.length > 10) {
+                const withoutPrefix = cleaned.substring(2);
+                if (withoutPrefix.length >= 9 && !withoutPrefix.startsWith('0')) {
+                  cleaned = '0' + withoutPrefix;
+                } else {
+                  cleaned = withoutPrefix;
+                }
+              }
+              return cleaned;
+            };
+            
+            // Helper to match by extension to employee (phone_ext or mobile_ext)
+            // Simple extension matching: if we see "849", check if "849" exists in phone_ext or mobile_ext
+            const matchExtensionToEmployee = (ext: string): string | null => {
+              if (!ext || !employeePhoneMap || employeePhoneMap.size === 0) return null;
+              
+              const trimmed = String(ext).trim();
+              
+              // Simple direct match: check if extension exists in map (from phone_ext or mobile_ext)
+              if (employeePhoneMap.has(trimmed)) {
+                return employeePhoneMap.get(trimmed) || null;
+              }
+              
+              // If extension has a dash (e.g., "849-decker"), try just the numeric part
+              if (trimmed.includes('-')) {
+                const numericPart = trimmed.split('-')[0].trim();
+                if (numericPart && employeePhoneMap.has(numericPart)) {
+                  return employeePhoneMap.get(numericPart) || null;
+                }
+              }
+              
+              // Also try numeric-only version (remove any non-digits)
+              const numericOnly = trimmed.replace(/[^\d]/g, '');
+              if (numericOnly && numericOnly !== trimmed && employeePhoneMap.has(numericOnly)) {
+                return employeePhoneMap.get(numericOnly) || null;
+              }
+              
+              return null;
+            };
+            
+            // Helper to match phone/mobile number to client
+            const matchPhoneNumberToClient = (phone: string): string | null => {
+              if (!phone) return null;
+              const normalized = normalizePhone(phone);
+              if (!normalized || normalized.length < 9) return null; // Need at least 9 digits for phone number
+              
+              // Check against client phone/mobile
+              const clientPhone = client.phone ? normalizePhone(client.phone) : '';
+              const clientMobile = client.mobile ? normalizePhone(client.mobile) : '';
+              
+              // Exact matches
+              if (normalized === clientPhone || normalized === clientMobile) {
+                return client.name;
+              }
+              
+              // Partial matches (last 7-9 digits)
+              if (normalized.length >= 9) {
+                const last9 = normalized.slice(-9);
+                const last7 = normalized.slice(-7);
+                
+                if (clientPhone && (clientPhone.slice(-9) === last9 || clientPhone.slice(-7) === last7)) {
+                  return client.name;
+                }
+                if (clientMobile && (clientMobile.slice(-9) === last9 || clientMobile.slice(-7) === last7)) {
+                  return client.name;
+                }
+              }
+              
+              return null;
+            };
+            
+            // Helper to match phone/mobile number to employee (fallback if not client)
+            const matchPhoneNumberToEmployee = (phone: string): string | null => {
+              if (!phone) return null;
+              const trimmed = phone.trim();
+              const normalized = normalizePhone(trimmed);
+              
+              // Try exact match first
+              if (employeePhoneMap.has(trimmed)) {
+                return employeePhoneMap.get(trimmed) || null;
+              }
+              if (normalized && employeePhoneMap.has(normalized)) {
+                return employeePhoneMap.get(normalized) || null;
+              }
+              
+              // Try partial match (last 7-9 digits)
+              if (normalized && normalized.length >= 9) {
+                const last9 = normalized.slice(-9);
+                if (employeePhoneMap.has(last9)) {
+                  return employeePhoneMap.get(last9) || null;
+                }
+                const last7 = normalized.slice(-7);
+                if (employeePhoneMap.has(last7)) {
+                  return employeePhoneMap.get(last7) || null;
+                }
+              }
+              
+              return null;
+            };
+            
+            // Helper to match phone number to contact by last 4 digits
+            const matchPhoneNumberToContact = (phone: string): string | null => {
+              if (!phone || !leadContacts || leadContacts.length === 0) return null;
+              
+              const normalized = normalizePhone(phone);
+              if (!normalized || normalized.length < 4) return null; // Need at least 4 digits
+              
+              const last4 = normalized.slice(-4);
+              
+              // Try to match against all contacts' phone and mobile numbers
+              for (const contact of leadContacts) {
+                if (contact.phone) {
+                  const contactPhoneNormalized = normalizePhone(contact.phone);
+                  if (contactPhoneNormalized && contactPhoneNormalized.slice(-4) === last4) {
+                    return contact.name;
+                  }
+                }
+                if (contact.mobile) {
+                  const contactMobileNormalized = normalizePhone(contact.mobile);
+                  if (contactMobileNormalized && contactMobileNormalized.slice(-4) === last4) {
+                    return contact.name;
+                  }
+                }
+              }
+              
+              return null;
+            };
+            
+            // Determine employee name:
+            // - For outbound calls: employee who made the call (source)
+            // - For inbound calls: employee who received the call (destination)
+            let employeeName: string | null = null;
+            
+            // Debug: log for first few calls
+            const callLogsArray = callLogsResult?.data || [];
+            const isDebugCall = callLogsArray.indexOf(callLog) < 2;
+            
+            // First, try to get employee name from the JOIN
+            if (callLog.tenants_employee) {
               const employee = Array.isArray(callLog.tenants_employee) ? callLog.tenants_employee[0] : callLog.tenants_employee;
-              employeeName = employee?.display_name || userFullName || 'You';
-            } else if (direction === 'out') {
-              employeeName = userFullName || 'You';
+              if (employee?.display_name) {
+                employeeName = employee.display_name;
+                if (isDebugCall) {
+                  console.log(`✅ Employee name from JOIN for call ${callLog.id}: "${employeeName}"`);
+                }
+              } else if (isDebugCall) {
+                console.log(`⚠️ JOIN has employee but no display_name for call ${callLog.id}:`, employee);
+              }
+            } else {
+              // JOIN didn't provide employee - this is where we need phone matching
+              // Log this for debugging
+              if (isDebugCall) {
+                console.log(`⚠️ No JOIN employee data for call ${callLog.id}, will try phone matching. Source: "${callLog.source}", Destination: "${callLog.destination}", Direction: "${direction}", Map ready: ${employeePhoneMap.size > 0 ? 'YES' : 'NO'}`);
+              }
+            }
+            
+            // If JOIN didn't provide employee name, try matching extensions first (simple direct match)
+            if (!employeeName) {
+              if (isDebugCall) {
+                console.log(`🔍 Starting extension/phone matching for call ${callLog.id}. Map size: ${employeePhoneMap.size}`);
+                console.log(`🔍 Source: "${callLog.source}", Destination: "${callLog.destination}", Direction: "${direction}"`);
+              }
+              
+              // Determine which field to check based on direction
+              // For outbound: source is the employee extension
+              // For inbound: destination is the employee extension
+              const primaryField = direction === 'out' ? callLog.source : callLog.destination;
+              const secondaryField = direction === 'out' ? callLog.destination : callLog.source;
+              
+              // Try primary field first (most likely to be the employee extension)
+              if (primaryField) {
+                const cleaned = String(primaryField).trim();
+                
+                // If it's a short number (2-4 digits), it's likely an extension - match directly
+                if (/^\d+$/.test(cleaned) && cleaned.length >= 2 && cleaned.length <= 4) {
+                  employeeName = matchExtensionToEmployee(cleaned);
+                  if (employeeName && isDebugCall) {
+                    console.log(`✅ Matched extension "${cleaned}" to employee "${employeeName}"`);
+                  }
+                }
+                // If it has a dash (e.g., "849-decker"), try just the numeric part
+                else if (cleaned.includes('-')) {
+                  const numericPart = cleaned.split('-')[0].trim();
+                  if (/^\d+$/.test(numericPart) && numericPart.length >= 2 && numericPart.length <= 4) {
+                    employeeName = matchExtensionToEmployee(numericPart);
+                    if (employeeName && isDebugCall) {
+                      console.log(`✅ Matched extension "${numericPart}" (from "${cleaned}") to employee "${employeeName}"`);
+                    }
+                  }
+                }
+                
+                // If extension matching didn't work, try as phone number (for longer numbers)
+                if (!employeeName && cleaned.length > 4) {
+                  employeeName = matchPhoneNumberToEmployee(cleaned);
+                  if (employeeName && isDebugCall) {
+                    console.log(`✅ Matched phone "${cleaned}" to employee "${employeeName}"`);
+                  }
+                }
+              }
+              
+              // If primary field didn't match, try secondary field as fallback
+              if (!employeeName && secondaryField) {
+                const cleaned = String(secondaryField).trim();
+                
+                // Try extension matching for short numbers
+                if (/^\d+$/.test(cleaned) && cleaned.length >= 2 && cleaned.length <= 4) {
+                  employeeName = matchExtensionToEmployee(cleaned);
+                  if (employeeName && isDebugCall) {
+                    console.log(`✅ Matched extension "${cleaned}" (secondary) to employee "${employeeName}"`);
+                  }
+                }
+                // Try phone matching for longer numbers
+                else if (!employeeName && cleaned.length > 4) {
+                  employeeName = matchPhoneNumberToEmployee(cleaned);
+                  if (employeeName && isDebugCall) {
+                    console.log(`✅ Matched phone "${cleaned}" (secondary) to employee "${employeeName}"`);
+                  }
+                }
+              }
+            }
+            
+            // Final fallback for employee name - show "Unknown" if we can't match
+            if (!employeeName) {
+              if (isDebugCall) {
+                console.log(`❌ Could not match employee for call ${callLog.id}. Source: "${callLog.source}", Destination: "${callLog.destination}", Map size: ${employeePhoneMap.size}`);
+              }
+              employeeName = 'Unknown';
+            } else if (isDebugCall) {
+              console.log(`✅ Final employee name for call ${callLog.id}: "${employeeName}"`);
+            }
+            
+            // Determine recipient name for "To:" field:
+            // - For outbound calls: destination (client we called)
+            // - For inbound calls: source (client who called us)
+            const recipientPhone = direction === 'out' ? callLog.destination : callLog.source;
+            let recipientName: string | null = null;
+            
+            if (recipientPhone) {
+              // First try to match phone/mobile number to client
+              if (recipientPhone.length > 4) {
+                recipientName = matchPhoneNumberToClient(recipientPhone);
+              }
+              
+              // If not a client, try matching to employee (fallback)
+              if (!recipientName) {
+                // Try extension match first
+                if (recipientPhone.length >= 2 && recipientPhone.length <= 4) {
+                  recipientName = matchExtensionToEmployee(recipientPhone);
+                }
+                // Then try phone number match
+                if (!recipientName && recipientPhone.length > 4) {
+                  recipientName = matchPhoneNumberToEmployee(recipientPhone);
+                }
+              }
+              
+              // If still no match, try matching to lead contacts by last 4 digits
+              if (!recipientName && recipientPhone.length >= 4) {
+                recipientName = matchPhoneNumberToContact(recipientPhone);
+                if (recipientName && isDebugCall) {
+                  console.log(`✅ Matched recipient phone "${recipientPhone}" to contact "${recipientName}" by last 4 digits`);
+                }
+              }
+              
+              // If still no match, show the phone number
+              if (!recipientName) {
+                recipientName = recipientPhone;
+              }
             }
             
             const duration = callLog.duration ? `${Math.floor(callLog.duration / 60)}:${(callLog.duration % 60).toString().padStart(2, '0')}` : '0:00';
@@ -2613,7 +2908,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               call_log: callLog,
               recording_url: callLog.url,
               call_duration: callLog.duration,
-              employee_data: callLog.tenants_employee
+              employee_data: callLog.tenants_employee,
+              recipient_name: recipientName || null, // Store the recipient name for display in "To:" field
             };
           }) || [],
 
@@ -2777,6 +3073,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       onInteractionCountUpdate,
       onInteractionsCacheUpdate,
       whatsAppTemplates, // Include templates so messages are reprocessed when templates load
+      employeePhoneMap, // Include employee phone map so we can match phone numbers to names
     ]
   );
 
@@ -2859,6 +3156,231 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     
     loadContacts();
   }, [client?.id, client?.lead_type]);
+
+  // Fetch employee phone/extension mapping
+  useEffect(() => {
+    const loadEmployeePhoneMap = async () => {
+      try {
+        const { data: employees, error } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name, phone_ext, phone, mobile, mobile_ext, onecom_code, photo_url')
+          .not('display_name', 'is', null);
+
+        if (error) {
+          console.error('Error fetching employees for phone mapping:', error);
+          return;
+        }
+
+        const phoneMap = new Map<string, string>();
+        const photoMap = new Map<string, string>(); // display_name -> photo_url
+        
+        const normalizePhone = (phone: string): string => {
+          if (!phone) return '';
+          // Remove all non-digit characters
+          let cleaned = phone.replace(/[^\d]/g, '');
+          // Handle Israeli phone numbers: remove country code prefixes
+          if (cleaned.startsWith('00972')) {
+            cleaned = '0' + cleaned.substring(5);
+          } else if (cleaned.startsWith('972')) {
+            cleaned = '0' + cleaned.substring(3);
+          } else if (cleaned.startsWith('00') && cleaned.length > 10) {
+            const withoutPrefix = cleaned.substring(2);
+            if (withoutPrefix.length >= 9 && !withoutPrefix.startsWith('0')) {
+              cleaned = '0' + withoutPrefix;
+            } else {
+              cleaned = withoutPrefix;
+            }
+          }
+          return cleaned;
+        };
+
+        employees?.forEach((emp: any) => {
+          if (!emp.display_name) return;
+
+          // Map employee name to photo URL
+          if (emp.photo_url) {
+            photoMap.set(emp.display_name, emp.photo_url);
+          }
+
+          // Map all phone/ext variations to employee name
+          if (emp.phone_ext) {
+            const ext = String(emp.phone_ext).trim();
+            // Store both the full extension and just the numeric part
+            phoneMap.set(ext, emp.display_name);
+            // Also match with tenant prefix if exists (e.g., "849-decker" -> "849")
+            if (ext.includes('-')) {
+              phoneMap.set(ext.split('-')[0], emp.display_name);
+            }
+            // Also store just the numeric part if it contains non-digits
+            const numericOnly = ext.replace(/[^\d]/g, '');
+            if (numericOnly && numericOnly !== ext) {
+              phoneMap.set(numericOnly, emp.display_name);
+            }
+          }
+          if (emp.phone) {
+            const phone = normalizePhone(emp.phone);
+            if (phone) {
+              phoneMap.set(phone, emp.display_name);
+              // Also match last 7-9 digits for partial matching
+              if (phone.length >= 9) {
+                phoneMap.set(phone.slice(-9), emp.display_name);
+                phoneMap.set(phone.slice(-7), emp.display_name);
+              }
+            }
+          }
+          if (emp.mobile) {
+            const mobile = normalizePhone(emp.mobile);
+            if (mobile) {
+              phoneMap.set(mobile, emp.display_name);
+              if (mobile.length >= 9) {
+                phoneMap.set(mobile.slice(-9), emp.display_name);
+                phoneMap.set(mobile.slice(-7), emp.display_name);
+              }
+            }
+          }
+          if (emp.mobile_ext) {
+            const mobileExt = String(emp.mobile_ext).trim();
+            // Store both the full extension and just the numeric part
+            phoneMap.set(mobileExt, emp.display_name);
+            // Also match with tenant prefix if exists (e.g., "849-decker" -> "849")
+            if (mobileExt.includes('-')) {
+              phoneMap.set(mobileExt.split('-')[0], emp.display_name);
+            }
+            // Also store just the numeric part if it contains non-digits
+            const numericOnly = mobileExt.replace(/[^\d]/g, '');
+            if (numericOnly && numericOnly !== mobileExt) {
+              phoneMap.set(numericOnly, emp.display_name);
+            }
+          }
+          // Also map onecom_code if available (this is often used for OneCom integration)
+          if (emp.onecom_code !== null && emp.onecom_code !== undefined) {
+            const onecomCode = String(emp.onecom_code).trim();
+            if (onecomCode) {
+              phoneMap.set(onecomCode, emp.display_name);
+              // Also store numeric-only version
+              const numericOnly = onecomCode.replace(/[^\d]/g, '');
+              if (numericOnly && numericOnly !== onecomCode) {
+                phoneMap.set(numericOnly, emp.display_name);
+              }
+            }
+          }
+        });
+
+        console.log(`✅ Loaded employee phone map with ${phoneMap.size} entries`);
+        console.log(`✅ Loaded employee photo map with ${photoMap.size} entries`);
+        setEmployeePhoneMap(phoneMap);
+        setEmployeePhotoMap(photoMap);
+      } catch (error) {
+        console.error('Error loading employee phone map:', error);
+      }
+    };
+
+    loadEmployeePhoneMap();
+  }, []);
+
+  // Re-process interactions when employeePhoneMap becomes available
+  // This ensures employee names are matched correctly even if map loads after initial fetch
+  useEffect(() => {
+    if (employeePhoneMap.size > 0 && interactions.length > 0 && client?.id) {
+      // Check if any call interactions have "Unknown" or suspiciously short employee names
+      const callInteractions = interactions.filter((i: any) => i.kind === 'call');
+      const hasUnknownEmployees = callInteractions.some((i: any) => {
+        const empName = i.employee || '';
+        // Check for "Unknown", empty, or very short names (likely failed matching)
+        return empName === 'Unknown' || empName === '' || (empName.length <= 2 && empName !== 'AZ'); // AZ is valid initials
+      });
+      
+      if (hasUnknownEmployees) {
+        const unknownCount = callInteractions.filter((i: any) => {
+          const empName = i.employee || '';
+          return empName === 'Unknown' || empName === '' || (empName.length <= 2 && empName !== 'AZ');
+        }).length;
+        console.log(`🔄 Employee phone map loaded (${employeePhoneMap.size} entries), found ${unknownCount} call(s) with unknown/short employee names, re-processing...`);
+        // Trigger a re-fetch to re-process with the populated map
+        // Use a small delay to avoid race conditions
+        const timeoutId = setTimeout(() => {
+          if (fetchInteractionsRef.current) {
+            fetchInteractionsRef.current({ bypassCache: true });
+          }
+        }, 100);
+        return () => clearTimeout(timeoutId);
+      }
+    }
+  }, [employeePhoneMap.size, client?.id, interactions.length]); // Include interactions.length to check when interactions change
+
+  // Helper function to match phone number to employee or client name
+  const matchPhoneToName = (phoneNumber: string | null | undefined): string | null => {
+    if (!phoneNumber || !phoneNumber.trim()) return null;
+
+    const phone = phoneNumber.trim();
+    
+    // Normalize phone number
+    const normalizePhone = (p: string): string => {
+      let cleaned = p.replace(/[^\d]/g, '');
+      if (cleaned.startsWith('00972')) {
+        cleaned = '0' + cleaned.substring(5);
+      } else if (cleaned.startsWith('972')) {
+        cleaned = '0' + cleaned.substring(3);
+      } else if (cleaned.startsWith('00') && cleaned.length > 10) {
+        const withoutPrefix = cleaned.substring(2);
+        if (withoutPrefix.length >= 9 && !withoutPrefix.startsWith('0')) {
+          cleaned = '0' + withoutPrefix;
+        } else {
+          cleaned = withoutPrefix;
+        }
+      }
+      return cleaned;
+    };
+
+    // Try exact match first
+    if (employeePhoneMap.has(phone)) {
+      return employeePhoneMap.get(phone) || null;
+    }
+
+    // Try normalized match
+    const normalized = normalizePhone(phone);
+    if (employeePhoneMap.has(normalized)) {
+      return employeePhoneMap.get(normalized) || null;
+    }
+
+    // Try extension match (if it's a short number like "849" or "849-decker")
+    if (phone.length >= 2 && phone.length <= 4) {
+      if (employeePhoneMap.has(phone)) {
+        return employeePhoneMap.get(phone) || null;
+      }
+      // Also try without tenant suffix
+      if (phone.includes('-')) {
+        const ext = phone.split('-')[0];
+        if (employeePhoneMap.has(ext)) {
+          return employeePhoneMap.get(ext) || null;
+        }
+      }
+    }
+
+    // Try partial match (last 7-9 digits for phone numbers)
+    if (normalized.length >= 9) {
+      const last9 = normalized.slice(-9);
+      if (employeePhoneMap.has(last9)) {
+        return employeePhoneMap.get(last9) || null;
+      }
+      const last7 = normalized.slice(-7);
+      if (employeePhoneMap.has(last7)) {
+        return employeePhoneMap.get(last7) || null;
+      }
+    }
+
+    // Try to match against client phone numbers
+    if (normalized) {
+      const clientPhone = client.phone ? normalizePhone(client.phone) : '';
+      const clientMobile = client.mobile ? normalizePhone(client.mobile) : '';
+      if (normalized === clientPhone || normalized === clientMobile) {
+        return client.name;
+      }
+    }
+
+    // If no match found, return null (will display the number)
+    return null;
+  };
 
   // Fetch WhatsApp templates on component mount
   useEffect(() => {
@@ -4134,20 +4656,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-purple-600 drop-shadow-sm" style={{color: '#9333ea'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-purple-200';
                 } else if (row.kind === 'call') {
-                  // Different colors based on call status
-                  if (row.status === 'ANSWERED') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-emerald-600 drop-shadow-sm" style={{color: '#059669'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-emerald-200';
-                  } else if (row.status === 'NO+ANSWER' || row.status === 'NO ANSWER') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-red-600 drop-shadow-sm" style={{color: '#dc2626'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-red-200';
-                  } else if (row.status === 'MISSED') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-orange-600 drop-shadow-sm" style={{color: '#ea580c'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-orange-200';
-                  } else {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-blue-200';
-                  }
+                  // All calls use same color, show direction with icon
+                  const DirectionIcon = row.direction === 'out' ? ArrowUpIcon : ArrowDownIcon;
+                  icon = (
+                    <div className="flex items-center justify-center relative">
+                      <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />
+                      <DirectionIcon className="w-3 h-3 md:w-3.5 md:h-3.5 !text-blue-600 absolute -bottom-0.5 -right-0.5 bg-white rounded-full" style={{color: '#2563eb'}} />
+                    </div>
+                  );
+                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-green-200';
@@ -4161,29 +4678,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-gray-600 drop-shadow-sm" style={{color: '#4b5563'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-gray-200';
                 }
-                cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
-                textGradient = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 bg-clip-text text-transparent';
-                avatarBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
+                // Use same color for all calls regardless of direction
+                if (row.kind === 'call') {
+                  cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
+                  textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
+                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
+                } else {
+                  cardBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600';
+                  textGradient = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 bg-clip-text text-transparent';
+                  avatarBg = 'bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white';
+                }
               } else {
                 // Client (Ingoing)
                 if (row.kind === 'sms') {
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-indigo-600 drop-shadow-sm" style={{color: '#4f46e5'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-indigo-200';
                 } else if (row.kind === 'call') {
-                  // Different colors based on call status
-                  if (row.status === 'ANSWERED') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-teal-600 drop-shadow-sm" style={{color: '#0d9488'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-teal-200';
-                  } else if (row.status === 'NO+ANSWER' || row.status === 'NO ANSWER') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-rose-600 drop-shadow-sm" style={{color: '#e11d48'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-rose-200';
-                  } else if (row.status === 'MISSED') {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-amber-600 drop-shadow-sm" style={{color: '#d97706'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-amber-200';
-                  } else {
-                    icon = <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
-                    iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
-                  }
+                  // All calls use same color, show direction with icon (inbound direction = 'in')
+                  const DirectionIcon = ArrowDownIcon;
+                  icon = (
+                    <div className="flex items-center justify-center relative">
+                      <PhoneIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />
+                      <DirectionIcon className="w-3 h-3 md:w-3.5 md:h-3.5 !text-blue-600 absolute -bottom-0.5 -right-0.5 bg-white rounded-full" style={{color: '#2563eb'}} />
+                    </div>
+                  );
+                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-green-200';
@@ -4197,13 +4716,44 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-slate-600 drop-shadow-sm" style={{color: '#475569'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-slate-200';
                 }
-                cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
-                textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';
-                avatarBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
+                // Use same color for all calls regardless of direction
+                if (row.kind === 'call') {
+                  cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
+                  textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
+                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
+                } else {
+                  cardBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400';
+                  textGradient = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 bg-clip-text text-transparent';
+                  avatarBg = 'bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white';
+                }
               }
               
-              // Initials
-              const initials = row.employee.split(' ').map(n => n[0]).join('').toUpperCase();
+              // Get employee photo if available
+              // For calls: from employee_data (JOIN result)
+              // For other interactions: look up by employee name from employeePhotoMap
+              let employeePhoto: string | null = null;
+              const employeeData = (row as any).employee_data;
+              if (employeeData) {
+                // Calls have employee_data from JOIN
+                employeePhoto = Array.isArray(employeeData) ? employeeData[0]?.photo_url : employeeData?.photo_url;
+              } else if (row.employee && employeePhotoMap.has(row.employee)) {
+                // For email/WhatsApp/etc, look up by employee name
+                employeePhoto = employeePhotoMap.get(row.employee) || null;
+              }
+              
+              // Initials - handle case where employee name might be missing or short
+              const employeeNameForInitials = row.employee || 'Unknown';
+              const initials = employeeNameForInitials.split(' ').map(n => n[0]).join('').toUpperCase() || '?';
+              
+              // Debug: Log employee name for calls to verify it's correct
+              if (row.kind === 'call' && idx < 3) {
+                console.log(`🔍 Rendering call ${(row as any).call_log?.id}: employee="${row.employee}", initials="${initials}", photo="${employeePhoto}"`);
+              }
+              
+              // Debug: Log if employee name seems wrong
+              if (row.kind === 'call' && (!row.employee || row.employee === 'Unknown' || row.employee.length <= 2)) {
+                console.warn(`⚠️ Call ${(row as any).call_log?.id} has suspicious employee name: "${row.employee}"`);
+              }
               
               return (
                 <div
@@ -4237,13 +4787,34 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {/* Header section with employee info and status */}
                           <div className="flex flex-col sm:flex-row sm:items-center gap-3 mb-4">
                             <div className="flex items-center gap-3">
-                              <div className={`w-8 h-8 sm:w-10 sm:h-10 rounded-full flex items-center justify-center font-bold ${avatarBg} text-sm sm:text-base`}>
-                                {initials}
-                              </div>
+                              <EmployeeAvatar photo={employeePhoto} name={row.employee} initials={initials} avatarBg={avatarBg} />
                               <div className="flex flex-col gap-1">
                                 <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
                                   {row.employee}
                                 </div>
+                                {/* Show recipient for call interactions */}
+                                {row.kind === 'call' && (() => {
+                                  const callLog = (row as any).call_log;
+                                  if (!callLog) return null;
+                                  
+                                  // Use the stored recipient_name from the interaction object
+                                  const recipientName = (row as any).recipient_name;
+                                  
+                                  // Fallback to destination if recipient_name is not available
+                                  const recipientDisplay = recipientName || callLog.destination;
+                                  
+                                  // Only show if we have a recipient to display
+                                  if (!recipientDisplay) return null;
+                                  
+                                  return (
+                                    <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
+                                      <div className="flex items-center gap-1">
+                                        <span>To:</span>
+                                        <span className="font-medium text-gray-700">{recipientDisplay}</span>
+                                      </div>
+                                    </div>
+                                  );
+                                })()}
                                 {/* Show contact name for email and WhatsApp interactions */}
                                 {(row.kind === 'email' || row.kind === 'whatsapp') && (() => {
                                   const interactionContactId = (row as any).contact_id;
@@ -4404,48 +4975,57 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             </div>
                           )}
                           
-                          {/* Call recording playback controls */}
-                          {row.kind === 'call' && (
-                            <div className="flex items-center justify-between bg-gray-50 rounded-lg p-3 mb-4">
-                              <div className="flex items-center gap-2">
-                                <SpeakerWaveIcon className="w-5 h-5 text-gray-500" />
-                                <div className="flex flex-col">
+                          {/* Call recording playback controls - only show play button for NO+ANSWER and BUSY status */}
+                          {row.kind === 'call' && (() => {
+                            const callStatus = row.status?.toUpperCase() || '';
+                            const shouldShowPlayButton = callStatus === 'NO+ANSWER' || 
+                                                         callStatus === 'NO ANSWER' || 
+                                                         callStatus === 'BUSY';
+                            
+                            if (!shouldShowPlayButton) return null;
+                            
+                            return (
+                              <div className="flex items-center justify-between mb-4">
+                                <div className="flex items-center gap-2">
+                                  <SpeakerWaveIcon className="w-5 h-5 text-gray-500" />
                                   <span className="text-sm font-medium text-gray-700">
                                     {row.recording_url ? 'Call Recording' : 'Recording not available'}
                                   </span>
                                 </div>
-                              </div>
-                              {row.recording_url && (
-                                <button
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    if (playingAudioId === row.id) {
-                                      handleStopRecording();
-                                    } else {
-                                      handlePlayRecording(row.recording_url!, row.id.toString());
-                                    }
-                                  }}
-                                  className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
-                                    playingAudioId === row.id
-                                      ? 'bg-red-500 text-white hover:bg-red-600 shadow-md'
-                                      : 'bg-purple-500 text-white hover:bg-purple-600 shadow-md'
-                                  }`}
-                                >
-                                  {playingAudioId === row.id ? (
-                                    <>
-                                      <StopIcon className="w-4 h-4" />
-                                      Stop
-                                    </>
-                                  ) : (
-                                    <>
-                                      <PlayIcon className="w-4 h-4" />
-                                      Play
-                                    </>
+                                <div className="flex items-center gap-2">
+                                  {row.recording_url && (
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        if (playingAudioId === row.id) {
+                                          handleStopRecording();
+                                        } else {
+                                          handlePlayRecording(row.recording_url!, row.id.toString());
+                                        }
+                                      }}
+                                      className={`flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all duration-200 ${
+                                        playingAudioId === row.id
+                                          ? 'bg-red-500 text-white hover:bg-red-600 shadow-md'
+                                          : 'bg-purple-500 text-white hover:bg-purple-600 shadow-md'
+                                      }`}
+                                    >
+                                      {playingAudioId === row.id ? (
+                                        <>
+                                          <StopIcon className="w-4 h-4" />
+                                          Stop
+                                        </>
+                                      ) : (
+                                        <>
+                                          <PlayIcon className="w-4 h-4" />
+                                          Play
+                                        </>
+                                      )}
+                                    </button>
                                   )}
-                                </button>
-                              )}
-                            </div>
-                          )}
+                                </div>
+                              </div>
+                            );
+                          })()}
 
                           {/* Observation/Notes */}
                           {row.observation && row.observation !== 'call-ended' && (
