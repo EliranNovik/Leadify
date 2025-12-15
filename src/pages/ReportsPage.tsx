@@ -3996,6 +3996,33 @@ const ExpertPipelineReport = () => {
     }
   };
 
+  // Helper function to get meeting color based on date (same as ExpertPage.tsx)
+  const getMeetingColor = (meetingDateStr: string | null | undefined): string => {
+    if (!meetingDateStr) return 'bg-gray-100 text-gray-600';
+    
+    // Extract date part
+    const dateOnly = meetingDateStr.split(' ')[0];
+    const meetingDate = new Date(dateOnly);
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    
+    // Set meeting date to start of day for comparison
+    const meetingDateStart = new Date(meetingDate);
+    meetingDateStart.setHours(0, 0, 0, 0);
+    
+    // Calculate difference in days
+    const diffTime = meetingDateStart.getTime() - today.getTime();
+    const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+    
+    if (diffDays < 0) {
+      // Past meeting - red
+      return 'bg-red-500 text-white';
+    } else {
+      // Today or future - green
+      return 'bg-green-500 text-white';
+    }
+  };
+
   const getHandlerOpinion = (handlerNotes: any): string => {
     if (!handlerNotes) return '---';
     if (Array.isArray(handlerNotes) && handlerNotes.length > 0) {
@@ -4107,6 +4134,55 @@ const ExpertPipelineReport = () => {
         throw legacyLeadsError;
       }
 
+      // Fetch stage dates for "meeting scheduled" (stage 20) from leads_leadstage
+      const newLeadIds = (newLeadsData || []).map(lead => lead.id).filter(Boolean);
+      const legacyLeadIds = (legacyLeadsData || []).map(lead => lead.id).filter(Boolean);
+
+      // Fetch stage dates for new leads
+      const stageDatesMap: Record<string, string> = {};
+      if (newLeadIds.length > 0) {
+        const { data: newLeadStageData } = await supabase
+          .from('leads_leadstage')
+          .select('newlead_id, date')
+          .in('newlead_id', newLeadIds)
+          .eq('stage', 20)
+          .order('date', { ascending: true });
+
+        if (newLeadStageData) {
+          // Use the earliest date for each lead (first time stage 20 was set)
+          newLeadStageData.forEach((stage: any) => {
+            if (stage.newlead_id && stage.date) {
+              const leadId = stage.newlead_id;
+              if (!stageDatesMap[leadId] || new Date(stage.date) < new Date(stageDatesMap[leadId])) {
+                stageDatesMap[leadId] = stage.date;
+              }
+            }
+          });
+        }
+      }
+
+      // Fetch stage dates for legacy leads
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeadStageData } = await supabase
+          .from('leads_leadstage')
+          .select('lead_id, date')
+          .in('lead_id', legacyLeadIds)
+          .eq('stage', 20)
+          .order('date', { ascending: true });
+
+        if (legacyLeadStageData) {
+          // Use the earliest date for each lead (first time stage 20 was set)
+          legacyLeadStageData.forEach((stage: any) => {
+            if (stage.lead_id && stage.date) {
+              const leadId = `legacy_${stage.lead_id}`;
+              if (!stageDatesMap[leadId] || new Date(stage.date) < new Date(stageDatesMap[leadId])) {
+                stageDatesMap[leadId] = stage.date;
+              }
+            }
+          });
+        }
+      }
+
       // Fetch ALL employees to create a complete mapping
       const { data: allEmployeesData } = await supabase
         .from('tenants_employee')
@@ -4173,6 +4249,7 @@ const ExpertPipelineReport = () => {
           meeting_scheduler: resolveEmployeeName(lead.scheduler),
           meeting_manager: resolveEmployeeName(lead.manager),
           handler_opinion: getHandlerOpinion(lead.handler_notes),
+          assigned_date: stageDatesMap[lead.id] || null,
           lead_type: 'new' as const
         };
       }).filter(Boolean);
@@ -4192,6 +4269,7 @@ const ExpertPipelineReport = () => {
           meeting_scheduler: resolveEmployeeName(lead.meeting_scheduler_id),
           meeting_manager: resolveEmployeeName(lead.meeting_manager_id),
           handler_opinion: getHandlerOpinion(lead.handler_notes),
+          assigned_date: stageDatesMap[`legacy_${lead.id}`] || null,
           lead_type: 'legacy' as const
         };
       });
@@ -4222,7 +4300,14 @@ const ExpertPipelineReport = () => {
 
   return (
     <div className="px-2 py-6">
-      <h2 className="text-2xl font-bold mb-6 px-4">Expert Pipeline</h2>
+      <h2 className="text-2xl font-bold mb-6 px-4">
+        Expert Pipeline
+        {searchPerformed && (
+          <span className="ml-2 text-lg font-normal text-gray-600">
+            ({results.length} {results.length === 1 ? 'lead' : 'leads'})
+          </span>
+        )}
+      </h2>
       
       {/* Filters */}
       <div className="mb-6 px-4">
@@ -4302,6 +4387,7 @@ const ExpertPipelineReport = () => {
                     <tr>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lead</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Assigned Date</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Date</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Scheduler</th>
                       <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Manager</th>
@@ -4320,7 +4406,18 @@ const ExpertPipelineReport = () => {
                           </Link>
                         </td>
                         <td className="px-4 py-4 text-sm text-gray-900">{lead.category}</td>
-                        <td className="px-4 py-4 text-sm text-gray-900">{formatDate(lead.meeting_date)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">
+                          {lead.assigned_date ? formatDate(lead.assigned_date) : '---'}
+                        </td>
+                        <td className="px-4 py-4 text-sm text-gray-900">
+                          {lead.meeting_date ? (
+                            <span className={`px-2 py-1 rounded font-semibold ${getMeetingColor(lead.meeting_date)}`}>
+                              {formatDate(lead.meeting_date)}
+                            </span>
+                          ) : (
+                            '---'
+                          )}
+                        </td>
                         <td className="px-4 py-4 text-sm text-gray-900">{lead.meeting_scheduler}</td>
                         <td className="px-4 py-4 text-sm text-gray-900">{lead.meeting_manager}</td>
                         <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
@@ -6516,8 +6613,6 @@ const ExpertsResultsReport = () => {
           proposal_total,
           proposal_currency,
           meeting_date,
-          eligibility_status_last_edited_at,
-          expert_eligibility_date,
           misc_category!category_id(
             id,
             name,
@@ -6591,7 +6686,6 @@ const ExpertsResultsReport = () => {
           total_base,
           currency_id,
           meeting_date,
-          eligibilty_date,
           misc_category!category_id(
             id,
             name,
@@ -6644,6 +6738,55 @@ const ExpertsResultsReport = () => {
         throw legacyLeadsError;
       }
 
+      // Fetch stage dates for "meeting scheduled" (stage 20) from leads_leadstage
+      const newLeadIds = (newLeadsData || []).map(lead => lead.id).filter(Boolean);
+      const legacyLeadIds = (legacyLeadsData || []).map(lead => lead.id).filter(Boolean);
+
+      // Fetch stage dates for new leads
+      const stageDatesMap: Record<string, string> = {};
+      if (newLeadIds.length > 0) {
+        const { data: newLeadStageData } = await supabase
+          .from('leads_leadstage')
+          .select('newlead_id, date')
+          .in('newlead_id', newLeadIds)
+          .eq('stage', 20)
+          .order('date', { ascending: true });
+
+        if (newLeadStageData) {
+          // Use the earliest date for each lead (first time stage 20 was set)
+          newLeadStageData.forEach((stage: any) => {
+            if (stage.newlead_id && stage.date) {
+              const leadId = stage.newlead_id;
+              if (!stageDatesMap[leadId] || new Date(stage.date) < new Date(stageDatesMap[leadId])) {
+                stageDatesMap[leadId] = stage.date;
+              }
+            }
+          });
+        }
+      }
+
+      // Fetch stage dates for legacy leads
+      if (legacyLeadIds.length > 0) {
+        const { data: legacyLeadStageData } = await supabase
+          .from('leads_leadstage')
+          .select('lead_id, date')
+          .in('lead_id', legacyLeadIds)
+          .eq('stage', 20)
+          .order('date', { ascending: true });
+
+        if (legacyLeadStageData) {
+          // Use the earliest date for each lead (first time stage 20 was set)
+          legacyLeadStageData.forEach((stage: any) => {
+            if (stage.lead_id && stage.date) {
+              const leadId = `legacy_${stage.lead_id}`;
+              if (!stageDatesMap[leadId] || new Date(stage.date) < new Date(stageDatesMap[leadId])) {
+                stageDatesMap[leadId] = stage.date;
+              }
+            }
+          });
+        }
+      }
+
       // Process new leads
       const processedNewLeads = (newLeadsData || []).map(lead => {
         const meetingDate = lead.meeting_date || (lead.meetings && lead.meetings.length > 0 ? lead.meetings[0].meeting_date : null);
@@ -6658,7 +6801,7 @@ const ExpertsResultsReport = () => {
           category: getCategoryName(lead.category_id, lead.misc_category),
           stage: lead.stage ? stages.find(s => s.id === lead.stage)?.name || String(lead.stage) : '---',
           language: lead.language || '---',
-          expert_set_date: lead.expert_eligibility_date || lead.eligibility_status_last_edited_at || null,
+          expert_set_date: stageDatesMap[lead.id] || null,
           meeting_date: meetingDate,
           scheduler: resolveEmployeeName(lead.scheduler),
           manager: resolveEmployeeName(lead.manager),
@@ -6685,7 +6828,7 @@ const ExpertsResultsReport = () => {
           category: getCategoryName(lead.category_id, lead.misc_category),
           stage: lead.stage ? stages.find(s => s.id === lead.stage)?.name || String(lead.stage) : '---',
           language: lead.language_id ? languages.find(l => l.id === lead.language_id)?.name || '---' : '---',
-          expert_set_date: lead.eligibilty_date || null,
+          expert_set_date: stageDatesMap[`legacy_${lead.id}`] || null,
           meeting_date: lead.meeting_date || null,
           scheduler: resolveEmployeeName(lead.meeting_scheduler_id),
           manager: resolveEmployeeName(lead.meeting_manager_id),
@@ -9516,8 +9659,17 @@ export default function ReportsPage() {
   const navigate = useNavigate();
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
 
   console.log('Selected report:', selectedReport);
+
+  // Close dropdown when report is selected
+  useEffect(() => {
+    if (selectedReport) {
+      setShowSearchDropdown(false);
+      setSearchQuery('');
+    }
+  }, [selectedReport]);
 
   // Filter reports based on search query
   const filteredReports = useMemo(() => {
@@ -9629,18 +9781,27 @@ export default function ReportsPage() {
                     type="text"
                     placeholder="Search other reports..."
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      setShowSearchDropdown(e.target.value.length > 0);
+                    }}
                     onFocus={() => {
-                      // When user starts searching, show report selector
-                      if (searchQuery) {
-                        // This will be handled by showing a dropdown or modal
+                      if (searchQuery.length > 0) {
+                        setShowSearchDropdown(true);
                       }
+                    }}
+                    onBlur={() => {
+                      // Delay closing to allow click events to fire
+                      setTimeout(() => setShowSearchDropdown(false), 200);
                     }}
                     className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
                   />
                   {searchQuery && (
               <button
-                      onClick={() => setSearchQuery('')}
+                      onClick={() => {
+                        setSearchQuery('');
+                        setShowSearchDropdown(false);
+                      }}
                       className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
                     >
                       <XMarkIcon className="w-4 h-4" />
@@ -9661,8 +9822,8 @@ export default function ReportsPage() {
             </div>
             
             {/* Search Results Dropdown */}
-            {searchQuery && (
-              <div className="mb-6 border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto">
+            {showSearchDropdown && searchQuery && (
+              <div className="mb-6 border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto z-50">
                 <div className="p-4">
                   <p className="text-sm font-semibold text-gray-700 mb-3">Quick Switch to:</p>
                   <div className="space-y-2">
@@ -9671,6 +9832,7 @@ export default function ReportsPage() {
                         <button
                           key={item.label}
                           onClick={() => {
+                            setShowSearchDropdown(false);
                             if (item.route) {
                               navigate(item.route);
                               setSearchQuery('');

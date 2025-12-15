@@ -1562,6 +1562,9 @@ const Clients: React.FC<ClientsProps> = ({
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
+  const [showRescheduleTimeDropdown, setShowRescheduleTimeDropdown] = useState(false);
+  const rescheduleTimeDropdownRef = useRef<HTMLDivElement>(null);
+  const [rescheduleMeetingCountsByTime, setRescheduleMeetingCountsByTime] = useState<Record<string, number>>({});
 
   // 1. Add state for the payments plan drawer
   const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
@@ -2317,6 +2320,69 @@ useEffect(() => {
     };
     fetchMeetings();
   }, [selectedClient, showRescheduleDrawer]);
+
+  // Fetch meeting counts by time for the selected date in reschedule drawer
+  useEffect(() => {
+    const fetchRescheduleMeetingCounts = async () => {
+      if (!rescheduleFormData.date) {
+        setRescheduleMeetingCountsByTime({});
+        return;
+      }
+
+      try {
+        // Fetch all meetings for the selected date
+        const { data: meetings, error } = await supabase
+          .from('meetings')
+          .select('meeting_time')
+          .eq('meeting_date', rescheduleFormData.date)
+          .or('status.is.null,status.neq.canceled');
+
+        if (error) {
+          console.error('Error fetching reschedule meeting counts:', error);
+          setRescheduleMeetingCountsByTime({});
+          return;
+        }
+
+        // Count meetings by time slot
+        const counts: Record<string, number> = {};
+        if (meetings) {
+          meetings.forEach((meeting: any) => {
+            if (meeting.meeting_time) {
+              // Extract time in HH:MM format (handle both TIME and TIMESTAMP formats)
+              const timeStr = typeof meeting.meeting_time === 'string' 
+                ? meeting.meeting_time.substring(0, 5) 
+                : new Date(meeting.meeting_time).toTimeString().substring(0, 5);
+              counts[timeStr] = (counts[timeStr] || 0) + 1;
+            }
+          });
+        }
+
+        setRescheduleMeetingCountsByTime(counts);
+      } catch (error) {
+        console.error('Error fetching reschedule meeting counts:', error);
+        setRescheduleMeetingCountsByTime({});
+      }
+    };
+
+    fetchRescheduleMeetingCounts();
+  }, [rescheduleFormData.date]);
+
+  // Close reschedule time dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (rescheduleTimeDropdownRef.current && !rescheduleTimeDropdownRef.current.contains(event.target as Node)) {
+        setShowRescheduleTimeDropdown(false);
+      }
+    };
+
+    if (showRescheduleTimeDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showRescheduleTimeDropdown]);
 
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
@@ -6412,33 +6478,34 @@ useEffect(() => {
       }
 
       // Update lead stage and roles
-      // Only update stage if we're not already in stage 21, or if we canceled a meeting
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
       const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
                           (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
       
-      // If we canceled a meeting, update to stage 21. If we're already in stage 21 and just creating a new meeting, stay in stage 21
-      // If we're in stage 20 and rescheduling, update to stage 21
-      // Since we now always automatically cancel the oldest meeting when rescheduling, check if we actually canceled one
-      const shouldUpdateStage = canceledMeeting !== null || currentStage !== 21;
+      // If we're in stage 20 (meeting scheduled) and rescheduling, keep stage at 20
+      // If we're already in stage 21, stay in stage 21
+      // Otherwise, update to stage 21
+      const shouldUpdateStage = currentStage !== 20 && currentStage !== 21;
       const rescheduledStageId = 21; // Meeting rescheduled
 
-      if (shouldUpdateStage) {
-        if (isLegacyLead) {
+      if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        const updatePayload: any = { 
-          stage: rescheduledStageId,
-          stage_changed_by: stageActor.fullName,
-          stage_changed_at: stageTimestamp,
-        };
+        const updatePayload: any = {};
 
-        // Update scheduler for legacy leads (must be numeric employee ID, not display name)
+        // Only update stage if needed
+        if (shouldUpdateStage) {
+          updatePayload.stage = rescheduledStageId;
+          updatePayload.stage_changed_by = stageActor.fullName;
+          updatePayload.stage_changed_at = stageTimestamp;
+        }
+
+        // Always update scheduler for legacy leads (must be numeric employee ID, not display name)
         if (schedulerEmployeeId !== null) {
           updatePayload.meeting_scheduler_id = schedulerEmployeeId;
         }
 
-        // Update manager and helper for legacy leads
+        // Always update manager and helper for legacy leads
         if (managerEmployeeId !== null) {
           updatePayload.meeting_manager_id = managerEmployeeId;
         }
@@ -6446,33 +6513,44 @@ useEffect(() => {
           updatePayload.meeting_lawyer_id = helperEmployeeId;
         }
         
-        // Update expert for legacy leads (must be numeric employee ID, not display name)
+        // Always update expert for legacy leads (must be numeric employee ID, not display name)
         if (expertEmployeeId !== null) {
           updatePayload.expert_id = expertEmployeeId;
         }
 
-        const { error } = await supabase
-          .from('leads_lead')
-          .update(updatePayload)
-          .eq('id', legacyId);
+        // Only update if there's something to update
+        if (Object.keys(updatePayload).length > 0) {
+          const { error } = await supabase
+            .from('leads_lead')
+            .update(updatePayload)
+            .eq('id', legacyId);
 
-        if (error) throw error;
+          if (error) throw error;
+        }
 
-        await recordLeadStageChange({
-          lead: selectedClient,
-          stage: rescheduledStageId,
-          actor: stageActor,
-          timestamp: stageTimestamp,
-        });
+        // Record stage change only if stage was updated
+        if (shouldUpdateStage) {
+          await recordLeadStageChange({
+            lead: selectedClient,
+            stage: rescheduledStageId,
+            actor: stageActor,
+            timestamp: stageTimestamp,
+          });
+        }
       } else {
-        const updatePayload: any = { 
-          stage: rescheduledStageId,
-          scheduler: currentUserFullName,
-          stage_changed_by: stageActor.fullName,
-          stage_changed_at: stageTimestamp,
-        };
+        const updatePayload: any = {};
 
-        // Update manager and helper for new leads (as employee IDs)
+        // Only update stage if needed
+        if (shouldUpdateStage) {
+          updatePayload.stage = rescheduledStageId;
+          updatePayload.stage_changed_by = stageActor.fullName;
+          updatePayload.stage_changed_at = stageTimestamp;
+        }
+
+        // Always update scheduler for new leads
+        updatePayload.scheduler = currentUserFullName;
+
+        // Always update manager and helper for new leads (as employee IDs)
         if (managerEmployeeId !== null) {
           updatePayload.manager = managerEmployeeId;
         }
@@ -6480,13 +6558,15 @@ useEffect(() => {
           updatePayload.helper = helperEmployeeId;
         }
 
-          const { error } = await supabase
-            .from('leads')
-            .update(updatePayload)
-            .eq('id', selectedClient.id);
+        const { error } = await supabase
+          .from('leads')
+          .update(updatePayload)
+          .eq('id', selectedClient.id);
 
-          if (error) throw error;
+        if (error) throw error;
 
+        // Record stage change only if stage was updated
+        if (shouldUpdateStage) {
           await recordLeadStageChange({
             lead: selectedClient,
             stage: rescheduledStageId,
@@ -12868,32 +12948,57 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     type="date"
                     className="input input-bordered w-full"
                     value={rescheduleFormData.date}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }))}
+                    onChange={(e) => {
+                      setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
+                      // Reset meeting counts when date changes
+                      setRescheduleMeetingCountsByTime({});
+                    }}
                     required
                     min={new Date().toISOString().split('T')[0]}
                   />
                 </div>
 
                 {/* Time */}
-                <div>
+                <div className="relative" ref={rescheduleTimeDropdownRef}>
                   <label className="block font-semibold mb-1">New Time</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={rescheduleFormData.time}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, time: e.target.value }))}
-                    required
+                  <div
+                    className="input input-bordered w-full cursor-pointer flex items-center justify-between"
+                    onClick={() => setShowRescheduleTimeDropdown(!showRescheduleTimeDropdown)}
                   >
-                    {Array.from({ length: 32 }, (_, i) => {
-                      const hour = Math.floor(i / 2) + 8; // Start from 8:00
-                      const minute = i % 2 === 0 ? '00' : '30';
-                      const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                      return (
-                        <option key={timeOption} value={timeOption}>
-                          {timeOption}
-                        </option>
-                      );
-                    })}
-                  </select>
+                    <span>{rescheduleFormData.time}</span>
+                    <ChevronDownIcon className="w-4 h-4" />
+                  </div>
+                  {showRescheduleTimeDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {Array.from({ length: 32 }, (_, i) => {
+                        const hour = Math.floor(i / 2) + 8; // Start from 8:00
+                        const minute = i % 2 === 0 ? '00' : '30';
+                        const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
+                        const count = rescheduleMeetingCountsByTime[timeOption] || 0;
+                        // Determine badge color based on count
+                        const badgeClass = count === 0 
+                          ? 'badge badge-ghost' 
+                          : count <= 2 
+                          ? 'badge badge-success' 
+                          : count <= 5 
+                          ? 'badge badge-warning' 
+                          : 'badge badge-error';
+                        return (
+                          <div
+                            key={timeOption}
+                            className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
+                            onClick={() => {
+                              setRescheduleFormData((prev: any) => ({ ...prev, time: timeOption }));
+                              setShowRescheduleTimeDropdown(false);
+                            }}
+                          >
+                            <span>{timeOption}</span>
+                            <span className={badgeClass}>{count}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </div>
 
                 {/* Manager (Optional) */}
