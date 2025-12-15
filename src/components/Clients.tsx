@@ -25,6 +25,7 @@ import {
   DocumentTextIcon,
   CalendarDaysIcon,
   ChevronDownIcon,
+  ChevronLeftIcon,
   CheckCircleIcon,
   EnvelopeIcon,
   PhoneIcon,
@@ -1565,6 +1566,10 @@ const Clients: React.FC<ClientsProps> = ({
   const [showRescheduleTimeDropdown, setShowRescheduleTimeDropdown] = useState(false);
   const rescheduleTimeDropdownRef = useRef<HTMLDivElement>(null);
   const [rescheduleMeetingCountsByTime, setRescheduleMeetingCountsByTime] = useState<Record<string, number>>({});
+  
+  // State for sticky header on scroll
+  const [showStickyHeader, setShowStickyHeader] = useState(false);
+  const scrollThreshold = 100; // Show sticky header after scrolling 100px
 
   // 1. Add state for the payments plan drawer
   const [showPaymentsPlanDrawer, setShowPaymentsPlanDrawer] = useState(false);
@@ -2383,6 +2388,55 @@ useEffect(() => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
   }, [showRescheduleTimeDropdown]);
+
+  // Handle scroll detection for sticky header
+  useEffect(() => {
+    if (!selectedClient) {
+      setShowStickyHeader(false);
+      return;
+    }
+
+    const handleScroll = () => {
+      // Check both window scroll and main element scroll
+      const windowScrollY = window.scrollY || window.pageYOffset || 0;
+      
+      // Also check the main element scroll (since App.tsx has overflow-y-auto on main)
+      const mainElement = document.querySelector('main');
+      const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
+      
+      // Use whichever is greater (handles both cases)
+      const scrollY = Math.max(windowScrollY, mainScrollTop);
+      
+      const shouldShow = scrollY > scrollThreshold;
+      
+      // Debug logging (can be removed later)
+      if (process.env.NODE_ENV === 'development') {
+        console.log('Scroll detection:', { scrollY, scrollThreshold, shouldShow, windowScrollY, mainScrollTop });
+      }
+      
+      setShowStickyHeader(shouldShow);
+    };
+
+    // Initial check after a small delay to ensure DOM is ready
+    const timeoutId = setTimeout(handleScroll, 100);
+
+    // Listen to both window and main element scroll
+    window.addEventListener('scroll', handleScroll, { passive: true });
+    
+    const mainElement = document.querySelector('main');
+    if (mainElement) {
+      mainElement.addEventListener('scroll', handleScroll, { passive: true });
+    }
+    
+    return () => {
+      clearTimeout(timeoutId);
+      window.removeEventListener('scroll', handleScroll);
+      const mainEl = document.querySelector('main');
+      if (mainEl) {
+        mainEl.removeEventListener('scroll', handleScroll);
+      }
+    };
+  }, [scrollThreshold, selectedClient]);
 
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
@@ -9430,6 +9484,116 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   
   return (
     <div className="min-h-screen bg-white dark:bg-gray-900">
+      {/* Sticky Header - appears when scrolled down, positioned below main header */}
+      {showStickyHeader && selectedClient && (
+        <div className="fixed top-16 left-0 md:left-[100px] right-0 z-[45] bg-white dark:bg-gray-800 shadow-lg border-b border-gray-200 dark:border-gray-700 transition-all duration-300 ease-in-out">
+          <div className="max-w-7xl mx-auto px-4 py-3">
+            <div className="flex items-center justify-between gap-4 flex-wrap">
+              {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
+                <div className="hidden md:flex items-center gap-2">
+                  <button
+                    onClick={() => {
+                      const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                      if (currentIndex > 0) {
+                        setActiveTab(tabs[currentIndex - 1].id);
+                      } else {
+                        setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
+                      }
+                    }}
+                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    title="Previous tab"
+                    aria-label="Previous tab"
+                  >
+                    <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                  </button>
+                  {/* Current Tab Name Badge */}
+                  {(() => {
+                    const currentTab = tabs.find(tab => tab.id === activeTab);
+                    return currentTab ? (
+                      <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
+                        {currentTab.label}
+                      </span>
+                    ) : null;
+                  })()}
+                  <button
+                    onClick={() => {
+                      const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                      if (currentIndex < tabs.length - 1) {
+                        setActiveTab(tabs[currentIndex + 1].id);
+                      } else {
+                        setActiveTab(tabs[0].id); // Wrap to first tab
+                      }
+                    }}
+                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    title="Next tab"
+                    aria-label="Next tab"
+                  >
+                    <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                  </button>
+                </div>
+                <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                  <span className="text-lg font-bold text-gray-900 dark:text-white whitespace-nowrap">
+                    #{selectedClient.lead_number || selectedClient.id}
+                  </span>
+                  <span className="text-lg font-semibold text-gray-700 dark:text-gray-300 truncate">
+                    {selectedClient.name || 'Unnamed Lead'}
+                  </span>
+                  {selectedClient.next_followup && (
+                    <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                      <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
+                      <span className="font-medium">
+                        {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
+                          month: 'short',
+                          day: 'numeric',
+                          year: 'numeric'
+                        })}
+                      </span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              {/* Right side: Stage badge and topic */}
+              <div className="flex items-center gap-3 flex-shrink-0">
+                {/* Stage Badge */}
+                {(() => {
+                  const stageStr = selectedClient.stage ? String(selectedClient.stage) : '';
+                  const stageName = getStageName(stageStr);
+                  const stageColor = getStageColour(stageStr);
+                  const textColor = getContrastingTextColor(stageColor);
+                  const backgroundColor = stageColor || '#3b28c7';
+                  
+                  return (
+                    <span 
+                      className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
+                      style={{
+                        backgroundColor: backgroundColor,
+                        color: textColor,
+                        borderColor: backgroundColor,
+                      }}
+                    >
+                      {stageName}
+                    </span>
+                  );
+                })()}
+                
+                {/* Topic/Category - same size as stage badge */}
+                {selectedClient.category && (
+                  <span 
+                    className="badge text-sm px-4 py-2 font-bold shadow-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 whitespace-nowrap flex items-center gap-2"
+                  >
+                    <TagIcon className="w-4 h-4 flex-shrink-0" />
+                    <span className="hidden sm:inline">{selectedClient.category}</span>
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Background loading indicator */}
       {backgroundLoading && (
         <div className="fixed top-4 right-4 z-40 bg-blue-100 text-blue-800 px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
@@ -12320,8 +12484,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </p>
                   </div>
                   <label className="block font-semibold mb-1">Name</label>
-                  <input 
-                    className="input input-bordered w-full" 
+                  <input
+                    className="input input-bordered w-full"
                     value={subLeadForm.name}
                     onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
                     placeholder="Enter client name"

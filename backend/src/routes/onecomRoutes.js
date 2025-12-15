@@ -417,16 +417,27 @@ router.post('/webhook', async (req, res) => {
           console.log(`📞 Webhook: Wait complete, starting to fetch recent call logs...`);
           
           // Use exact same date format as manual sync (YYYY-MM-DD)
-          // For today's sync, use today's date for both start and end
+          // For webhook, sync from today to today to catch today's calls
+          // Also include yesterday to catch any calls that might have been delayed
           const today = new Date();
           const todayStr = today.toISOString().split('T')[0];
           
-          // For webhook, use today only (same as manual "sync today")
-          // But extend to last 24 hours to catch calls that might be slightly delayed
-          const now = new Date();
-          const yesterday = new Date(now.getTime() - 24 * 60 * 60 * 1000);
-          const startDate = yesterday.toISOString().split('T')[0];
-          const endDate = todayStr;
+          // Include yesterday to catch any delayed calls
+          const yesterday = new Date(today);
+          yesterday.setDate(yesterday.getDate() - 1);
+          const yesterdayStr = yesterday.toISOString().split('T')[0];
+          
+          // Use tomorrow as end date to ensure we get all of today's calls
+          // (OneCom API might interpret end date as exclusive or need buffer)
+          const tomorrow = new Date(today);
+          tomorrow.setDate(tomorrow.getDate() + 1);
+          const tomorrowStr = tomorrow.toISOString().split('T')[0];
+          
+          // Use yesterday as start and tomorrow as end to ensure we get all calls including today
+          const startDate = yesterdayStr;
+          const endDate = tomorrowStr;
+          
+          console.log(`📞 Webhook: Date range: ${startDate} to ${endDate} (includes yesterday, today, and tomorrow to ensure today's calls are captured)`);
           
           console.log(`📞 Webhook: Syncing call logs from ${startDate} to ${endDate}`);
           console.log(`📞 Webhook: Using date format: YYYY-MM-DD (matching manual sync)`);

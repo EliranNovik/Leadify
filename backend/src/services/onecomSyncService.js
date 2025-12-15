@@ -1082,10 +1082,17 @@ class OneComSyncService {
                   console.log(`✅ DEBUG: Extension ${searchTerm} substring matched in field: ${field} (record: ${record.uniqueid})`);
                   return true;
                 }
-                // Normalized partial match (ends with)
+                // Normalized partial match (bidirectional - handles 2-digit mobile_ext matching 3-digit extensions)
+                // Check if longer field ends with shorter search term
                 if (normalizedField.length >= normalizedSearch.length && 
                     normalizedField.slice(-normalizedSearch.length) === normalizedSearch) {
                   console.log(`✅ DEBUG: Extension ${searchTerm} normalized partial matched in field: ${field} (record: ${record.uniqueid})`);
+                  return true;
+                }
+                // Check if longer search term ends with shorter field (handles 2-digit mobile_ext)
+                if (normalizedSearch.length >= normalizedField.length && 
+                    normalizedSearch.slice(-normalizedField.length) === normalizedField) {
+                  console.log(`✅ DEBUG: Extension ${searchTerm} reverse partial matched in field: ${field} (record: ${record.uniqueid})`);
                   return true;
                 }
               } else {
