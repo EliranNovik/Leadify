@@ -114,7 +114,7 @@ class OneComSyncService {
   }
 
   /**
-   * Parse CSV response from 1com API
+   * Parse CSV response from 1com API using header-based parsing
    * @param {string} csvData - Raw CSV string
    * @returns {Array}
    */
@@ -122,56 +122,81 @@ class OneComSyncService {
     try {
       const lines = csvData.trim().split('\n');
       if (lines.length < 2) {
+        console.log('⚠️ CSV has less than 2 lines, returning empty array');
         return [];
       }
+
+      // Parse header row to get column indices
+      const headerLine = lines[0];
+      const headers = this.parseCsvLine(headerLine).map(h => h.trim().toLowerCase());
+      
+      // Create index map for quick lookup
+      const idx = {};
+      headers.forEach((header, index) => {
+        idx[header] = index;
+      });
+
+      // Debug: Log header and first data line
+      console.log('📋 CSV HEADER:', headers);
+      if (lines.length > 1) {
+        console.log('📋 FIRST DATA LINE:', lines[1].substring(0, 200));
+      }
+
+      // Helper function to get field value by name
+      const getField = (fields, name) => {
+        const index = idx[name.toLowerCase()];
+        return index !== undefined ? (fields[index] ?? '') : '';
+      };
 
       const dataLines = lines.slice(1);
       const records = [];
 
       for (const line of dataLines) {
-        if (line.trim()) {
-          const fields = this.parseCsvLine(line);
-          if (fields.length >= 15) { // Need at least uniqueid field
-            records.push({
-              accountcode: fields[0] || '',
-              call_id: fields[1] || '',
-              start: fields[2] || '',
-              answer: fields[3] || '',
-              end: fields[4] || '',
-              clid: fields[5] || '',
-              realsrc: fields[6] || '',
-              firstdst: fields[7] || '',
-              duration: parseInt(fields[8]) || 0,
-              billsec: parseInt(fields[9]) || 0,
-              disposition: fields[10] || '',
-              cc_cost: fields[11] || '',
-              dcontext: fields[12] || '',
-              dstchannel: fields[13] || '',
-              userfield: fields[14] || '',
-              uniqueid: fields[15] || '',
-              prevuniqueid: fields[16] || '',
-              lastdst: fields[17] || '',
-              wherelanded: fields[18] || '',
-              src: fields[19] || '',
-              dst: fields[20] || '',
-              lastapp: fields[21] || '',
-              srcCallID: fields[22] || '',
-              linkedid: fields[23] || '',
-              peeraccount: fields[24] || '',
-              originateid: fields[25] || '',
-              cc_country: fields[26] || '',
-              cc_network: fields[27] || '',
-              pincode: fields[28] || '',
-              cc_buy: fields[29] || ''
-            });
-          }
-        }
+        if (!line.trim()) continue;
+        
+        const fields = this.parseCsvLine(line);
+        
+        // Build record using header-based mapping
+        records.push({
+          accountcode: getField(fields, 'accountcode'),
+          call_id: getField(fields, 'call_id'),
+          start: getField(fields, 'start'),
+          answer: getField(fields, 'answer'),
+          end: getField(fields, 'end'),
+          clid: getField(fields, 'clid'),
+          realsrc: getField(fields, 'realsrc'),
+          firstdst: getField(fields, 'firstdst'),
+          duration: parseInt(getField(fields, 'duration')) || 0,
+          billsec: parseInt(getField(fields, 'billsec')) || 0,
+          disposition: getField(fields, 'disposition'),
+          cc_cost: getField(fields, 'cc_cost'),
+          dcontext: getField(fields, 'dcontext'),
+          dstchannel: getField(fields, 'dstchannel'),
+          srcchannel: getField(fields, 'srcchannel'), // Added srcchannel
+          userfield: getField(fields, 'userfield'),
+          uniqueid: getField(fields, 'uniqueid'),
+          prevuniqueid: getField(fields, 'prevuniqueid'),
+          lastdst: getField(fields, 'lastdst'),
+          wherelanded: getField(fields, 'wherelanded'),
+          src: getField(fields, 'src'),
+          dst: getField(fields, 'dst'),
+          lastapp: getField(fields, 'lastapp'),
+          srcCallID: getField(fields, 'srccallid') || getField(fields, 'srcCallID'),
+          linkedid: getField(fields, 'linkedid'),
+          peeraccount: getField(fields, 'peeraccount'),
+          originateid: getField(fields, 'originateid'),
+          cc_country: getField(fields, 'cc_country'),
+          cc_network: getField(fields, 'cc_network'),
+          pincode: getField(fields, 'pincode'),
+          cc_buy: getField(fields, 'cc_buy')
+        });
       }
 
       console.log(`✅ Parsed ${records.length} call log records from 1com`);
       return records;
     } catch (error) {
       console.error('❌ Error parsing CSV response:', error);
+      console.error('❌ Error stack:', error.stack);
       return [];
     }
   }
@@ -346,7 +371,8 @@ class OneComSyncService {
       try {
         // According to 1com docs, we can get recording with: 
         // https://pbx6webserver.1com.co.il/pbx/proxyapi.php?key=KEY&reqtype=INFO&info=recording&id=UNIQUEID&tenant=TENANT
-        const recordingApiUrl = `${this.baseUrl}/pbx/proxyapi.php?key=${this.apiKey}&reqtype=INFO&info=recording&id=${onecomRecord.uniqueid}&tenant=${this.tenant}`;
+        // baseUrl already includes /pbx/proxyapi.php, so don't duplicate it
+        const recordingApiUrl = `${this.baseUrl}?key=${this.apiKey}&reqtype=INFO&info=recording&id=${onecomRecord.uniqueid}&tenant=${this.tenant}`;
         // Note: We'll fetch this asynchronously to avoid blocking the sync process
         recordingUrl = recordingApiUrl;
       } catch (error) {
@@ -390,7 +416,8 @@ class OneComSyncService {
     if (!uniqueId) return null;
 
     try {
-      const recordingUrl = `${this.baseUrl}/pbx/proxyapi.php?key=${this.apiKey}&reqtype=INFO&info=recording&id=${uniqueId}&tenant=${this.tenant}`;
+      // baseUrl already includes /pbx/proxyapi.php, so don't duplicate it
+      const recordingUrl = `${this.baseUrl}?key=${this.apiKey}&reqtype=INFO&info=recording&id=${uniqueId}&tenant=${this.tenant}`;
       
       console.log(`🎵 Fetching recording data for ${uniqueId}...`);
       const response = await fetch(recordingUrl);
@@ -479,8 +506,9 @@ class OneComSyncService {
 
   /**
    * Map extension/phone number to employee_id automatically
-   * Cross-matches ALL employee phone/mobile/extension fields against BOTH source and incoming DID
-   * @param {string} source - Extension or phone number from 1com
+   * Cross-matches ALL employee phone/mobile/extension fields (phone_ext, phone, mobile, mobile_ext) 
+   * against BOTH source and incoming DID
+   * @param {string} source - Extension or phone number from 1com (can be phone_ext, mobile_ext, phone, or mobile)
    * @param {string} incomingDid - Incoming DID from 1com call log
    * @returns {Promise<number|null>}
    */

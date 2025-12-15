@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Link } from 'react-router-dom';
-import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon } from '@heroicons/react/24/outline';
+import { Link, useNavigate } from 'react-router-dom';
+import { PencilSquareIcon, CheckIcon, XMarkIcon, ChevronDownIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
+import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../lib/supabase';
 import { convertToNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
@@ -265,7 +266,123 @@ const buildCurrencyMeta = (...candidates: any[]): CurrencyMeta => {
   };
 };
 
+// Reports list for search functionality
+type ReportItem = {
+  label: string;
+  icon: React.ComponentType<React.SVGProps<SVGSVGElement>>;
+  component?: React.FC;
+  route?: string;
+};
+
+type ReportSection = {
+  category: string;
+  items: ReportItem[];
+};
+
+const reports: ReportSection[] = [
+  {
+    category: 'Search',
+    items: [
+      { label: 'Full Search', icon: MagnifyingGlassIcon, route: '/reports' },
+      { label: 'Stage Search', icon: Squares2X2Icon, route: '/reports' },
+      { label: 'Anchor Search', icon: ArrowUturnDownIcon, route: '/reports' },
+      { label: 'Duplicate Search', icon: DocumentDuplicateIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Marketing',
+    items: [
+      { label: 'Sources pie', icon: ChartPieIcon, route: '/reports' },
+      { label: 'Category & source', icon: AdjustmentsHorizontalIcon, route: '/reports' },
+      { label: 'Convertion', icon: FunnelIcon, route: '/reports' },
+      { label: 'Convertion Steps', icon: FunnelIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Meetings',
+    items: [
+      { label: 'Scheduled', icon: ClockIcon, route: '/reports' },
+      { label: 'Rescheduled', icon: ArrowPathIcon, route: '/reports' },
+      { label: 'Results', icon: CheckCircleIcon, route: '/reports' },
+      { label: 'Collection', icon: BanknotesIcon, route: '/reports' },
+      { label: 'Convertion', icon: FunnelIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Sales',
+    items: [
+      { label: 'Actual', icon: UserGroupIcon, route: '/reports' },
+      { label: 'Target', icon: UserIcon, route: '/reports' },
+      { label: 'Signed', icon: AcademicCapIcon, route: '/sales/signed' },
+      { label: 'Scheduling Bonuses', icon: StarIcon, route: '/reports' },
+      { label: 'Bonuses (v4)', icon: PlusIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Pipelines',
+    items: [
+      { label: 'General Sales', icon: Squares2X2Icon, route: '/reports' },
+      { label: 'Employee', icon: UserIcon, route: '/reports' },
+      { label: 'Unhandled', icon: UserIcon, route: '/reports' },
+      { label: 'Expert', icon: AcademicCapIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Schedulers',
+    items: [
+      { label: 'Super Pipeline', icon: BanknotesIcon, route: '/reports' },
+      { label: 'Schedulers Quality', icon: StarIcon, route: '/reports' },
+      { label: 'Performance', icon: ChartBarIcon, route: '/reports' },
+      { label: 'Performance by Cat.', icon: ChartBarIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Closers',
+    items: [
+      { label: 'Super Pipeline', icon: BanknotesIcon, route: '/reports' },
+      { label: 'Closers Quality', icon: StarIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Experts',
+    items: [
+      { label: 'Experts Assignment', icon: AcademicCapIcon, route: '/reports' },
+      { label: 'Experts Results', icon: AcademicCapIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Contribution',
+    items: [
+      { label: 'All', icon: RectangleStackIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Analysis',
+    items: [
+      { label: 'Employees Performance', icon: ChartBarIcon, route: '/reports' },
+      { label: 'Statistics', icon: ChartPieIcon, route: '/reports' },
+      { label: 'Pies', icon: ChartPieIcon, route: '/reports' },
+      { label: 'Tasks', icon: ListBulletIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Finances',
+    items: [
+      { label: 'Profitability', icon: CurrencyDollarIcon, route: '/reports' },
+      { label: 'Collection', icon: BanknotesIcon, route: '/reports/collection-finances' },
+      { label: 'Collection Due', icon: BanknotesIcon, route: '/reports' },
+    ],
+  },
+  {
+    category: 'Cases',
+    items: [
+      { label: 'Sum Active', icon: BriefcaseIcon, route: '/reports' },
+    ],
+  },
+];
+
 const SignedSalesReportPage: React.FC = () => {
+  const navigate = useNavigate();
   const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
   const [filters, setFilters] = useState<FiltersState>({
     fromDate: todayIso,
@@ -274,6 +391,7 @@ const SignedSalesReportPage: React.FC = () => {
     employee: '',
     language: '',
   });
+  const [searchQuery, setSearchQuery] = useState<string>('');
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
@@ -1374,11 +1492,101 @@ const resolveLegacyLanguage = (lead: any) => {
 
   const totalInNIS = useMemo(() => rows.reduce((sum, row) => sum + (row.totalNIS || 0), 0), [rows]);
 
+  // Filter reports based on search query
+  const filteredReports = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return reports;
+    }
+
+    const query = searchQuery.toLowerCase().trim();
+    return reports
+      .map((section) => {
+        const filteredItems = section.items.filter((item) => {
+          const matchesLabel = item.label.toLowerCase().includes(query);
+          const matchesCategory = section.category.toLowerCase().includes(query);
+          return matchesLabel || matchesCategory;
+        });
+
+        return {
+          ...section,
+          items: filteredItems,
+        };
+      })
+      .filter((section) => section.items.length > 0);
+  }, [searchQuery]);
+
   return (
     <div className="space-y-8 px-5 md:px-1">
-      <div>
+      <div className="flex items-center justify-between flex-wrap gap-4">
         <h1 className="text-4xl font-bold">Signed Agreements Overview</h1>
+        <div className="flex items-center gap-3 flex-wrap">
+          {/* Search Bar */}
+          <div className="relative max-w-xs">
+            <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+            <input
+              type="text"
+              placeholder="Search other reports..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+            />
+            {searchQuery && (
+              <button
+                onClick={() => setSearchQuery('')}
+                className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+              >
+                <XMarkIcon className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+          {/* Back to Reports Button */}
+          <Link
+            to="/reports"
+            className="btn btn-outline btn-primary flex items-center gap-2"
+          >
+            <ArrowLeftIcon className="w-5 h-5" />
+            Back to Reports
+          </Link>
+        </div>
       </div>
+
+      {/* Search Results Dropdown */}
+      {searchQuery && (
+        <div className="border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto">
+          <div className="p-4">
+            <p className="text-sm font-semibold text-gray-700 mb-3">Quick Switch to:</p>
+            <div className="space-y-2">
+              {filteredReports.map((section) =>
+                section.items.map((item) => (
+                  <button
+                    key={item.label}
+                    onClick={() => {
+                      if (item.route) {
+                        navigate(item.route);
+                        setSearchQuery('');
+                      }
+                    }}
+                    className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
+                      item.route === '/sales/signed' ? 'bg-primary text-white' : 'bg-gray-50'
+                    }`}
+                  >
+                    <item.icon className="w-5 h-5" />
+                    <div className="flex-1">
+                      <div className="font-medium">{item.label}</div>
+                      <div className="text-xs opacity-75">{section.category}</div>
+                    </div>
+                  </button>
+                ))
+              )}
+            </div>
+            {filteredReports.length === 0 && (
+              <div className="text-center py-4 text-gray-500 text-sm">
+                No reports found matching "{searchQuery}"
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       <div className="card bg-base-100 shadow-lg border border-base-200">
         <div className="card-body space-y-6">

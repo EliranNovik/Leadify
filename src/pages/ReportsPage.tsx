@@ -9,7 +9,9 @@ import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
   LeadBaseDetail,
 } from '../components/reports/EmployeeLeadDrawer';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
+import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
+import { convertToNIS } from '../lib/currencyConversion';
 
 // Stage Search Report Component
 const StageSearchReport = () => {
@@ -3903,7 +3905,443 @@ const BonusesV4Report = () => {
 const GeneralSalesReport = () => <div className="p-6">General Sales Pipeline Report Content</div>;
 const EmployeeReport = () => <div className="p-6">Employee Pipeline Report Content</div>;
 const UnhandledReport = () => <div className="p-6">Unhandled Pipeline Report Content</div>;
-const ExpertReport = () => <div className="p-6">Expert Pipeline Report Content</div>;
+const ExpertPipelineReport = () => {
+  const navigate = useNavigate();
+  const [filters, setFilters] = useState({
+    employee: '',
+  });
+  const [results, setResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [employeeSearch, setEmployeeSearch] = useState<string>('');
+  const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+
+  useEffect(() => {
+    const fetchOptions = async () => {
+      // Fetch employees
+      const { data: empData } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .order('display_name');
+      if (empData) {
+        setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+      }
+
+      // Fetch categories for category name resolution
+      const { data: catData } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id(
+            id,
+            name
+          )
+        `)
+        .order('name');
+      if (catData) {
+        setAllCategories(catData || []);
+      }
+    };
+    fetchOptions();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  const getCategoryName = (categoryId: string | number | null | undefined, miscCategory?: any) => {
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      return '---';
+    }
+    
+    if (miscCategory) {
+      const cat = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
+      const mainCategory = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
+      if (mainCategory?.name && cat?.name) {
+        return `${cat.name} (${mainCategory.name})`;
+      }
+      if (cat?.name) {
+        return cat.name;
+      }
+    }
+
+    const foundCategory = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (foundCategory) {
+      const mainCategory = Array.isArray(foundCategory.misc_maincategory) 
+        ? foundCategory.misc_maincategory[0] 
+        : foundCategory.misc_maincategory;
+      if (mainCategory?.name) {
+        return `${foundCategory.name} (${mainCategory.name})`;
+      }
+      return foundCategory.name;
+    }
+    
+    return String(categoryId);
+  };
+
+  const formatDate = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '---';
+    try {
+      const date = new Date(dateStr);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = String(date.getFullYear()).slice(-2);
+      return `${day}.${month}.${year}`;
+    } catch {
+      return '---';
+    }
+  };
+
+  const getHandlerOpinion = (handlerNotes: any): string => {
+    if (!handlerNotes) return '---';
+    if (Array.isArray(handlerNotes) && handlerNotes.length > 0) {
+      const lastNote = handlerNotes[handlerNotes.length - 1];
+      if (typeof lastNote === 'string') {
+        return lastNote;
+      }
+      if (lastNote?.content) {
+        return lastNote.content;
+      }
+      return JSON.stringify(lastNote);
+    }
+    if (typeof handlerNotes === 'string') {
+      return handlerNotes;
+    }
+    return '---';
+  };
+
+  const handleSearch = async () => {
+    setIsSearching(true);
+    setSearchPerformed(true);
+    try {
+      const selectedEmployeeId = filters.employee ? parseInt(filters.employee) : null;
+
+      // Fetch new leads that need expert examination
+      let newLeadsQuery = supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          created_at,
+          expert,
+          category_id,
+          category,
+          handler_notes,
+          scheduler,
+          manager,
+          stage,
+          meetings (
+            meeting_date
+          ),
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          )
+        `)
+        .or('eligibility_status.is.null,eligibility_status.eq.""')
+        .gte('stage', 20)
+        .lt('stage', 60)
+        .neq('stage', 35);
+
+      if (selectedEmployeeId) {
+        newLeadsQuery = newLeadsQuery.eq('expert', selectedEmployeeId);
+      }
+
+      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads:', newLeadsError);
+        throw newLeadsError;
+      }
+
+      // Fetch legacy leads that need expert examination
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          cdate,
+          expert_id,
+          category_id,
+          category,
+          handler_notes,
+          meeting_scheduler_id,
+          meeting_manager_id,
+          stage,
+          meeting_date,
+          meeting_time,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          )
+        `)
+        .eq('expert_examination', 0)
+        .gte('meeting_date', '2025-01-01')
+        .gte('stage', 20)
+        .lt('stage', 60)
+        .neq('stage', 35);
+
+      if (selectedEmployeeId) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('expert_id', selectedEmployeeId);
+      }
+
+      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery.order('cdate', { ascending: false });
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads:', legacyLeadsError);
+        throw legacyLeadsError;
+      }
+
+      // Fetch ALL employees to create a complete mapping
+      const { data: allEmployeesData } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name');
+      
+      const employeeNameMap: Record<number, string> = {};
+      const employeeNameToIdMap: Record<string, number> = {};
+      
+      if (allEmployeesData) {
+        allEmployeesData.forEach(emp => {
+          if (emp.id && emp.display_name) {
+            employeeNameMap[emp.id] = emp.display_name;
+            employeeNameToIdMap[emp.display_name.toLowerCase()] = emp.id;
+          }
+        });
+      }
+
+      // Helper function to resolve employee name from ID or name
+      const resolveEmployeeName = (value: any): string => {
+        if (!value) return '---';
+        
+        // If it's already a number (employee ID)
+        if (typeof value === 'number') {
+          return employeeNameMap[value] || `Employee ${value}`;
+        }
+        
+        // If it's a string that's a number (employee ID as string)
+        const numericValue = parseInt(String(value));
+        if (!isNaN(numericValue) && String(numericValue) === String(value).trim()) {
+          return employeeNameMap[numericValue] || `Employee ${numericValue}`;
+        }
+        
+        // If it's already a name, check if we can find the ID and get the display_name
+        const nameLower = String(value).toLowerCase().trim();
+        const foundId = employeeNameToIdMap[nameLower];
+        if (foundId && employeeNameMap[foundId]) {
+          return employeeNameMap[foundId];
+        }
+        
+        // If it's already a display name, return it as is
+        return String(value);
+      };
+
+      // Process new leads
+      const processedNewLeads = (newLeadsData || []).map(lead => {
+        // Filter by meeting date from 2025 onwards
+        const hasMeetingIn2025OrLater = lead.meetings && lead.meetings.length > 0 && lead.meetings.some((meeting: any) => {
+          const meetingDate = new Date(meeting.meeting_date);
+          return meetingDate.getFullYear() >= 2025;
+        });
+
+        if (!hasMeetingIn2025OrLater) return null;
+
+        const meetingDate = lead.meetings && lead.meetings.length > 0 
+          ? lead.meetings[0].meeting_date 
+          : null;
+
+        return {
+          id: lead.id,
+          lead_number: lead.lead_number || lead.id,
+          name: lead.name || 'Unnamed Lead',
+          category: getCategoryName(lead.category_id, lead.misc_category),
+          meeting_date: meetingDate,
+          meeting_scheduler: resolveEmployeeName(lead.scheduler),
+          meeting_manager: resolveEmployeeName(lead.manager),
+          handler_opinion: getHandlerOpinion(lead.handler_notes),
+          lead_type: 'new' as const
+        };
+      }).filter(Boolean);
+
+      // Process legacy leads
+      const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
+        const meetingDate = lead.meeting_date 
+          ? (lead.meeting_time ? `${lead.meeting_date} ${lead.meeting_time}` : lead.meeting_date)
+          : null;
+
+        return {
+          id: `legacy_${lead.id}`,
+          lead_number: lead.id?.toString() || '',
+          name: lead.name || 'Unnamed Lead',
+          category: getCategoryName(lead.category_id, lead.misc_category),
+          meeting_date: meetingDate,
+          meeting_scheduler: resolveEmployeeName(lead.meeting_scheduler_id),
+          meeting_manager: resolveEmployeeName(lead.meeting_manager_id),
+          handler_opinion: getHandlerOpinion(lead.handler_notes),
+          lead_type: 'legacy' as const
+        };
+      });
+
+      // Combine and sort by meeting date
+      const allLeads = [...processedNewLeads, ...processedLegacyLeads].filter(Boolean).sort((a, b) => {
+        if (!a || !b) return 0;
+        if (!a.meeting_date && !b.meeting_date) return 0;
+        if (!a.meeting_date) return 1;
+        if (!b.meeting_date) return -1;
+        return new Date(a.meeting_date).getTime() - new Date(b.meeting_date).getTime();
+      });
+
+      setResults(allLeads);
+    } catch (error: any) {
+      console.error('Error fetching expert pipeline:', error);
+      toast.error('Failed to fetch expert pipeline data');
+      setResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Filter employees based on search
+  const filteredEmployees = employees.filter((emp: any) => 
+    emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
+  );
+
+  return (
+    <div className="px-2 py-6">
+      <h2 className="text-2xl font-bold mb-6 px-4">Expert Pipeline</h2>
+      
+      {/* Filters */}
+      <div className="mb-6 px-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Employee:</label>
+            <div className="relative">
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search employee..."
+                value={employeeSearch}
+                onChange={(e) => {
+                  setEmployeeSearch(e.target.value);
+                  setShowEmployeeDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('employee', '');
+                  }
+                }}
+                onFocus={() => setShowEmployeeDropdown(true)}
+                onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
+              />
+              {showEmployeeDropdown && filteredEmployees.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('employee', '');
+                      setEmployeeSearch('');
+                      setShowEmployeeDropdown(false);
+                    }}
+                  >
+                    All Employees
+                  </div>
+                  {filteredEmployees.map((emp) => (
+                    <div
+                      key={emp.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('employee', emp.id.toString());
+                        setEmployeeSearch(emp.name);
+                        setShowEmployeeDropdown(false);
+                      }}
+                    >
+                      {emp.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+          <div className="flex items-end">
+            <button
+              onClick={handleSearch}
+              disabled={isSearching}
+              className="btn btn-primary w-full md:w-auto"
+            >
+              {isSearching ? 'Loading...' : 'Show'}
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* Results */}
+      {searchPerformed && (
+        <div className="px-4">
+          <h3 className="text-lg font-semibold mb-4">Expert Examination required</h3>
+          {results.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              No leads found requiring expert examination.
+            </div>
+          ) : (
+            <div className="overflow-x-auto -mx-2">
+              <div className="px-4">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lead</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Date</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Scheduler</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Manager</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Handler opinion</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {results.map((lead, index) => (
+                      <tr key={lead.id || index} className="hover:bg-gray-50">
+                        <td className="px-4 py-4 whitespace-nowrap">
+                          <Link
+                            to={`/clients/${lead.lead_number}`}
+                            className="text-blue-600 hover:text-blue-800 font-semibold"
+                          >
+                            #{lead.lead_number} {lead.name}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.category}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{formatDate(lead.meeting_date)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.meeting_scheduler}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.meeting_manager}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900 max-w-xs">
+                          <div className="line-clamp-2 break-words" title={lead.handler_opinion !== '---' ? lead.handler_opinion : undefined}>
+                            {lead.handler_opinion}
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+const ExpertReport = ExpertPipelineReport;
 const SchedulerSuperPipelineReport = () => {
   const navigate = useNavigate();
   const today = new Date().toISOString().split('T')[0];
@@ -3920,7 +4358,6 @@ const SchedulerSuperPipelineReport = () => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
-  const [allCategories, setAllCategories] = useState<any[]>([]);
   const [editingManagerNotes, setEditingManagerNotes] = useState<Record<string, boolean>>({});
   const [managerNotesValues, setManagerNotesValues] = useState<Record<string, string>>({});
   const [savingManagerNotes, setSavingManagerNotes] = useState<Record<string, boolean>>({});
@@ -3942,23 +4379,7 @@ const SchedulerSuperPipelineReport = () => {
         setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
       }
 
-      // Fetch all categories with their parent main category names using JOINs
-      const { data: categoriesData, error: categoriesError } = await supabase
-        .from('misc_category')
-        .select(`
-          id,
-          name,
-          parent_id,
-          misc_maincategory!parent_id (
-            id,
-            name
-          )
-        `)
-        .order('name', { ascending: true });
-      
-      if (!categoriesError && categoriesData) {
-        setAllCategories(categoriesData);
-      }
+      // No need to fetch all categories - we only use main categories
 
       // Fetch employees
       const { data: empData } = await supabase
@@ -3986,37 +4407,14 @@ const SchedulerSuperPipelineReport = () => {
   };
 
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    // For display purposes, we'll show a simple category name
+    // This function is used for displaying category names in the results
     if (!categoryId || categoryId === '---' || categoryId === '--') {
-      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
-        let foundCategory = null;
-        if (typeof fallbackCategory === 'number') {
-          foundCategory = allCategories.find((cat: any) => 
-            cat.id.toString() === fallbackCategory.toString()
-          );
-        }
-        if (!foundCategory && typeof fallbackCategory === 'string') {
-          foundCategory = allCategories.find((cat: any) => 
-            cat.name?.toLowerCase() === fallbackCategory.toLowerCase()
-          );
-        }
-        if (foundCategory) {
-          const mainCat = foundCategory.misc_maincategory;
-          return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
-        }
-        return String(fallbackCategory);
-      }
       return '---';
     }
 
-    const foundCategory = allCategories.find((cat: any) => 
-      cat.id.toString() === categoryId.toString()
-    );
-    
-    if (foundCategory) {
-      const mainCat = foundCategory.misc_maincategory;
-      return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
-    }
-    
+    // Try to find the main category by looking up subcategories
+    // For now, return a simple display - this can be enhanced if needed
     return fallbackCategory ? String(fallbackCategory) : '---';
   };
 
@@ -4192,9 +4590,21 @@ const SchedulerSuperPipelineReport = () => {
         }
       }
 
-      // Apply category filter
+      // Apply category filter (main category - need to filter by all subcategories)
       if (filters.category) {
-        newLeadsQuery = newLeadsQuery.eq('category_id', filters.category);
+        // Fetch all subcategories for this main category
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', filters.category);
+        
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id.toString());
+          newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          newLeadsQuery = newLeadsQuery.eq('category_id', -1); // Non-existent ID
+        }
       }
 
       // Apply language filter
@@ -4301,9 +4711,21 @@ const SchedulerSuperPipelineReport = () => {
         }
       }
 
-      // Apply category filter
+      // Apply category filter (main category - need to filter by all subcategories)
       if (filters.category) {
-        legacyLeadsQuery = legacyLeadsQuery.eq('category_id', Number(filters.category));
+        // Fetch all subcategories for this main category
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', filters.category);
+        
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id);
+          legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          legacyLeadsQuery = legacyLeadsQuery.eq('category_id', -1); // Non-existent ID
+        }
       }
 
       // Apply language filter
@@ -4456,21 +4878,22 @@ const SchedulerSuperPipelineReport = () => {
     }
   };
 
-  // Automatically load all leads on component mount
+  // Automatically load all leads on component mount (without date filters)
   useEffect(() => {
-    handleSearch();
+    handleSearch(false); // Pass false to skip date filters on initial load
+    setSearchPerformed(true); // Show the table with initial results
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array means this runs once on mount
 
   // Sync search inputs with selected filters
   useEffect(() => {
     if (filters.category) {
-      const selectedCategory = allCategories.find(cat => cat.id.toString() === filters.category);
-      setCategorySearch(selectedCategory ? `${selectedCategory.misc_maincategory?.name || ''}, ${selectedCategory.name}`.replace(/^, /, '') : '');
+      const selectedCategory = categories.find(cat => cat.id.toString() === filters.category);
+      setCategorySearch(selectedCategory ? selectedCategory.name : '');
     } else {
       setCategorySearch('');
     }
-  }, [filters.category, allCategories]);
+  }, [filters.category, categories]);
 
   useEffect(() => {
     if (filters.employee) {
@@ -4491,11 +4914,10 @@ const SchedulerSuperPipelineReport = () => {
   }, [filters.language, languages]);
 
   // Filter options based on search
-  const filteredCategories = allCategories.filter((cat: any) => {
+  const filteredCategories = categories.filter((cat: any) => {
     const searchTerm = categorySearch.toLowerCase();
-    const mainCatName = cat.misc_maincategory?.name?.toLowerCase() || '';
     const catName = cat.name?.toLowerCase() || '';
-    return mainCatName.includes(searchTerm) || catName.includes(searchTerm) || `${mainCatName}, ${catName}`.includes(searchTerm);
+    return catName.includes(searchTerm);
   });
 
   const filteredEmployees = employees.filter((emp: any) => 
@@ -4507,13 +4929,11 @@ const SchedulerSuperPipelineReport = () => {
   );
 
   return (
-    <div className="p-6">
-      <h2 className="text-2xl font-bold mb-6">Scheduler Super Pipeline</h2>
+    <div className="px-2 py-6">
+      <h2 className="text-2xl font-bold mb-6 px-4">Scheduler Super Pipeline</h2>
       
-      {/* Main White Box - Contains Filters and Table */}
-      <div className="bg-white rounded-lg shadow-md p-6">
       {/* Filters */}
-        <div className="mb-6">
+      <div className="mb-6 px-4">
           <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
@@ -4563,18 +4983,17 @@ const SchedulerSuperPipelineReport = () => {
                     All Categories
                   </div>
                   {filteredCategories.map((cat) => {
-                    const displayName = cat.misc_maincategory ? `${cat.misc_maincategory.name}, ${cat.name}` : cat.name;
                     return (
                       <div
                         key={cat.id}
                         className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                         onClick={() => {
                           handleFilterChange('category', cat.id.toString());
-                          setCategorySearch(displayName);
+                          setCategorySearch(cat.name);
                           setShowCategoryDropdown(false);
                         }}
                       >
-                        {displayName}
+                        {cat.name}
                       </div>
                     );
                   })}
@@ -4686,14 +5105,14 @@ const SchedulerSuperPipelineReport = () => {
 
         {/* Results Table - Inside same white box */}
         {searchPerformed && (
-          <div className="border-t border-gray-200 pt-6">
-            <div className="mb-4">
+          <div className="border-t border-gray-200 pt-6 -mx-2">
+            <div className="mb-4 px-4">
               <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
             </div>
             {results.length === 0 ? (
               <div className="p-6 text-center text-gray-500">No leads found</div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto px-4">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
@@ -4701,10 +5120,10 @@ const SchedulerSuperPipelineReport = () => {
                       <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expert Opinion</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manager Notes</th>
+                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Manager Notes</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
                     </tr>
                   </thead>
@@ -4726,8 +5145,10 @@ const SchedulerSuperPipelineReport = () => {
                             wordBreak: 'break-word'
                           }}>{lead.name || '---'}</div>
                         </td>
-                        <td className="px-2 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <td className="px-2 py-4 text-sm text-gray-900">
+                          <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
                           {lead.stage || '---'}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {lead.probability ? `${lead.probability}%` : '---'}
@@ -4735,8 +5156,13 @@ const SchedulerSuperPipelineReport = () => {
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {lead.scheduler || '---'}
                         </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
+                        <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                          <div 
+                            className="line-clamp-3 break-words cursor-help"
+                            title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
+                          >
                           {lead.expert_opinion || '---'}
+                          </div>
                         </td>
                         <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                           {lead.number_of_applicants_meeting ?? '---'}
@@ -4781,14 +5207,19 @@ const SchedulerSuperPipelineReport = () => {
                               </div>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-2 group">
-                              <span className="truncate">{lead.manager_notes || '---'}</span>
+                            <div className="flex items-start gap-2 group">
+                              <div 
+                                className="line-clamp-3 break-words flex-1 cursor-help"
+                                title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                              >
+                                {lead.manager_notes || '---'}
+                              </div>
                               <button
                                 onClick={() => {
                                   setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
                                   setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
                                 }}
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                                 title="Edit manager notes"
                               >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -4809,7 +5240,6 @@ const SchedulerSuperPipelineReport = () => {
             )}
           </div>
         )}
-      </div>
     </div>
   );
 };
@@ -4830,7 +5260,6 @@ const CloserSuperPipelineReport = () => {
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
-  const [allCategories, setAllCategories] = useState<any[]>([]);
   const [editingManagerNotes, setEditingManagerNotes] = useState<Record<string, boolean>>({});
   const [managerNotesValues, setManagerNotesValues] = useState<Record<string, string>>({});
   const [savingManagerNotes, setSavingManagerNotes] = useState<Record<string, boolean>>({});
@@ -4852,23 +5281,7 @@ const CloserSuperPipelineReport = () => {
         setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
       }
 
-      // Fetch all categories with their parent main category names using JOINs
-      const { data: categoriesData, error: categoriesError } = await supabase
-        .from('misc_category')
-        .select(`
-          id,
-          name,
-          parent_id,
-          misc_maincategory!parent_id (
-            id,
-            name
-          )
-        `)
-        .order('name', { ascending: true });
-      
-      if (!categoriesError && categoriesData) {
-        setAllCategories(categoriesData);
-      }
+      // No need to fetch all categories - we only use main categories
 
       // Fetch employees
       const { data: empData } = await supabase
@@ -4896,37 +5309,14 @@ const CloserSuperPipelineReport = () => {
   };
 
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string | number) => {
+    // For display purposes, we'll show a simple category name
+    // This function is used for displaying category names in the results
     if (!categoryId || categoryId === '---' || categoryId === '--') {
-      if (fallbackCategory && String(fallbackCategory).trim() !== '') {
-        let foundCategory = null;
-        if (typeof fallbackCategory === 'number') {
-          foundCategory = allCategories.find((cat: any) => 
-            cat.id.toString() === fallbackCategory.toString()
-          );
-        }
-        if (!foundCategory && typeof fallbackCategory === 'string') {
-          foundCategory = allCategories.find((cat: any) => 
-            cat.name?.toLowerCase() === fallbackCategory.toLowerCase()
-          );
-        }
-        if (foundCategory) {
-          const mainCat = foundCategory.misc_maincategory;
-          return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
-        }
-        return String(fallbackCategory);
-      }
       return '---';
     }
 
-    const foundCategory = allCategories.find((cat: any) => 
-      cat.id.toString() === categoryId.toString()
-    );
-    
-    if (foundCategory) {
-      const mainCat = foundCategory.misc_maincategory;
-      return mainCat ? `${mainCat.name}, ${foundCategory.name}` : foundCategory.name;
-    }
-    
+    // Try to find the main category by looking up subcategories
+    // For now, return a simple display - this can be enhanced if needed
     return fallbackCategory ? String(fallbackCategory) : '---';
   };
 
@@ -5107,9 +5497,21 @@ const CloserSuperPipelineReport = () => {
         }
       }
 
-      // Apply category filter
+      // Apply category filter (main category - need to filter by all subcategories)
       if (filters.category) {
-        newLeadsQuery = newLeadsQuery.eq('category_id', filters.category);
+        // Fetch all subcategories for this main category
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', filters.category);
+        
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id.toString());
+          newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          newLeadsQuery = newLeadsQuery.eq('category_id', -1); // Non-existent ID
+        }
       }
 
       // Apply language filter
@@ -5216,9 +5618,21 @@ const CloserSuperPipelineReport = () => {
         }
       }
 
-      // Apply category filter
+      // Apply category filter (main category - need to filter by all subcategories)
       if (filters.category) {
-        legacyLeadsQuery = legacyLeadsQuery.eq('category_id', Number(filters.category));
+        // Fetch all subcategories for this main category
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', filters.category);
+        
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id);
+          legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          // If no subcategories found, return no results
+          legacyLeadsQuery = legacyLeadsQuery.eq('category_id', -1); // Non-existent ID
+        }
       }
 
       // Apply language filter
@@ -5392,18 +5806,19 @@ const CloserSuperPipelineReport = () => {
   // Automatically load all leads on component mount (without date filters)
   useEffect(() => {
     handleSearch(false); // Pass false to skip date filters on initial load
+    setSearchPerformed(true); // Show the table with initial results
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // Empty dependency array means this runs once on mount
 
   // Sync search inputs with selected filters
   useEffect(() => {
     if (filters.category) {
-      const selectedCategory = allCategories.find(cat => cat.id.toString() === filters.category);
-      setCategorySearch(selectedCategory ? `${selectedCategory.misc_maincategory?.name || ''}, ${selectedCategory.name}`.replace(/^, /, '') : '');
+      const selectedCategory = categories.find(cat => cat.id.toString() === filters.category);
+      setCategorySearch(selectedCategory ? selectedCategory.name : '');
     } else {
       setCategorySearch('');
     }
-  }, [filters.category, allCategories]);
+  }, [filters.category, categories]);
 
   useEffect(() => {
     if (filters.employee) {
@@ -5424,11 +5839,10 @@ const CloserSuperPipelineReport = () => {
   }, [filters.language, languages]);
 
   // Filter options based on search
-  const filteredCategories = allCategories.filter((cat: any) => {
+  const filteredCategories = categories.filter((cat: any) => {
     const searchTerm = categorySearch.toLowerCase();
-    const mainCatName = cat.misc_maincategory?.name?.toLowerCase() || '';
     const catName = cat.name?.toLowerCase() || '';
-    return mainCatName.includes(searchTerm) || catName.includes(searchTerm) || `${mainCatName}, ${catName}`.includes(searchTerm);
+    return catName.includes(searchTerm);
   });
 
   const filteredEmployees = employees.filter((emp: any) => 
@@ -5440,13 +5854,11 @@ const CloserSuperPipelineReport = () => {
   );
 
   return (
-    <div className="p-6">
-      <h2 className="text-2xl font-bold mb-6">Closer Super Pipeline</h2>
+    <div className="px-2 py-6">
+      <h2 className="text-2xl font-bold mb-6 px-4">Closer Super Pipeline</h2>
       
-      {/* Main White Box - Contains Filters and Table */}
-      <div className="bg-white rounded-lg shadow-md p-6">
         {/* Filters */}
-        <div className="mb-6">
+      <div className="mb-6 px-4">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
@@ -5496,18 +5908,17 @@ const CloserSuperPipelineReport = () => {
                     All Categories
                   </div>
                   {filteredCategories.map((cat) => {
-                    const displayName = cat.misc_maincategory ? `${cat.misc_maincategory.name}, ${cat.name}` : cat.name;
                     return (
                       <div
                         key={cat.id}
                         className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                         onClick={() => {
                           handleFilterChange('category', cat.id.toString());
-                          setCategorySearch(displayName);
+                          setCategorySearch(cat.name);
                           setShowCategoryDropdown(false);
                         }}
                       >
-                        {displayName}
+                        {cat.name}
                       </div>
                     );
                   })}
@@ -5619,14 +6030,14 @@ const CloserSuperPipelineReport = () => {
 
         {/* Results Table - Inside same white box */}
         {searchPerformed && (
-          <div className="border-t border-gray-200 pt-6">
-            <div className="mb-4">
+          <div className="border-t border-gray-200 pt-6 -mx-2">
+            <div className="mb-4 px-4">
               <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
             </div>
             {results.length === 0 ? (
               <div className="p-6 text-center text-gray-500">No leads found</div>
             ) : (
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto px-4">
                 <table className="min-w-full divide-y divide-gray-200">
                   <thead className="bg-gray-50">
                     <tr>
@@ -5635,10 +6046,10 @@ const CloserSuperPipelineReport = () => {
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Closer</th>
                       <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expert Opinion</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
-                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manager Notes</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Manager Notes</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
                   </tr>
                 </thead>
@@ -5660,8 +6071,10 @@ const CloserSuperPipelineReport = () => {
                             wordBreak: 'break-word'
                           }}>{lead.name || '---'}</div>
                       </td>
-                        <td className="px-2 py-4 whitespace-nowrap text-sm text-gray-900">
+                        <td className="px-2 py-4 text-sm text-gray-900">
+                          <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
                         {lead.stage || '---'}
+                          </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.probability ? `${lead.probability}%` : '---'}
@@ -5672,8 +6085,13 @@ const CloserSuperPipelineReport = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.scheduler || '---'}
                       </td>
-                      <td className="px-6 py-4 text-sm text-gray-900 max-w-xs truncate">
+                      <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                        <div 
+                          className="line-clamp-3 break-words cursor-help"
+                          title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
+                        >
                         {lead.expert_opinion || '---'}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.number_of_applicants_meeting ?? '---'}
@@ -5681,7 +6099,7 @@ const CloserSuperPipelineReport = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.potential_applicants_meeting ?? '---'}
                       </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs">
+                        <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
                           {editingManagerNotes[lead.id || index] ? (
                             <div className="flex flex-col gap-2">
                               <textarea
@@ -5718,14 +6136,19 @@ const CloserSuperPipelineReport = () => {
                               </div>
                             </div>
                           ) : (
-                            <div className="flex items-center gap-2 group">
-                              <span className="truncate">{lead.manager_notes || '---'}</span>
+                            <div className="flex items-start gap-2 group">
+                              <div 
+                                className="line-clamp-3 break-words flex-1 cursor-help"
+                                title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                              >
+                                {lead.manager_notes || '---'}
+                              </div>
                               <button
                                 onClick={() => {
                                   setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
                                   setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
                                 }}
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity"
+                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
                                 title="Edit manager notes"
                               >
                                 <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -5746,7 +6169,6 @@ const CloserSuperPipelineReport = () => {
           )}
         </div>
       )}
-      </div>
     </div>
   );
 };
@@ -5758,7 +6180,1000 @@ const PerformanceByCatReport = () => <div className="p-6">Schedulers Performance
 const SuperPipelineClosersReport = CloserSuperPipelineReport;
 const ClosersQualityReport = () => <div className="p-6">Closers Quality Report Content</div>;
 const ExpertsAssignmentReport = () => <div className="p-6">Experts Assignment Report Content</div>;
-const ExpertsResultsReport = () => <div className="p-6">Experts Results Report Content</div>;
+const ExpertsResultsReport = () => {
+  const navigate = useNavigate();
+  const today = new Date().toISOString().split('T')[0];
+  const [filters, setFilters] = useState({
+    fromDate: today,
+    toDate: today,
+    stage: '',
+    language: '',
+    category: '',
+    expertExamination: '',
+    expert: '',
+    source: '',
+  });
+  const [results, setResults] = useState<any[]>([]);
+  const [isSearching, setIsSearching] = useState(false);
+  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [stages, setStages] = useState<{ id: number; name: string }[]>([]);
+  const [languages, setLanguages] = useState<{ id: number; name: string }[]>([]);
+  const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
+  const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [sources, setSources] = useState<string[]>([]);
+  const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [employeeNameMap, setEmployeeNameMap] = useState<Record<number, string>>({});
+  
+  // Search states for searchable dropdowns
+  const [stageSearch, setStageSearch] = useState<string>('');
+  const [languageSearch, setLanguageSearch] = useState<string>('');
+  const [categorySearch, setCategorySearch] = useState<string>('');
+  const [expertExaminationSearch, setExpertExaminationSearch] = useState<string>('');
+  const [expertSearch, setExpertSearch] = useState<string>('');
+  const [sourceSearch, setSourceSearch] = useState<string>('');
+  
+  // Dropdown visibility states
+  const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
+  const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
+  const [showCategoryDropdown, setShowCategoryDropdown] = useState<boolean>(false);
+  const [showExpertExaminationDropdown, setShowExpertExaminationDropdown] = useState<boolean>(false);
+  const [showExpertDropdown, setShowExpertDropdown] = useState<boolean>(false);
+  const [showSourceDropdown, setShowSourceDropdown] = useState<boolean>(false);
+
+  const expertExaminationOptions = [
+    { value: '', label: 'Please choose' },
+    { value: 'feasible_no_check', label: 'Feasible (No Check)' },
+    { value: 'feasible_check', label: 'Feasible (Further Check)' },
+    { value: 'not_feasible', label: 'Not Feasible' },
+  ];
+
+  useEffect(() => {
+    const fetchOptions = async () => {
+      // Fetch stages
+      const { data: stageData } = await supabase
+        .from('lead_stages')
+        .select('id, name')
+        .order('name');
+      if (stageData) {
+        setStages(stageData.map(s => ({ id: s.id, name: s.name })));
+      }
+
+      // Fetch languages
+      const { data: langData } = await supabase
+        .from('misc_language')
+        .select('id, name')
+        .order('name');
+      if (langData) {
+        setLanguages(langData.map(l => ({ id: l.id, name: l.name })));
+      }
+
+      // Fetch main categories
+      const { data: catData } = await supabase
+        .from('misc_maincategory')
+        .select('id, name')
+        .order('name');
+      if (catData) {
+        setCategories(catData.map(c => ({ id: c.id, name: c.name })));
+      }
+
+      // Fetch all categories with subcategories for detailed lookup
+      const { data: allCatData } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id(
+            id,
+            name
+          )
+        `)
+        .order('name');
+      if (allCatData) {
+        setAllCategories(allCatData || []);
+      }
+
+      // Fetch employees
+      const { data: empData } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name')
+        .order('display_name');
+      if (empData) {
+        setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+        const nameMap: Record<number, string> = {};
+        empData.forEach(emp => {
+          if (emp.id && emp.display_name) {
+            nameMap[emp.id] = emp.display_name;
+          }
+        });
+        setEmployeeNameMap(nameMap);
+      }
+
+      // Fetch sources
+      const { data: sourceData } = await supabase
+        .from('leads')
+        .select('source')
+        .not('source', 'is', null)
+        .neq('source', '');
+      if (sourceData) {
+        const uniqueSources = Array.from(new Set(sourceData.map(s => s.source).filter(Boolean))) as string[];
+        setSources(uniqueSources.sort());
+      }
+    };
+    fetchOptions();
+  }, []);
+
+  const handleFilterChange = (field: string, value: any) => {
+    setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Update search text when filter changes
+  useEffect(() => {
+    if (filters.stage) {
+      const selectedStage = stages.find(s => s.id.toString() === filters.stage);
+      setStageSearch(selectedStage ? selectedStage.name : '');
+    } else {
+      setStageSearch('');
+    }
+  }, [filters.stage, stages]);
+
+  useEffect(() => {
+    if (filters.language) {
+      const selectedLanguage = languages.find(l => l.id.toString() === filters.language);
+      setLanguageSearch(selectedLanguage ? selectedLanguage.name : '');
+    } else {
+      setLanguageSearch('');
+    }
+  }, [filters.language, languages]);
+
+  useEffect(() => {
+    if (filters.category) {
+      const selectedCategory = categories.find(c => c.id.toString() === filters.category);
+      setCategorySearch(selectedCategory ? selectedCategory.name : '');
+    } else {
+      setCategorySearch('');
+    }
+  }, [filters.category, categories]);
+
+  useEffect(() => {
+    if (filters.expertExamination) {
+      const selectedOption = expertExaminationOptions.find(opt => opt.value === filters.expertExamination);
+      setExpertExaminationSearch(selectedOption ? selectedOption.label : '');
+    } else {
+      setExpertExaminationSearch('');
+    }
+  }, [filters.expertExamination]);
+
+  useEffect(() => {
+    if (filters.expert) {
+      const selectedExpert = employees.find(e => e.id.toString() === filters.expert);
+      setExpertSearch(selectedExpert ? selectedExpert.name : '');
+    } else {
+      setExpertSearch('');
+    }
+  }, [filters.expert, employees]);
+
+  useEffect(() => {
+    if (filters.source) {
+      setSourceSearch(filters.source);
+    } else {
+      setSourceSearch('');
+    }
+  }, [filters.source]);
+
+  // Filter options based on search
+  const filteredStages = stages.filter((stage: { id: number; name: string }) => 
+    stage.name.toLowerCase().includes(stageSearch.toLowerCase())
+  );
+
+  const filteredLanguages = languages.filter((lang: { id: number; name: string }) => 
+    lang.name.toLowerCase().includes(languageSearch.toLowerCase())
+  );
+
+  const filteredCategories = categories.filter((cat: { id: number; name: string }) => 
+    cat.name.toLowerCase().includes(categorySearch.toLowerCase())
+  );
+
+  const filteredExpertExaminations = expertExaminationOptions.filter((opt: { value: string; label: string }) => 
+    opt.label.toLowerCase().includes(expertExaminationSearch.toLowerCase())
+  );
+
+  const filteredExperts = employees.filter((emp: { id: number; name: string }) => 
+    emp.name.toLowerCase().includes(expertSearch.toLowerCase())
+  );
+
+  const filteredSources = sources.filter((source: string) => 
+    source.toLowerCase().includes(sourceSearch.toLowerCase())
+  );
+
+  const getCategoryName = (categoryId: string | number | null | undefined, miscCategory?: any) => {
+    if (!categoryId || categoryId === '---' || categoryId === '--') {
+      return '---';
+    }
+    
+    if (miscCategory) {
+      const cat = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
+      const mainCategory = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
+      if (mainCategory?.name && cat?.name) {
+        return `${cat.name} (${mainCategory.name})`;
+      }
+      if (cat?.name) {
+        return cat.name;
+      }
+    }
+
+    const foundCategory = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
+    if (foundCategory) {
+      const mainCategory = Array.isArray(foundCategory.misc_maincategory) 
+        ? foundCategory.misc_maincategory[0] 
+        : foundCategory.misc_maincategory;
+      if (mainCategory?.name) {
+        return `${foundCategory.name} (${mainCategory.name})`;
+      }
+      return foundCategory.name;
+    }
+    
+    return String(categoryId);
+  };
+
+  const formatDate = (dateStr: string | null | undefined) => {
+    if (!dateStr) return '---';
+    try {
+      const date = new Date(dateStr);
+      const day = String(date.getDate()).padStart(2, '0');
+      const month = String(date.getMonth() + 1).padStart(2, '0');
+      const year = String(date.getFullYear()).slice(-2);
+      return `${day}.${month}.${year}`;
+    } catch {
+      return '---';
+    }
+  };
+
+  const formatCurrency = (amount: number | null | undefined, currency: string | null | undefined) => {
+    if (!amount) return '---';
+    const symbol = currency === 'USD' ? '$' : currency === 'EUR' ? '€' : currency === 'GBP' ? '£' : currency === 'NIS' || currency === 'ILS' ? '₪' : currency || '₪';
+    return `${symbol} ${amount.toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 1 })}`;
+  };
+
+  const getExpertExaminationResult = (lead: any): { text: string; color: string } => {
+    if (lead.lead_type === 'new') {
+      const status = lead.eligibility_status;
+      if (status === 'feasible_no_check') {
+        return { text: 'Feasible (no check)', color: 'bg-green-100 text-green-800' };
+      } else if (status === 'feasible_check') {
+        return { text: 'Feasibile (further check)', color: 'bg-yellow-100 text-yellow-800' };
+      } else if (status === 'not_feasible') {
+        return { text: 'Not feasible', color: 'bg-red-100 text-red-800' };
+      }
+    } else {
+      const exam = String(lead.expert_examination || '');
+      if (exam === '8') {
+        return { text: 'Feasible (no check)', color: 'bg-green-100 text-green-800' };
+      } else if (exam === '5') {
+        return { text: 'Feasibile (further check)', color: 'bg-yellow-100 text-yellow-800' };
+      } else if (exam === '1') {
+        return { text: 'Not feasible', color: 'bg-red-100 text-red-800' };
+      }
+    }
+    return { text: '---', color: 'bg-gray-100 text-gray-800' };
+  };
+
+  const resolveEmployeeName = (value: any): string => {
+    if (!value) return '---';
+    if (typeof value === 'number') {
+      return employeeNameMap[value] || `Employee ${value}`;
+    }
+    const numericValue = parseInt(String(value));
+    if (!isNaN(numericValue) && String(numericValue) === String(value).trim()) {
+      return employeeNameMap[numericValue] || `Employee ${numericValue}`;
+    }
+    return String(value);
+  };
+
+  const handleSearch = async () => {
+    setIsSearching(true);
+    setSearchPerformed(true);
+    try {
+      // Ensure dates are in proper ISO format
+      // Date input returns YYYY-MM-DD, but we need to ensure we only use the date part
+      const fromDate = filters.fromDate ? (() => {
+        // Remove any existing time component and spaces, keep only YYYY-MM-DD
+        const cleanDate = filters.fromDate.trim().split('T')[0].split(' ')[0];
+        // Validate it's in YYYY-MM-DD format
+        if (/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+          return `${cleanDate}T00:00:00`;
+        }
+        return null;
+      })() : null;
+      const toDate = filters.toDate ? (() => {
+        // Remove any existing time component and spaces, keep only YYYY-MM-DD
+        const cleanDate = filters.toDate.trim().split('T')[0].split(' ')[0];
+        // Validate it's in YYYY-MM-DD format
+        if (/^\d{4}-\d{2}-\d{2}$/.test(cleanDate)) {
+          return `${cleanDate}T23:59:59`;
+        }
+        return null;
+      })() : null;
+
+      // Build query for new leads with expert examination results
+      let newLeadsQuery = supabase
+        .from('leads')
+        .select(`
+          id,
+          lead_number,
+          name,
+          category_id,
+          category,
+          stage,
+          language,
+          source,
+          expert,
+          eligibility_status,
+          scheduler,
+          manager,
+          balance,
+          balance_currency,
+          proposal_total,
+          proposal_currency,
+          meeting_date,
+          eligibility_status_last_edited_at,
+          expert_eligibility_date,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          ),
+          meetings (
+            meeting_date
+          )
+        `)
+        .in('eligibility_status', ['feasible_no_check', 'feasible_check', 'not_feasible']);
+
+      // Filter by eligibility_status_last_edited_at (primary tracking column)
+      // fromDate and toDate already have time components appended
+      if (fromDate) {
+        newLeadsQuery = newLeadsQuery.gte('eligibility_status_last_edited_at', fromDate);
+      }
+      if (toDate) {
+        newLeadsQuery = newLeadsQuery.lte('eligibility_status_last_edited_at', toDate);
+      }
+      if (filters.stage) newLeadsQuery = newLeadsQuery.eq('stage', parseInt(filters.stage));
+      if (filters.language) newLeadsQuery = newLeadsQuery.eq('language_id', parseInt(filters.language));
+      if (filters.category) {
+        // Get subcategories for the selected main category
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', parseInt(filters.category));
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id.toString());
+          newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          newLeadsQuery = newLeadsQuery.eq('category_id', -1);
+        }
+      }
+      if (filters.expertExamination) {
+        newLeadsQuery = newLeadsQuery.eq('eligibility_status', filters.expertExamination);
+      }
+      if (filters.expert) {
+        newLeadsQuery = newLeadsQuery.eq('expert', parseInt(filters.expert));
+      }
+      if (filters.source) {
+        newLeadsQuery = newLeadsQuery.eq('source', filters.source);
+      }
+
+      const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery;
+
+      if (newLeadsError) {
+        console.error('Error fetching new leads:', newLeadsError);
+        throw newLeadsError;
+      }
+
+      // Build query for legacy leads with expert examination results
+      let legacyLeadsQuery = supabase
+        .from('leads_lead')
+        .select(`
+          id,
+          name,
+          category_id,
+          category,
+          stage,
+          language_id,
+          source_id,
+          expert_id,
+          expert_examination,
+          meeting_scheduler_id,
+          meeting_manager_id,
+          total_base,
+          currency_id,
+          meeting_date,
+          eligibilty_date,
+          misc_category!category_id(
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name
+            )
+          )
+        `)
+        .not('expert_examination', 'is', null)
+        .neq('expert_examination', '0')
+        .neq('expert_examination', '');
+
+      if (fromDate) legacyLeadsQuery = legacyLeadsQuery.gte('eligibilty_date', fromDate);
+      if (toDate) legacyLeadsQuery = legacyLeadsQuery.lte('eligibilty_date', toDate);
+      if (filters.stage) legacyLeadsQuery = legacyLeadsQuery.eq('stage', parseInt(filters.stage));
+      if (filters.language) legacyLeadsQuery = legacyLeadsQuery.eq('language_id', parseInt(filters.language));
+      if (filters.category) {
+        const { data: subCategories } = await supabase
+          .from('misc_category')
+          .select('id')
+          .eq('parent_id', parseInt(filters.category));
+        if (subCategories && subCategories.length > 0) {
+          const subCategoryIds = subCategories.map(sc => sc.id);
+          legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
+        } else {
+          legacyLeadsQuery = legacyLeadsQuery.eq('category_id', -1);
+        }
+      }
+      if (filters.expertExamination) {
+        const examValue = filters.expertExamination === 'feasible_no_check' ? '8' : 
+                         filters.expertExamination === 'feasible_check' ? '5' : '1';
+        legacyLeadsQuery = legacyLeadsQuery.eq('expert_examination', examValue);
+      }
+      if (filters.expert) {
+        legacyLeadsQuery = legacyLeadsQuery.eq('expert_id', parseInt(filters.expert));
+      }
+      // Note: Legacy leads use source_id (integer FK), not source (string)
+      // Source filter for legacy leads would require joining with misc_leadsource table
+      // For now, we'll skip source filtering for legacy leads
+      // if (filters.source) {
+      //   legacyLeadsQuery = legacyLeadsQuery.eq('source_id', parseInt(filters.source));
+      // }
+
+      const { data: legacyLeadsData, error: legacyLeadsError } = await legacyLeadsQuery;
+
+      if (legacyLeadsError) {
+        console.error('Error fetching legacy leads:', legacyLeadsError);
+        throw legacyLeadsError;
+      }
+
+      // Process new leads
+      const processedNewLeads = (newLeadsData || []).map(lead => {
+        const meetingDate = lead.meeting_date || (lead.meetings && lead.meetings.length > 0 ? lead.meetings[0].meeting_date : null);
+        const amount = typeof lead.balance === 'number' ? lead.balance : (typeof lead.proposal_total === 'number' ? lead.proposal_total : 0);
+        const currency = lead.balance_currency || lead.proposal_currency || 'NIS';
+        const amountNIS = convertToNIS(amount, currency);
+
+        return {
+          id: lead.id,
+          lead_number: lead.lead_number || lead.id,
+          name: lead.name || 'Unnamed Lead',
+          category: getCategoryName(lead.category_id, lead.misc_category),
+          stage: lead.stage ? stages.find(s => s.id === lead.stage)?.name || String(lead.stage) : '---',
+          language: lead.language || '---',
+          expert_set_date: lead.expert_eligibility_date || lead.eligibility_status_last_edited_at || null,
+          meeting_date: meetingDate,
+          scheduler: resolveEmployeeName(lead.scheduler),
+          manager: resolveEmployeeName(lead.manager),
+          expert: resolveEmployeeName(lead.expert),
+          total: amount,
+          totalNIS: amountNIS,
+          total_display: formatCurrency(amount, currency),
+          result: getExpertExaminationResult({ ...lead, lead_type: 'new' }),
+          lead_type: 'new' as const
+        };
+      });
+
+      // Process legacy leads
+      const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
+        const amount = typeof lead.total_base === 'number' ? lead.total_base : 0;
+        const currencyId = lead.currency_id;
+        const currency = currencyId ? (currencyId === 1 ? 'NIS' : currencyId === 2 ? 'EUR' : currencyId === 3 ? 'USD' : currencyId === 4 ? 'GBP' : 'NIS') : 'NIS';
+        const amountNIS = convertToNIS(amount, currencyId || 'NIS');
+
+        return {
+          id: `legacy_${lead.id}`,
+          lead_number: lead.id?.toString() || '',
+          name: lead.name || 'Unnamed Lead',
+          category: getCategoryName(lead.category_id, lead.misc_category),
+          stage: lead.stage ? stages.find(s => s.id === lead.stage)?.name || String(lead.stage) : '---',
+          language: lead.language_id ? languages.find(l => l.id === lead.language_id)?.name || '---' : '---',
+          expert_set_date: lead.eligibilty_date || null,
+          meeting_date: lead.meeting_date || null,
+          scheduler: resolveEmployeeName(lead.meeting_scheduler_id),
+          manager: resolveEmployeeName(lead.meeting_manager_id),
+          expert: resolveEmployeeName(lead.expert_id),
+          total: amount,
+          totalNIS: amountNIS,
+          total_display: formatCurrency(amount, currency),
+          result: getExpertExaminationResult({ ...lead, lead_type: 'legacy' }),
+          lead_type: 'legacy' as const
+        };
+      });
+
+      const allLeads = [...processedNewLeads, ...processedLegacyLeads];
+      setResults(allLeads);
+    } catch (error: any) {
+      console.error('Error fetching experts results:', error);
+      toast.error('Failed to fetch experts results data');
+      setResults([]);
+    } finally {
+      setIsSearching(false);
+    }
+  };
+
+  // Calculate summary statistics
+  const summaryStats = useMemo(() => {
+    const totalLeads = results.length;
+    // Sum all amounts converted to NIS
+    const totalAmount = results.reduce((sum, lead) => {
+      const amountNIS = (lead as any).totalNIS || 0;
+      return sum + (typeof amountNIS === 'number' ? amountNIS : 0);
+    }, 0);
+    return { totalLeads, totalAmount };
+  }, [results]);
+
+  // Generate color palette for experts
+  const generateColors = (count: number): string[] => {
+    const colors = [
+      '#8884d8', '#82ca9d', '#ffc658', '#ff7300', '#00ff00',
+      '#0088fe', '#00c49f', '#ffbb28', '#ff8042', '#8884d8',
+      '#8dd1e1', '#d084d0', '#ffb347', '#87ceeb', '#dda0dd',
+      '#98d8c8', '#f7dc6f', '#bb8fce', '#85c1e2', '#f8b88b'
+    ];
+    return colors.slice(0, count);
+  };
+
+  // Calculate chart data by expert
+  const chartData = useMemo(() => {
+    const expertCounts: Record<string, number> = {};
+    results.forEach(lead => {
+      if (lead.expert && lead.expert !== '---') {
+        expertCounts[lead.expert] = (expertCounts[lead.expert] || 0) + 1;
+      }
+    });
+
+    const data = Object.entries(expertCounts)
+      .map(([name, count]) => ({ name, value: count }))
+      .sort((a, b) => b.value - a.value)
+      .slice(0, 10); // Top 10 experts
+
+    // Assign colors to each expert
+    const colors = generateColors(data.length);
+    return data.map((item, index) => ({
+      ...item,
+      fill: colors[index]
+    }));
+  }, [results]);
+
+  const getStageName = (stageId: string | number | null | undefined) => {
+    if (!stageId) return '---';
+    const found = stages.find(s => s.id.toString() === String(stageId));
+    return found ? found.name : String(stageId);
+  };
+
+  return (
+    <div className="px-2 py-6">
+      <h2 className="text-2xl font-bold mb-6 px-4">Experts Results</h2>
+      
+      {/* Filters */}
+      <div className="mb-6 px-4">
+        <div className="space-y-4">
+          {/* Input fields section */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">From date:</label>
+              <input
+                type="date"
+                value={filters.fromDate}
+                onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">To date:</label>
+              <input
+                type="date"
+                value={filters.toDate}
+                onChange={(e) => handleFilterChange('toDate', e.target.value)}
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+            </div>
+          </div>
+          
+          {/* Dropdowns section - all as searchable input fields */}
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Stage:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search stage..."
+                value={stageSearch}
+                onChange={(e) => {
+                  setStageSearch(e.target.value);
+                  setShowStageDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('stage', '');
+                  }
+                }}
+                onFocus={() => setShowStageDropdown(true)}
+                onBlur={() => setTimeout(() => setShowStageDropdown(false), 200)}
+              />
+              {showStageDropdown && filteredStages.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('stage', '');
+                      setStageSearch('');
+                      setShowStageDropdown(false);
+                    }}
+                  >
+                    All Stages
+                  </div>
+                  {filteredStages.map((stage) => (
+                    <div
+                      key={stage.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('stage', stage.id.toString());
+                        setStageSearch(stage.name);
+                        setShowStageDropdown(false);
+                      }}
+                    >
+                      {stage.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Language:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search language..."
+                value={languageSearch}
+                onChange={(e) => {
+                  setLanguageSearch(e.target.value);
+                  setShowLanguageDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('language', '');
+                  }
+                }}
+                onFocus={() => setShowLanguageDropdown(true)}
+                onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
+              />
+              {showLanguageDropdown && filteredLanguages.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('language', '');
+                      setLanguageSearch('');
+                      setShowLanguageDropdown(false);
+                    }}
+                  >
+                    All Languages
+                  </div>
+                  {filteredLanguages.map((lang) => (
+                    <div
+                      key={lang.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('language', lang.id.toString());
+                        setLanguageSearch(lang.name);
+                        setShowLanguageDropdown(false);
+                      }}
+                    >
+                      {lang.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Category:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search category..."
+                value={categorySearch}
+                onChange={(e) => {
+                  setCategorySearch(e.target.value);
+                  setShowCategoryDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('category', '');
+                  }
+                }}
+                onFocus={() => setShowCategoryDropdown(true)}
+                onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+              />
+              {showCategoryDropdown && filteredCategories.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('category', '');
+                      setCategorySearch('');
+                      setShowCategoryDropdown(false);
+                    }}
+                  >
+                    All Categories
+                  </div>
+                  {filteredCategories.map((cat) => (
+                    <div
+                      key={cat.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('category', cat.id.toString());
+                        setCategorySearch(cat.name);
+                        setShowCategoryDropdown(false);
+                      }}
+                    >
+                      {cat.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Expert examination:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search examination..."
+                value={expertExaminationSearch}
+                onChange={(e) => {
+                  setExpertExaminationSearch(e.target.value);
+                  setShowExpertExaminationDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('expertExamination', '');
+                  }
+                }}
+                onFocus={() => setShowExpertExaminationDropdown(true)}
+                onBlur={() => setTimeout(() => setShowExpertExaminationDropdown(false), 200)}
+              />
+              {showExpertExaminationDropdown && filteredExpertExaminations.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('expertExamination', '');
+                      setExpertExaminationSearch('');
+                      setShowExpertExaminationDropdown(false);
+                    }}
+                  >
+                    All Examinations
+                  </div>
+                  {filteredExpertExaminations.map((opt) => (
+                    <div
+                      key={opt.value}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('expertExamination', opt.value);
+                        setExpertExaminationSearch(opt.label);
+                        setShowExpertExaminationDropdown(false);
+                      }}
+                    >
+                      {opt.label}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Expert:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search expert..."
+                value={expertSearch}
+                onChange={(e) => {
+                  setExpertSearch(e.target.value);
+                  setShowExpertDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('expert', '');
+                  }
+                }}
+                onFocus={() => setShowExpertDropdown(true)}
+                onBlur={() => setTimeout(() => setShowExpertDropdown(false), 200)}
+              />
+              {showExpertDropdown && filteredExperts.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('expert', '');
+                      setExpertSearch('');
+                      setShowExpertDropdown(false);
+                    }}
+                  >
+                    All Experts
+                  </div>
+                  {filteredExperts.map((emp) => (
+                    <div
+                      key={emp.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('expert', emp.id.toString());
+                        setExpertSearch(emp.name);
+                        setShowExpertDropdown(false);
+                      }}
+                    >
+                      {emp.name}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <div className="relative">
+              <label className="block text-sm font-medium text-gray-700 mb-1">Source:</label>
+              <input
+                type="text"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Search source..."
+                value={sourceSearch}
+                onChange={(e) => {
+                  setSourceSearch(e.target.value);
+                  setShowSourceDropdown(true);
+                  if (!e.target.value) {
+                    handleFilterChange('source', '');
+                  }
+                }}
+                onFocus={() => setShowSourceDropdown(true)}
+                onBlur={() => setTimeout(() => setShowSourceDropdown(false), 200)}
+              />
+              {showSourceDropdown && filteredSources.length > 0 && (
+                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                  <div
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('source', '');
+                      setSourceSearch('');
+                      setShowSourceDropdown(false);
+                    }}
+                  >
+                    All Sources
+                  </div>
+                  {filteredSources.map((source) => (
+                    <div
+                      key={source}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('source', source);
+                        setSourceSearch(source);
+                        setShowSourceDropdown(false);
+                      }}
+                    >
+                      {source}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+        <div className="mt-4">
+          <button
+            onClick={handleSearch}
+            disabled={isSearching}
+            className="btn btn-primary"
+          >
+            {isSearching ? 'Loading...' : 'Show'}
+          </button>
+        </div>
+      </div>
+
+      {/* Summary Bar */}
+      {searchPerformed && (
+        <div className="mb-6 px-4">
+          <div className="bg-gray-200 px-4 py-2 rounded-md">
+            <span className="font-semibold">
+              {summaryStats.totalLeads} Leads Total: {formatCurrency(summaryStats.totalAmount, 'NIS')}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Bar Chart */}
+      {searchPerformed && chartData.length > 0 && (
+        <div className="mb-6 px-4">
+          <div className="bg-white p-4 rounded-lg shadow">
+            <h3 className="text-lg font-semibold mb-4">Expert Results</h3>
+            <ResponsiveContainer width="100%" height={300}>
+              <BarChart data={chartData}>
+                <CartesianGrid strokeDasharray="3 3" />
+                <XAxis dataKey="name" />
+                <YAxis domain={[0, 'dataMax + 0.5']} />
+                <Tooltip />
+                <Legend />
+                <Bar dataKey="value">
+                  {chartData.map((entry, index) => (
+                    <Cell key={`cell-${index}`} fill={entry.fill || '#8884d8'} />
+                  ))}
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      )}
+
+      {/* Results Table */}
+      {searchPerformed && (
+        <div className="px-4">
+          {results.length === 0 ? (
+            <div className="text-center py-8 text-gray-500">
+              No results found.
+            </div>
+          ) : (
+            <div className="overflow-x-auto -mx-2">
+              <div className="px-4">
+                <table className="min-w-full divide-y divide-gray-200">
+                  <thead className="bg-gray-50">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lead</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Category</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Lang</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expert set Date</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Meeting Date</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Manager</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Expert</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Result (Feasibility)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="bg-white divide-y divide-gray-200">
+                    {results.map((lead, index) => (
+                      <tr key={lead.id || index} className="hover:bg-gray-50">
+                        <td className="px-4 py-4 whitespace-nowrap">
+                          <Link
+                            to={`/clients/${lead.lead_number}`}
+                            className="text-blue-600 hover:text-blue-800 font-semibold"
+                          >
+                            #{lead.lead_number} {lead.name}
+                          </Link>
+                        </td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.category}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.stage}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.language}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{formatDate(lead.expert_set_date)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{formatDate(lead.meeting_date)}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.scheduler}</td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.manager}</td>
+                        <td className="px-4 py-4 text-sm">
+                          <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-800 text-xs font-semibold">
+                            {lead.expert}
+                          </span>
+                        </td>
+                        <td className="px-4 py-4 text-sm text-gray-900">{lead.total_display}</td>
+                        <td className="px-4 py-4 text-sm">
+                          <span className={`px-2 py-1 rounded-full text-xs font-semibold ${lead.result.color}`}>
+                            {lead.result.text}
+                          </span>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
 const EmployeesPerformanceReport = () => <div className="p-6">Employees Performance Analysis Content</div>;
 const StatisticsReport = () => <div className="p-6">Statistics Analysis Content</div>;
 const PiesReport = () => <div className="p-6">Pies Analysis Content</div>;
@@ -8100,23 +9515,86 @@ const reports: ReportSection[] = [
 export default function ReportsPage() {
   const navigate = useNavigate();
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState<string>('');
 
   console.log('Selected report:', selectedReport);
+
+  // Filter reports based on search query
+  const filteredReports = useMemo(() => {
+    if (!searchQuery.trim()) {
+      return reports;
+    }
+
+    const query = searchQuery.toLowerCase().trim();
+    return reports
+      .map((section) => {
+        const filteredItems = section.items.filter((item) => {
+          const matchesLabel = item.label.toLowerCase().includes(query);
+          const matchesCategory = section.category.toLowerCase().includes(query);
+          return matchesLabel || matchesCategory;
+        });
+
+        return {
+          ...section,
+          items: filteredItems,
+        };
+      })
+      .filter((section) => section.items.length > 0);
+  }, [searchQuery]);
 
   return (
     <div className="p-0 md:p-6 space-y-8">
       {!selectedReport ? (
         <>
-          <h1 className="text-4xl font-bold mb-8 px-4 md:px-0">Reports</h1>
-          <div className="space-y-10 px-4 md:px-0">
-            {reports.map((section) => (
+          <div className="px-4 md:px-0">
+            <h1 className="text-4xl font-bold mb-6">Reports</h1>
+            {/* Search Bar */}
+            <div className="mb-8">
+              <div className="relative max-w-2xl">
+                <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                <input
+                  type="text"
+                  placeholder="Search reports by name or category..."
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-10 py-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent"
+                />
+                {searchQuery && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                )}
+              </div>
+              {searchQuery && (
+                <p className="mt-2 text-sm text-gray-600">
+                  Found {filteredReports.reduce((sum, section) => sum + section.items.length, 0)} report(s)
+                </p>
+              )}
+            </div>
+          </div>
+          <div className="space-y-6 sm:space-y-8 md:space-y-10 px-4 md:px-0">
+            {filteredReports.length === 0 ? (
+              <div className="text-center py-12">
+                <p className="text-gray-500 text-lg">No reports found matching "{searchQuery}"</p>
+                <button
+                  onClick={() => setSearchQuery('')}
+                  className="mt-4 text-primary hover:underline"
+                >
+                  Clear search
+                </button>
+              </div>
+            ) : (
+              filteredReports.map((section) => (
               <div key={section.category}>
                 <h2 className="text-2xl font-semibold mb-4">{section.category}</h2>
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-6">
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3 md:gap-4 lg:gap-6">
                   {section.items.map((item) => (
                     <button
                       key={item.label}
-                      className="card bg-base-100 shadow hover:shadow-lg transition-shadow border border-base-200 flex flex-col items-center justify-center p-6 cursor-pointer hover:bg-primary hover:text-white group"
+                        className="card bg-base-100 shadow hover:shadow-lg transition-shadow border border-base-200 flex flex-col items-center justify-center p-3 sm:p-4 md:p-5 lg:p-6 cursor-pointer hover:bg-primary hover:text-white group"
                       onClick={() => {
                         if (item.route) {
                           navigate(item.route);
@@ -8127,29 +9605,104 @@ export default function ReportsPage() {
                         }
                       }}
                     >
-                      <item.icon className="w-12 h-12 mb-3 text-black group-hover:text-white" />
-                      <span className="font-semibold text-lg text-center group-hover:text-white">{item.label}</span>
+                        <item.icon className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 mb-2 sm:mb-2 md:mb-3 text-black group-hover:text-white" />
+                        <span className="font-semibold text-sm sm:text-base md:text-lg text-center group-hover:text-white">{item.label}</span>
                     </button>
                   ))}
                 </div>
               </div>
-            ))}
+              ))
+            )}
           </div>
         </>
       ) : (
         <div className="px-4 md:px-0">
           {/* Report Content */}
           <div className="bg-white rounded-xl shadow-lg p-8 border border-base-200">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-6 flex-wrap gap-4">
               <h3 className="text-2xl font-bold">{selectedReport.label}</h3>
+              <div className="flex items-center gap-3 flex-wrap">
+                {/* Search Bar in Report View */}
+                <div className="relative max-w-xs">
+                  <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search other reports..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onFocus={() => {
+                      // When user starts searching, show report selector
+                      if (searchQuery) {
+                        // This will be handled by showing a dropdown or modal
+                      }
+                    }}
+                    className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
+                  />
+                  {searchQuery && (
               <button
-                onClick={() => setSelectedReport(null)}
+                      onClick={() => setSearchQuery('')}
+                      className="absolute right-3 top-1/2 transform -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+                <button
+                  onClick={() => {
+                    setSelectedReport(null);
+                    setSearchQuery('');
+                  }}
                 className="btn btn-outline btn-primary flex items-center gap-2"
               >
                 <ArrowLeftIcon className="w-5 h-5" />
                 Back to Reports
               </button>
             </div>
+            </div>
+            
+            {/* Search Results Dropdown */}
+            {searchQuery && (
+              <div className="mb-6 border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto">
+                <div className="p-4">
+                  <p className="text-sm font-semibold text-gray-700 mb-3">Quick Switch to:</p>
+                  <div className="space-y-2">
+                    {filteredReports.map((section) =>
+                      section.items.map((item) => (
+                        <button
+                          key={item.label}
+                          onClick={() => {
+                            if (item.route) {
+                              navigate(item.route);
+                              setSearchQuery('');
+                              return;
+                            }
+                            if (item.component) {
+                              setSelectedReport(item);
+                              setSearchQuery('');
+                            }
+                          }}
+                          className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
+                            selectedReport?.label === item.label ? 'bg-primary text-white' : 'bg-gray-50'
+                          }`}
+                        >
+                          <item.icon className="w-5 h-5" />
+                          <div className="flex-1">
+                            <div className="font-medium">{item.label}</div>
+                            <div className="text-xs opacity-75">{section.category}</div>
+                          </div>
+                        </button>
+                      ))
+                    )}
+                  </div>
+                  {filteredReports.length === 0 && (
+                    <div className="text-center py-4 text-gray-500 text-sm">
+                      No reports found matching "{searchQuery}"
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+            
             <div className="min-h-[400px]">
               {selectedReport.component ? (
                 React.createElement(selectedReport.component)

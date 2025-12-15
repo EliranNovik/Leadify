@@ -324,15 +324,15 @@ router.post('/webhook', async (req, res) => {
       } else {
         console.error(`❌ Webhook processing failed:`, result.error);
       }
-    } else if (webhookData.phone || webhookData.extension || webhookData.phone_ext) {
+    } else if (webhookData.phone || webhookData.extension || webhookData.phone_ext || webhookData.mobile_ext) {
       // Outgoing call notification - just extension/phone number
       // Fetch recent call logs for this extension to get full call data
       // Process this asynchronously to avoid blocking the response
       const processWebhookAsync = async () => {
         try {
           console.log(`🚀 Webhook: Starting async processing for extension notification`);
-          const extensionOrPhone = String(webhookData.phone || webhookData.extension || webhookData.phone_ext).trim();
-          console.log(`📞 Webhook: Received outgoing call notification for extension/phone: ${extensionOrPhone}`);
+          const extensionOrPhone = String(webhookData.phone || webhookData.extension || webhookData.phone_ext || webhookData.mobile_ext).trim();
+          console.log(`📞 Webhook: Received outgoing call notification for extension/phone/mobile_ext: ${extensionOrPhone}`);
           
           // First, try to find the employee by extension or phone to get all their contact methods
           // This ensures we can match calls by both extension AND phone number
@@ -455,7 +455,7 @@ router.post('/webhook', async (req, res) => {
               console.log(`📞 Webhook: Retry syncCallLogs returned:`, JSON.stringify({ success: retryResult.success, synced: retryResult.synced, skipped: retryResult.skipped, error: retryResult.error }));
               
               if (retryResult.success) {
-                console.log(`✅ Webhook (retry): Synced call logs for extension ${extension}`);
+                console.log(`✅ Webhook (retry): Synced call logs for extension ${extensionOrPhone}`);
                 console.log(`   - New records: ${retryResult.synced || 0}`);
                 console.log(`   - Skipped (existing): ${retryResult.skipped || 0}`);
                 
@@ -475,7 +475,7 @@ router.post('/webhook', async (req, res) => {
                   }
                 }
               } else {
-                console.error(`❌ Webhook (retry): Failed to sync call logs for extension ${extension}:`, retryResult.error);
+                console.error(`❌ Webhook (retry): Failed to sync call logs for extension ${extensionOrPhone}:`, retryResult.error);
               }
             }
             
@@ -485,10 +485,21 @@ router.post('/webhook', async (req, res) => {
                 console.error(`   - Error ${idx + 1}:`, err);
               });
             }
-              } else {
-                console.error(`❌ Webhook: Failed to sync call logs for ${searchTermsString}:`, syncResult.error);
-                console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
-              }
+          } else {
+            console.error(`❌ Webhook: Failed to sync call logs for ${searchTermsString}:`, syncResult.error);
+            console.error(`❌ Webhook: Full error details:`, JSON.stringify(syncResult, null, 2));
+            
+            // If sync failed, try one more time after a delay as a last resort
+            console.log(`⏳ Webhook: Sync failed, waiting 5 seconds and retrying once more...`);
+            await new Promise(resolve => setTimeout(resolve, 5000));
+            
+            const finalRetryResult = await onecomSync.syncCallLogs(startDate, endDate, searchTermsString);
+            if (finalRetryResult.success) {
+              console.log(`✅ Webhook (final retry): Successfully synced ${finalRetryResult.synced || 0} records`);
+            } else {
+              console.error(`❌ Webhook (final retry): Still failed:`, finalRetryResult.error);
+            }
+          }
         } catch (asyncError) {
           console.error(`❌ Webhook: Error processing outgoing call notification:`, asyncError);
           console.error(`❌ Webhook: Error stack:`, asyncError.stack);

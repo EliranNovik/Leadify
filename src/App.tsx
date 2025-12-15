@@ -74,6 +74,8 @@ const AppContentInner: React.FC = () => {
   const { accounts, instance } = useMsal();
   const location = useLocation();
   const isAdminPage = location.pathname === '/admin';
+  const isReportsPage = location.pathname.startsWith('/reports');
+  const isSignedSalesPage = location.pathname === '/sales/signed';
   const msalAccount = instance.getActiveAccount() || accounts[0];
   const userName = accounts.length > 0 ? accounts[0].name : undefined;
   
@@ -507,7 +509,7 @@ const AppContentInner: React.FC = () => {
         element={
           <ProtectedRoute user={authUser}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              {!isAdminPage && (
+              {!isAdminPage && !isReportsPage && !isSignedSalesPage && (
                 <Sidebar 
                   userName={userFullName || userName}
                   userInitials={userInitials}
@@ -516,7 +518,7 @@ const AppContentInner: React.FC = () => {
                   onOpenAIChat={() => setIsAiChatOpen(true)}
                 />
               )}
-              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage ? 'md:pl-24' : ''}`}>
+              <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage ? 'md:pl-24' : ''}`}>
                 <Header 
                   onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
                   onSearchClick={() => setIsSearchOpen(prev => !prev)}
@@ -529,7 +531,7 @@ const AppContentInner: React.FC = () => {
                   onOpenMessaging={() => setIsMessagingOpen(true)}
                   isMenuOpen={isSidebarOpen}
                 />
-                <main className="flex-1 overflow-x-hidden overflow-y-auto">
+                <main className={`flex-1 overflow-x-hidden overflow-y-auto ${isReportsPage ? 'w-full' : ''}`}>
                   <Routes>
                     <Route path="/" element={<Dashboard />} />
                     <Route path="/clients" element={<Clients selectedClient={selectedClient} setSelectedClient={setSelectedClient} refreshClientData={refreshClientData} />} />
