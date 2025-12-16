@@ -71,7 +71,7 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '239': 'America/Chicago', // Tennessee
     '240': 'America/New_York', // Maryland
     '248': 'America/Chicago', // Michigan
-    '251': 'America/New_York', // Massachusetts
+    '251': 'America/Chicago', // Alabama (Mobile)
     '252': 'America/New_York', // North Carolina
     '253': 'America/Los_Angeles', // Washington
     '254': 'America/Chicago', // Texas
@@ -96,9 +96,9 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '308': 'America/Chicago', // North Dakota
     '309': 'America/Chicago', // Illinois
     '310': 'America/Los_Angeles', // California
-    '312': 'America/Los_Angeles', // California
+    '312': 'America/Chicago', // Illinois (Chicago)
     '313': 'America/New_York', // Michigan
-    '314': 'America/Denver', // Nebraska
+    '314': 'America/Chicago', // Missouri (St. Louis)
     '315': 'America/New_York', // New York
     '316': 'America/Chicago', // Illinois
     '317': 'America/New_York', // Pennsylvania
@@ -169,11 +169,11 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '479': 'America/Chicago', // Wisconsin
     '480': 'America/Phoenix', // Arizona
     '484': 'America/Chicago', // Texas
-    '501': 'America/New_York', // Massachusetts
+    '501': 'America/Chicago', // Arkansas
     '502': 'America/New_York', // New Hampshire
     '503': 'America/Los_Angeles', // Oregon
-    '504': 'America/New_York', // Maine
-    '505': 'America/Denver', // Colorado
+    '504': 'America/Chicago', // Louisiana (New Orleans)
+    '505': 'America/Denver', // New Mexico
     '507': 'America/New_York', // Massachusetts
     '508': 'America/New_York', // Massachusetts
     '509': 'America/Los_Angeles', // Washington
@@ -207,11 +207,11 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '580': 'America/Chicago', // Oklahoma
     '585': 'America/New_York', // New York
     '586': 'America/Denver', // Utah
-    '587': 'America/New_York', // Maine
+    '587': 'America/Denver', // Alberta, Canada (Mountain Time)
     '601': 'America/Chicago', // Mississippi
     '602': 'America/Phoenix', // Arizona
     '603': 'America/New_York', // New Hampshire
-    '605': 'America/New_York', // Massachusetts
+    '605': 'America/Chicago', // South Dakota
     '606': 'America/New_York', // Kentucky
     '607': 'America/New_York', // New York
     '608': 'America/Chicago', // Wisconsin
@@ -224,7 +224,7 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '617': 'America/New_York', // Massachusetts
     '618': 'America/Chicago', // Illinois
     '619': 'America/Los_Angeles', // California
-    '620': 'America/New_York', // New York
+    '620': 'America/Chicago', // Kansas
     '623': 'America/Phoenix', // Arizona
     '626': 'America/Los_Angeles', // California
     '627': 'America/Chicago', // Missouri
@@ -234,11 +234,11 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '631': 'America/New_York', // New York
     '636': 'America/Chicago', // Missouri
     '641': 'America/Chicago', // Iowa
-    '646': 'America/New_York', // Missouri
+    '646': 'America/New_York', // New York (Manhattan overlay)
     '647': 'America/New_York', // Ontario, Canada (Eastern)
     '650': 'America/Los_Angeles', // California
     '651': 'America/Chicago', // Minnesota
-    '657': 'America/Chicago', // Missouri
+    '657': 'America/Los_Angeles', // California (Orange County overlay)
     '660': 'America/Chicago', // Missouri
     '661': 'America/Los_Angeles', // California
     '662': 'America/New_York', // Florida
@@ -274,7 +274,7 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '727': 'America/New_York', // Florida
     '728': 'America/New_York', // Florida
     '730': 'America/Chicago', // Illinois
-    '731': 'America/New_York', // New Hampshire
+    '731': 'America/Chicago', // Tennessee
     '732': 'America/New_York', // New Jersey
     '734': 'America/New_York', // Michigan
     '737': 'America/Chicago', // Texas
@@ -315,7 +315,7 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '817': 'America/Chicago', // Texas
     '818': 'America/Los_Angeles', // California
     '828': 'America/New_York', // North Carolina
-    '830': 'America/Chicago', // Texas
+    '830': 'America/Chicago', // Texas (San Antonio area)
     '831': 'America/Los_Angeles', // California
     '832': 'America/Chicago', // Texas
     '843': 'America/New_York', // South Carolina
@@ -369,8 +369,8 @@ export const getUSTimezoneFromAreaCode = (areaCode: string): string | null => {
     '951': 'America/Los_Angeles', // California
     '952': 'America/Chicago', // Minnesota
     '954': 'America/New_York', // Florida
-    '956': 'America/Chicago', // Texas
-    '957': 'America/New_York', // Maine
+    '956': 'America/Chicago', // Texas (Rio Grande Valley)
+    '957': 'America/Denver', // New Mexico (overlay)
     '958': 'America/Los_Angeles', // California
     '959': 'America/Los_Angeles', // California
     '970': 'America/Denver', // Colorado

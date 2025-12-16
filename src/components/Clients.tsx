@@ -5582,6 +5582,48 @@ useEffect(() => {
     // Fetch current tags for this lead
     const tagsString = await fetchCurrentLeadTags(selectedClient?.id || '');
     
+    // Fetch follow-up from follow_ups table for current user
+    let followUpDate = '';
+    const { data: { user } } = await supabase.auth.getUser();
+    if (user) {
+      const { data: userData } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .single();
+      
+      if (userData && selectedClient) {
+        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+        
+        if (isLegacyLead) {
+          const legacyId = selectedClient.id.toString().replace('legacy_', '');
+          const { data: followUpData } = await supabase
+            .from('follow_ups')
+            .select('date')
+            .eq('user_id', userData.id)
+            .eq('lead_id', legacyId)
+            .is('new_lead_id', null)
+            .maybeSingle();
+          
+          if (followUpData?.date) {
+            followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+          }
+        } else {
+          const { data: followUpData } = await supabase
+            .from('follow_ups')
+            .select('date')
+            .eq('user_id', userData.id)
+            .eq('new_lead_id', selectedClient.id)
+            .is('lead_id', null)
+            .maybeSingle();
+          
+          if (followUpData?.date) {
+            followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+          }
+        }
+      }
+    }
+    
     // Reset the edit form data with current client data
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
@@ -5595,7 +5637,7 @@ useEffect(() => {
       number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
       potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
       balance: selectedClient?.balance || selectedClient?.total || '',
-      next_followup: selectedClient?.next_followup || '',
+      next_followup: followUpDate || '',
       balance_currency: currentCurrency,
     });
     setShowEditLeadDrawer(true);
@@ -5861,12 +5903,7 @@ useEffect(() => {
           }
           updateData.probability = probabilityValue;
         }
-        if (editLeadData.next_followup !== selectedClient.next_followup) {
-          // Handle empty follow-up date - provide a default date if empty
-          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-            new Date().toISOString().split('T')[0] : editLeadData.next_followup;
-          updateData.next_followup = followupValue;
-        }
+        // Follow-up is now handled separately in follow_ups table - don't include in updateData
         if (editLeadData.balance !== selectedClient.balance) {
           // Handle empty string for balance field
           const balanceValue = editLeadData.balance === '' || editLeadData.balance === null ? null : String(editLeadData.balance);
@@ -5996,12 +6033,7 @@ useEffect(() => {
           }
           updateData.balance = balanceValue;
         }
-        if (editLeadData.next_followup !== selectedClient.next_followup) {
-          // Handle empty follow-up date - provide a default date if empty
-          const followupValue = editLeadData.next_followup === '' || editLeadData.next_followup === null ? 
-            new Date().toISOString().split('T')[0] : editLeadData.next_followup;
-          updateData.next_followup = followupValue;
-        }
+        // Follow-up is now handled separately in follow_ups table - don't include in updateData
         if (editLeadData.balance_currency !== selectedClient.balance_currency) {
           updateData.balance_currency = editLeadData.balance_currency;
         }
@@ -6096,6 +6128,102 @@ useEffect(() => {
         console.error('Error updating lead:', updateError);
         toast.error('Failed to update lead.');
         return;
+      }
+      
+      // Handle follow-up save/update in follow_ups table
+      const { data: { user } } = await supabase.auth.getUser();
+      if (user) {
+        const { data: userData } = await supabase
+          .from('users')
+          .select('id')
+          .eq('auth_id', user.id)
+          .single();
+        
+        if (userData) {
+          // Fetch current follow-up to compare
+          let currentFollowUp;
+          if (isLegacyLead) {
+            const legacyId = selectedClient.id.toString().replace('legacy_', '');
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('user_id', userData.id)
+              .eq('lead_id', legacyId)
+              .is('new_lead_id', null)
+              .maybeSingle();
+            currentFollowUp = data;
+          } else {
+            const { data } = await supabase
+              .from('follow_ups')
+              .select('id, date')
+              .eq('user_id', userData.id)
+              .eq('new_lead_id', selectedClient.id)
+              .is('lead_id', null)
+              .maybeSingle();
+            currentFollowUp = data;
+          }
+          
+          const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
+          const newFollowUpDate = editLeadData.next_followup || '';
+          
+          if (currentFollowUpDate !== newFollowUpDate) {
+            if (newFollowUpDate && newFollowUpDate.trim() !== '') {
+              // Update or create follow-up
+              if (currentFollowUp) {
+                // Update existing
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .update({ date: newFollowUpDate + 'T00:00:00Z' })
+                  .eq('id', currentFollowUp.id)
+                  .eq('user_id', userData.id);
+                
+                if (followupError) {
+                  console.error('Error updating follow-up:', followupError);
+                  toast.error('Failed to update follow-up date');
+                }
+              } else {
+                // Create new
+                const insertData: any = {
+                  user_id: userData.id,
+                  date: newFollowUpDate + 'T00:00:00Z',
+                  created_at: new Date().toISOString()
+                };
+                
+                if (isLegacyLead) {
+                  const legacyId = selectedClient.id.toString().replace('legacy_', '');
+                  insertData.lead_id = legacyId;
+                  insertData.new_lead_id = null;
+                } else {
+                  insertData.new_lead_id = selectedClient.id;
+                  insertData.lead_id = null;
+                }
+                
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .insert(insertData);
+                
+                if (followupError) {
+                  console.error('Error creating follow-up:', followupError);
+                  toast.error('Failed to save follow-up date');
+                }
+              }
+            } else {
+              // Delete follow-up if date is empty
+              if (currentFollowUp) {
+                const { error: followupError } = await supabase
+                  .from('follow_ups')
+                  .delete()
+                  .eq('id', currentFollowUp.id)
+                  .eq('user_id', userData.id);
+                
+                if (followupError) {
+                  console.error('Error deleting follow-up:', followupError);
+                  toast.error('Failed to delete follow-up');
+                }
+              }
+            }
+          }
+        }
       }
       
       // Log the changes to lead_changes table (only for regular leads, as legacy leads don't have this table)

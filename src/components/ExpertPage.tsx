@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, Squares2X2Icon, Bars3Icon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, Squares2X2Icon, Bars3Icon, StarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
 import DocumentModal from './DocumentModal';
@@ -158,8 +158,6 @@ const ExpertPage: React.FC = () => {
   const [labelDropdownOpen, setLabelDropdownOpen] = useState<number | string | null>(null);
   const [labelSubmitting, setLabelSubmitting] = useState(false);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
-  const [highlightedLeads, setHighlightedLeads] = useState<LeadForExpert[]>([]);
-  const [highlightPanelOpen, setHighlightPanelOpen] = useState(false);
   const [userId, setUserId] = useState<string | null>(null);
   
   // State for row selection and action menu
@@ -1367,59 +1365,89 @@ const ExpertPage: React.FC = () => {
     setLabelSubmitting(false);
   };
 
-  // Set highlightedLeads based on leads.highlighted_by
-  useEffect(() => {
-    if (!userId || leads.length === 0) return;
-    setHighlightedLeads(
-      leads.filter(l => Array.isArray(l.highlighted_by) && l.highlighted_by.includes(userId))
-    );
-  }, [userId, leads]);
+  // Helper function to add highlight to user_highlights table
+  const handleHighlight = async (lead: LeadForExpert | null) => {
+    if (!lead) {
+      console.error('No lead provided to handleHighlight');
+      return;
+    }
 
-  const handleHighlight = async (lead: LeadForExpert) => {
-    if (!userId || highlightedLeads.find(l => String(l.id) === String(lead.id))) return;
-    // Add userId to highlighted_by array
-    const highlightedBy = Array.isArray(lead.highlighted_by) ? [...lead.highlighted_by] : [];
-    if (!highlightedBy.includes(userId)) {
-      highlightedBy.push(userId);
+    try {
+      // Get current user's auth_id
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No user found');
+        return;
+      }
+
+      // Get user's id from users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData) {
+        console.error('Error fetching user ID:', userError);
+        return;
+      }
+
+      const currentUserId = userData.id;
+      const leadNumber = lead.lead_number || '';
+
+      // Check if highlight already exists
+      let existingHighlight;
       if (lead.lead_type === 'legacy') {
         const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
-        await supabase.from('leads_lead').update({ expert_page_highlighted_by: highlightedBy }).eq('id', numericId);
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('lead_id', numericId)
+          .maybeSingle();
+        existingHighlight = data;
       } else {
-        await supabase.from('leads').update({ expert_page_highlighted_by: highlightedBy }).eq('id', lead.id);
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('new_lead_id', lead.id)
+          .maybeSingle();
+        existingHighlight = data;
       }
-      setHighlightedLeads(prev => [...prev, { ...lead, highlighted_by: highlightedBy }]);
-      setHighlightPanelOpen(true);
-    }
-  };
 
-  const handleRemoveHighlight = async (leadId: string) => {
-    if (!userId) return;
-    const lead = leads.find(l => String(l.id) === String(leadId));
-    if (!lead) return;
-    let highlightedBy = Array.isArray(lead.highlighted_by) ? [...lead.highlighted_by] : [];
-    highlightedBy = highlightedBy.filter((id: string) => id !== userId);
-    if (lead.lead_type === 'legacy') {
-      const numericId = typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : parseInt(leadId);
-      await supabase.from('leads_lead').update({ expert_page_highlighted_by: highlightedBy }).eq('id', numericId);
-    } else {
-      await supabase.from('leads').update({ expert_page_highlighted_by: highlightedBy }).eq('id', leadId);
-    }
-    setHighlightedLeads(prev => prev.filter(l => String(l.id) !== String(leadId)));
-  };
+      if (existingHighlight) {
+        // Highlight already exists
+        return;
+      }
 
-  // For scrolling/animating to a main card
-  const mainCardRefs = useRef<{ [id: string | number]: HTMLDivElement | null }>({});
-  const handleHighlightCardClick = (leadId: number | string) => {
-    const ref = mainCardRefs.current[leadId];
-    if (ref) {
-      ref.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      ref.classList.add('ring-4', 'ring-primary', 'animate-pulse');
-      setTimeout(() => {
-        ref.classList.remove('animate-pulse');
-        setTimeout(() => ref.classList.remove('ring-4', 'ring-primary'), 600);
-      }, 1200);
+      // Insert new highlight
+      const highlightData: any = {
+        user_id: currentUserId,
+        lead_number: leadNumber,
+      };
+
+      if (lead.lead_type === 'legacy') {
+        const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+        highlightData.lead_id = numericId;
+      } else {
+        highlightData.new_lead_id = lead.id;
+      }
+
+      const { error: insertError } = await supabase
+        .from('user_highlights')
+        .insert([highlightData]);
+
+      if (insertError) {
+        console.error('Error adding highlight:', insertError);
+        return;
+      }
+
+      // Dispatch event to refresh HighlightsPanel
+      window.dispatchEvent(new CustomEvent('highlights:added'));
+    } catch (error) {
+      console.error('Error in handleHighlight:', error);
     }
-    setHighlightPanelOpen(false);
   };
 
   // Calculate summary statistics (using real data from database)
@@ -1591,8 +1619,7 @@ const ExpertPage: React.FC = () => {
             <div
               key={lead.id}
               onClick={() => handleRowClick(lead)}
-              ref={el => mainCardRefs.current[lead.id] = el}
-                className="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 cursor-pointer border border-gray-100 group relative pb-16"
+              className="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 cursor-pointer border border-gray-100 group relative pb-16"
             >
               {/* Lead Number and Name */}
               <div className="mb-3 flex items-center gap-2">
@@ -1703,14 +1730,13 @@ const ExpertPage: React.FC = () => {
                 </Link>
                 <button
                   className="btn btn-outline btn-warning btn-sm ml-2 flex items-center justify-center"
-                  title={highlightedLeads.find(l => l.id === lead.id) ? 'Highlighted' : 'Highlight'}
+                  title="Highlight"
                   onClick={(e) => {
                     e.stopPropagation();
                     handleHighlight(lead);
                   }}
-                  disabled={!!highlightedLeads.find(l => l.id === lead.id)}
                 >
-                  <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-yellow-500"><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" /></svg>
+                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
                 </button>
               </div>
               
@@ -2301,25 +2327,21 @@ const ExpertPage: React.FC = () => {
               </div>
               
               {/* Highlight Button */}
-              {!highlightedLeads.find(l => l.id === selectedLead.id) && (
-                <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleHighlight(selectedLead);
-                      setShowActionMenu(false);
-                      setSelectedRowId(null);
-                    }}
-                    className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
-                    title="Highlight"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-6 h-6">
-                      <path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" />
-                    </svg>
-                  </button>
-                </div>
-              )}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleHighlight(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Highlight"
+                >
+                  <StarIcon className="w-6 h-6 text-white" style={{ color: '#ffffff' }} />
+                </button>
+              </div>
             </div>
           </>
         );
@@ -2504,84 +2526,6 @@ const ExpertPage: React.FC = () => {
         </div>
       )}
       
-      {/* Highlighted Cards Panel */}
-      <div className={`fixed top-0 right-0 h-full z-40 flex items-start transition-transform duration-300 ${highlightPanelOpen ? 'translate-x-0' : 'translate-x-full'}`}
-        style={{ width: 420 }}>
-        <div className="relative h-full bg-white shadow-2xl border-l border-base-200 flex flex-col w-full">
-          <div className="p-4 border-b border-base-200 flex items-center gap-2">
-            <span className="font-bold text-lg">Highlights</span>
-            <span className="badge badge-primary">{highlightedLeads.length}</span>
-          </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-4">
-            {highlightedLeads.length === 0 ? (
-              <div className="text-base-content/50 text-center mt-12">No highlighted leads yet.</div>
-            ) : (
-              highlightedLeads.map(lead => (
-                <div key={lead.id} className="flex items-start gap-2">
-                  {/* Card */}
-                  <div
-                    className="bg-white rounded-2xl shadow-lg border-2 border-primary/30 hover:shadow-2xl hover:border-primary/60 transition-all duration-200 cursor-pointer flex flex-col gap-2 relative p-4 group"
-                    style={{ minHeight: 120, flex: 1 }}
-                    onClick={() => handleHighlightCardClick(lead.id)}
-                  >
-                    {/* Label on top */}
-                    {lead.label && (
-                      <div className="mb-1 flex justify-start">
-                        <span className="px-2 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border-2 border-primary">{lead.label}</span>
-                      </div>
-                    )}
-                    <div className="flex items-center gap-2 mb-1">
-                      <span className="text-xs font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
-                      <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                      <span className="font-bold text-base-content truncate text-base">{lead.name}</span>
-                    </div>
-                    {/* Two rows of content */}
-                    <div className="flex flex-row gap-4 text-xs mb-1">
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold">Stage:</span>
-                        <span>{lead.stage ? getStageName(lead.stage) : 'N/A'}</span>
-                      </div>
-                    </div>
-                    <div className="flex flex-row gap-4 text-xs">
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold">Probability:</span>
-                        <span>{lead.probability !== undefined && lead.probability !== null ? `${lead.probability}%` : 'N/A'}</span>
-                      </div>
-                      <div className="flex items-center gap-1">
-                        <span className="font-semibold">Applicants:</span>
-                        <span>{lead.number_of_applicants_meeting ?? 'N/A'}</span>
-                      </div>
-                    </div>
-                  </div>
-                  {/* Remove button OUTSIDE the card */}
-                  <button
-                    className="btn btn-xs btn-error mt-2"
-                    title="Remove from highlights"
-                    onClick={e => { e.stopPropagation(); handleRemoveHighlight(String(lead.id)); }}
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
-                </div>
-              ))
-            )}
-          </div>
-        </div>
-      </div>
-      {/* Highlight Panel Arrow Toggle (moves to left of panel when open) */}
-      <button
-        className={`fixed z-50 btn btn-circle btn-primary btn-sm transition-transform duration-300`}
-        style={{
-          top: 100,
-          right: highlightPanelOpen ? 420 : 0,
-          boxShadow: '0 2px 8px 0 rgba(0,0,0,0.10)',
-          position: 'fixed',
-        }}
-        onClick={() => setHighlightPanelOpen(!highlightPanelOpen)}
-        title={highlightPanelOpen ? 'Close Highlights' : 'Open Highlights'}
-      >
-        <svg className={`w-6 h-6 transition-transform ${highlightPanelOpen ? '' : 'rotate-180'}`} fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M15 19l-7-7 7-7" /></svg>
-      </button>
-
       {/* My Stats Modal */}
       {showMyStatsModal && (
         <div className="modal modal-open">

@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
-import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon } from '@heroicons/react/24/outline';
+import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
 import { updateLeadStageWithHistory, fetchStageActorInfo } from '../lib/leadStageManager';
@@ -223,19 +223,26 @@ const MyCasesPage: React.FC = () => {
     
     try {
       const now = new Date();
-      const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
-      const hour = localTime.getHours();
       
-      // Business hours: 8 AM to 7 PM (8:00 - 19:00)
-      const isBusinessHours = hour >= 8 && hour < 19;
-      
-      // Format the local time
-      const formattedTime = localTime.toLocaleString("en-US", {
+      // Format the local time directly using the timezone
+      const formattedTime = now.toLocaleString("en-US", {
         timeZone: timezone,
         hour: '2-digit',
         minute: '2-digit',
         hour12: true
       });
+      
+      // Get the hour in the target timezone using Intl.DateTimeFormat
+      const hourFormatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: 'numeric',
+        hour12: false
+      });
+      const hourParts = hourFormatter.formatToParts(now);
+      const hour = parseInt(hourParts.find(part => part.type === 'hour')?.value || '0', 10);
+      
+      // Business hours: 8 AM to 8 PM (8:00 - 20:00)
+      const isBusinessHours = hour >= 8 && hour < 20;
       
       return { isBusinessHours, localTime: formattedTime };
     } catch (error) {
@@ -880,10 +887,91 @@ const MyCasesPage: React.FC = () => {
     navigate(`/clients/${navigationId}`);
   };
 
-  const handleHighlight = (caseItem: Case) => {
-    // Navigate to client page - highlight functionality would be handled there
-    const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
-    navigate(`/clients/${navigationId}`);
+  // Helper function to add highlight to user_highlights table
+  const handleHighlight = async (caseItem: Case) => {
+    try {
+      // Get current user's auth_id
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No user found');
+        return;
+      }
+
+      // Get user's id from users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData) {
+        console.error('Error fetching user ID:', userError);
+        return;
+      }
+
+      const currentUserId = userData.id;
+      const leadNumber = caseItem.lead_number || '';
+
+      // Check if highlight already exists
+      let existingHighlight;
+      if (!caseItem.isNewLead) {
+        // Legacy lead
+        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_') 
+          ? parseInt(caseItem.id.replace('legacy_', '')) 
+          : parseInt(caseItem.id);
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('lead_id', numericId)
+          .maybeSingle();
+        existingHighlight = data;
+      } else {
+        // New lead
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('new_lead_id', caseItem.id)
+          .maybeSingle();
+        existingHighlight = data;
+      }
+
+      if (existingHighlight) {
+        // Highlight already exists
+        return;
+      }
+
+      // Insert new highlight
+      const highlightData: any = {
+        user_id: currentUserId,
+        lead_number: leadNumber,
+      };
+
+      if (!caseItem.isNewLead) {
+        // Legacy lead
+        const numericId = typeof caseItem.id === 'string' && caseItem.id.startsWith('legacy_') 
+          ? parseInt(caseItem.id.replace('legacy_', '')) 
+          : parseInt(caseItem.id);
+        highlightData.lead_id = numericId;
+      } else {
+        highlightData.new_lead_id = caseItem.id;
+      }
+
+      const { error: insertError } = await supabase
+        .from('user_highlights')
+        .insert([highlightData]);
+
+      if (insertError) {
+        console.error('Error adding highlight:', insertError);
+        return;
+      }
+
+      // Dispatch event to refresh HighlightsPanel
+      window.dispatchEvent(new CustomEvent('highlights:added'));
+    } catch (error) {
+      console.error('Error in handleHighlight:', error);
+    }
   };
 
   const handleOpenRMQForCloser = async (caseItem: Case) => {
@@ -1950,6 +2038,24 @@ const MyCasesPage: React.FC = () => {
                   title="View Client"
                 >
                   <EyeIcon className="w-6 h-6" />
+                </button>
+              </div>
+              
+              {/* Highlight Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleHighlight(selectedCase);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                    setSelectedCase(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Highlight"
+                >
+                  <StarIcon className="w-6 h-6 text-white" style={{ color: '#ffffff' }} />
                 </button>
               </div>
               

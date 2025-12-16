@@ -740,19 +740,26 @@ const SchedulerToolPage: React.FC = () => {
     
     try {
       const now = new Date();
-      const localTime = new Date(now.toLocaleString("en-US", { timeZone: timezone }));
-      const hour = localTime.getHours();
       
-      // Business hours: 8 AM to 7 PM (8:00 - 19:00)
-      const isBusinessHours = hour >= 8 && hour < 19;
-      
-      // Format the local time
-      const formattedTime = localTime.toLocaleString("en-US", {
+      // Format the local time directly using the timezone
+      const formattedTime = now.toLocaleString("en-US", {
         timeZone: timezone,
         hour: '2-digit',
         minute: '2-digit',
         hour12: true
       });
+      
+      // Get the hour in the target timezone using Intl.DateTimeFormat
+      const hourFormatter = new Intl.DateTimeFormat("en-US", {
+        timeZone: timezone,
+        hour: 'numeric',
+        hour12: false
+      });
+      const hourParts = hourFormatter.formatToParts(now);
+      const hour = parseInt(hourParts.find(part => part.type === 'hour')?.value || '0', 10);
+      
+      // Business hours: 8 AM to 8 PM (8:00 - 20:00)
+      const isBusinessHours = hour >= 8 && hour < 20;
       
       return { isBusinessHours, localTime: formattedTime };
     } catch (error) {
@@ -1466,6 +1473,92 @@ const SchedulerToolPage: React.FC = () => {
     navigate(`/clients/${lead.lead_number}?tab=interactions`);
   };
 
+  // Helper function to add highlight to user_highlights table
+  const handleHighlight = async (lead: SchedulerLead) => {
+    try {
+      // Get current user's auth_id
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) {
+        console.error('No user found');
+        return;
+      }
+
+      // Get user's id from users table
+      const { data: userData, error: userError } = await supabase
+        .from('users')
+        .select('id')
+        .eq('auth_id', user.id)
+        .single();
+
+      if (userError || !userData) {
+        console.error('Error fetching user ID:', userError);
+        return;
+      }
+
+      const currentUserId = userData.id;
+      const leadNumber = lead.lead_number || '';
+
+      // Check if highlight already exists
+      let existingHighlight;
+      if (lead.lead_type === 'legacy') {
+        const numericId = typeof lead.id === 'string' && lead.id.startsWith('legacy_') 
+          ? parseInt(lead.id.replace('legacy_', '')) 
+          : parseInt(lead.id);
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('lead_id', numericId)
+          .maybeSingle();
+        existingHighlight = data;
+      } else {
+        const { data } = await supabase
+          .from('user_highlights')
+          .select('id')
+          .eq('user_id', currentUserId)
+          .eq('new_lead_id', lead.id)
+          .maybeSingle();
+        existingHighlight = data;
+      }
+
+      if (existingHighlight) {
+        // Highlight already exists
+        return;
+      }
+
+      // Insert new highlight
+      const highlightData: any = {
+        user_id: currentUserId,
+        lead_number: leadNumber,
+      };
+
+      if (lead.lead_type === 'legacy') {
+        const numericId = typeof lead.id === 'string' && lead.id.startsWith('legacy_') 
+          ? parseInt(lead.id.replace('legacy_', '')) 
+          : parseInt(lead.id);
+        highlightData.lead_id = numericId;
+      } else {
+        highlightData.new_lead_id = lead.id;
+      }
+
+      const { error: insertError } = await supabase
+        .from('user_highlights')
+        .insert([highlightData]);
+
+      if (insertError) {
+        console.error('Error adding highlight:', insertError);
+        return;
+      }
+
+      // Dispatch event to refresh HighlightsPanel
+      window.dispatchEvent(new CustomEvent('highlights:added'));
+      toast.success('Lead highlighted');
+    } catch (error) {
+      console.error('Error in handleHighlight:', error);
+      toast.error('Failed to highlight lead');
+    }
+  };
+
   const handleClientUpdate = async () => {
     // Refresh the leads data when a client is updated
     await fetchSchedulerLeads(allCategories, allSources, allStages, currentUser, allCountries, schedulerStageIds);
@@ -2036,88 +2129,90 @@ const SchedulerToolPage: React.FC = () => {
       }
       
       // Handle follow-up save/update in follow_ups table
-      if (editLeadData.next_followup !== selectedLead.next_followup && currentUser?.id) {
+      if (currentUser?.id) {
         const isLegacyLead = selectedLead.lead_type === 'legacy' || selectedLead.id.toString().startsWith('legacy_');
         
-        if (editLeadData.next_followup && editLeadData.next_followup.trim() !== '') {
-          // Check if follow-up already exists
-          let existingFollowup;
-          if (isLegacyLead) {
-            const legacyId = selectedLead.id.toString().replace('legacy_', '');
-            const { data } = await supabase
-              .from('follow_ups')
-              .select('id')
-              .eq('user_id', currentUser.id)
-              .eq('lead_id', legacyId)
-              .is('new_lead_id', null)
-              .maybeSingle();
-            existingFollowup = data;
-          } else {
-            const { data } = await supabase
-              .from('follow_ups')
-              .select('id')
-              .eq('user_id', currentUser.id)
-              .eq('new_lead_id', selectedLead.id)
-              .is('lead_id', null)
-              .maybeSingle();
-            existingFollowup = data;
-          }
-          
-          if (existingFollowup) {
-            // Update existing follow-up
-            const { error: followupError } = await supabase
-              .from('follow_ups')
-              .update({ date: editLeadData.next_followup + 'T00:00:00Z' })
-              .eq('id', existingFollowup.id)
-              .eq('user_id', currentUser.id);
-            
-            if (followupError) {
-              console.error('Error updating follow-up:', followupError);
-              toast.error('Failed to update follow-up date');
-            }
-          } else {
-            // Create new follow-up
-            const insertData: any = {
-              user_id: currentUser.id,
-              date: editLeadData.next_followup + 'T00:00:00Z',
-              created_at: new Date().toISOString()
-            };
-            
-            if (isLegacyLead) {
-              const legacyId = selectedLead.id.toString().replace('legacy_', '');
-              insertData.lead_id = legacyId;
-              insertData.new_lead_id = null;
-            } else {
-              insertData.new_lead_id = selectedLead.id;
-              insertData.lead_id = null;
-            }
-            
-            const { error: followupError } = await supabase
-              .from('follow_ups')
-              .insert(insertData);
-            
-            if (followupError) {
-              console.error('Error creating follow-up:', followupError);
-              toast.error('Failed to save follow-up date');
-            }
-          }
+        // Fetch current follow-up to compare
+        let currentFollowUp;
+        if (isLegacyLead) {
+          const legacyId = selectedLead.id.toString().replace('legacy_', '');
+          const { data } = await supabase
+            .from('follow_ups')
+            .select('id, date')
+            .eq('user_id', currentUser.id)
+            .eq('lead_id', legacyId)
+            .is('new_lead_id', null)
+            .maybeSingle();
+          currentFollowUp = data;
         } else {
-          // Delete follow-up if date is empty
-          if (isLegacyLead) {
-            const legacyId = selectedLead.id.toString().replace('legacy_', '');
-            await supabase
-              .from('follow_ups')
-              .delete()
-              .eq('user_id', currentUser.id)
-              .eq('lead_id', legacyId)
-              .is('new_lead_id', null);
+          const { data } = await supabase
+            .from('follow_ups')
+            .select('id, date')
+            .eq('user_id', currentUser.id)
+            .eq('new_lead_id', selectedLead.id)
+            .is('lead_id', null)
+            .maybeSingle();
+          currentFollowUp = data;
+        }
+        
+        const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
+        const newFollowUpDate = editLeadData.next_followup || '';
+        
+        if (currentFollowUpDate !== newFollowUpDate) {
+          if (newFollowUpDate && newFollowUpDate.trim() !== '') {
+            // Update or create follow-up
+            if (currentFollowUp) {
+              // Update existing
+              const { error: followupError } = await supabase
+                .from('follow_ups')
+                .update({ date: newFollowUpDate + 'T00:00:00Z' })
+                .eq('id', currentFollowUp.id)
+                .eq('user_id', currentUser.id);
+              
+              if (followupError) {
+                console.error('Error updating follow-up:', followupError);
+                toast.error('Failed to update follow-up date');
+              }
+            } else {
+              // Create new follow-up
+              const insertData: any = {
+                user_id: currentUser.id,
+                date: newFollowUpDate + 'T00:00:00Z',
+                created_at: new Date().toISOString()
+              };
+              
+              if (isLegacyLead) {
+                const legacyId = selectedLead.id.toString().replace('legacy_', '');
+                insertData.lead_id = legacyId;
+                insertData.new_lead_id = null;
+              } else {
+                insertData.new_lead_id = selectedLead.id;
+                insertData.lead_id = null;
+              }
+              
+              const { error: followupError } = await supabase
+                .from('follow_ups')
+                .insert(insertData);
+              
+              if (followupError) {
+                console.error('Error creating follow-up:', followupError);
+                toast.error('Failed to save follow-up date');
+              }
+            }
           } else {
-            await supabase
-              .from('follow_ups')
-              .delete()
-              .eq('user_id', currentUser.id)
-              .eq('new_lead_id', selectedLead.id)
-              .is('lead_id', null);
+            // Delete follow-up if date is empty
+            if (currentFollowUp) {
+              const { error: followupError } = await supabase
+                .from('follow_ups')
+                .delete()
+                .eq('id', currentFollowUp.id)
+                .eq('user_id', currentUser.id);
+              
+              if (followupError) {
+                console.error('Error deleting follow-up:', followupError);
+                toast.error('Failed to delete follow-up');
+              }
+            }
           }
         }
       }
