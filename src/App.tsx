@@ -501,6 +501,10 @@ const AppContentInner: React.FC = () => {
                 <CallsLedgerPage />
               </main>
             </div>
+            <RMQMessagesPage 
+              isOpen={isMessagingOpen} 
+              onClose={() => setIsMessagingOpen(false)} 
+            />
           </div>
         </ProtectedRoute>
       } />

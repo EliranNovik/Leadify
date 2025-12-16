@@ -1522,9 +1522,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           'Unknown User';
         const photoUrl = otherParticipant.user.tenants_employee?.photo_url;
         const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
-        const handleAvatarClick = () => {
+        const handleAvatarClick = async () => {
           const employee = otherParticipant.user?.tenants_employee;
           if (employee) {
+            // Fetch background photo from tenants_employee table
+            let backgroundPhoto = null;
+            if (otherParticipant.user.employee_id) {
+              try {
+                const { data } = await supabase
+                  .from('tenants_employee')
+                  .select('photo')
+                  .eq('id', otherParticipant.user.employee_id)
+                  .maybeSingle();
+                if (data?.photo) {
+                  backgroundPhoto = data.photo;
+                }
+              } catch (error) {
+                console.error('Error fetching employee background photo:', error);
+              }
+            }
+            
             setSelectedEmployee({
               id: otherParticipant.user.employee_id?.toString() || '',
               display_name: employee.display_name || name,
@@ -1533,8 +1550,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               bonuses_role: employee.bonuses_role || '',
               department: employee.tenant_departement?.name || '',
               photo_url: photoUrl,
+              photo: backgroundPhoto,
               mobile: employee.mobile,
               phone: employee.phone,
+              phone_ext: employee.phone_ext,
+              mobile_ext: employee.mobile_ext,
               is_active: otherParticipant.user.is_active,
               user: otherParticipant.user
             });
@@ -5809,9 +5829,26 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         const avatarKey = otherParticipant.user.id || otherParticipant.user_id;
                         const otherUserId = otherParticipant.user.id ? String(otherParticipant.user.id) : null;
                         const isOnline = otherUserId ? onlineUsers.has(otherUserId) : false;
-                        const handleAvatarClick = () => {
+                        const handleAvatarClick = async () => {
                           const employee = otherParticipant.user?.tenants_employee;
                           if (employee) {
+                            // Fetch background photo from tenants_employee table
+                            let backgroundPhoto = null;
+                            if (otherParticipant.user.employee_id) {
+                              try {
+                                const { data } = await supabase
+                                  .from('tenants_employee')
+                                  .select('photo')
+                                  .eq('id', otherParticipant.user.employee_id)
+                                  .maybeSingle();
+                                if (data?.photo) {
+                                  backgroundPhoto = data.photo;
+                                }
+                              } catch (error) {
+                                console.error('Error fetching employee background photo:', error);
+                              }
+                            }
+                            
                             setSelectedEmployee({
                               id: otherParticipant.user.employee_id?.toString() || '',
                               display_name: employee.display_name || name,
@@ -5820,8 +5857,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               bonuses_role: employee.bonuses_role || '',
                               department: employee.tenant_departement?.name || '',
                               photo_url: photoUrl,
+                              photo: backgroundPhoto,
                               mobile: employee.mobile,
                               phone: employee.phone,
+                              phone_ext: employee.phone_ext,
+                              mobile_ext: employee.mobile_ext,
                               is_active: otherParticipant.user.is_active,
                               user: otherParticipant.user
                             });
@@ -7214,110 +7254,116 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       {/* Employee Info Modal */}
       {showEmployeeInfoModal && selectedEmployee && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
-          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col">
-            {/* Modal Header */}
-            <div className="p-6 border-b border-gray-200">
-              <div className="flex items-center justify-between">
-                <h3 className="text-xl font-bold text-gray-900">Employee Information</h3>
-                <button
-                  onClick={() => {
-                    setShowEmployeeInfoModal(false);
-                    setSelectedEmployee(null);
-                  }}
-                  className="btn btn-ghost btn-sm btn-circle"
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col overflow-hidden">
+            {/* Header with Background Image */}
+            <div className="relative">
+              {/* Background Image with Overlay */}
+              {selectedEmployee.photo && (
+                <div 
+                  className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                  style={{ backgroundImage: `url(${selectedEmployee.photo})` }}
                 >
-                  <XMarkIcon className="w-5 h-5" />
-                </button>
+                  <div className="absolute inset-0 bg-gradient-to-r from-black/60 via-black/40 to-black/60"></div>
+                </div>
+              )}
+              <div className={`relative z-10 p-6 ${selectedEmployee.photo ? 'text-white' : 'bg-white border-b border-gray-200'}`}>
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className={`text-xl font-bold ${selectedEmployee.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>Employee Information</h3>
+                  <button
+                    onClick={() => {
+                      setShowEmployeeInfoModal(false);
+                      setSelectedEmployee(null);
+                    }}
+                    className={`btn btn-ghost btn-sm btn-circle ${selectedEmployee.photo ? 'text-white hover:bg-white/20' : ''}`}
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
+
+                {/* Employee Avatar and Name */}
+                <div className="flex flex-col items-center">
+                  {/* Employee Avatar */}
+                  {selectedEmployee.photo_url ? (
+                    <div className="w-32 h-32 rounded-full overflow-hidden shadow-lg mb-4 ring-2 ring-white/30">
+                      <img
+                        src={selectedEmployee.photo_url}
+                        alt={selectedEmployee.official_name || selectedEmployee.display_name}
+                        className="w-full h-full object-cover"
+                      />
+                    </div>
+                  ) : (
+                    <div className={`w-32 h-32 rounded-full flex items-center justify-center text-white text-4xl font-bold shadow-lg mb-4 ring-2 ring-white/30 ${selectedEmployee.photo ? 'bg-primary/80' : 'bg-gradient-to-br from-purple-500 to-blue-500'}`}>
+                      {getInitials(selectedEmployee.official_name || selectedEmployee.display_name)}
+                    </div>
+                  )}
+                  
+                  {/* Employee Name */}
+                  <h2 className={`text-2xl font-bold mb-2 ${selectedEmployee.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
+                    {selectedEmployee.official_name || selectedEmployee.display_name}
+                  </h2>
+                  
+                  {/* Employee Email */}
+                  {selectedEmployee.email && (
+                    <p className={`mb-3 ${selectedEmployee.photo ? 'text-white/90 drop-shadow-md' : 'text-gray-600'}`}>
+                      <EnvelopeIcon className="w-4 h-4 inline mr-1" />
+                      {selectedEmployee.email}
+                    </p>
+                  )}
+
+                  {/* Contact Information */}
+                  <div className="flex flex-wrap items-center gap-3 justify-center text-sm">
+                    {selectedEmployee.phone && (
+                      <div className={`flex items-center gap-1 ${selectedEmployee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                        <PhoneIcon className="w-4 h-4" />
+                        <span>{selectedEmployee.phone}</span>
+                      </div>
+                    )}
+                    {selectedEmployee.mobile && (
+                      <div className={`flex items-center gap-1 ${selectedEmployee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                        <DevicePhoneMobileIcon className="w-4 h-4" />
+                        <span>{selectedEmployee.mobile}</span>
+                      </div>
+                    )}
+                    {selectedEmployee.phone_ext && (
+                      <div className={`flex items-center gap-1 ${selectedEmployee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                        <span className="text-xs opacity-75">Ext:</span>
+                        <span>{selectedEmployee.phone_ext}</span>
+                      </div>
+                    )}
+                    {selectedEmployee.mobile_ext && (
+                      <div className={`flex items-center gap-1 ${selectedEmployee.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                        <span className="text-xs opacity-75">M.Ext:</span>
+                        <span>{selectedEmployee.mobile_ext}</span>
+                      </div>
+                    )}
+                  </div>
+                </div>
               </div>
             </div>
 
             {/* Modal Content */}
-            <div className="flex-1 overflow-y-auto p-6">
-              <div className="flex flex-col items-center mb-6">
-                {/* Employee Avatar */}
-                {selectedEmployee.photo_url ? (
-                  <div className="w-40 h-40 rounded-full overflow-hidden shadow-lg mb-4">
-                    <img
-                      src={selectedEmployee.photo_url}
-                      alt={selectedEmployee.official_name || selectedEmployee.display_name}
-                      className="w-full h-full object-cover"
-                    />
-                  </div>
-                ) : (
-                  <div className="w-40 h-40 rounded-full bg-gradient-to-br from-purple-500 to-blue-500 flex items-center justify-center text-white text-5xl font-bold shadow-lg mb-4">
-                    {(selectedEmployee.official_name || selectedEmployee.display_name)?.charAt(0)?.toUpperCase() || 'U'}
-                  </div>
-                )}
-                
-                {/* Employee Name */}
-                <h2 className="text-2xl font-bold text-gray-900 mb-2">{selectedEmployee.official_name || selectedEmployee.display_name}</h2>
-                
-                {/* Employee Email */}
-                {selectedEmployee.email && (
-                  <p className="text-gray-600 mb-4">{selectedEmployee.email}</p>
-                )}
-              </div>
-
-              {/* Employee Details */}
-              <div className="space-y-4">
-                {/* Role */}
+            <div className="flex-1 overflow-y-auto p-6 bg-white">
+              {/* Role and Department Badges */}
+              <div className="flex items-center gap-3 justify-center mb-6">
                 {selectedEmployee.bonuses_role && (
-                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
-                    <div className="w-10 h-10 rounded-full bg-purple-100 flex items-center justify-center">
-                      <UserIcon className="w-5 h-5 text-purple-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-500">Role</p>
-                      <p className="font-semibold text-gray-900">
-                        {getRoleDisplayName(selectedEmployee.bonuses_role)}
-                      </p>
-                    </div>
+                  <div className="flex flex-col items-center">
+                    <span className="badge badge-primary badge-lg px-4 py-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0">
+                      {getRoleDisplayName(selectedEmployee.bonuses_role)}
+                    </span>
                   </div>
                 )}
-
-                {/* Department */}
                 {selectedEmployee.department && (
-                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
-                    <div className="w-10 h-10 rounded-full bg-blue-100 flex items-center justify-center">
-                      <UserGroupIcon className="w-5 h-5 text-blue-600" />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-500">Department</p>
-                      <p className="font-semibold text-gray-900">{selectedEmployee.department}</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Mobile */}
-                {selectedEmployee.mobile && (
-                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
-                    <div className="w-10 h-10 rounded-full bg-green-100 flex items-center justify-center">
-                      <DevicePhoneMobileIcon className="w-5 h-5 text-green-600" style={{ color: '#3E17C3' }} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-500">Mobile</p>
-                      <p className="font-semibold text-gray-900">{selectedEmployee.mobile}</p>
-                    </div>
-                  </div>
-                )}
-
-                {/* Phone */}
-                {selectedEmployee.phone && (
-                  <div className="flex items-center gap-3 p-3 bg-white border border-gray-200 rounded-lg">
-                    <div className="w-10 h-10 rounded-full bg-orange-100 flex items-center justify-center">
-                      <PhoneIcon className="w-5 h-5 text-orange-600" style={{ color: '#3E17C3' }} />
-                    </div>
-                    <div className="flex-1">
-                      <p className="text-sm text-gray-500">Phone</p>
-                      <p className="font-semibold text-gray-900">{selectedEmployee.phone}</p>
-                    </div>
+                  <div className="flex flex-col items-center">
+                    <span className="badge badge-outline badge-lg px-4 py-2">
+                      {selectedEmployee.department}
+                    </span>
                   </div>
                 )}
               </div>
             </div>
 
             {/* Modal Footer */}
-            <div className="p-6 border-t border-gray-200 flex gap-3">
+            <div className="p-6 border-t border-gray-200 flex gap-3 bg-white">
               <button
                 onClick={() => {
                   setShowEmployeeInfoModal(false);

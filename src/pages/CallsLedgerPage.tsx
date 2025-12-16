@@ -9,12 +9,20 @@ import {
   ChevronRightIcon,
   ArrowPathIcon,
   CloudArrowDownIcon,
-  XMarkIcon
+  XMarkIcon,
+  PhoneArrowUpRightIcon,
+  PhoneArrowDownLeftIcon,
+  EnvelopeIcon,
+  ChatBubbleLeftRightIcon,
+  DocumentTextIcon
 } from '@heroicons/react/24/outline';
+import { FaWhatsapp } from 'react-icons/fa';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import { onecomSyncApi } from '../lib/onecomSyncApi';
 import AudioPlayerModal from '../components/AudioPlayerModal';
+import EmployeeStatsModal from '../components/EmployeeStatsModal';
+import { fetchLegacyInteractions } from '../lib/legacyInteractionsApi';
 
 interface CallLog {
   id: number;
@@ -35,8 +43,37 @@ interface CallLog {
   employee_id?: number;
   employee?: {
     display_name: string;
+    photo_url?: string | null;
   };
 }
+
+// Helper component for employee avatar with image error fallback
+const EmployeeAvatar: React.FC<{ photoUrl: string; name: string }> = ({ photoUrl, name }) => {
+  const [imageError, setImageError] = React.useState(false);
+  
+  if (imageError || !photoUrl) {
+    const initials = name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+    return (
+      <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium bg-blue-500 text-white ring-1 ring-gray-200">
+        {initials}
+      </div>
+    );
+  }
+  
+  return (
+    <img
+      src={photoUrl}
+      alt={name}
+      className="w-10 h-10 rounded-full object-cover ring-1 ring-gray-200"
+      onError={() => setImageError(true)}
+    />
+  );
+};
 
 const CallsLedgerPage: React.FC = () => {
   const navigate = useNavigate();
@@ -65,6 +102,10 @@ const CallsLedgerPage: React.FC = () => {
   const [currentRecordingUrl, setCurrentRecordingUrl] = useState<string>('');
   const [currentCallId, setCurrentCallId] = useState<string>('');
   const [currentEmployeeName, setCurrentEmployeeName] = useState<string>('');
+  
+  // Employee statistics modal state
+  const [isEmployeeStatsModalOpen, setIsEmployeeStatsModalOpen] = useState(false);
+  const [selectedEmployeeForStats, setSelectedEmployeeForStats] = useState<any>(null);
 
   // Fetch employees for dropdown - only active users
   const fetchEmployees = async () => {
@@ -181,7 +222,8 @@ const CallsLedgerPage: React.FC = () => {
           lead_id,
           employee_id,
           tenants_employee!employee_id (
-            display_name
+            display_name,
+            photo_url
           )
         `)
         .gte('date', appliedFromDate)
@@ -456,38 +498,38 @@ const CallsLedgerPage: React.FC = () => {
   };
 
   const getStatusBadge = (status?: string) => {
-    if (!status) return <span className="badge badge-neutral">Unknown</span>;
+    if (!status) return <span className="px-3 py-1 rounded-full text-xs font-medium bg-gray-500 text-white">Unknown</span>;
     
     const statusLower = status.toLowerCase();
     
-    // Handle exact matches first (from 1com API)
+    // Handle exact matches first (from 1com API) - using saturated colors like follow-up badges
     if (statusLower === 'answered') {
-      return <span className="badge badge-success">Answered</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-500 text-white">Answered</span>;
     } else if (statusLower === 'no+answer' || statusLower === 'no answer') {
-      return <span className="badge badge-error">Not Answered</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white">Not Answered</span>;
     } else if (statusLower === 'failed') {
-      return <span className="badge badge-error">Failed</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white">Failed</span>;
     } else if (statusLower === 'cancelled') {
-      return <span className="badge badge-warning">Cancelled</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-500 text-white">Cancelled</span>;
     } else if (statusLower === 'redirected') {
-      return <span className="badge badge-info">Redirected</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-blue-500 text-white">Redirected</span>;
     } else if (statusLower === 'busy') {
-      return <span className="badge badge-warning">Busy</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-500 text-white">Busy</span>;
     } else if (statusLower === 'congestion') {
-      return <span className="badge badge-error">Failed</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white">Failed</span>;
     }
     
     // Handle partial matches for other variations
     if (statusLower.includes('no+answer') || statusLower.includes('noanswer')) {
-      return <span className="badge badge-error">Not Answered</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white">Not Answered</span>;
     } else if (statusLower.includes('answer') && !statusLower.includes('no')) {
-      return <span className="badge badge-success">Answered</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-green-500 text-white">Answered</span>;
     } else if (statusLower.includes('busy')) {
-      return <span className="badge badge-warning">Busy</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-yellow-500 text-white">Busy</span>;
     } else if (statusLower.includes('failed')) {
-      return <span className="badge badge-error">Failed</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-red-500 text-white">Failed</span>;
     } else {
-      return <span className="badge badge-neutral">{status}</span>;
+      return <span className="px-3 py-1 rounded-full text-xs font-medium bg-gray-500 text-white">{status}</span>;
     }
   };
 
@@ -738,7 +780,6 @@ const CallsLedgerPage: React.FC = () => {
             <table className="table w-full compact-table">
               <thead>
                 <tr>
-                  <th className="px-2 py-2 text-sm font-semibold">Call ID</th>
                   <th className="px-2 py-2 text-sm font-semibold">Date</th>
                   <th className="px-2 py-2 text-sm font-semibold">Time</th>
                   <th className="px-2 py-2 text-sm font-semibold">Source</th>
@@ -754,7 +795,7 @@ const CallsLedgerPage: React.FC = () => {
               <tbody>
                 {loading ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-8">
+                    <td colSpan={10} className="text-center py-8">
                       <div className="flex items-center justify-center gap-2">
                         <span className="loading loading-spinner loading-md"></span>
                         <span className="text-gray-500">Loading call logs...</span>
@@ -763,7 +804,7 @@ const CallsLedgerPage: React.FC = () => {
                   </tr>
                 ) : callLogs.length === 0 ? (
                   <tr>
-                    <td colSpan={11} className="text-center py-8">
+                    <td colSpan={10} className="text-center py-8">
                       <div className="flex flex-col items-center gap-2">
                         <PhoneIcon className="w-12 h-12 text-gray-300" />
                         <p className="text-gray-500 font-medium">No calls found</p>
@@ -772,51 +813,105 @@ const CallsLedgerPage: React.FC = () => {
                     </td>
                   </tr>
                 ) : (
-                  callLogs.map((call) => (
-                    <tr key={call.id} className="hover:bg-gray-50">
-                      <td className="px-2 py-2 font-mono text-sm">{call.call_id || '---'}</td>
-                      <td className="px-2 py-2 text-sm">
-                        {call.date ? new Date(call.date).toLocaleDateString('en-GB') : '---'}
-                      </td>
-                      <td className="px-2 py-2 text-sm">
-                        {call.time ? call.time.substring(0, 5) : '---'}
-                      </td>
-                      <td className="px-2 py-2 font-mono text-sm">{call.source || '---'}</td>
-                      <td className="px-2 py-2 font-mono text-sm">{call.destination || '---'}</td>
-                      <td className="px-2 py-2 font-mono text-sm">{cleanIncomingDID(call.incomingdid)}</td>
-                      <td className="px-2 py-2 text-sm">{call.direction || '---'}</td>
-                      <td className="px-2 py-2">{getStatusBadge(call.status)}</td>
-                      <td className="px-2 py-2 text-sm">
-                        {call.duration ? formatDuration(call.duration) : '---'}
-                      </td>
-                      <td className="px-2 py-2">
-                        {call.lead_id ? (
-                          <button
-                            className="text-blue-600 hover:text-blue-800 underline font-medium text-sm"
-                            onClick={() => handleLeadClick(call.lead_id!)}
-                          >
-                            {call.lead_id}
-                          </button>
-                        ) : (
-                          <span className="text-sm">---</span>
-                        )}
-                      </td>
-                      <td className="px-2 py-2">
-                        <div className="flex items-center justify-between">
-                          <span className="text-sm">{call.employee?.display_name || '---'}</span>
-                          {call.url && (
-                            <button
-                              className="btn btn-ghost btn-sm flex items-center justify-center hover:bg-purple-50"
-                              onClick={() => handlePlayRecording(call.url!, call.call_id || String(call.id), call.employee?.display_name)}
-                              title="Play Recording"
-                            >
-                              <MicrophoneIcon className="w-5 h-5 text-purple-600" />
-                            </button>
+                  callLogs.map((call) => {
+                    const direction = call.direction?.toLowerCase() || '';
+                    const isOutbound = direction.includes('out') || direction.includes('outgoing');
+                    const isInbound = direction.includes('in') || direction.includes('incoming');
+                    
+                    return (
+                      <tr key={call.id} className="hover:bg-gray-50">
+                        <td className="px-2 py-2 text-sm">
+                          {call.date ? new Date(call.date).toLocaleDateString('en-GB') : '---'}
+                        </td>
+                        <td className="px-2 py-2 text-sm">
+                          {call.time ? call.time.substring(0, 5) : '---'}
+                        </td>
+                        <td className="px-2 py-2 font-mono text-sm">{call.source || '---'}</td>
+                        <td className="px-2 py-2 font-mono text-sm">{call.destination || '---'}</td>
+                        <td className="px-2 py-2 font-mono text-sm">{cleanIncomingDID(call.incomingdid)}</td>
+                        <td className="px-2 py-2">
+                          {isOutbound ? (
+                            <div className="flex items-center gap-1" title="Outbound">
+                              <PhoneArrowUpRightIcon className="w-5 h-5 text-blue-600" />
+                            </div>
+                          ) : isInbound ? (
+                            <div className="flex items-center gap-1" title="Inbound">
+                              <PhoneArrowDownLeftIcon className="w-5 h-5 text-green-600" />
+                            </div>
+                          ) : (
+                            <span className="text-sm text-gray-400">---</span>
                           )}
-                        </div>
-                      </td>
-                    </tr>
-                  ))
+                        </td>
+                        <td className="px-2 py-2">{getStatusBadge(call.status)}</td>
+                        <td className="px-2 py-2 text-sm">
+                          {call.duration ? formatDuration(call.duration) : '---'}
+                        </td>
+                        <td className="px-2 py-2">
+                          {call.lead_id ? (
+                            <button
+                              className="text-blue-600 hover:text-blue-800 underline font-medium text-sm"
+                              onClick={() => handleLeadClick(call.lead_id!)}
+                            >
+                              {call.lead_id}
+                            </button>
+                          ) : (
+                            <span className="text-sm">---</span>
+                          )}
+                        </td>
+                        <td className="px-2 py-2">
+                          <div className="flex items-center justify-between">
+                            {call.employee?.display_name ? (
+                              <div className="flex items-center gap-2">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    if (call.employee) {
+                                      setSelectedEmployeeForStats({
+                                        id: call.employee_id,
+                                        display_name: call.employee.display_name,
+                                        photo_url: call.employee.photo_url
+                                      });
+                                      setIsEmployeeStatsModalOpen(true);
+                                    }
+                                  }}
+                                  className="cursor-pointer hover:opacity-80 transition-opacity"
+                                  title="View employee statistics"
+                                >
+                                  {call.employee && call.employee.photo_url ? (
+                                    <EmployeeAvatar 
+                                      photoUrl={call.employee.photo_url}
+                                      name={call.employee.display_name}
+                                    />
+                                  ) : call.employee ? (
+                                    <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-medium bg-blue-500 text-white ring-1 ring-gray-200">
+                                      {call.employee.display_name
+                                        .split(' ')
+                                        .map(n => n[0])
+                                        .join('')
+                                        .toUpperCase()
+                                        .slice(0, 2)}
+                                    </div>
+                                  ) : null}
+                                </button>
+                                <span className="text-sm">{call.employee?.display_name}</span>
+                              </div>
+                            ) : (
+                              <span className="text-sm">---</span>
+                            )}
+                            {call.url && (
+                              <button
+                                className="btn btn-ghost btn-sm flex items-center justify-center hover:bg-purple-50"
+                                onClick={() => handlePlayRecording(call.url!, call.call_id || String(call.id), call.employee?.display_name)}
+                                title="Play Recording"
+                              >
+                                <MicrophoneIcon className="w-5 h-5 text-purple-600" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>
@@ -830,6 +925,16 @@ const CallsLedgerPage: React.FC = () => {
           audioUrl={currentRecordingUrl}
           callId={currentCallId}
           employeeName={currentEmployeeName}
+        />
+
+        {/* Employee Statistics Modal */}
+        <EmployeeStatsModal
+          isOpen={isEmployeeStatsModalOpen}
+          onClose={() => {
+            setIsEmployeeStatsModalOpen(false);
+            setSelectedEmployeeForStats(null);
+          }}
+          employee={selectedEmployeeForStats}
         />
     </div>
   );
