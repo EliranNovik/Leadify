@@ -20,10 +20,31 @@ import { getStageName } from '../lib/stageUtils';
 import EmployeeScoreboard from './EmployeeScoreboard';
 import { formatMeetingValue } from '../lib/meetingValue';
 import { toast } from 'react-hot-toast';
+import CompactAvailabilityCalendar, { CompactAvailabilityCalendarRef } from './CompactAvailabilityCalendar';
 
 
+// My Availability Section Component
+const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void }> = ({ onAvailabilityChange }) => {
+  const calendarRef = React.useRef<CompactAvailabilityCalendarRef>(null);
 
-
+  return (
+    <>
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="text-lg font-semibold text-gray-900">My Availability</h3>
+        <button
+          onClick={() => {
+            calendarRef.current?.openAddRangeModal();
+          }}
+          className="btn btn-sm btn-primary btn-circle"
+          title="Add Range"
+        >
+          <PlusIcon className="w-4 h-4" />
+        </button>
+      </div>
+      <CompactAvailabilityCalendar ref={calendarRef} onAvailabilityChange={onAvailabilityChange} />
+    </>
+  );
+};
 
 const Dashboard: React.FC = () => {
   // Get the current month name
@@ -64,6 +85,10 @@ const Dashboard: React.FC = () => {
     const day = String(today.getDate()).padStart(2, '0');
     return `${year}-${month}-${day}`;
   });
+  // Department filter for team availability
+  const [departmentFilter, setDepartmentFilter] = useState<string>('');
+  const [availableDepartments, setAvailableDepartments] = useState<string[]>([]);
+  const navigate = useNavigate();
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<Record<string, string>>({});
 
@@ -108,9 +133,6 @@ const Dashboard: React.FC = () => {
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
   const [editFollowUpDate, setEditFollowUpDate] = useState<string>('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-
-
-  const navigate = useNavigate();
 
   // Fetch meeting locations and their default links for join buttons
   useEffect(() => {
@@ -226,6 +248,8 @@ const Dashboard: React.FC = () => {
           unavailable_ranges,
           bonuses_role,
           department_id,
+          photo_url,
+          photo,
           tenant_departement!department_id(id, name)
         `)
         .not('unavailable_times', 'is', null);
@@ -287,13 +311,16 @@ const Dashboard: React.FC = () => {
             const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
             detailedData.push({
               id: `${employee.id}-${time.id}`,
+              employeeId: employee.id,
               employeeName: employee.display_name,
               role: getRoleDisplayName(employee.bonuses_role),
               department: departmentName,
               date: formattedDate,
               time: `${time.startTime} - ${time.endTime}`,
               reason: time.reason,
-              isActive: isCurrentlyActive
+              isActive: isCurrentlyActive,
+              photo_url: employee.photo_url || null,
+              photo: employee.photo || null
             });
           });
 
@@ -313,22 +340,53 @@ const Dashboard: React.FC = () => {
             const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
             detailedData.push({
               id: `${employee.id}-${range.id}`,
+              employeeId: employee.id,
               employeeName: employee.display_name,
               role: getRoleDisplayName(employee.bonuses_role),
               department: departmentName,
               date: `${startDateFormatted} to ${endDateFormatted}`,
               time: 'All Day',
               reason: range.reason,
-              isActive: false
+              isActive: false,
+              photo_url: employee.photo_url || null,
+              photo: employee.photo || null
             });
           });
         }
       });
 
-      setUnavailableEmployeesData(detailedData);
-      setUnavailableEmployeesCount(totalUnavailable);
-      setCurrentlyUnavailableCount(currentlyUnavailable);
-      setScheduledTimeOffCount(scheduledTimeOff);
+      // Deduplicate: keep only the latest availability entry per employee
+      const employeeMap = new Map<number, any>();
+      // Sort by id in descending order to get latest entries first
+      detailedData.sort((a, b) => {
+        // Compare by id (which includes time/range id) in reverse order
+        return b.id.localeCompare(a.id);
+      });
+      
+      // Keep only the first occurrence of each employee (which will be the latest)
+      detailedData.forEach(item => {
+        if (!employeeMap.has(item.employeeId)) {
+          employeeMap.set(item.employeeId, item);
+        }
+      });
+      
+      // Convert map back to array
+      const uniqueData = Array.from(employeeMap.values());
+      
+      // Recalculate counts based on unique data
+      const uniqueTotalUnavailable = uniqueData.length;
+      const uniqueCurrentlyUnavailable = uniqueData.filter(item => item.isActive).length;
+      const uniqueScheduledTimeOff = uniqueTotalUnavailable - uniqueCurrentlyUnavailable;
+
+      setUnavailableEmployeesData(uniqueData);
+      setUnavailableEmployeesCount(uniqueTotalUnavailable);
+      setCurrentlyUnavailableCount(uniqueCurrentlyUnavailable);
+      setScheduledTimeOffCount(uniqueScheduledTimeOff);
+      
+      // Extract unique departments from the unique data
+      const departments = Array.from(new Set(uniqueData.map(item => item.department).filter(dept => dept && dept !== 'N/A')));
+      departments.sort();
+      setAvailableDepartments(departments as string[]);
     } catch (error) {
     } finally {
       setUnavailableEmployeesLoading(false);
@@ -7167,12 +7225,11 @@ const Dashboard: React.FC = () => {
         </div>
       </div>
 
-      {/* 3. Employee Scoreboard Component */}
-      <EmployeeScoreboard />
-
-      {/* Team Availability Section */}
+      {/* Team Availability and Calendar Section */}
       <div className="w-full mt-12">
-        <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6">
+          {/* Team Availability Section */}
+          <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
           <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
             <div className="flex items-center gap-3">
               <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
@@ -7185,6 +7242,25 @@ const Dashboard: React.FC = () => {
                 </p>
               </div>
             </div>
+            
+            {/* Center: Department Filter - Dropdown */}
+            <div className="flex items-center justify-center flex-1">
+              <div className="relative">
+                <select
+                  className="select select-bordered select-sm w-48"
+                  value={departmentFilter}
+                  onChange={(e) => setDepartmentFilter(e.target.value)}
+                >
+                  <option value="">All Departments</option>
+                  {availableDepartments.map((dept) => (
+                    <option key={dept} value={dept}>
+                      {dept}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
+            
             <div className="flex items-center gap-2">
               <button
                 type="button"
@@ -7227,37 +7303,128 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
           
-          {/* Detailed Table */}
+          {/* Employee Cards */}
           {unavailableEmployeesLoading ? (
             <div className="flex justify-center items-center py-8 px-6">
               <div className="loading loading-spinner loading-lg text-gray-600"></div>
             </div>
           ) : unavailableEmployeesData.length > 0 ? (
-            <div className="overflow-x-auto px-6 pb-6">
-              <table className="table w-full">
-                <thead className="bg-white border-b border-gray-200">
-                  <tr>
-                    <th className="text-gray-700 font-medium">Employee</th>
-                    <th className="text-gray-700 font-medium">Role</th>
-                    <th className="text-gray-700 font-medium">Department</th>
-                    <th className="text-gray-700 font-medium">Date</th>
-                    <th className="text-gray-700 font-medium">Time</th>
-                    <th className="text-gray-700 font-medium">Reason</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {unavailableEmployeesData.map((item) => (
-                    <tr key={item.id} className="hover:bg-gray-50 border-b border-gray-100">
-                      <td className="font-medium text-gray-900 py-3">{item.employeeName}</td>
-                      <td className="text-gray-700 py-3">{item.role}</td>
-                      <td className="text-gray-700 py-3">{item.department}</td>
-                      <td className="text-gray-700 py-3">{item.date}</td>
-                      <td className="text-gray-700 py-3">{item.time}</td>
-                      <td className="text-gray-700 py-3">{item.reason}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
+            <div className="px-6 pb-6 pt-6">
+              <div className="flex overflow-x-auto gap-5 pb-4 -mx-6 px-6 sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 sm:overflow-x-visible sm:pb-0 sm:-mx-0 sm:px-0">
+                {unavailableEmployeesData
+                  .filter((item) => {
+                    if (!departmentFilter.trim()) return true;
+                    return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                  })
+                  .map((item) => {
+                  const employeeInitials = item.employeeName
+                    .split(' ')
+                    .map((n: string) => n[0])
+                    .join('')
+                    .toUpperCase()
+                    .slice(0, 2);
+                  
+                  return (
+                    <div
+                      key={item.id}
+                      className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] flex-shrink-0 w-[280px] sm:w-auto sm:min-w-0"
+                      style={{
+                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                      }}
+                    >
+                      {/* Background Image with Overlay */}
+                      {item.photo && (
+                        <div 
+                          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                          style={{ backgroundImage: `url(${item.photo})` }}
+                        >
+                          <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
+                        </div>
+                      )}
+                      
+                      {/* Role Badge - Top Right Corner */}
+                      {item.role && (
+                        <div className="absolute top-2 right-2 z-20">
+                          <span className="badge badge-sm px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-xs font-semibold shadow-lg">
+                            {item.role}
+                          </span>
+                        </div>
+                      )}
+                      
+                      {/* Content */}
+                      <div className={`relative z-10 p-4 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                        {/* Top Row: Profile Image (Left), Time Range (Center), Role Badge (Right - already positioned) */}
+                        <div className="flex items-start justify-between mb-2">
+                          {/* Left Side: Profile Image and Name */}
+                          <div className="flex-shrink-0 flex flex-col items-center">
+                            {/* Profile Image or Initials Circle */}
+                            {item.photo_url ? (
+                              <img
+                                src={item.photo_url}
+                                alt={item.employeeName}
+                                className="w-20 h-20 rounded-full object-cover shadow-lg mb-1.5"
+                                onError={(e) => {
+                                  const target = e.target as HTMLImageElement;
+                                  const targetParent = target.parentElement;
+                                  if (targetParent) {
+                                    target.style.display = 'none';
+                                    const fallback = document.createElement('div');
+                                    fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg mb-1.5 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
+                                    fallback.textContent = employeeInitials;
+                                    targetParent.insertBefore(fallback, target);
+                                  }
+                                }}
+                              />
+                            ) : (
+                              <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg mb-1.5 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
+                                {employeeInitials}
+                              </div>
+                            )}
+                            {/* Employee Name - Always shown under the circle */}
+                            <h4 className={`text-sm font-semibold text-center truncate max-w-[80px] ${item.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
+                              {item.employeeName}
+                            </h4>
+                          </div>
+                          
+                          {/* Spacer for right side (role badge) */}
+                          <div className="w-16 flex-shrink-0"></div>
+                        </div>
+                        
+                        {/* Center: Time Range - Moved lower */}
+                        <div className="flex-1 text-center px-2 mb-3">
+                          {item.time && (
+                            <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                              {item.time}
+                            </div>
+                          )}
+                          {/* Date Range - only if it's a range */}
+                          {item.date && item.date.includes('to') && (
+                            <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                              {item.date}
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Department */}
+                        <div className="text-center mb-3">
+                          <div className={`text-sm font-medium ${item.photo ? 'text-white/90' : 'text-gray-600'}`}>
+                            {item.department}
+                          </div>
+                        </div>
+                        
+                        {/* Reason */}
+                        <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                          {item.reason && (
+                            <div className={`text-sm text-center px-2 py-1 rounded-md truncate ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                              {item.reason}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                    );
+                  })}
+              </div>
             </div>
           ) : (
             <div className="px-6 pb-6 pt-8 text-center">
@@ -7274,8 +7441,19 @@ const Dashboard: React.FC = () => {
               </div>
             </div>
           )}
+          </div>
+          
+          {/* My Availability Calendar - Desktop Only */}
+          <div className="hidden lg:block">
+            <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6 h-full">
+              <MyAvailabilitySection onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)} />
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* 3. Employee Scoreboard Component */}
+      <EmployeeScoreboard />
 
       {/* Closed deals without Payments plan Box */}
       <div className="w-full mt-12">

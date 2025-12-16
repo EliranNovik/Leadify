@@ -9,7 +9,9 @@ import {
   DocumentTextIcon,
   DevicePhoneMobileIcon,
   TableCellsIcon,
-  Squares2X2Icon
+  Squares2X2Icon,
+  ArrowUpIcon,
+  ArrowDownIcon
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchLegacyInteractions } from '../lib/legacyInteractionsApi';
@@ -1121,27 +1123,60 @@ const EmployeeStatsModal: React.FC<EmployeeStatsModalProps> = ({
                       
                       {/* Stats */}
                       <div className={`space-y-3 ${backgroundPhoto ? 'text-white' : ''}`}>
+                        {/* WhatsApp Stats */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <FaWhatsapp className={`w-5 h-5 ${backgroundPhoto ? 'text-white' : 'text-green-500'}`} />
                             <span className={`text-base font-medium ${backgroundPhoto ? 'text-white' : 'text-gray-600'}`}>WhatsApp</span>
                           </div>
-                          <span className="font-bold text-lg">{stats.whatsapp}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1">
+                              <ArrowDownIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.whatsapp.inbound}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <ArrowUpIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.whatsapp.outbound}</span>
+                            </div>
+                          </div>
                         </div>
+                        
+                        {/* Email Stats */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <EnvelopeIcon className={`w-5 h-5 ${backgroundPhoto ? 'text-white' : 'text-blue-500'}`} />
                             <span className={`text-base font-medium ${backgroundPhoto ? 'text-white' : 'text-gray-600'}`}>Email</span>
                           </div>
-                          <span className="font-bold text-lg">{stats.email}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1">
+                              <ArrowDownIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.email.inbound}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <ArrowUpIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.email.outbound}</span>
+                            </div>
+                          </div>
                         </div>
+                        
+                        {/* Phone Stats */}
                         <div className="flex items-center justify-between">
                           <div className="flex items-center gap-2">
                             <PhoneIcon className={`w-5 h-5 ${backgroundPhoto ? 'text-white' : 'text-indigo-500'}`} />
                             <span className={`text-base font-medium ${backgroundPhoto ? 'text-white' : 'text-gray-600'}`}>Phone</span>
                           </div>
-                          <span className="font-bold text-lg">{stats.phone}</span>
+                          <div className="flex items-center gap-3">
+                            <div className="flex items-center gap-1">
+                              <ArrowDownIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.phone.inbound}</span>
+                            </div>
+                            <div className="flex items-center gap-1">
+                              <ArrowUpIcon className={`w-4 h-4 ${backgroundPhoto ? 'text-white/80' : 'text-gray-500'}`} />
+                              <span className="font-bold text-base">{stats.directionStats.phone.outbound}</span>
+                            </div>
+                          </div>
                         </div>
+                        
                         <div className={`border-t pt-3 mt-3 ${backgroundPhoto ? 'border-white/20' : 'border-gray-200'}`}>
                           <div className="flex items-center justify-between">
                             <span className={`text-base font-semibold ${backgroundPhoto ? 'text-white' : 'text-gray-700'}`}>Total</span>
