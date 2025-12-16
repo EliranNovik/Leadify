@@ -6547,11 +6547,15 @@ useEffect(() => {
       const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
                           (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
       
-      // If we're in stage 20 (meeting scheduled) and rescheduling, keep stage at 20
-      // If we're already in stage 21, stay in stage 21
-      // Otherwise, update to stage 21
-      const shouldUpdateStage = currentStage !== 20 && currentStage !== 21;
-      const rescheduledStageId = 21; // Meeting rescheduled
+      // When rescheduling (new meeting is scheduled), always change stage to "Meeting scheduled" (id 20)
+      const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
+      if (meetingScheduledStageId === null) {
+        toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
+        setIsReschedulingMeeting(false);
+        return;
+      }
+      const shouldUpdateStage = currentStage !== meetingScheduledStageId; // Always update if not already at stage 20
+      const rescheduledStageId = meetingScheduledStageId; // Meeting scheduled (id 20)
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
@@ -6565,6 +6569,7 @@ useEffect(() => {
         }
 
         // Always update scheduler for legacy leads (must be numeric employee ID, not display name)
+        // Same as in handleScheduleMeeting - always update if schedulerEmployeeId is available
         if (schedulerEmployeeId !== null) {
           updatePayload.meeting_scheduler_id = schedulerEmployeeId;
         }
@@ -6611,7 +6616,7 @@ useEffect(() => {
           updatePayload.stage_changed_at = stageTimestamp;
         }
 
-        // Always update scheduler for new leads
+        // Always update scheduler for new leads (same as in handleScheduleMeeting)
         updatePayload.scheduler = currentUserFullName;
 
         // Always update manager and helper for new leads (as employee IDs)

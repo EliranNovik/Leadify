@@ -136,15 +136,50 @@ export async function handleContractSigned(contract: Contract) {
         value_vat = typeof plan.value_vat === 'number' ? plan.value_vat : parseFloat(plan.value_vat as any) || 0;
       }
       
+      // Determine payment order - prioritize payment_order, then due_date, then label, then default
+      // IMPORTANT: Always mark the last payment as "Final Payment"
+      const isLastPayment = idx === paymentPlan.length - 1;
+      let paymentOrder = plan.payment_order;
+      if (!paymentOrder) {
+        if (plan.due_date && typeof plan.due_date === 'string' && !/^\d{4}-\d{2}-\d{2}$/.test(plan.due_date)) {
+          // If due_date is a descriptive string (not a date), use it only if not last payment
+          paymentOrder = isLastPayment ? 'Final Payment' : plan.due_date;
+        } else if ((plan as any).label) {
+          paymentOrder = isLastPayment ? 'Final Payment' : (plan as any).label;
+        } else {
+          paymentOrder = idx === 0 ? 'First Payment' : isLastPayment ? 'Final Payment' : 'Intermediate Payment';
+        }
+      } else {
+        // If payment_order is already set, override it for the last payment to ensure it's always "Final Payment"
+        paymentOrder = isLastPayment ? 'Final Payment' : paymentOrder;
+      }
+      
+      // Parse due_date - it might be a string like "On signing" or "30 days" or a valid date
+      // Only use it if it's a valid date format (YYYY-MM-DD), otherwise use fallback
+      let dueDate: string | null = null;
+      if (plan.due_date) {
+        // Check if it's a valid date format (YYYY-MM-DD)
+        const dateRegex = /^\d{4}-\d{2}-\d{2}$/;
+        if (dateRegex.test(plan.due_date)) {
+          dueDate = plan.due_date;
+        } else {
+          // It's a descriptive string like "On signing" or "30 days", use fallback
+          dueDate = idx === dueDateIdx ? today.toISOString().split('T')[0] : null;
+        }
+      } else {
+        // No due_date provided, use fallback
+        dueDate = idx === dueDateIdx ? today.toISOString().split('T')[0] : null;
+      }
+      
       return {
         lead_id: contract.client_id || null, // Will be null for legacy leads
         due_percent: duePercent,
         percent: duePercent,
-        due_date: idx === dueDateIdx ? today.toISOString().split('T')[0] : null,
+        due_date: dueDate,
         value: value,
         value_vat: value_vat,
         client_name: contract.contact_name || client.name || '',
-        payment_order: plan.payment_order || (idx === 0 ? 'First Payment' : idx === paymentPlan.length - 1 ? 'Final Payment' : 'Intermediate Payment'),
+        payment_order: paymentOrder,
         notes: plan.notes || '',
         currency: currency,
       };

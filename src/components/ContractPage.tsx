@@ -11,7 +11,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import { generateJSON } from '@tiptap/html';
-import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { CheckIcon, ArrowLeftIcon, ChevronDownIcon, ChevronUpIcon, PrinterIcon, ArrowDownTrayIcon, XMarkIcon } from '@heroicons/react/24/outline';
 import { handleContractSigned } from '../lib/contractAutomation';
 import { getPricePerApplicant } from '../lib/contractPricing';
 import SignaturePad from 'react-signature-canvas';
@@ -268,25 +268,37 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
         });
 
         // Also handle generic {{payment_plan_row}} placeholders (sequential replacement)
+        // For readonly/editor mode, we need to replace these placeholders as text
+        // For rendering mode, renderTiptapContent will handle them as React components
         if (!globalRowIndex) globalRowIndex = { current: 0 };
+        // Replace {{payment_plan_row}} placeholders sequentially
+        const placeholderMatches = text.match(/\{\{payment_plan_row\}\}/g);
+        if (placeholderMatches) {
+          console.log(`🔄 Found ${placeholderMatches.length} {{payment_plan_row}} placeholder(s), payment plan has ${customPricing.payment_plan.length} row(s)`);
+        }
         text = text.replace(/\{\{payment_plan_row\}\}/g, (match: string) => {
-          const row = customPricing.payment_plan[globalRowIndex!.current];
+          const rowIndex = globalRowIndex!.current;
+          const row = customPricing.payment_plan[rowIndex];
+          console.log(`🔄 Replacing {{payment_plan_row}} #${rowIndex + 1} with row:`, row);
           globalRowIndex!.current++;
           if (row) {
             // Use the exact same value format as shown in the payment plan panel
-            let displayValue = '0';
+            let displayValueStr = '0';
             if (row.value) {
               if (typeof row.value === 'string' && row.value.includes('+')) {
                 // Keep the "value + VAT" format exactly as it appears in the panel
-                displayValue = row.value;
+                displayValueStr = row.value;
               } else {
                 // Handle numeric value or simple string
                 const numValue = parseFloat(row.value) || 0;
-                displayValue = numValue.toString();
+                displayValueStr = numValue.toString();
               }
             }
-            return `${row.percent}% = ${customPricing.currency} ${displayValue}`;
+            const replacement = `${row.percent}% = ${customPricing.currency} ${displayValueStr}`;
+            console.log(`✅ Replaced with: ${replacement}`);
+            return replacement;
           }
+          console.warn(`⚠️ No payment plan row at index ${rowIndex}`);
           return '';
         });
       }
@@ -665,11 +677,16 @@ const ContractPage: React.FC = () => {
   const [currencyType, setCurrencyType] = useState<'USD' | 'NIS'>('USD'); // Main currency type (USD or NIS)
   const [subCurrency, setSubCurrency] = useState<'USD' | 'GBP' | 'EUR'>('USD'); // Sub-currency for USD type
   
+  // VAT included/excluded state (default: included for NIS, excluded for USD/GBP/EUR)
+  const [vatIncluded, setVatIncluded] = useState<boolean>(false);
+  
   // Template change modal state
   const [showChangeTemplateModal, setShowChangeTemplateModal] = useState(false);
   const [availableTemplates, setAvailableTemplates] = useState<any[]>([]);
   const [templateSearchQuery, setTemplateSearchQuery] = useState('');
   const [showTemplateDropdown, setShowTemplateDropdown] = useState(false);
+  const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
+  const [availableLanguages, setAvailableLanguages] = useState<any[]>([]);
 
   // TipTap editor setup for editing - must be called before any early returns
   const editor = useEditor({
@@ -690,11 +707,60 @@ const ContractPage: React.FC = () => {
     },
   });
 
+  // Field insertion constants (similar to ContractTemplatesManager)
+  const DYNAMIC_FIELDS = [
+    { label: 'Client Name', tag: '{{client_name}}' },
+    { label: 'Client Phone', tag: '{{client_phone}}' },
+    { label: 'Client Email', tag: '{{client_email}}' },
+    { label: 'Signature', tag: '{{signature}}' },
+    { label: 'Date', tag: '{{date}}' },
+  ];
+
+  const FIELD_TYPES = [
+    { label: 'Text Field (Generic)', tag: '{{text}}' },
+    { label: 'Applicant Name', tag: '{{text:applicant}}' },
+    { label: 'Document Name', tag: '{{text:document}}' },
+    { label: 'Country', tag: '{{text:country}}' },
+    { label: 'Address', tag: '{{text:address}}' },
+    { label: 'City', tag: '{{text:city}}' },
+    { label: 'Postal Code', tag: '{{text:postal}}' },
+    { label: 'Notes', tag: '{{text:notes}}' },
+    { label: 'Reference Number', tag: '{{text:reference}}' },
+    { label: 'Other Text', tag: '{{text:other}}' },
+    { label: 'Signature Field', tag: '{{signature}}' },
+    { label: 'Date Field', tag: '{{date}}' },
+  ];
+
+  const PRICING_FIELDS = [
+    { label: 'Applicant Count', tag: '{{applicant_count}}' },
+    { label: 'Price Per Applicant', tag: '{{price_per_applicant}}' },
+    { label: 'Total Amount', tag: '{{total_amount}}' },
+    { label: 'Discount Percentage', tag: '{{discount_percentage}}' },
+    { label: 'Discount Amount', tag: '{{discount_amount}}' },
+    { label: 'Final Amount', tag: '{{final_amount}}' },
+    { label: 'Currency', tag: '{{currency}}' },
+  ];
+
+  const PAYMENT_PLAN_FIELDS = [
+    { label: 'Payment Plan Row', tag: '{{payment_plan_row}}' },
+    { label: 'Payment Percent', tag: '{{payment_1_percent}}' },
+    { label: 'Payment Due', tag: '{{payment_1_due}}' },
+    { label: 'Payment Amount', tag: '{{payment_1_value}}' },
+  ];
+
+  // Insert field into editor
+  const insertField = (tag: string) => {
+    if (editor && editing) {
+      editor.chain().focus().insertContent(tag).run();
+    }
+  };
+
   // Add at the top, after useState declarations
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
 
-  // Collapse/expand state for entire sidebar (both boxes together)
-  const [isSidebarExpanded, setIsSidebarExpanded] = useState(true);
+  // Collapse/expand state for individual boxes
+  const [isContractDetailsExpanded, setIsContractDetailsExpanded] = useState(true);
+  const [isPricingExpanded, setIsPricingExpanded] = useState(true);
 
   // Track last content hash to prevent unnecessary updates
   const lastContentHashRef = useRef<string>('');
@@ -1039,6 +1105,21 @@ const ContractPage: React.FC = () => {
               } else {
                 console.error('ContractPage: Error fetching legacy template:', legacyTemplateError);
               }
+            } else {
+              // Not a legacy template, try fetching from contract_templates
+              console.log('ContractPage: Fetching template from contract_templates:', contractData.template_id);
+              const { data: newTemplate, error: newTemplateError } = await supabase
+                .from('contract_templates')
+                .select('*')
+                .eq('id', contractData.template_id)
+                .single();
+              
+              if (!newTemplateError && newTemplate) {
+                console.log('ContractPage: Found template from contract_templates:', newTemplate);
+                templateData = newTemplate;
+              } else {
+                console.error('ContractPage: Error fetching template from contract_templates:', newTemplateError);
+              }
             }
           }
           // If template_id is NULL, check for legacy_template_id in custom_pricing
@@ -1175,6 +1256,7 @@ const ContractPage: React.FC = () => {
           const recalculatedTotal = currentPricePerApplicant * applicantCount;
           
           // Preserve user customizations but update pricing tiers and recalculated totals
+          // IMPORTANT: Preserve existing payment_plan if it exists, don't overwrite it
           const pricingWithVat = {
             ...contractData.custom_pricing,
             pricing_tiers: refreshedPricingTiers, // Use fresh template defaults
@@ -1186,7 +1268,8 @@ const ContractPage: React.FC = () => {
             discount_amount: contractData.custom_pricing.discount_percentage
               ? Math.round(recalculatedTotal * (contractData.custom_pricing.discount_percentage / 100))
               : 0,
-            payment_plan: null // This will trigger the useEffect to recalculate with VAT
+            // Preserve payment_plan if it exists, otherwise let useEffect handle it
+            payment_plan: contractData.custom_pricing.payment_plan || null
           };
           
           console.log('ContractPage: Updated pricing with fresh template defaults:', pricingWithVat);
@@ -1290,15 +1373,16 @@ const ContractPage: React.FC = () => {
           // Contract is signed, displaying filled-in content
         }
 
-        // Set loading to false after contract is loaded
+        // Set loading to false after contract is loaded AND template is set
         // For contractId-only routes: if we tried to fetch client, it should be loaded by now (or failed)
         // For leadNumber routes: client is loaded separately in fetchClient useEffect
         // Only set loading to false if we don't need to wait for client, or if client is already loaded
+        // Use setTimeout to ensure template state update has been processed before checking for it
         if (leadNumber || clientLoaded || client) {
-          setLoading(false);
+          setTimeout(() => setLoading(false), 0);
         } else if (!leadNumber && !contractData.client_id) {
           // No client needed, set loading to false
-          setLoading(false);
+          setTimeout(() => setLoading(false), 0);
         }
 
       } catch (error) {
@@ -1317,6 +1401,27 @@ const ContractPage: React.FC = () => {
     }
   }, [leadNumber, contractId]);
 
+  // Fetch languages when modal opens
+  useEffect(() => {
+    if (showChangeTemplateModal) {
+      const fetchLanguages = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('misc_language')
+            .select('id, name')
+            .order('name', { ascending: true });
+          
+          if (error) throw error;
+          setAvailableLanguages(data || []);
+        } catch (error) {
+          console.error('Error fetching languages:', error);
+        }
+      };
+
+      fetchLanguages();
+    }
+  }, [showChangeTemplateModal]);
+
   // Fetch templates when modal opens
   useEffect(() => {
     if (showChangeTemplateModal) {
@@ -1325,12 +1430,12 @@ const ContractPage: React.FC = () => {
           const [newTemplatesResult, legacyTemplatesResult] = await Promise.all([
             supabase
               .from('contract_templates')
-              .select('id, name, content, active')
+              .select('id, name, content, active, language_id')
               .eq('active', true)
               .order('name', { ascending: true }),
             supabase
               .from('misc_contracttemplate')
-              .select('id, name, content, active')
+              .select('id, name, content, active, language_id')
               .order('name', { ascending: true })
           ]);
 
@@ -1362,10 +1467,36 @@ const ContractPage: React.FC = () => {
     if (!contract || !contractId) return;
 
     try {
-      // Update contract template_id
+      // Check if the new template is a legacy template
+      const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
+      
+      // Prepare update data
+      const updateData: any = {};
+      
+      if (isLegacyTemplate) {
+        // For legacy templates, set template_id to NULL and store ID in custom_pricing.legacy_template_id
+        updateData.template_id = null;
+        
+        // Update custom_pricing to include legacy_template_id
+        const currentCustomPricing = contract.custom_pricing || {};
+        updateData.custom_pricing = {
+          ...currentCustomPricing,
+          legacy_template_id: newTemplateId.toString().replace('legacy_', '')
+        };
+      } else {
+        // For new templates (UUID), set template_id to the UUID and remove legacy_template_id
+        updateData.template_id = newTemplateId;
+        
+        // Remove legacy_template_id from custom_pricing if it exists
+        const currentCustomPricing = contract.custom_pricing || {};
+        const { legacy_template_id, ...restCustomPricing } = currentCustomPricing;
+        updateData.custom_pricing = restCustomPricing;
+      }
+
+      // Update contract
       const { error } = await supabase
         .from('contracts')
-        .update({ template_id: newTemplateId })
+        .update(updateData)
         .eq('id', contractId);
 
       if (error) throw error;
@@ -1375,13 +1506,13 @@ const ContractPage: React.FC = () => {
       if (newTemplate) {
         // Fetch full template content
         let fullTemplate;
-        const isLegacyTemplate = !isNaN(Number(newTemplateId)) || newTemplateId.startsWith('legacy_');
         
         if (isLegacyTemplate) {
+          const templateId = newTemplateId.toString().replace('legacy_', '');
           const { data } = await supabase
             .from('misc_contracttemplate')
             .select('*')
-            .eq('id', newTemplateId)
+            .eq('id', templateId)
             .single();
           fullTemplate = data;
         } else {
@@ -1412,6 +1543,7 @@ const ContractPage: React.FC = () => {
 
       setShowChangeTemplateModal(false);
       setTemplateSearchQuery('');
+      setTemplateLanguageFilter(null);
     } catch (error) {
       console.error('Error changing template:', error);
       alert('Failed to change template');
@@ -1454,7 +1586,9 @@ const ContractPage: React.FC = () => {
   useEffect(() => {
     if (!editor || !contract || !template) return;
 
-    // Always load the content (custom_content if available, otherwise template)
+    // Always prefer custom_content if it exists (preserves user edits in both edit and view mode)
+    // Otherwise use template.content to ensure we have placeholders to replace
+    // When pricing changes, we'll still update placeholders in the current content
     const content = contract.custom_content || template.content;
     
     if (!content) return;
@@ -1494,7 +1628,31 @@ const ContractPage: React.FC = () => {
     const editingChanged = lastEditingStateRef.current !== editing;
 
     // If we're in edit mode and content hasn't changed, don't update (preserve user edits)
-    if (editing && !contentChanged) {
+    // BUT: if customPricing changed, we should update placeholders even in edit mode
+    let pricingChanged = false;
+    if (customPricing && lastContentHashRef.current) {
+      try {
+        const lastHash = JSON.parse(lastContentHashRef.current);
+        const currentPricingHash = JSON.stringify({
+          applicant_count: customPricing.applicant_count,
+          total_amount: customPricing.total_amount,
+          final_amount: customPricing.final_amount,
+          discount_percentage: customPricing.discount_percentage,
+          discount_amount: customPricing.discount_amount,
+          currency: customPricing.currency,
+          pricing_tiers: customPricing.pricing_tiers,
+          payment_plan: customPricing.payment_plan,
+        });
+        pricingChanged = lastHash.customPricingHash !== currentPricingHash;
+      } catch (e) {
+        // If parsing fails, assume pricing changed
+        pricingChanged = true;
+      }
+    }
+    
+    // In readonly mode, always update when pricing changes (including payment plan)
+    // In edit mode, only update if pricing changed (to update placeholders) or content changed
+    if (editing && !contentChanged && !pricingChanged) {
       // Only update editability if it changed
       if (editingChanged) {
         editor.setEditable(editing);
@@ -1503,8 +1661,9 @@ const ContractPage: React.FC = () => {
       return;
     }
 
-    // If content hasn't changed and editing state hasn't changed, skip update
-    if (!contentChanged && !editingChanged) {
+    // If content hasn't changed and editing state hasn't changed and pricing hasn't changed, skip update
+    // BUT: if pricing changed (including payment plan), we need to update even if content source didn't change
+    if (!contentChanged && !editingChanged && !pricingChanged) {
       return;
     }
 
@@ -1528,9 +1687,11 @@ const ContractPage: React.FC = () => {
       processedContent = { type: 'doc', content: [] };
     }
     
-    // Only set content if it actually changed
-    if (contentChanged) {
-      console.log('🎯 Setting processed content:', processedContent);
+    // Set content if it changed OR if pricing changed (including payment plan)
+    // Always update when pricing changes to update placeholders, even in edit mode
+    // This ensures payment plan rows update automatically when changed in the side panel
+    if (contentChanged || pricingChanged) {
+      console.log('🎯 Setting processed content:', { contentChanged, pricingChanged, editing, hasCustomContent: !!contract.custom_content });
       try {
         editor.commands.setContent(processedContent);
         lastContentHashRef.current = contentHash;
@@ -1559,15 +1720,66 @@ const ContractPage: React.FC = () => {
     window.location.reload();
   };
 
-  // Update contract.custom_pricing in DB and local state
+  // Update contract.custom_pricing in DB and local state, and refresh contract content
   const updateCustomPricing = useCallback(async (updates: any) => {
-    if (!contract) return;
-    const newPricing = { ...customPricing, ...updates };
-    setCustomPricing(newPricing);
-    setRenderKey(prev => prev + 1); // Force re-render
-    await supabase.from('contracts').update({ custom_pricing: newPricing }).eq('id', contract.id);
-    setContract((prev: any) => ({ ...prev, custom_pricing: newPricing }));
-  }, [contract, customPricing]);
+    if (!contract) {
+      console.error('updateCustomPricing: No contract available');
+      return;
+    }
+    
+    // Compute new pricing first
+    setCustomPricing((currentPricing: any) => {
+      const newPricing = { ...currentPricing, ...updates };
+      
+      // If payment_plan is being updated, ensure it's properly formatted
+      if (updates.payment_plan) {
+        newPricing.payment_plan = updates.payment_plan.map((row: any, index: number) => ({
+          ...row,
+          payment_order: row.payment_order || row.due_date || (row.label || `Payment ${index + 1}`),
+          notes: row.notes || '',
+        }));
+      }
+      
+      // Save to database immediately with the computed value
+      const updatePayload: any = { 
+        custom_pricing: newPricing,
+        total_amount: newPricing.total_amount,
+        applicant_count: newPricing.applicant_count,
+      };
+      
+      console.log('💾 Saving payment plan to database:', updatePayload.custom_pricing?.payment_plan);
+      
+      // Perform async database update outside of state setter
+      (async () => {
+        try {
+          const { error } = await supabase.from('contracts').update(updatePayload).eq('id', contract.id);
+          if (error) {
+            console.error('❌ Error updating custom_pricing in database:', error);
+            console.error('❌ Failed payload:', JSON.stringify(updatePayload, null, 2));
+            alert('Failed to save payment plan changes. Please try again.');
+          } else {
+            console.log('✅ Successfully saved custom_pricing to database');
+            console.log('✅ Payment plan saved:', JSON.stringify(newPricing.payment_plan, null, 2));
+            // Update contract state to reflect the saved data
+            setContract((prev: any) => ({ ...prev, custom_pricing: newPricing }));
+          }
+        } catch (err: any) {
+          console.error('❌ Exception while updating custom_pricing:', err);
+          alert('Failed to save payment plan changes. Please try again.');
+        }
+      })();
+      
+      return newPricing;
+    });
+    
+    setRenderKey(prev => prev + 1); // Force re-render of readonly view
+    
+    // Force editor content refresh when payment plan changes
+    // Reset content hash to ensure useEffect detects the change
+    if (updates.payment_plan) {
+      lastContentHashRef.current = '';
+    }
+  }, [contract]);
 
   // Ensure applicant_count is at least 1 after loading contract/customPricing
   useEffect(() => {
@@ -1614,38 +1826,66 @@ const ContractPage: React.FC = () => {
     const currency = customPricing?.currency || '₪';
     const isIsraeli = currency === '₪' || currency === 'ILS' || currency === 'NIS';
 
-    // Check if payment plan needs VAT calculation
+    // Always recalculate payment plan when final amount changes
+    // This ensures payment plan amounts update automatically when total_amount, discount, or currency changes
     const currentPaymentPlan = customPricing.payment_plan || [];
-    const needsVatCalculation = !currentPaymentPlan.length || 
-      currentPaymentPlan.some((row: any) => typeof row.value === 'number' || !row.value.includes('+'));
-
-    if (!needsVatCalculation) return;
-
-    // Calculate the discounted base total
+    
+    // Calculate the discounted base total (for payment plan calculations)
     const discountedBaseTotal = totalAmount - discountAmount;
 
-    // Build the basic payment plan structure
-    const basicPaymentPlan = buildPaymentPlan(totalAmount, archivalFee);
+    // If payment plan exists, recalculate amounts based on percentages
+    // Otherwise, build a new payment plan structure
+    let basicPaymentPlan;
+    if (currentPaymentPlan.length > 0) {
+      // Use existing payment plan structure but recalculate amounts
+      basicPaymentPlan = currentPaymentPlan.map((row: any) => ({
+        percent: row.percent || row.due_percent || 0,
+        due_date: row.due_date || null,
+        label: row.label || row.payment_order || 'Payment',
+        payment_order: row.payment_order || row.label || 'Payment',
+        notes: row.notes || '',
+      }));
+    } else {
+      // Build new payment plan structure
+      basicPaymentPlan = buildPaymentPlan(totalAmount, archivalFee);
+    }
 
+    // Calculate total percentage to ensure proper distribution
+    const totalPercent = basicPaymentPlan.reduce((sum: number, p: any) => sum + Number(p.percent || 0), 0) || 100;
+    
     // Update each payment to show value + VAT only if there's VAT
-    const paymentPlan = basicPaymentPlan.map((payment: any) => {
-      if (payment.label === 'Archival Research') {
-        return payment;
+    const paymentPlan = basicPaymentPlan.map((payment: any, idx: number) => {
+      if (payment.label === 'Archival Research' || payment.payment_order === 'Archival Research') {
+        // Archival fee is separate and doesn't get recalculated
+        return {
+          ...payment,
+          value: archivalFee.toString(),
+          payment_order: payment.payment_order || payment.label || 'Archival Research',
+          notes: payment.notes || '',
+        };
       } else {
-        // Calculate the base value for this percentage
-        const baseValueForThisPercent = Math.round((discountedBaseTotal * payment.percent) / 100);
+        // Calculate the base value for this percentage based on discounted total
+        // Use the percentage ratio to distribute the discounted amount
+        const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(payment.percent || 0)) / totalPercent);
         const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+        
+        // Ensure last payment is marked as "Final Payment"
+        const isLastPayment = idx === basicPaymentPlan.length - 1;
+        const paymentOrder = isLastPayment ? 'Final Payment' : (payment.payment_order || payment.label || payment.due_date || 'Payment');
         
         return {
           ...payment,
-          value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+          percent: payment.percent || 0,
+          value: (vatIncluded && isIsraeli && vatForThisPercent > 0) ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+          payment_order: paymentOrder,
+          notes: payment.notes || '',
         };
       }
     });
 
     // Always update the payment plan to ensure VAT is applied
     setCustomPricing((prev: typeof customPricing) => ({ ...prev, payment_plan: paymentPlan }));
-  }, [customPricing?.total_amount, customPricing?.discount_amount, customPricing?.archival_research_fee, contract?.client_country, customPricing?.currency, customPricing?._forceVatCalculation]);
+  }, [customPricing?.total_amount, customPricing?.discount_amount, customPricing?.archival_research_fee, contract?.client_country, customPricing?.currency, customPricing?._forceVatCalculation, vatIncluded, currencyType]);
 
   // Force VAT calculation on initial load
   useEffect(() => {
@@ -1834,9 +2074,17 @@ const ContractPage: React.FC = () => {
   };
 
   const handleAddPaymentRow = () => {
+    const currentPlan = customPricing.payment_plan || [];
     const newPlan = [
-      ...(customPricing.payment_plan || []),
-      { percent: 0, due_date: '', value: 0 },
+      ...currentPlan,
+      { 
+        percent: 0, 
+        due_date: '', 
+        value: 0,
+        payment_order: `Payment ${currentPlan.length + 1}`,
+        notes: '',
+        label: `Payment ${currentPlan.length + 1}`,
+      },
     ];
     updateCustomPricing({ payment_plan: newPlan });
   };
@@ -1886,7 +2134,7 @@ const ContractPage: React.FC = () => {
       let updatedPaymentPlan = latestPricing.payment_plan || [];
       if (updatedPaymentPlan.length > 0) {
         const totalPercent = updatedPaymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
-        updatedPaymentPlan = updatedPaymentPlan.map((row: any) => {
+        updatedPaymentPlan = updatedPaymentPlan.map((row: any, idx: number) => {
           // Parse the "value + VAT" format to extract separate values
           let value = 0;
           let value_vat = 0;
@@ -1907,10 +2155,25 @@ const ContractPage: React.FC = () => {
             value: value,
             value_vat: value_vat,
             amount: value + value_vat, // Keep amount for backward compatibility
+            payment_order: row.payment_order || row.due_date || (row.label || `Payment ${idx + 1}`),
+            notes: row.notes || '',
+            due_date: row.due_date || null,
+            percent: row.percent || 0,
           };
         });
       }
       // Update the contract with the rebuilt payment plan and final amount before signing
+      // Ensure payment plan has all required fields for contractAutomation
+      const formattedPaymentPlan = updatedPaymentPlan.map((row: any, idx: number) => ({
+        percent: row.percent || 0,
+        due_date: row.due_date || null,
+        value: row.value,
+        value_vat: row.value_vat || 0,
+        payment_order: row.payment_order || row.due_date || (row.label || `Payment ${idx + 1}`),
+        notes: row.notes || '',
+        label: row.label || row.payment_order || `Payment ${idx + 1}`,
+      }));
+      
       await supabase.from('contracts').update({
         custom_pricing: {
           ...latestPricing,
@@ -1919,7 +2182,7 @@ const ContractPage: React.FC = () => {
           total_amount: total,
           discount_amount: discountAmount,
           final_amount: finalAmount,
-          payment_plan: updatedPaymentPlan,
+          payment_plan: formattedPaymentPlan,
         }
       }).eq('id', contract.id);
 
@@ -2184,9 +2447,22 @@ const ContractPage: React.FC = () => {
               }
             }
 
+            // Use the exact same value format as shown in the payment plan panel
+            let displayValueStr = '0';
+            if (row.value) {
+              if (typeof row.value === 'string' && row.value.includes('+')) {
+                // Keep the "value + VAT" format exactly as it appears in the panel
+                displayValueStr = row.value;
+              } else {
+                // Handle numeric value or simple string
+                const numValue = parseFloat(row.value) || 0;
+                displayValueStr = numValue.toString();
+              }
+            }
+            
             result.push(
               <span className="inline-block text-black font-medium border-b-2 border-black" key={keyPrefix + '-pprow-' + rowIndex}>
-                {row.percent}% {rowIndex === 0 && row.due_date ? `(${row.due_date}) ` : ''}= {customPricing.currency} {displayValue}
+                {row.percent}% = {customPricing.currency} {displayValueStr}
               </span>
             );
           } else {
@@ -2841,7 +3117,7 @@ const ContractPage: React.FC = () => {
   // Add save state
   const [isSaving, setIsSaving] = useState(false);
 
-  // Save customPricing to DB
+  // Save customPricing to DB and refresh contract content
   const handleSaveCustomPricing = async () => {
     if (!contract || !customPricing) return;
     setIsSaving(true);
@@ -2851,7 +3127,46 @@ const ContractPage: React.FC = () => {
         total_amount: customPricing.total_amount,
         applicant_count: customPricing.applicant_count,
       }).eq('id', contract.id);
-      alert('Pricing and payment plan saved!');
+      
+      // Update local contract state
+      setContract((prev: any) => ({ ...prev, custom_pricing: customPricing }));
+      
+      // Force refresh of contract content to reflect changes
+      setRenderKey(prev => prev + 1);
+      
+      // Reset content hash to force useEffect to refresh content
+      lastContentHashRef.current = '';
+      
+      // Refresh editor content immediately (works for both edit and readonly modes)
+      if (editor && template) {
+        const content = contract.custom_content || template.content;
+        if (content) {
+          try {
+            let processedContent = normalizeTiptapContent(content);
+            processedContent = JSON.parse(JSON.stringify(processedContent)); // Deep clone
+
+            if (customPricing && client) {
+              // Replace pricing and other placeholders but keep {{text}} and {{signature}} for the custom renderer
+              processedContent = fillPlaceholdersInTiptapContent(processedContent, customPricing, client, contract, editing, { current: 0 });
+            }
+
+            // Clean up any empty nodes
+            processedContent = cleanTiptapContent(processedContent);
+            
+            // Final validation before setting content
+            if (!processedContent || processedContent.type !== 'doc') {
+              processedContent = { type: 'doc', content: [] };
+            }
+            
+            // Update editor content - this will refresh both edit and readonly views
+            editor.commands.setContent(processedContent);
+          } catch (error) {
+            console.error('❌ Error refreshing editor content after save:', error);
+          }
+        }
+      }
+      
+      alert('Pricing and payment plan saved! Contract content has been updated.');
     } catch (err) {
       alert('Failed to save. Please try again.');
     } finally {
@@ -3036,7 +3351,38 @@ const ContractPage: React.FC = () => {
             );
           } else if (sigMatch) {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : 'signature';
-            const signatureData = clientInputs[id];
+            // Try to find signature data by ID
+            let signatureData = clientInputs[id];
+            
+            // If not found by exact ID, try variations (e.g., signature-1, signature-0)
+            if (!signatureData) {
+              // Try to find any signature field in clientInputs
+              const signatureKeys = Object.keys(clientInputs).filter(key => 
+                key.toLowerCase().includes('signature') && clientInputs[key] && clientInputs[key].startsWith('data:image/')
+              );
+              
+              // If there's only one signature, use it
+              if (signatureKeys.length === 1) {
+                signatureData = clientInputs[signatureKeys[0]];
+              } else if (signatureKeys.length > 0) {
+                // Multiple signatures - try to match by numeric part of ID
+                const numericMatch = id.match(/\d+/);
+                if (numericMatch) {
+                  const numId = numericMatch[0];
+                  const matchingKey = signatureKeys.find(key => key.includes(numId));
+                  if (matchingKey) {
+                    signatureData = clientInputs[matchingKey];
+                  } else {
+                    // Use the first signature if no numeric match
+                    signatureData = clientInputs[signatureKeys[0]];
+                  }
+                } else {
+                  // Use the first signature if no numeric ID
+                  signatureData = clientInputs[signatureKeys[0]];
+                }
+              }
+            }
+            
             // For signed contracts, show the actual signature if available
             if (signatureData && signatureData.startsWith('data:image/')) {
               parts.push(
@@ -3499,21 +3845,8 @@ const ContractPage: React.FC = () => {
     </div>
   );
 
-  if (!template) return (
-    <div className="min-h-screen bg-white flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-red-500 text-lg">Template not found.</p>
-        <button
-          onClick={() => navigate(`/clients/${leadNumber}`)}
-          className="mt-4 btn btn-primary"
-        >
-          Back to Client
-        </button>
-      </div>
-    </div>
-  );
 
-  const status = contractStatuses[contract.id]?.status || contract.status;
+  const status = contract ? (contractStatuses[contract.id]?.status || contract.status) : 'draft';
 
   // Before the return statement in ContractPage, define VAT logic
   const archivalFee = customPricing?.archival_research_fee || 0;
@@ -3541,7 +3874,7 @@ const ContractPage: React.FC = () => {
                   {status === 'draft' && (
                     <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
                   )}
-                  <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template.name || 'Contract'}</h1>
+                  <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template?.name || 'Contract'}</h1>
                   {/* Buttons next to title on desktop only */}
                   <div className="hidden sm:flex items-center gap-1 sm:gap-2">
                     <button
@@ -3554,6 +3887,30 @@ const ContractPage: React.FC = () => {
                     >
                       Share
                     </button>
+                    {!editing && status === 'draft' && (
+                      <button className="btn btn-outline btn-xs sm:btn-sm" onClick={() => setEditing(true)}>
+                        Edit
+                      </button>
+                    )}
+                    {editing && (
+                      <>
+                        <button className="btn btn-primary btn-xs sm:btn-sm" onClick={handleSaveEdit}>
+                          Save
+                        </button>
+                        <button 
+                          className="btn btn-ghost btn-xs sm:btn-sm" 
+                          onClick={() => {
+                            setEditing(false);
+                            // Reload to discard changes
+                            window.location.reload();
+                          }}
+                          title="Cancel editing"
+                        >
+                          <XMarkIcon className="w-4 h-4" />
+                          Cancel
+                        </button>
+                      </>
+                    )}
                     {status === 'signed' && (
                       <>
                         <button
@@ -3592,6 +3949,29 @@ const ContractPage: React.FC = () => {
                       >
                         Share
                       </button>
+                      {!editing && status === 'draft' && (
+                        <button className="btn btn-outline btn-xs" onClick={() => setEditing(true)}>
+                          Edit
+                        </button>
+                      )}
+                      {editing && (
+                        <>
+                          <button className="btn btn-primary btn-xs" onClick={handleSaveEdit}>
+                            Save
+                          </button>
+                          <button 
+                            className="btn btn-ghost btn-xs" 
+                            onClick={() => {
+                              setEditing(false);
+                              // Reload to discard changes
+                              window.location.reload();
+                            }}
+                            title="Cancel editing"
+                          >
+                            <XMarkIcon className="w-4 h-4" />
+                          </button>
+                        </>
+                      )}
                       {status === 'signed' && (
                         <>
                           <button
@@ -3623,22 +4003,11 @@ const ContractPage: React.FC = () => {
                   )}
                   {status === 'signed' && contract?.custom_content && (
                     <p className="text-xs sm:text-sm text-green-600 font-medium truncate">
+                      Contract has been customized
                     </p>
                   )}
                 </div>
               </div>
-            </div>
-            <div className="flex items-center space-x-1 sm:space-x-2">
-              {!editing && status === 'draft' && (
-                <button className="btn btn-outline btn-xs sm:btn-sm" onClick={() => setEditing(true)}>
-                  Edit
-                </button>
-              )}
-              {editing && (
-                <button className="btn btn-primary btn-xs sm:btn-sm" onClick={handleSaveEdit}>
-                  Save
-                </button>
-              )}
             </div>
           </div>
         </div>
@@ -3648,14 +4017,58 @@ const ContractPage: React.FC = () => {
       <div className="w-full px-2 sm:px-6 xl:px-16 2xl:px-32 py-8 print-content-wrapper">
         <div className="relative">
           {/* Contract Content */}
-          <div className={`w-full transition-all duration-300 ${
-            !isSidebarExpanded
-              ? 'xl:mr-0'
-              : 'xl:mr-[450px] 2xl:mr-[500px]'
-          }`}>
+          <div className="w-full transition-all duration-300 xl:mr-[550px] 2xl:mr-[600px]">
             <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
                   {editing ? (
-                    <EditorContent editor={editor} />
+                    <>
+                      {/* Editor Toolbar with Field Insertion - Fixed at top */}
+                      <div className="sticky top-0 z-30 flex flex-wrap gap-2 items-center mb-4 p-4 rounded-xl border border-gray-300 bg-gray-50 print-hide shadow-md backdrop-blur-sm bg-white/95">
+                        {/* Formatting buttons */}
+                        <button className={`btn btn-sm ${editor.isActive('bold') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleBold().run()} title="Bold"><b className="text-base font-bold">B</b></button>
+                        <button className={`btn btn-sm ${editor.isActive('italic') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleItalic().run()} title="Italic"><i className="text-base italic">I</i></button>
+                        <button className={`btn btn-sm ${editor.isActive('underline') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleUnderline().run()} title="Underline"><u className="text-base underline">U</u></button>
+                        <button className={`btn btn-sm ${editor.isActive('strike') ? 'btn-primary' : 'btn-ghost'}`} onClick={() => editor.chain().focus().toggleStrike().run()} title="Strikethrough"><s className="text-base line-through">S</s></button>
+                        
+                        {/* Field insertion dropdowns */}
+                        <div className="dropdown dropdown-bottom">
+                          <button className="btn btn-sm btn-outline" type="button">Dynamic Fields</button>
+                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                            {DYNAMIC_FIELDS.map(f => (
+                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="dropdown dropdown-bottom">
+                          <button className="btn btn-sm btn-outline" type="button">Text Fields</button>
+                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-64 z-50 max-h-96 overflow-y-auto">
+                            {FIELD_TYPES.map(f => (
+                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="dropdown dropdown-bottom">
+                          <button className="btn btn-sm btn-outline" type="button">Pricing Fields</button>
+                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                            {PRICING_FIELDS.map(f => (
+                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="dropdown dropdown-bottom">
+                          <button className="btn btn-sm btn-outline" type="button">Payment Plan Fields</button>
+                          <ul className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 z-50">
+                            {PAYMENT_PLAN_FIELDS.map(f => (
+                              <li key={f.tag}><button type="button" onClick={() => insertField(f.tag)}>{f.label}</button></li>
+                            ))}
+                          </ul>
+                        </div>
+                        
+                        {/* Undo/Redo */}
+                        <button className="btn btn-sm btn-ghost" onClick={() => editor.chain().focus().undo().run()} title="Undo"><span className="text-lg">⎌</span></button>
+                        <button className="btn btn-sm btn-ghost" onClick={() => editor.chain().focus().redo().run()} title="Redo"><span className="text-lg">⎌⎌</span></button>
+                      </div>
+                      <EditorContent editor={editor} />
+                    </>
                   ) : status === 'signed' ? (
                     // For signed contracts, show the filled-in content using custom rendering
                     <div key={`signed-${renderKey}-${customPricing?.final_amount}-${customPricing?.applicant_count}`}>
@@ -3684,51 +4097,41 @@ const ContractPage: React.FC = () => {
 
           {/* Sidebar - Fixed to right edge */}
           <div 
-            className={`fixed right-0 z-40 transition-all duration-300 ease-in-out hidden xl:block print-hide ${
-              !isSidebarExpanded
-                ? 'translate-x-[calc(100%-60px)]' 
-                : 'translate-x-0'
-            }`}
+            className="fixed right-0 z-40 transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto"
             style={{
               top: `${headerHeight}px`,
-              height: `calc(100vh - ${headerHeight}px)`
+              height: `calc(100vh - ${headerHeight}px)`,
+              width: '550px'
             }}
           >
-            <div className={`bg-white shadow-2xl border-l border-gray-200 overflow-y-auto h-full transition-all duration-300 ${
-              !isSidebarExpanded
-                ? 'w-[60px]' 
-                : 'w-[450px] 2xl:w-[500px]'
-            }`}>
-              {!isSidebarExpanded ? (
-                /* Collapsed state - show toggle button */
-                <div className="flex flex-col items-center justify-center h-full p-2">
-                  <button
-                    onClick={() => setIsSidebarExpanded(true)}
-                    className="flex flex-col items-center gap-2 p-3 hover:bg-gray-50 rounded-lg transition-colors w-full"
-                  >
-                    <ChevronDownIcon className="w-6 h-6 text-gray-500 transform -rotate-90" />
-                    <span className="text-xs font-semibold text-gray-700" style={{ writingMode: 'vertical-rl', textOrientation: 'mixed' }}>
-                      Expand
-                    </span>
-                  </button>
-                </div>
-              ) : (
-                <div className="space-y-6 p-6">
-                  {/* Toggle button at the top */}
-                  <button
-                    onClick={() => setIsSidebarExpanded(false)}
-                    className="w-full flex items-center justify-end gap-2 p-2 hover:bg-gray-50 rounded-lg transition-colors mb-2"
-                  >
-                    <span className="text-sm font-medium text-gray-700">Collapse</span>
-                    <ChevronUpIcon className="w-5 h-5 text-gray-500 transform rotate-90" />
-                  </button>
-
-                  {/* Combined Contact Information & Contract Details */}
-                  <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                    <div className="p-6">
-                      <h3 className="text-lg font-semibold mb-4 text-gray-900">Contract Details</h3>
-                      
-                      <div className="space-y-6">
+            <div className="space-y-6 p-6">
+              {/* Contract Details Box */}
+              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
+                isContractDetailsExpanded 
+                  ? 'bg-white' 
+                  : 'bg-white/30 backdrop-blur-md border-white/50'
+              }`}
+              style={{ touchAction: 'none', userSelect: 'none' }}
+              >
+                <div className={`p-6 ${!isContractDetailsExpanded ? 'overflow-hidden' : ''}`}>
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className={`text-lg font-semibold transition-colors ${
+                      isContractDetailsExpanded ? 'text-gray-900' : 'text-gray-700'
+                    }`}>Contract Details</h3>
+                    <button
+                      onClick={() => setIsContractDetailsExpanded(!isContractDetailsExpanded)}
+                      className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      {isContractDetailsExpanded ? (
+                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+                      ) : (
+                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+                      )}
+                    </button>
+                  </div>
+                  
+                  {isContractDetailsExpanded && (
+                    <div className="space-y-6">
                     {/* Contact Information Section */}
                     {contract?.contact_name && (
                       <div>
@@ -3792,14 +4195,38 @@ const ContractPage: React.FC = () => {
                         )}
                       </div>
                     </div>
-                      </div>
                     </div>
-                  </div>
+                  )}
+                </div>
+              </div>
 
-                  {/* Editable Pricing Panel */}
-                  <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                    <div className="p-6 space-y-6">
-                      <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
+              {/* Pricing & Payment Plan Box */}
+              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
+                isPricingExpanded 
+                  ? 'bg-white' 
+                  : 'bg-white/30 backdrop-blur-md border-white/50'
+              }`}
+              style={{ touchAction: 'none', userSelect: 'none' }}
+              >
+                <div className={`p-6 space-y-6 ${!isPricingExpanded ? 'overflow-hidden' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <h3 className={`text-lg font-semibold transition-colors ${
+                      isPricingExpanded ? 'text-gray-900' : 'text-gray-700'
+                    }`}>Pricing & Payment Plan</h3>
+                    <button
+                      onClick={() => setIsPricingExpanded(!isPricingExpanded)}
+                      className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      {isPricingExpanded ? (
+                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+                      ) : (
+                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+                      )}
+                    </button>
+                  </div>
+                  
+                  {isPricingExpanded && (
+                    <>
                       
                       {/* Currency Selection */}
                   {status !== 'signed' && (
@@ -3811,6 +4238,7 @@ const ContractPage: React.FC = () => {
                           className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
                           onClick={() => {
                             setCurrencyType('USD');
+                            setVatIncluded(false); // USD/GBP/EUR don't have VAT
                             // Reload pricing tiers from template for USD
                             if (template?.default_pricing_tiers_usd) {
                               const pricingTiers = template.default_pricing_tiers_usd;
@@ -3841,6 +4269,7 @@ const ContractPage: React.FC = () => {
                           className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
                           onClick={() => {
                             setCurrencyType('NIS');
+                            setVatIncluded(true); // NIS has VAT included by default
                             // Reload pricing tiers from template for NIS
                             if (template?.default_pricing_tiers_nis) {
                               const pricingTiers = template.default_pricing_tiers_nis;
@@ -3889,6 +4318,80 @@ const ContractPage: React.FC = () => {
                             <option value="GBP">GBP (£)</option>
                             <option value="EUR">EUR (€)</option>
                           </select>
+                        </div>
+                      )}
+                      
+                      {/* VAT Included/Excluded Toggle - Only show for NIS */}
+                      {(currencyType === 'NIS' || (currencyType === 'USD' && customPricing?.currency === '₪')) && (
+                        <div className="mt-3">
+                          <label className="font-medium text-gray-700 text-sm mb-2 block">VAT:</label>
+                          <div className="flex gap-2">
+                            <button
+                              type="button"
+                              className={`btn btn-sm flex-1 ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                              onClick={() => {
+                                setVatIncluded(true);
+                                // Recalculate payment plan with VAT included
+                                const total = customPricing?.total_amount || 0;
+                                const discountAmount = customPricing?.discount_amount || 0;
+                                const archivalFee = customPricing?.archival_research_fee || 0;
+                                const baseTotal = total + archivalFee;
+                                const discountedBaseTotal = baseTotal - discountAmount;
+                                
+                                let paymentPlan = customPricing?.payment_plan || [];
+                                if (paymentPlan.length > 0) {
+                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                  paymentPlan = paymentPlan.map((row: any) => {
+                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                    const vatForThisPercent = Math.round((baseValueForThisPercent * 0.18 * 100) / 100);
+                                    return {
+                                      ...row,
+                                      value: `${baseValueForThisPercent} + ${vatForThisPercent}`,
+                                    };
+                                  });
+                                }
+                                
+                                setCustomPricing((prev: any) => ({
+                                  ...prev,
+                                  payment_plan: paymentPlan
+                                }));
+                              }}
+                            >
+                              Included
+                            </button>
+                            <button
+                              type="button"
+                              className={`btn btn-sm flex-1 ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                              onClick={() => {
+                                setVatIncluded(false);
+                                // Recalculate payment plan with VAT excluded
+                                const total = customPricing?.total_amount || 0;
+                                const discountAmount = customPricing?.discount_amount || 0;
+                                const archivalFee = customPricing?.archival_research_fee || 0;
+                                const baseTotal = total + archivalFee;
+                                const discountedBaseTotal = baseTotal - discountAmount;
+                                
+                                let paymentPlan = customPricing?.payment_plan || [];
+                                if (paymentPlan.length > 0) {
+                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                  paymentPlan = paymentPlan.map((row: any) => {
+                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                    return {
+                                      ...row,
+                                      value: baseValueForThisPercent.toString(),
+                                    };
+                                  });
+                                }
+                                
+                                setCustomPricing((prev: any) => ({
+                                  ...prev,
+                                  payment_plan: paymentPlan
+                                }));
+                              }}
+                            >
+                              Excluded
+                            </button>
+                          </div>
                         </div>
                       )}
                     </div>
@@ -4062,7 +4565,7 @@ const ContractPage: React.FC = () => {
                             const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
                             const finalAmountWithVat = discountedBaseTotal + vatAmount;
 
-                            // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
+                            // Recalculate payment plan amounts - each payment should show "value + VAT" only if VAT is included
                             let paymentPlan = customPricing.payment_plan || [];
                             if (paymentPlan.length > 0) {
                               const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
@@ -4071,10 +4574,10 @@ const ContractPage: React.FC = () => {
                                 const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
                                 // Calculate the VAT for this percentage
                                 const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+                                // The amount field should show "value + VAT" format only if VAT is included, otherwise just the value
                                 return {
                                   ...row,
-                                  value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                  value: (vatIncluded && isIsraeli && vatForThisPercent > 0) ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
                                 };
                               });
                             }
@@ -4095,32 +4598,47 @@ const ContractPage: React.FC = () => {
                       </div>
 
                       {/* Totals */}
-                      <div className="space-y-2 pt-3 border-t border-gray-200">
-                        <div className="flex items-center justify-between">
-                          <span className="text-gray-600">Total:</span>
-                          <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
-                        </div>
-                        {customPricing?.archival_research_fee && (
-                          <div className="flex items-center justify-between">
-                            <span className="text-gray-600">Archival Research:</span>
-                            <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                      {(() => {
+                        const desktopIsIsraeli = contract?.client_country === '₪' || customPricing?.currency === '₪';
+                        const desktopArchivalFee = customPricing?.archival_research_fee || 0;
+                        const desktopBaseTotal = (customPricing?.total_amount || 0) + desktopArchivalFee;
+                        const desktopDiscountAmount = customPricing?.discount_amount || 0;
+                        const desktopDiscountedBaseTotal = desktopBaseTotal - desktopDiscountAmount;
+                        const desktopVatAmount = desktopIsIsraeli ? Math.round(desktopDiscountedBaseTotal * 0.18 * 100) / 100 : 0;
+                        const desktopFinalAmountWithVat = vatIncluded && desktopIsIsraeli ? desktopDiscountedBaseTotal + desktopVatAmount : desktopDiscountedBaseTotal;
+                        const desktopFinalAmountWithoutVat = desktopDiscountedBaseTotal;
+                        
+                        return (
+                          <div className="space-y-2 pt-3 border-t border-gray-200">
+                            <div className="flex items-center justify-between">
+                              <span className="text-gray-600">Total:</span>
+                              <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
+                            </div>
+                            {customPricing?.archival_research_fee && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-gray-600">Archival Research:</span>
+                                <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                              </div>
+                            )}
+                            {desktopIsIsraeli && (
+                              <div className="flex items-center justify-between">
+                                <span className="text-gray-600">VAT (18%):</span>
+                                <span className="font-semibold text-gray-900">{customPricing.currency} {desktopVatAmount.toLocaleString()}</span>
+                              </div>
+                            )}
+                            <div className="flex items-center justify-between">
+                              <span className="text-gray-600">Discount:</span>
+                              <span className="font-semibold text-gray-900">{customPricing.currency} {desktopDiscountAmount.toLocaleString()}</span>
+                            </div>
+                            <div className="flex items-center justify-between">
+                              <span className="font-bold text-gray-900">Final Amount:</span>
+                              <span className="font-bold text-lg" style={{ color: '#391BC8' }}>
+                                {customPricing.currency} {(vatIncluded && desktopIsIsraeli ? desktopFinalAmountWithVat : desktopFinalAmountWithoutVat).toLocaleString()}
+                              </span>
+                            </div>
                           </div>
-                        )}
-                        {isIsraeli && (
-                          <div className="flex items-center justify-between">
-                            <span className="text-gray-600">VAT (18%):</span>
-                            <span className="font-semibold text-gray-900">{customPricing.currency} {vatAmount.toLocaleString()}</span>
-                          </div>
-                        )}
-                        <div className="flex items-center justify-between">
-                          <span className="text-gray-600">Discount:</span>
-                          <span className="font-semibold text-gray-900">{customPricing.currency} {discountAmount.toLocaleString()}</span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className="font-bold text-gray-900">Final Amount:</span>
-                          <span className="font-bold text-lg" style={{ color: '#391BC8' }}>{customPricing.currency} {finalAmountWithVat.toLocaleString()}</span>
-                        </div>
-                      </div>
+                        );
+                      })()}
 
                       {/* Payment Plan Editor */}
                       <div>
@@ -4211,42 +4729,48 @@ const ContractPage: React.FC = () => {
                   ) : (
                     <div className="text-gray-500">Loading pricing data...</div>
                   )}
-                    </div>
-                  </div>
+                  </>
+                )}
                 </div>
-              )}
+              </div>
             </div>
           </div>
 
           {/* Mobile Sidebar - Normal layout on mobile */}
           <div className="xl:hidden w-full mt-6 print-hide">
-            <button
-              onClick={() => setIsSidebarExpanded(!isSidebarExpanded)}
-              className="w-full flex items-center justify-between p-4 mb-4 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
-            >
-              <span className="text-sm font-semibold text-gray-700">
-                {isSidebarExpanded ? 'Collapse Sidebar' : 'Expand Sidebar'}
-              </span>
-              {isSidebarExpanded ? (
-                <ChevronUpIcon className="w-5 h-5 text-gray-500" />
-              ) : (
-                <ChevronDownIcon className="w-5 h-5 text-gray-500" />
-              )}
-            </button>
-            
-            {isSidebarExpanded && (
-              <div className="space-y-6">
-                {/* Combined Contact Information & Contract Details */}
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                  <div className="p-6">
-                    <h3 className="text-lg font-semibold mb-4 text-gray-900">Contract Details</h3>
-                    
-                    <div className="space-y-6">
+            <div className="space-y-6">
+              {/* Contract Details Box */}
+              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
+                isContractDetailsExpanded 
+                  ? 'bg-white' 
+                  : 'bg-white/30 backdrop-blur-md border-white/50'
+              }`}
+              style={{ touchAction: 'none', userSelect: 'none' }}
+              >
+                <div className={`p-4 ${!isContractDetailsExpanded ? 'overflow-hidden' : ''}`}>
+                  <div className="flex items-center justify-between mb-2">
+                    <h3 className={`text-base font-semibold transition-colors ${
+                      isContractDetailsExpanded ? 'text-gray-900' : 'text-gray-700'
+                    }`}>Contract Details</h3>
+                    <button
+                      onClick={() => setIsContractDetailsExpanded(!isContractDetailsExpanded)}
+                      className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      {isContractDetailsExpanded ? (
+                        <ChevronUpIcon className="w-4 h-4 text-gray-500" />
+                      ) : (
+                        <ChevronDownIcon className="w-4 h-4 text-gray-500" />
+                      )}
+                    </button>
+                  </div>
+                  
+                  {isContractDetailsExpanded && (
+                    <div className="space-y-4">
                       {/* Contact Information Section */}
                       {contract?.contact_name && (
                         <div>
-                          <h4 className="text-md font-semibold mb-3 text-gray-800">Contact Information</h4>
-                          <div className="space-y-3 text-sm">
+                          <h4 className="text-sm font-semibold mb-2 text-gray-800">Contact Information</h4>
+                          <div className="space-y-2 text-xs">
                             <div className="text-gray-700">
                               <span className="font-medium">Name:</span>
                               <span className="ml-2 font-semibold text-purple-600">{contract.contact_name}</span>
@@ -4274,22 +4798,22 @@ const ContractPage: React.FC = () => {
                       )}
                       
                       {/* Contract Details Section */}
-                      <div className={contract?.contact_name ? "pt-3 border-t border-gray-200" : ""}>
-                        <div className="flex items-center justify-between mb-3">
-                          <h4 className="text-md font-semibold text-gray-800">Contract Information</h4>
+                      <div className={contract?.contact_name ? "pt-2 border-t border-gray-200" : ""}>
+                        <div className="flex items-center justify-between mb-2">
+                          <h4 className="text-sm font-semibold text-gray-800">Contract Information</h4>
                           {status !== 'signed' && (
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
                                 setShowChangeTemplateModal(true);
                               }}
-                              className="btn btn-sm btn-outline btn-primary"
+                              className="btn btn-xs btn-outline btn-primary"
                             >
                               Change Template
                             </button>
                           )}
                         </div>
-                        <div className="space-y-3 text-sm">
+                        <div className="space-y-2 text-xs">
                           <div>
                             <span className="font-medium text-gray-700">Template:</span>
                             <span className="ml-2 text-gray-900">{template?.name || 'Unknown'}</span>
@@ -4306,24 +4830,49 @@ const ContractPage: React.FC = () => {
                         </div>
                       </div>
                     </div>
-                  </div>
+                  )}
                 </div>
+              </div>
 
-                {/* Pricing Panel - Mobile */}
-                <div className="bg-white rounded-lg shadow-lg border border-gray-200">
-                  <div className="p-6 space-y-6">
-                    <h3 className="text-lg font-semibold text-gray-900">Pricing & Payment Plan</h3>
+              {/* Pricing & Payment Plan Box */}
+              <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
+                isPricingExpanded 
+                  ? 'bg-white' 
+                  : 'bg-white/30 backdrop-blur-md border-white/50'
+              }`}
+              style={{ touchAction: 'none', userSelect: 'none' }}
+              >
+                <div className={`p-6 space-y-6 ${!isPricingExpanded ? 'overflow-hidden' : ''}`}>
+                  <div className="flex items-center justify-between">
+                    <h3 className={`text-lg font-semibold transition-colors ${
+                      isPricingExpanded ? 'text-gray-900' : 'text-gray-700'
+                    }`}>Pricing & Payment Plan</h3>
+                    <button
+                      onClick={() => setIsPricingExpanded(!isPricingExpanded)}
+                      className="p-1 hover:bg-gray-100 rounded transition-colors"
+                    >
+                      {isPricingExpanded ? (
+                        <ChevronUpIcon className="w-5 h-5 text-gray-500" />
+                      ) : (
+                        <ChevronDownIcon className="w-5 h-5 text-gray-500" />
+                      )}
+                    </button>
+                  </div>
+                  
+                  {isPricingExpanded && (
+                    <>
                     
                     {/* Currency Selection */}
                     {status !== 'signed' && (
-                      <div className="space-y-3 pb-4 border-b border-gray-200">
-                        <label className="font-medium text-gray-700">Currency Type:</label>
+                      <div className="space-y-2 pb-3 border-b border-gray-200">
+                        <label className="font-medium text-sm text-gray-700">Currency Type:</label>
                         <div className="flex gap-2">
                           <button
                             type="button"
-                            className={`btn btn-sm flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
+                            className={`btn btn-xs flex-1 ${currencyType === 'USD' ? 'btn-primary' : 'btn-outline'}`}
                             onClick={() => {
                               setCurrencyType('USD');
+                              setVatIncluded(false); // USD/GBP/EUR don't have VAT
                               // Reload pricing tiers from template for USD
                               if (template?.default_pricing_tiers_usd) {
                                 const pricingTiers = template.default_pricing_tiers_usd;
@@ -4337,12 +4886,35 @@ const ContractPage: React.FC = () => {
                                   : '1';
                                 const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
                                 const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                                const discountAmount = customPricing?.discount_amount || 0;
+                                const finalAmount = total - discountAmount;
+                                const newCurrency = subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$';
+                                const isIsraeli = false; // USD/GBP/EUR don't have VAT
+                                const archivalFee = customPricing?.archival_research_fee || 0;
+                                
+                                // Recalculate payment plan amounts based on new currency and total
+                                let paymentPlan = customPricing?.payment_plan || [];
+                                if (paymentPlan.length > 0) {
+                                  const baseTotal = total + archivalFee;
+                                  const discountedBaseTotal = baseTotal - discountAmount;
+                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                  paymentPlan = paymentPlan.map((row: any) => {
+                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+                                    return {
+                                      ...row,
+                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                    };
+                                  });
+                                }
+                                
                                 setCustomPricing((prev: any) => ({
                                   ...prev,
                                   pricing_tiers: pricingTiers,
-                                  currency: subCurrency === 'EUR' ? '€' : subCurrency === 'GBP' ? '£' : '$',
+                                  currency: newCurrency,
                                   total_amount: total,
-                                  final_amount: total - (prev.discount_amount || 0)
+                                  final_amount: finalAmount,
+                                  payment_plan: paymentPlan
                                 }));
                               }
                             }}
@@ -4351,7 +4923,7 @@ const ContractPage: React.FC = () => {
                           </button>
                           <button
                             type="button"
-                            className={`btn btn-sm flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
+                            className={`btn btn-xs flex-1 ${currencyType === 'NIS' ? 'btn-primary' : 'btn-outline'}`}
                             onClick={() => {
                               setCurrencyType('NIS');
                               // Reload pricing tiers from template for NIS
@@ -4367,12 +4939,34 @@ const ContractPage: React.FC = () => {
                                   : '1';
                                 const currentPricePerApplicant = pricingTiers[currentTierKey] || 0;
                                 const total = currentPricePerApplicant * (customPricing?.applicant_count || 1);
+                                const discountAmount = customPricing?.discount_amount || 0;
+                                const finalAmount = total - discountAmount;
+                                const isIsraeli = true; // NIS has VAT
+                                const archivalFee = customPricing?.archival_research_fee || 0;
+                                
+                                // Recalculate payment plan amounts based on new currency and total
+                                let paymentPlan = customPricing?.payment_plan || [];
+                                if (paymentPlan.length > 0) {
+                                  const baseTotal = total + archivalFee;
+                                  const discountedBaseTotal = baseTotal - discountAmount;
+                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                  paymentPlan = paymentPlan.map((row: any) => {
+                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+                                    return {
+                                      ...row,
+                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                    };
+                                  });
+                                }
+                                
                                 setCustomPricing((prev: any) => ({
                                   ...prev,
                                   pricing_tiers: pricingTiers,
                                   currency: '₪',
                                   total_amount: total,
-                                  final_amount: total - (prev.discount_amount || 0)
+                                  final_amount: finalAmount,
+                                  payment_plan: paymentPlan
                                 }));
                               }
                             }}
@@ -4384,17 +4978,39 @@ const ContractPage: React.FC = () => {
                         {/* Sub-currency selector for USD type */}
                         {currencyType === 'USD' && (
                           <div>
-                            <label className="font-medium text-gray-700 text-sm mb-2 block">Select Currency:</label>
+                            <label className="font-medium text-gray-700 text-xs mb-1 block">Select Currency:</label>
                             <select
-                              className="select select-bordered select-sm w-full"
+                              className="select select-bordered select-xs w-full"
                               value={subCurrency}
                               onChange={(e) => {
                                 const newSubCurrency = e.target.value as 'USD' | 'GBP' | 'EUR';
                                 setSubCurrency(newSubCurrency);
                                 const currencySymbol = newSubCurrency === 'EUR' ? '€' : newSubCurrency === 'GBP' ? '£' : '$';
+                                const isIsraeli = false; // USD/GBP/EUR don't have VAT
+                                const archivalFee = customPricing?.archival_research_fee || 0;
+                                
+                                // Recalculate payment plan amounts based on new currency
+                                let paymentPlan = customPricing?.payment_plan || [];
+                                if (paymentPlan.length > 0) {
+                                  const total = customPricing?.total_amount || 0;
+                                  const discountAmount = customPricing?.discount_amount || 0;
+                                  const baseTotal = total + archivalFee;
+                                  const discountedBaseTotal = baseTotal - discountAmount;
+                                  const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                  paymentPlan = paymentPlan.map((row: any) => {
+                                    const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                    const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
+                                    return {
+                                      ...row,
+                                      value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                    };
+                                  });
+                                }
+                                
                                 setCustomPricing((prev: any) => ({
                                   ...prev,
-                                  currency: currencySymbol
+                                  currency: currencySymbol,
+                                  payment_plan: paymentPlan
                                 }));
                               }}
                             >
@@ -4405,16 +5021,91 @@ const ContractPage: React.FC = () => {
                           </div>
                         )}
                       </div>
-                    )}
+                        )}
+                        
+                        {/* VAT Included/Excluded Toggle - Only show for NIS */}
+                        {(currencyType === 'NIS' || (currencyType === 'USD' && customPricing?.currency === '₪')) && (
+                          <div className="mt-2">
+                            <label className="font-medium text-gray-700 text-xs mb-1 block">VAT:</label>
+                            <div className="flex gap-2">
+                              <button
+                                type="button"
+                                className={`btn btn-xs flex-1 ${vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                                onClick={() => {
+                                  setVatIncluded(true);
+                                  // Recalculate payment plan with VAT included
+                                  const total = customPricing?.total_amount || 0;
+                                  const discountAmount = customPricing?.discount_amount || 0;
+                                  const archivalFee = customPricing?.archival_research_fee || 0;
+                                  const baseTotal = total + archivalFee;
+                                  const discountedBaseTotal = baseTotal - discountAmount;
+                                  
+                                  let paymentPlan = customPricing?.payment_plan || [];
+                                  if (paymentPlan.length > 0) {
+                                    const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                    paymentPlan = paymentPlan.map((row: any) => {
+                                      const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                      const vatForThisPercent = Math.round((baseValueForThisPercent * 0.18 * 100) / 100);
+                                      return {
+                                        ...row,
+                                        value: `${baseValueForThisPercent} + ${vatForThisPercent}`,
+                                      };
+                                    });
+                                  }
+                                  
+                                  setCustomPricing((prev: any) => ({
+                                    ...prev,
+                                    payment_plan: paymentPlan
+                                  }));
+                                }}
+                              >
+                                Included
+                              </button>
+                              <button
+                                type="button"
+                                className={`btn btn-xs flex-1 ${!vatIncluded ? 'btn-primary' : 'btn-outline'}`}
+                                onClick={() => {
+                                  setVatIncluded(false);
+                                  // Recalculate payment plan with VAT excluded
+                                  const total = customPricing?.total_amount || 0;
+                                  const discountAmount = customPricing?.discount_amount || 0;
+                                  const archivalFee = customPricing?.archival_research_fee || 0;
+                                  const baseTotal = total + archivalFee;
+                                  const discountedBaseTotal = baseTotal - discountAmount;
+                                  
+                                  let paymentPlan = customPricing?.payment_plan || [];
+                                  if (paymentPlan.length > 0) {
+                                    const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
+                                    paymentPlan = paymentPlan.map((row: any) => {
+                                      const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
+                                      return {
+                                        ...row,
+                                        value: baseValueForThisPercent.toString(),
+                                      };
+                                    });
+                                  }
+                                  
+                                  setCustomPricing((prev: any) => ({
+                                    ...prev,
+                                    payment_plan: paymentPlan
+                                  }));
+                                }}
+                              >
+                                Excluded
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      
                     {customPricing ? (
                       <>
                         {/* Applicant Count */}
                         <div className="flex items-center justify-between">
-                          <label className="font-medium text-gray-700">Number of Applicants:</label>
-                          <div className="flex items-center gap-3">
+                          <label className="font-medium text-sm text-gray-700">Number of Applicants:</label>
+                          <div className="flex items-center gap-2">
                             <button
-                              className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                              style={{ width: 40, height: 40 }}
+                              className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
+                              style={{ width: 28, height: 28 }}
                               onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                               onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                               onClick={() => handleApplicantCountChange(Math.max(1, (customPricing.applicant_count || 1) - 1))}
@@ -4422,14 +5113,14 @@ const ContractPage: React.FC = () => {
                               type="button"
                               disabled={status === 'signed'}
                             >
-                              <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                              <MinusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
                             </button>
                             <input
                               type="number"
                               min={1}
                               max={50}
-                              className="input input-bordered input-lg w-28 text-center bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                              style={{ height: 48, borderColor: '#391BC8' }}
+                              className="input input-bordered input-sm w-20 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
+                              style={{ height: 32, borderColor: '#391BC8' }}
                               value={customPricing.applicant_count || 1}
                               onChange={e => handleApplicantCountChange(Number(e.target.value))}
                               onFocus={(e) => e.target.style.borderColor = '#391BC8'}
@@ -4439,8 +5130,8 @@ const ContractPage: React.FC = () => {
                               disabled={status === 'signed'}
                             />
                             <button
-                              className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                              style={{ width: 40, height: 40 }}
+                              className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
+                              style={{ width: 28, height: 28 }}
                               onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                               onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                               onClick={() => handleApplicantCountChange(Math.min(50, (customPricing.applicant_count || 1) + 1))}
@@ -4448,15 +5139,15 @@ const ContractPage: React.FC = () => {
                               type="button"
                               disabled={status === 'signed'}
                             >
-                              <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                              <PlusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
                             </button>
                           </div>
                         </div>
 
                         {/* Pricing Tiers */}
                         <div>
-                          <label className="block font-medium text-gray-700 mb-3">Pricing Tiers (Price per applicant):</label>
-                          <div className="space-y-2">
+                          <label className="block font-medium text-sm text-gray-700 mb-2">Pricing Tiers (Price per applicant):</label>
+                          <div className="space-y-1.5">
                             {customPricing.pricing_tiers ? (() => {
                               const tierStructure = [
                                 { key: '1', label: 'For one applicant' },
@@ -4484,19 +5175,19 @@ const ContractPage: React.FC = () => {
                                 const price = customPricing.pricing_tiers[tier.key] || 0;
                                 const isActive = tier.key === currentTierKey;
                                 return (
-                                  <div key={tier.key} className={`flex items-center justify-between p-2 rounded-lg ${isActive
+                                  <div key={tier.key} className={`flex items-center justify-between p-1.5 rounded-lg ${isActive
                                       ? 'bg-white border-2'
                                       : 'bg-white border border-gray-200'
                                     }`}
                                     style={isActive ? { borderColor: '#391BC8', backgroundColor: 'rgba(57, 27, 200, 0.05)' } : {}}
                                   >
-                                    <span className="text-base font-semibold text-gray-700">
+                                    <span className="text-sm font-semibold text-gray-700">
                                       {tier.label}:
                                     </span>
-                                    <div className="flex items-center gap-3">
+                                    <div className="flex items-center gap-2">
                                       <button
-                                        className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                        style={{ width: 40, height: 40 }}
+                                        className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
+                                        style={{ width: 28, height: 28 }}
                                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                                         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                         onClick={() => handleTierPriceChange(tier.key, Math.max(0, price - 100))}
@@ -4504,13 +5195,13 @@ const ContractPage: React.FC = () => {
                                         type="button"
                                         disabled={status === 'signed'}
                                       >
-                                        <MinusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                        <MinusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
                                       </button>
                                       <input
                                         type="number"
                                         min={0}
-                                        className="input input-bordered input-lg w-36 text-right bg-white text-lg font-bold px-4 py-2 rounded-xl border-2 no-arrows"
-                                        style={{ height: 48, borderColor: '#391BC8' }}
+                                        className="input input-bordered input-sm w-28 text-right bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
+                                        style={{ height: 32, borderColor: '#391BC8' }}
                                         value={price}
                                         onChange={e => handleTierPriceChange(tier.key, Number(e.target.value))}
                                         onFocus={(e) => e.target.style.borderColor = '#391BC8'}
@@ -4518,8 +5209,8 @@ const ContractPage: React.FC = () => {
                                         disabled={status === 'signed'}
                                       />
                                       <button
-                                        className="btn btn-circle btn-md bg-gray-200 border-none flex items-center justify-center"
-                                        style={{ width: 40, height: 40 }}
+                                        className="btn btn-circle btn-xs bg-gray-200 border-none flex items-center justify-center"
+                                        style={{ width: 28, height: 28 }}
                                         onMouseEnter={(e) => e.currentTarget.style.backgroundColor = '#391BC8'}
                                         onMouseLeave={(e) => e.currentTarget.style.backgroundColor = '#e5e7eb'}
                                         onClick={() => handleTierPriceChange(tier.key, price + 100)}
@@ -4527,9 +5218,9 @@ const ContractPage: React.FC = () => {
                                         type="button"
                                         disabled={status === 'signed'}
                                       >
-                                        <PlusIcon className="w-6 h-6" style={{ color: '#391BC8' }} />
+                                        <PlusIcon className="w-4 h-4" style={{ color: '#391BC8' }} />
                                       </button>
-                                      <span className="text-base font-semibold text-gray-600">{customPricing.currency}</span>
+                                      <span className="text-sm font-semibold text-gray-600">{customPricing.currency}</span>
                                     </div>
                                   </div>
                                 );
@@ -4544,9 +5235,9 @@ const ContractPage: React.FC = () => {
 
                         {/* Discount */}
                         <div className="flex items-center justify-between">
-                          <label className="font-medium text-gray-700">Discount:</label>
+                          <label className="font-medium text-sm text-gray-700">Discount:</label>
                           <select
-                            className="select select-bordered select-md w-24 text-right bg-white"
+                            className="select select-bordered select-xs w-20 text-right bg-white"
                             value={customPricing.discount_percentage}
                             onChange={e => {
                               const discount = Number(e.target.value);
@@ -4575,7 +5266,7 @@ const ContractPage: React.FC = () => {
                               const vatAmount = isIsraeli ? Math.round(discountedBaseTotal * 0.18 * 100) / 100 : 0;
                               const finalAmountWithVat = discountedBaseTotal + vatAmount;
 
-                              // Recalculate payment plan amounts - each payment should show "value + VAT" only if there's VAT
+                              // Recalculate payment plan amounts - each payment should show "value + VAT" only if VAT is included
                               let paymentPlan = customPricing.payment_plan || [];
                               if (paymentPlan.length > 0) {
                                 const totalPercent = paymentPlan.reduce((sum: number, row: any) => sum + Number(row.percent), 0) || 1;
@@ -4584,10 +5275,10 @@ const ContractPage: React.FC = () => {
                                   const baseValueForThisPercent = Math.round((discountedBaseTotal * Number(row.percent)) / totalPercent);
                                   // Calculate the VAT for this percentage
                                   const vatForThisPercent = isIsraeli ? Math.round((baseValueForThisPercent * 0.18 * 100) / 100) : 0;
-                                  // The amount field should show "value + VAT" format only if there's VAT, otherwise just the value
+                                  // The amount field should show "value + VAT" format only if VAT is included, otherwise just the value
                                   return {
                                     ...row,
-                                    value: isIsraeli && vatForThisPercent > 0 ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
+                                    value: (vatIncluded && isIsraeli && vatForThisPercent > 0) ? `${baseValueForThisPercent} + ${vatForThisPercent}` : baseValueForThisPercent.toString(),
                                   };
                                 });
                               }
@@ -4608,15 +5299,15 @@ const ContractPage: React.FC = () => {
                         </div>
 
                         {/* Totals */}
-                        <div className="space-y-2 pt-3 border-t border-gray-200">
+                        <div className="space-y-1.5 pt-2 border-t border-gray-200">
                           <div className="flex items-center justify-between">
-                            <span className="text-gray-600">Total:</span>
-                            <span className="font-semibold text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
+                            <span className="text-sm text-gray-600">Total:</span>
+                            <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {(customPricing.total_amount || 0).toLocaleString()}</span>
                           </div>
                           {customPricing?.archival_research_fee && (
                             <div className="flex items-center justify-between">
-                              <span className="text-gray-600">Archival Research:</span>
-                              <span className="font-semibold text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
+                              <span className="text-sm text-gray-600">Archival Research:</span>
+                              <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {customPricing.archival_research_fee.toLocaleString()}</span>
                             </div>
                           )}
                           {(() => {
@@ -4624,24 +5315,28 @@ const ContractPage: React.FC = () => {
                             const mobileArchivalFee = customPricing?.archival_research_fee || 0;
                             const mobileBaseTotal = (customPricing?.total_amount || 0) + mobileArchivalFee;
                             const mobileDiscountAmount = customPricing?.discount_amount || 0;
-                            const mobileVatAmount = mobileIsIsraeli ? Math.round(mobileBaseTotal * 0.18 * 100) / 100 : 0;
-                            const mobileFinalAmountWithVat = mobileBaseTotal + mobileVatAmount - mobileDiscountAmount;
+                            const mobileDiscountedBaseTotal = mobileBaseTotal - mobileDiscountAmount;
+                            const mobileVatAmount = mobileIsIsraeli ? Math.round(mobileDiscountedBaseTotal * 0.18 * 100) / 100 : 0;
+                            const mobileFinalAmountWithVat = vatIncluded && mobileIsIsraeli ? mobileDiscountedBaseTotal + mobileVatAmount : mobileDiscountedBaseTotal;
+                            const mobileFinalAmountWithoutVat = mobileDiscountedBaseTotal;
                             
                             return (
                               <>
                                 {mobileIsIsraeli && (
                                   <div className="flex items-center justify-between">
-                                    <span className="text-gray-600">VAT (18%):</span>
-                                    <span className="font-semibold text-gray-900">{customPricing.currency} {mobileVatAmount.toLocaleString()}</span>
+                                    <span className="text-sm text-gray-600">VAT (18%):</span>
+                                    <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {mobileVatAmount.toLocaleString()}</span>
                                   </div>
                                 )}
                                 <div className="flex items-center justify-between">
-                                  <span className="text-gray-600">Discount:</span>
-                                  <span className="font-semibold text-gray-900">{customPricing.currency} {mobileDiscountAmount.toLocaleString()}</span>
+                                  <span className="text-sm text-gray-600">Discount:</span>
+                                  <span className="font-semibold text-sm text-gray-900">{customPricing.currency} {mobileDiscountAmount.toLocaleString()}</span>
                                 </div>
                                 <div className="flex items-center justify-between">
-                                  <span className="font-bold text-gray-900">Final Amount:</span>
-                                  <span className="font-bold text-lg" style={{ color: '#391BC8' }}>{customPricing.currency} {mobileFinalAmountWithVat.toLocaleString()}</span>
+                                  <span className="font-bold text-sm text-gray-900">Final Amount:</span>
+                                  <span className="font-bold text-base" style={{ color: '#391BC8' }}>
+                                    {customPricing.currency} {(vatIncluded && mobileIsIsraeli ? mobileFinalAmountWithVat : mobileFinalAmountWithoutVat).toLocaleString()}
+                                  </span>
                                 </div>
                               </>
                             );
@@ -4650,30 +5345,30 @@ const ContractPage: React.FC = () => {
 
                         {/* Payment Plan Editor */}
                         <div>
-                          <h4 className="font-semibold text-gray-900 mb-3">Payment Plan</h4>
+                          <h4 className="font-semibold text-sm text-gray-900 mb-2">Payment Plan</h4>
                           {(() => {
                             const totalPercent = (customPricing.payment_plan || []).reduce((sum: number, row: any) => sum + Number(row.percent), 0);
                             if (totalPercent < 100) {
                               return (
-                                <div className="flex items-center gap-3 p-4 mb-3 rounded-xl shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
-                                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-6 w-6" fill="none" viewBox="0 0 24 24">
+                                <div className="flex items-center gap-2 p-3 mb-2 rounded-lg shadow-lg bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white">
+                                  <svg xmlns="http://www.w3.org/2000/svg" className="stroke-current shrink-0 h-4 w-4" fill="none" viewBox="0 0 24 24">
                                     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z" />
                                   </svg>
-                                  <span className="font-medium">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
+                                  <span className="font-medium text-xs">Payment plan total is {totalPercent}%. Please ensure the total equals 100%.</span>
                                 </div>
                               );
                             }
                             return null;
                           })()}
-                          <div className="space-y-3">
+                          <div className="space-y-2">
                             {(customPricing.payment_plan || []).map((row: any, idx: number) => (
-                              <div key={idx} className="flex items-center gap-3 bg-white p-4 rounded-lg border border-gray-200">
+                              <div key={idx} className="flex items-center gap-2 bg-white p-2 rounded-lg border border-gray-200">
                                 <input
                                   type="number"
                                   min={0}
                                   max={100}
-                                  className="input input-bordered w-24 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2 no-arrows"
-                                  style={{ borderColor: '#391BC8' }}
+                                  className="input input-bordered w-16 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2 no-arrows"
+                                  style={{ borderColor: '#391BC8', height: 32 }}
                                   value={row.percent === 0 ? '' : row.percent}
                                   onChange={e => {
                                     const value = e.target.value;
@@ -4686,12 +5381,12 @@ const ContractPage: React.FC = () => {
                                   placeholder="%"
                                   disabled={status === 'signed'}
                                 />
-                                <span className="text-lg font-semibold text-gray-700">%</span>
-                                <span className="text-lg font-semibold text-gray-700">=</span>
+                                <span className="text-sm font-semibold text-gray-700">%</span>
+                                <span className="text-sm font-semibold text-gray-700">=</span>
                                 <input
                                   type="text"
-                                  className="input input-bordered w-40 text-center bg-white text-xl font-bold px-4 py-3 rounded-xl border-2"
-                                  style={{ borderColor: '#391BC8' }}
+                                  className="input input-bordered w-28 text-center bg-white text-sm font-bold px-2 py-1 rounded-lg border-2"
+                                  style={{ borderColor: '#391BC8', height: 32 }}
                                   value={row.value}
                                   onChange={e => handlePaymentPlanChange(idx, 'value', e.target.value)}
                                   onFocus={(e) => e.target.style.borderColor = '#391BC8'}
@@ -4699,9 +5394,9 @@ const ContractPage: React.FC = () => {
                                   placeholder="Value + VAT"
                                   disabled={status === 'signed'}
                                 />
-                                <span className="text-lg font-semibold text-gray-700">{customPricing.currency}</span>
+                                <span className="text-sm font-semibold text-gray-700">{customPricing.currency}</span>
                                 <button
-                                  className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-xl font-bold w-10 h-10"
+                                  className="btn btn-circle btn-ghost text-red-500 hover:bg-red-100 text-base font-bold w-7 h-7"
                                   onClick={() => handleDeletePaymentRow(idx)}
                                   disabled={status === 'signed'}
                                 >
@@ -4709,7 +5404,7 @@ const ContractPage: React.FC = () => {
                                 </button>
                               </div>
                             ))}
-                            <button className="btn btn-outline btn-sm w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
+                            <button className="btn btn-outline btn-xs w-full" onClick={handleAddPaymentRow} disabled={status === 'signed'}>
                               + Add Payment
                             </button>
                           </div>
@@ -4717,7 +5412,7 @@ const ContractPage: React.FC = () => {
                         {/* Save Button */}
                         {status !== 'signed' && (
                           <button
-                            className="btn btn-primary btn-block mt-4"
+                            className="btn btn-primary btn-sm btn-block mt-3"
                             onClick={handleSaveCustomPricing}
                             disabled={isSaving}
                           >
@@ -4737,10 +5432,11 @@ const ContractPage: React.FC = () => {
                     ) : (
                       <div className="text-gray-500">Loading pricing data...</div>
                     )}
-                  </div>
+                    </>
+                  )}
                 </div>
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
@@ -4756,6 +5452,7 @@ const ContractPage: React.FC = () => {
                   onClick={() => {
                     setShowChangeTemplateModal(false);
                     setTemplateSearchQuery('');
+                    setTemplateLanguageFilter(null);
                   }}
                   className="btn btn-ghost btn-sm btn-circle"
                 >
@@ -4764,6 +5461,25 @@ const ContractPage: React.FC = () => {
               </div>
             </div>
             <div className="p-6 overflow-y-auto flex-1 min-h-0">
+              {/* Language Filter */}
+              <div className="mb-4">
+                <select
+                  className="select select-bordered w-full"
+                  value={templateLanguageFilter || ''}
+                  onChange={(e) => {
+                    setTemplateLanguageFilter(e.target.value || null);
+                    setShowTemplateDropdown(true);
+                  }}
+                >
+                  <option value="">All Languages</option>
+                  {availableLanguages.map(lang => (
+                    <option key={lang.id} value={String(lang.id)}>
+                      {lang.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              
               <div className="relative mb-4">
                 <input
                   type="text"
@@ -4782,11 +5498,23 @@ const ContractPage: React.FC = () => {
                   onBlur={() => setTimeout(() => setShowTemplateDropdown(false), 200)}
                 />
                 {showTemplateDropdown && availableTemplates
-                  .filter(t => !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()))
+                  .filter(t => {
+                    // Filter by search query
+                    const matchesSearch = !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase());
+                    // Filter by language
+                    const matchesLanguage = !templateLanguageFilter || String(t.language_id) === templateLanguageFilter;
+                    return matchesSearch && matchesLanguage;
+                  })
                   .length > 0 && (
                   <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-lg shadow-lg max-h-96 overflow-y-auto">
                     {availableTemplates
-                      .filter(t => !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase()))
+                      .filter(t => {
+                        // Filter by search query
+                        const matchesSearch = !templateSearchQuery.trim() || t.name.toLowerCase().includes(templateSearchQuery.toLowerCase());
+                        // Filter by language
+                        const matchesLanguage = !templateLanguageFilter || String(t.language_id) === templateLanguageFilter;
+                        return matchesSearch && matchesLanguage;
+                      })
                       .map(t => (
                         <div
                           key={t.id}
@@ -4920,74 +5648,73 @@ const ContractPage: React.FC = () => {
           }
         }
       `}</style>
+      
+      {/* Remove default arrows from all number inputs */}
+      <style>{`
+        input[type=number].no-arrows::-webkit-inner-spin-button, 
+        input[type=number].no-arrows::-webkit-outer-spin-button {
+          -webkit-appearance: none;
+          margin: 0;
+        }
+        input[type=number].no-arrows {
+          -moz-appearance: textfield;
+        }
+        
+        /* Ensure read-only mode has identical styling to edit mode */
+        .ProseMirror[contenteditable="false"] {
+          padding: 0 !important;
+          margin: 0 !important;
+          min-height: 0 !important;
+        }
+        
+        .ProseMirror[contenteditable="false"] p {
+          margin-bottom: 0.75rem !important;
+          margin-top: 0 !important;
+        }
+        
+        .ProseMirror[contenteditable="false"] p:last-child {
+          margin-bottom: 0 !important;
+        }
+        
+        /* Style {{text}} and {{signature}} placeholders to look like input fields in view mode */
+        .ProseMirror[contenteditable="false"] .text-field-placeholder {
+          display: inline-block;
+          min-width: 150px;
+          height: 40px;
+          border: 2px solid #d1d5db;
+          border-radius: 8px;
+          background-color: #f9fafb;
+          padding: 8px 12px;
+          margin: 0 4px;
+          font-size: 14px;
+          color: #6b7280;
+          font-style: italic;
+        }
+        
+        .ProseMirror[contenteditable="false"] .signature-placeholder {
+          display: inline-block;
+          min-width: 200px;
+          height: 80px;
+          border: 2px solid #d1d5db;
+          border-radius: 8px;
+          background-color: #f9fafb;
+          margin: 0 4px;
+          position: relative;
+        }
+        
+        .ProseMirror[contenteditable="false"] .signature-placeholder::after {
+          content: "Sign here";
+          position: absolute;
+          top: 50%;
+          left: 50%;
+          transform: translate(-50%, -50%);
+          color: #9ca3af;
+          font-size: 12px;
+          font-style: italic;
+        }
+      `}</style>
     </div>
   );
 };
-
-// Remove default arrows from all number inputs
-// Add this style at the end of the file or in a global style block
-<style>{`
-  input[type=number].no-arrows::-webkit-inner-spin-button, 
-  input[type=number].no-arrows::-webkit-outer-spin-button {
-    -webkit-appearance: none;
-    margin: 0;
-  }
-  input[type=number].no-arrows {
-    -moz-appearance: textfield;
-  }
-  
-  /* Ensure read-only mode has identical styling to edit mode */
-  .ProseMirror[contenteditable="false"] {
-    padding: 0 !important;
-    margin: 0 !important;
-    min-height: 0 !important;
-  }
-  
-  .ProseMirror[contenteditable="false"] p {
-    margin-bottom: 0.75rem !important;
-    margin-top: 0 !important;
-  }
-  
-  .ProseMirror[contenteditable="false"] p:last-child {
-    margin-bottom: 0 !important;
-  }
-  
-  /* Style {{text}} and {{signature}} placeholders to look like input fields in view mode */
-  .ProseMirror[contenteditable="false"] .text-field-placeholder {
-    display: inline-block;
-    min-width: 150px;
-    height: 40px;
-    border: 2px solid #d1d5db;
-    border-radius: 8px;
-    background-color: #f9fafb;
-    padding: 8px 12px;
-    margin: 0 4px;
-    font-size: 14px;
-    color: #6b7280;
-    font-style: italic;
-  }
-  
-  .ProseMirror[contenteditable="false"] .signature-placeholder {
-    display: inline-block;
-    min-width: 200px;
-    height: 80px;
-    border: 2px solid #d1d5db;
-    border-radius: 8px;
-    background-color: #f9fafb;
-    margin: 0 4px;
-    position: relative;
-  }
-  
-  .ProseMirror[contenteditable="false"] .signature-placeholder::after {
-    content: "Sign here";
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%);
-    color: #9ca3af;
-    font-size: 12px;
-    font-style: italic;
-  }
-`}</style>
 
 export default ContractPage; 
