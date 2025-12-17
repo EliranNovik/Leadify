@@ -263,7 +263,8 @@ interface Interaction {
   body_preview?: string | null;
   renderedContent?: string;
   renderedContentFallback?: string;
-  contact_id?: number | null; // Contact ID for email and WhatsApp interactions
+  contact_id?: number | null; // Contact ID for email, WhatsApp, and manual interactions
+  contact_name?: string; // Contact name for manual interactions
   sender_email?: string | null; // Sender email for email interactions
   recipient_list?: string | null; // Recipient list for email interactions
   phone_number?: string | null; // Phone number for WhatsApp interactions
@@ -284,8 +285,7 @@ interface EmailTemplate {
 const contactMethods = [
   { value: 'email', label: 'E-mail' },
   { value: 'whatsapp', label: 'WhatsApp' },
-  { value: 'call', label: 'Call' },
-  { value: 'call_log', label: 'Call Log' },
+  { value: 'call_log', label: 'Call' },
   { value: 'sms', label: 'SMS' },
   { value: 'office', label: 'In Office' },
 ];
@@ -699,7 +699,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [employeePhoneMap, setEmployeePhoneMap] = useState<Map<string, string>>(new Map()); // phone/ext -> display_name
   const [employeePhotoMap, setEmployeePhotoMap] = useState<Map<string, string>>(new Map()); // display_name -> photo_url
   const [editIndex, setEditIndex] = useState<number|null>(null);
-  const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '' });
+  const [editData, setEditData] = useState({ date: '', time: '', content: '', observation: '', length: '', direction: 'out' as 'in' | 'out' });
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [contactDrawerOpen, setContactDrawerOpen] = useState(false);
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
@@ -710,7 +710,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     length: '',
     content: '',
     observation: '',
+    direction: 'out', // 'out' = we contacted client, 'in' = client contacted us
+    contact_id: null as number | null,
+    contact_name: '', // For display
   });
+  const [manualInteractionContacts, setManualInteractionContacts] = useState<Array<{ id: number; name: string; email?: string | null; phone?: string | null; mobile?: string | null }>>([]);
   const { user } = useAuthContext();
   const userId = user?.id ?? null;
   const userEmail = user?.email ?? null;
@@ -1552,7 +1556,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // --- Add: handler for clicking an interaction to jump to message in modal ---
   const handleInteractionClick = async (row: Interaction, idx: number) => {
-    if (row.kind === 'email') {
+    if (row.kind === 'email' && !row.editable) {
+      // For actual sent/received emails (not manual), open email modal
       // Ensure contacts are loaded first
       let contacts = leadContacts;
       if (contacts.length === 0) {
@@ -1675,7 +1680,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 1200);
         }
       }, 300);
-    } else if (row.kind === 'whatsapp') {
+    } else if (row.kind === 'whatsapp' && !row.editable) {
+      // For actual sent/received WhatsApp messages (not manual), open WhatsApp modal
       // Ensure contacts are loaded first
       let contacts = leadContacts;
       if (contacts.length === 0) {
@@ -1742,7 +1748,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         : client.id;
       
       if (contactToSelect) {
-        console.log('📞 Setting contact for WhatsApp click:', contactToSelect.name);
         const contactData = {
           contact: contactToSelect,
           leadId,
@@ -1765,7 +1770,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setIsWhatsAppOpen(true);
         setActiveWhatsAppId(row.id.toString());
       }
+    } else if (row.editable) {
+      // Manual interactions - open edit drawer
+      openEditDrawer(idx);
     } else {
+      // Other interactions (calls, etc.) - open edit drawer as well
       openEditDrawer(idx);
     }
   };
@@ -2962,11 +2971,28 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           Array.isArray(legacyResult) ? legacyResult.filter((interaction: any) => interaction.kind !== 'call') : []
         ];
 
-        // 1. Manual interactions (excluding WhatsApp) - fast client-side processing
-        const manualInteractions = (client.manual_interactions || []).filter((i: any) => i.kind !== 'whatsapp').map((i: any) => ({
-          ...i,
-          employee: i.direction === 'out' ? (userFullName || 'You') : i.employee || client.name,
-        }));
+        // 1. Manual interactions - fast client-side processing
+        const manualInteractions = (client.manual_interactions || []).map((i: any) => {
+          // Set sender as employee and store recipient separately
+          let employeeDisplay = '';
+          let recipientName = '';
+          
+          if (i.direction === 'out') {
+            // We contacted client - employee is sender
+            employeeDisplay = i.employee || userFullName || 'You';
+            recipientName = i.contact_name || client.name;
+          } else {
+            // Client contacted us - client/contact is sender
+            employeeDisplay = i.contact_name || client.name;
+            recipientName = i.employee || userFullName || 'You';
+          }
+          
+          return {
+            ...i,
+            employee: employeeDisplay,
+            recipient_name: recipientName, // Store recipient for display
+          };
+        });
         // 2. Email interactions - prioritise freshly fetched emails, fallback to client prop
         const clientEmails = emailsResult.data || [];
         
@@ -3003,7 +3029,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             content: body,
             subject: e.subject || '',
             observation: e.observation || '',
-            editable: true,
+            editable: false, // Actual emails are not editable, only manual emails are
             status: e.status,
             body_html: bodyHtml,
             body_preview: bodyPreview || null,
@@ -4111,6 +4137,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       content: latestRow.content || '',
       observation: latestRow.observation || '',
       length: latestRow.length ? String(latestRow.length).replace(/m$/, '') : '',
+      direction: latestRow.direction || 'out',
     });
     setDetailsDrawerOpen(true);
   };
@@ -4140,6 +4167,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           content: editData.content,
           observation: editData.observation,
           length: editData.length ? `${editData.length}m` : '',
+          direction: editData.direction,
         };
       }
       return interaction;
@@ -4190,7 +4218,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
   };
 
-  const openContactDrawer = () => {
+  const openContactDrawer = async () => {
     const now = new Date();
     const pad = (n: number) => n.toString().padStart(2, '0');
     const date = `${pad(now.getDate())}.${pad(now.getMonth() + 1)}.${now.getFullYear().toString().slice(-2)}`;
@@ -4202,7 +4230,84 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       length: '',
       content: '',
       observation: '',
+      direction: 'out',
+      contact_id: null,
+      contact_name: '',
     });
+    
+    // Fetch lead contacts using the helper function
+    if (client) {
+      try {
+        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        const leadId = isLegacyLead ? client.id.replace('legacy_', '') : client.id;
+        
+        console.log('🔍 Fetching contacts for manual interaction:', { 
+          isLegacyLead, 
+          leadId, 
+          clientId: client.id,
+          leadType: client.lead_type 
+        });
+        
+        // Use the existing helper function to fetch contacts
+        const contacts = await fetchLeadContacts(leadId, isLegacyLead);
+        
+        console.log('📋 Contacts fetched:', { contacts, count: contacts?.length });
+        
+        // Helper to normalize phone numbers for deduplication
+        const normalizePhone = (phone: string | null | undefined): string => {
+          if (!phone) return '';
+          return phone.replace(/[\s\-\(\)\+]/g, '').trim();
+        };
+        
+        // Convert ContactInfo to our simpler format
+        const simplifiedContacts = contacts.map(c => ({
+          id: c.id,
+          name: c.name,
+          email: c.email,
+          phone: c.phone,
+          mobile: c.mobile,
+        }));
+        
+        // Add the lead/client itself as the first option
+        const allContactsWithLead = [
+          {
+            id: -1, // Special ID for the lead itself
+            name: client.name,
+            email: client.email,
+            phone: client.phone,
+            mobile: client.mobile,
+          },
+          ...simplifiedContacts
+        ];
+        
+        // Deduplicate by phone number - keep first occurrence
+        const seenPhones = new Set<string>();
+        const deduplicatedContacts = allContactsWithLead.filter(contact => {
+          const phone = normalizePhone(contact.phone || contact.mobile);
+          if (!phone) {
+            // Keep contacts without phone numbers
+            return true;
+          }
+          if (seenPhones.has(phone)) {
+            // Skip duplicate phone number
+            return false;
+          }
+          seenPhones.add(phone);
+          return true;
+        });
+        
+        console.log('📋 Deduplicated contacts:', { 
+          original: allContactsWithLead.length, 
+          deduplicated: deduplicatedContacts.length 
+        });
+        
+        setManualInteractionContacts(deduplicatedContacts);
+      } catch (error) {
+        console.error('❌ Error fetching contacts:', error);
+        setManualInteractionContacts([]);
+      }
+    }
+    
     setContactDrawerOpen(true);
   };
 
@@ -4210,7 +4315,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setContactDrawerOpen(false);
   };
 
-  const handleNewContactChange = (field: string, value: string) => {
+  const handleNewContactChange = (field: string, value: any) => {
     setNewContact((prev) => ({ ...prev, [field]: value }));
   };
 
@@ -4252,12 +4357,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
       employee: userFullName || 'You',
-      direction: 'out',
+      direction: newContact.direction as 'in' | 'out',
       kind: newContact.method,
       length: newContact.length ? `${newContact.length}m` : '',
       content: newContact.content,
       observation: newContact.observation,
       editable: true,
+      contact_id: newContact.contact_id,
+      contact_name: newContact.contact_name,
     };
 
     // --- Optimistic Update ---
@@ -4268,72 +4375,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     // --- End Optimistic Update ---
 
     try {
-      if (newContact.method === 'call_log') {
-        // Get current user's employee ID for the call log
-        let employeeId = null;
-        try {
-          const { data: { user } } = await supabase.auth.getUser();
-          if (user?.id) {
-            const { data: userData } = await supabase
-              .from('users')
-              .select('employee_id')
-              .eq('auth_id', user.id)
-              .single();
-            if (userData?.employee_id) {
-              employeeId = userData.employee_id;
-            }
-          }
-        } catch (error) {
-          console.log('Could not fetch employee_id for call log:', error);
-        }
+      // Save ALL manual interactions (including calls) to manual_interactions
+      // This preserves direction, contact info, and allows proper "To:" display
+      const existingInteractions = client.manual_interactions || [];
+      const updatedInteractions = [...existingInteractions, newInteraction];
 
-        // Save to call_logs table
-        const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        const callLogData: any = {
-          cdate: now.toISOString().split('T')[0],
-          direction: 'Manual Entry',
-          date: newContact.date ? new Date(newContact.date).toISOString().split('T')[0] : now.toISOString().split('T')[0],
-          time: newContact.time || now.toTimeString().split(' ')[0].substring(0, 5),
-          status: 'ANSWERED', // Default for manual entries
-          duration: newContact.length ? parseInt(newContact.length) * 60 : 0, // Convert minutes to seconds
-          employee_id: employeeId, // Include employee_id for JOIN queries
-          action: ''
-        };
-        
-        if (isLegacyLead) {
-          const legacyId = parseInt(client.id.replace('legacy_', ''));
-          callLogData.lead_id = legacyId;
-        } else {
-          callLogData.client_id = client.id;
-        }
-        
-        const { error: callLogError } = await supabase
-          .from('call_logs')
-          .insert(callLogData);
+      // Update manual_interactions and latest_interaction timestamp
+      const { error: updateError } = await supabase
+        .from('leads')
+        .update({ 
+          manual_interactions: updatedInteractions,
+          latest_interaction: now.toISOString()
+        })
+        .eq('id', client.id);
 
-        if (callLogError) throw callLogError;
-        
-        toast.success('Call log saved!');
-        if (onClientUpdate) await onClientUpdate(); // Silently refresh data
-      } else {
-        // Save to manual_interactions
-        const existingInteractions = client.manual_interactions || [];
-        const updatedInteractions = [...existingInteractions, newInteraction];
-
-        // Update manual_interactions and latest_interaction timestamp
-        const { error: updateError } = await supabase
-          .from('leads')
-          .update({ 
-            manual_interactions: updatedInteractions,
-            latest_interaction: now.toISOString()
-          })
-          .eq('id', client.id);
-
-        if (updateError) throw updateError;
-        
-        toast.success('Interaction saved!');
-        if (onClientUpdate) await onClientUpdate(); // Silently refresh data
-      }
+      if (updateError) throw updateError;
+      
+      toast.success('Interaction saved!');
+      if (onClientUpdate) await onClientUpdate(); // Silently refresh data
 
     } catch (error) {
       toast.error('Save failed. Reverting changes.');
@@ -4605,16 +4664,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           </div>
         ) : (
           <>
-            {/* Header with Contact Client Dropdown and AI Smart Recap */}
+            {/* Header with Action Buttons */}
             <div className="w-full flex flex-col sm:flex-row items-stretch sm:items-center gap-4 mb-8 md:mb-12">
-              <div className="dropdown">
+              {/* Mobile: Contact Client Dropdown */}
+              <div className="dropdown lg:hidden">
                 <label tabIndex={0} className="btn btn-outline btn-primary flex items-center gap-2 cursor-pointer w-full sm:w-auto justify-center">
                   <UserIcon className="w-5 h-5" /> Contact Client <ChevronDownIcon className="w-4 h-4 ml-1" />
                 </label>
                 <ul tabIndex={0} className="dropdown-content menu p-2 shadow bg-base-100 rounded-box w-52 mt-2 z-[100]">
                   <li>
                     <button className="flex gap-2 items-center" onClick={() => {
-                      // Show contact selector first
                       setShowContactSelectorForEmail(true);
                     }}>
                       <EnvelopeIcon className="w-5 h-5" /> Email
@@ -4622,7 +4681,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </li>
                   <li>
                     <button className="flex gap-2 items-center" onClick={() => {
-                      // Show contact selector first
                       setShowContactSelector(true);
                     }}>
                       <FaWhatsapp className="w-5 h-5" /> WhatsApp
@@ -4636,9 +4694,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </ul>
               </div>
               
+              {/* Desktop: Individual Buttons */}
+              <div className="hidden lg:flex gap-4">
+                <button 
+                  className="btn btn-outline btn-primary flex items-center gap-2"
+                  onClick={() => setShowContactSelectorForEmail(true)}
+                >
+                  <EnvelopeIcon className="w-5 h-5" /> Email
+                </button>
+                <button 
+                  className="btn btn-outline btn-primary flex items-center gap-2"
+                  onClick={() => setShowContactSelector(true)}
+                >
+                  <FaWhatsapp className="w-5 h-5" /> WhatsApp
+                </button>
+                <button 
+                  className="btn btn-outline btn-primary flex items-center gap-2"
+                  onClick={openContactDrawer}
+                >
+                  <ChatBubbleLeftRightIcon className="w-5 h-5" /> Manual Entry
+                </button>
+              </div>
+              
               {/* AI Smart Recap Button */}
               <button 
-                className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto justify-center"
+                className="btn bg-gradient-to-r from-purple-600 to-indigo-600 text-white border-none hover:from-purple-700 hover:to-indigo-700 shadow-lg w-full sm:w-auto lg:ml-auto justify-center"
                 onClick={() => {
                   // Toggle AI summary panel on mobile, or show/hide it on desktop
                   if (window.innerWidth < 1024) {
@@ -4776,15 +4856,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               // Get employee photo if available
               // For calls: from employee_data (JOIN result)
               // For other interactions: look up by employee name from employeePhotoMap
+              // For manual interactions where client contacted us: don't look up photo (client won't be in employee map)
               let employeePhoto: string | null = null;
               const employeeData = (row as any).employee_data;
+              const isManualInteraction = row.editable;
+              const isClientSender = isManualInteraction && row.direction === 'in';
+              
               if (employeeData) {
                 // Calls have employee_data from JOIN
                 employeePhoto = Array.isArray(employeeData) ? employeeData[0]?.photo_url : employeeData?.photo_url;
-              } else if (row.employee && employeePhotoMap.has(row.employee)) {
-                // For email/WhatsApp/etc, look up by employee name
+              } else if (!isClientSender && row.employee && employeePhotoMap.has(row.employee)) {
+                // For email/WhatsApp/etc (not manual interactions with client as sender), look up by employee name
                 employeePhoto = employeePhotoMap.get(row.employee) || null;
               }
+              // If isClientSender is true, leave employeePhoto as null (will show initials only)
               
               // Initials - handle case where employee name might be missing or short
               const employeeNameForInitials = row.employee || 'Unknown';
@@ -4837,31 +4922,57 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <div className={`font-semibold text-sm sm:text-base md:text-lg ${textGradient}`}>
                                   {row.employee}
                                 </div>
-                                {/* Show recipient for call interactions */}
-                                {row.kind === 'call' && (() => {
-                                  const callLog = (row as any).call_log;
-                                  if (!callLog) return null;
+                                {/* Show recipient for call and manual interactions (excluding email/whatsapp which have their own logic) */}
+                                {(row.kind === 'call' || row.kind === 'call_log' || (row.editable && row.kind !== 'email' && row.kind !== 'whatsapp')) && (() => {
+                                  // For call logs from database, get from call_log
+                                  if (row.kind === 'call') {
+                                    const callLog = (row as any).call_log;
+                                    if (!callLog) return null;
+                                    
+                                    // Use the stored recipient_name from the interaction object
+                                    const recipientName = (row as any).recipient_name;
+                                    
+                                    // Fallback to destination if recipient_name is not available
+                                    const recipientDisplay = recipientName || callLog.destination;
+                                    
+                                    // Only show if we have a recipient to display
+                                    if (!recipientDisplay) return null;
+                                    
+                                    return (
+                                      <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
+                                        <div className="flex items-center gap-1">
+                                          <span>To:</span>
+                                          <span className="font-medium text-gray-700">{recipientDisplay}</span>
+                                        </div>
+                                      </div>
+                                    );
+                                  }
                                   
-                                  // Use the stored recipient_name from the interaction object
+                                  // For manual interactions (excluding email/whatsapp), get from recipient_name
                                   const recipientName = (row as any).recipient_name;
-                                  
-                                  // Fallback to destination if recipient_name is not available
-                                  const recipientDisplay = recipientName || callLog.destination;
-                                  
-                                  // Only show if we have a recipient to display
-                                  if (!recipientDisplay) return null;
+                                  if (!recipientName) return null;
                                   
                                   return (
                                     <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
                                       <div className="flex items-center gap-1">
                                         <span>To:</span>
-                                        <span className="font-medium text-gray-700">{recipientDisplay}</span>
+                                        <span className="font-medium text-gray-700">{recipientName}</span>
                                       </div>
                                     </div>
                                   );
                                 })()}
                                 {/* Show contact name for email and WhatsApp interactions */}
                                 {(row.kind === 'email' || row.kind === 'whatsapp') && (() => {
+                                  // For manual interactions, use recipient_name set during processing
+                                  if (row.editable && (row as any).recipient_name) {
+                                    return (
+                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                        <span>To:</span>
+                                        <span className="font-medium text-gray-700">{(row as any).recipient_name}</span>
+                                      </div>
+                                    );
+                                  }
+                                  
                                   const interactionContactId = (row as any).contact_id;
                                   const senderEmail = (row as any).sender_email?.toLowerCase().trim();
                                   const recipientList = (row as any).recipient_list?.toLowerCase() || '';
@@ -4946,16 +5057,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   {row.status}
                                 </span>
                               )}
-                              {/* Call status badge - always show for calls */}
-                              {row.kind === 'call' && (
+                              {/* Call status badge - only show if status is known and not 'unread' */}
+                              {row.kind === 'call' && row.status && row.status !== 'unread' && row.status.toLowerCase() !== 'unknown' && (
                                 <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
-                                  row.status && row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
-                                  row.status && (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
-                                  row.status && row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
-                                  row.status && row.status.toLowerCase() === 'busy' ? 'bg-yellow-500 text-white' :
+                                  row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
+                                  (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
+                                  row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
+                                  row.status.toLowerCase() === 'busy' ? 'bg-yellow-500 text-white' :
                                   'bg-gray-600 text-white'
                                 }`}>
-                                  {row.status === 'NO+ANSWER' ? 'NO ANSWER' : (row.status === 'unread' ? 'UNKNOWN' : (row.status || 'UNKNOWN'))}
+                                  {row.status === 'NO+ANSWER' ? 'NO ANSWER' : row.status}
                                 </span>
                               )}
                               {row.length && row.length !== 'm' && (
@@ -4978,8 +5089,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             </div>
                           </div>
                         
-                          {/* Content section - hide content for calls since status is shown in badge */}
-                          {row.content && row.kind !== 'call' && (
+                          {/* Content section - hide content for database calls, but show for manual calls */}
+                          {row.content && (row.kind !== 'call' || row.editable) && (
                             <div 
                               className="text-sm sm:text-base text-gray-700 break-words mb-4"
                               dir="auto"
@@ -6063,6 +6174,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             </div>
             <div className="flex flex-col gap-4 flex-1">
               <div>
+                <label className="block font-semibold mb-1">Direction</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={newContact.direction}
+                  onChange={e => handleNewContactChange('direction', e.target.value)}
+                >
+                  <option value="out">We contacted client</option>
+                  <option value="in">Client contacted us</option>
+                </select>
+              </div>
+              <div>
+                <label className="block font-semibold mb-1">Contact Person (Optional)</label>
+                <select
+                  className="select select-bordered w-full"
+                  value={newContact.contact_id?.toString() || ''}
+                  onChange={e => {
+                    const contactId = e.target.value ? parseInt(e.target.value) : null;
+                    const contact = manualInteractionContacts.find(c => c.id === contactId);
+                    handleNewContactChange('contact_id', contactId);
+                    handleNewContactChange('contact_name', contact?.name || '');
+                  }}
+                >
+                  <option value="">-- Select Contact (Optional) --</option>
+                  {manualInteractionContacts.map((contact) => (
+                    <option key={contact.id} value={contact.id}>
+                      {contact.name}
+                      {(contact.phone || contact.mobile) && ` - ${contact.phone || contact.mobile}`}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
                 <label className="block font-semibold mb-1">How to contact</label>
                 <select
                   className="select select-bordered w-full"
@@ -6233,18 +6376,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               <div><span className="font-semibold">Type:</span> {activeInteraction.kind}</div>
               <div><span className="font-semibold">Date:</span> {activeInteraction.date} {activeInteraction.time}</div>
               <div><span className="font-semibold">Employee:</span> {activeInteraction.employee}</div>
-              {activeInteraction.kind === 'call' && activeInteraction.editable && (
+              {activeInteraction.editable && (
                 <>
                   <div>
-                    <label className="block font-semibold mb-1">Minutes</label>
-                    <input
-                      type="number"
-                      className="input input-bordered w-full"
-                      value={editData.length}
-                      onChange={e => handleEditChange('length', e.target.value)}
-                      min={0}
-                    />
+                    <label className="block font-semibold mb-1">Direction</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={editData.direction}
+                      onChange={e => handleEditChange('direction', e.target.value)}
+                    >
+                      <option value="out">We contacted client</option>
+                      <option value="in">Client contacted us</option>
+                    </select>
                   </div>
+                  {(activeInteraction.kind === 'call' || activeInteraction.kind === 'call_log') && (
+                    <div>
+                      <label className="block font-semibold mb-1">Minutes</label>
+                      <input
+                        type="number"
+                        className="input input-bordered w-full"
+                        value={editData.length}
+                        onChange={e => handleEditChange('length', e.target.value)}
+                        min={0}
+                      />
+                    </div>
+                  )}
                   <div>
                     <label className="block font-semibold mb-1">Content</label>
                     <textarea
@@ -6267,8 +6423,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   </div>
                 </>
               )}
-              {/* Show non-editable fields for other types or non-editable interactions */}
-              {!(activeInteraction.kind === 'call' && activeInteraction.editable) && (
+              {/* Show non-editable fields for non-manual interactions */}
+              {!activeInteraction.editable && (
                 <>
                   <div><span className="font-semibold">Content:</span> {activeInteraction.content}</div>
                   <div><span className="font-semibold">Observation:</span> {activeInteraction.observation}</div>

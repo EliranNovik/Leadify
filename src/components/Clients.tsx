@@ -903,11 +903,22 @@ const Clients: React.FC<ClientsProps> = ({
     const currency = currencies.find((curr: any) => curr.id.toString() === currencyId.toString());
     
     if (currency) {
-      // For dropdown compatibility, return the name field which matches the dropdown values
-      return currency.name || currency.front_name || currency.iso_code || '₪';
+      // Map currency to its symbol based on ISO code or name
+      const isoCode = currency.iso_code ? currency.iso_code.toUpperCase() : null;
+      const currencyName = currency.name ? currency.name.toUpperCase() : null;
+      
+      // Map common currencies to their symbols
+      if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === 'ILS' || currencyName === 'NIS') return '₪';
+      if (isoCode === 'EUR' || currencyName === 'EUR' || currencyName === 'EURO') return '€';
+      if (isoCode === 'USD' || currencyName === 'USD' || currencyName === 'DOLLAR') return '$';
+      if (isoCode === 'GBP' || currencyName === 'GBP' || currencyName === 'POUND') return '£';
+      if (isoCode === 'CAD' || currencyName === 'CAD') return 'C$';
+      
+      // If no match found, return the symbol if available, otherwise default to ₪
+      return currency.front_name || '₪';
     }
     
-    return '₪'; // Default fallback - matches dropdown format
+    return '₪'; // Default fallback
   };
 
   // Helper function to get category name from ID with main category
@@ -6525,8 +6536,12 @@ useEffect(() => {
         }
       }
 
-      // 4. Update stage to "Meeting rescheduling" (ID 21)
-      await updateLeadStage(21);
+      // 4. Update stage to "Meeting rescheduling" (ID 21) - ONLY if not in "Another meeting" stage
+      // For "Another meeting" stage, keep the stage unchanged
+      const currentStageNameForCheck = selectedClient ? getStageName(selectedClient.stage) : '';
+      if (!areStagesEquivalent(currentStageNameForCheck, 'another_meeting')) {
+        await updateLeadStage(21);
+      }
 
       // 5. Show toast and close drawer
       toast.success('Meeting canceled and client notified.');
@@ -6776,14 +6791,22 @@ useEffect(() => {
       const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
                           (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
       
-      // When rescheduling (new meeting is scheduled), always change stage to "Meeting scheduled" (id 20)
+      // Check if current stage is "Another meeting"
+      const currentStageName = getStageName(selectedClient.stage);
+      const isAnotherMeeting = areStagesEquivalent(currentStageName, 'Another meeting');
+      
+      // When rescheduling (new meeting is scheduled), change stage to "Meeting scheduled" (id 20)
+      // EXCEPT when in "Another meeting" stage - then keep the stage unchanged
       const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
       if (meetingScheduledStageId === null) {
         toast.error('Unable to resolve the "Meeting scheduled" stage. Please contact an administrator.');
         setIsReschedulingMeeting(false);
         return;
       }
-      const shouldUpdateStage = currentStage !== meetingScheduledStageId; // Always update if not already at stage 20
+      // Don't update stage if:
+      // 1. Already at "Meeting scheduled" stage, OR
+      // 2. Currently in "Another meeting" stage (exclusive condition)
+      const shouldUpdateStage = !isAnotherMeeting && (currentStage !== meetingScheduledStageId);
       const rescheduledStageId = meetingScheduledStageId; // Meeting scheduled (id 20)
 
       if (isLegacyLead) {
@@ -8284,12 +8307,27 @@ useEffect(() => {
   })()) {
     dropdownItems = (
       <>
-        {areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-        areStagesEquivalent(currentStageName, 'another_meeting') ||
-        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21)) ? (
+        {/* Special handling for "Another meeting" stage - only show Meeting ReScheduling and Meeting Ended */}
+        {areStagesEquivalent(currentStageName, 'another_meeting') ? (
           <>
-            {/* Only show Schedule Meeting button for "another_meeting" and stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
+            <li>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowRescheduleDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
+                <ArrowPathIcon className="w-5 h-5 text-black" />
+                Meeting ReScheduling
+              </a>
+            </li>
+            <li>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Meeting Ended')}>
+                <CheckCircleIcon className="w-5 h-5 text-black" />
+                Meeting Ended
+              </a>
+            </li>
+          </>
+        ) : (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
+        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) ? (
+          <>
+            {/* Only show Schedule Meeting button for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
             {!areStagesEquivalent(currentStageName, 'meeting_scheduled') && 
              !areStagesEquivalent(currentStageName, 'Meeting rescheduling') && (
               <li>
@@ -8341,7 +8379,7 @@ useEffect(() => {
           </li>
         )}
         {(() => {
-          const communicationExcludedStages = ['meeting_scheduled', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];
+          const communicationExcludedStages = ['meeting_scheduled', 'another_meeting', 'waiting_for_mtng_sum', 'client_signed', 'client signed agreement', 'Client signed agreement', 'communication_started', 'Success', 'handler_assigned', 'Meeting rescheduling'];
           const isCommunicationExcluded = communicationExcludedStages.some(stage => areStagesEquivalent(currentStageName, stage));
           // Also exclude if current stage is 21 (Meeting rescheduled)
           const isStage21 = (isStageNumeric && stageNumeric === 21) || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
@@ -8923,11 +8961,34 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
       const masterIdValue = extractDigits(masterBaseNumber) ?? masterBaseNumber;
 
-      // For sub-leads, always inherit category_id from the master lead (selectedClient)
+      // For sub-leads, use form's category_id first (user may have changed it), then fall back to master lead
       let categoryIdValue: number | null = null;
       
-      // Primary source: selectedClient's category_id (master lead)
-      if (selectedClient?.category_id != null) {
+      // Primary source: Form's categoryId (user selection)
+      if (subLeadForm.categoryId && subLeadForm.categoryId.trim() !== '') {
+        const categoryIdStr = subLeadForm.categoryId.trim();
+        const parsedId = Number(categoryIdStr);
+        if (!Number.isNaN(parsedId) && parsedId > 0) {
+          categoryIdValue = parsedId;
+        }
+      }
+      
+      // If not in form, try to find it from the form category name/text
+      if (categoryIdValue === null && subLeadForm.category && subLeadForm.category.trim() !== '') {
+        const matchingOption = categoryOptions.find(opt => 
+          opt.label === subLeadForm.category || 
+          opt.label.toLowerCase() === subLeadForm.category.toLowerCase()
+        );
+        if (matchingOption) {
+          const parsedId = Number(matchingOption.id);
+          if (!Number.isNaN(parsedId) && parsedId > 0) {
+            categoryIdValue = parsedId;
+          }
+        }
+      }
+      
+      // Fallback: Inherit from master lead's category_id
+      if (categoryIdValue === null && selectedClient?.category_id != null) {
         const clientCategoryId = typeof selectedClient.category_id === 'number' 
           ? selectedClient.category_id 
           : Number(selectedClient.category_id);
@@ -8936,7 +8997,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         }
       }
       
-      // If category_id is null but we have category text, search for it in allCategories
+      // If category_id is still null but we have category text from master lead, search for it in allCategories
       if (categoryIdValue === null && selectedClient?.category && selectedClient.category.trim() !== '') {
         console.log('🔍 Master lead has category text but no category_id, searching in allCategories:', {
           categoryText: selectedClient.category,
@@ -8997,29 +9058,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               categoryId: categoryIdValue, 
               categoryName: foundCategory.name || foundCategory.raw?.name 
             });
-          }
-        }
-      }
-      
-      // Fallback: try form's categoryId if master lead doesn't have one
-      if (categoryIdValue === null && subLeadForm.categoryId && subLeadForm.categoryId.trim() !== '') {
-        const categoryIdStr = subLeadForm.categoryId.trim();
-        const parsedId = Number(categoryIdStr);
-        if (!Number.isNaN(parsedId) && parsedId > 0) {
-          categoryIdValue = parsedId;
-        }
-      }
-      
-      // If still null, try to find it from the form category name/text
-      if (categoryIdValue === null && subLeadForm.category && subLeadForm.category.trim() !== '') {
-        const matchingOption = categoryOptions.find(opt => 
-          opt.label === subLeadForm.category || 
-          opt.label.toLowerCase() === subLeadForm.category.toLowerCase()
-        );
-        if (matchingOption) {
-          const parsedId = Number(matchingOption.id);
-          if (!Number.isNaN(parsedId) && parsedId > 0) {
-            categoryIdValue = parsedId;
           }
         }
       }
@@ -10469,7 +10507,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                 ) : (
                                   <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                                 )}
-                                <li><a className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                                 <li>
                                   <a
                                     className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
@@ -11114,7 +11151,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           ) : (
                             <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                           )}
-                          <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                           <li>
                             <a
                               className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
@@ -11332,7 +11368,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     ) : (
                       <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                     )}
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                     <li>
                       <a
                         className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
@@ -11566,7 +11601,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 ) : (
                   <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                 )}
-                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                 <li>
                   <a
                     className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
@@ -13028,19 +13062,58 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               )}
               {subLeadStep === 'newContact' && (
                 <>
-                  <label className="block font-semibold mb-1">Topic</label>
+                  <label className="block font-semibold mb-1">Category</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full pr-10"
+                      value={subLeadForm.category}
+                      onChange={e => {
+                        const value = e.target.value;
+                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                      }}
+                      placeholder="Type to search categories..."
+                    />
+                    {subLeadForm.category && (
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    {subLeadForm.category && !subLeadForm.categoryId && (
+                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {categoryOptions
+                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                          .slice(0, 10)
+                          .map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                              onClick={() => {
+                                setSubLeadForm(f => ({
+                                  ...f,
+                                  categoryId: opt.id,
+                                  category: opt.label
+                                }));
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="block font-semibold mb-1 mt-4">Topic</label>
                   <input 
                     className="input input-bordered w-full" 
                     value={subLeadForm.topic}
                     onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
                     placeholder="Enter topic"
                   />
-                  {/* Category is automatically inherited from master lead - no dropdown needed */}
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <p className="text-sm text-gray-700">
-                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
-                    </p>
-                  </div>
                   <label className="block font-semibold mb-1">Client Name</label>
                   <input 
                     className="input input-bordered w-full" 
@@ -13193,11 +13266,50 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
                     </p>
                   </div>
-                  {/* Category is automatically inherited from master lead */}
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <p className="text-sm text-gray-700">
-                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
-                    </p>
+                  <label className="block font-semibold mb-1">Category</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full pr-10"
+                      value={subLeadForm.category}
+                      onChange={e => {
+                        const value = e.target.value;
+                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                      }}
+                      placeholder="Type to search categories..."
+                    />
+                    {subLeadForm.category && (
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    {subLeadForm.category && !subLeadForm.categoryId && (
+                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {categoryOptions
+                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                          .slice(0, 10)
+                          .map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                              onClick={() => {
+                                setSubLeadForm(f => ({
+                                  ...f,
+                                  categoryId: opt.id,
+                                  category: opt.label
+                                }));
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                      </div>
+                    )}
                   </div>
                   <label className="block font-semibold mb-1">Name</label>
                   <input
@@ -13246,19 +13358,58 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               )}
               {subLeadStep === 'newProcedure' && (
                 <>
-                  <label className="block font-semibold mb-1">Topic</label>
+                  <label className="block font-semibold mb-1">Category</label>
+                  <div className="relative">
+                    <input
+                      type="text"
+                      className="input input-bordered w-full pr-10"
+                      value={subLeadForm.category}
+                      onChange={e => {
+                        const value = e.target.value;
+                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                      }}
+                      placeholder="Type to search categories..."
+                    />
+                    {subLeadForm.category && (
+                      <button
+                        type="button"
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                      >
+                        ✕
+                      </button>
+                    )}
+                    {subLeadForm.category && !subLeadForm.categoryId && (
+                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                        {categoryOptions
+                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                          .slice(0, 10)
+                          .map(opt => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                              onClick={() => {
+                                setSubLeadForm(f => ({
+                                  ...f,
+                                  categoryId: opt.id,
+                                  category: opt.label
+                                }));
+                              }}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                      </div>
+                    )}
+                  </div>
+                  <label className="block font-semibold mb-1 mt-4">Topic</label>
                   <input 
                     className="input input-bordered w-full" 
                     value={subLeadForm.topic}
                     onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
                     placeholder="Enter topic"
                   />
-                  {/* Category is automatically inherited from master lead - no dropdown needed */}
-                  <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
-                    <p className="text-sm text-gray-700">
-                      <strong>Category:</strong> {subLeadForm.category || selectedClient?.category || 'Will be inherited from master lead'}
-                    </p>
-                  </div>
                   <label className="block font-semibold mb-1">Client Name</label>
                   <input 
                     className="input input-bordered w-full" 
