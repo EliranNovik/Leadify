@@ -127,22 +127,22 @@ const CallsLedgerPage: React.FC = () => {
         return;
       }
 
-      // Get user IDs for employees that have user_id
-      const userIds = allEmployees
-        .map((emp: any) => emp.user_id)
+      // Get employee IDs for querying users table
+      const employeeIds = allEmployees
+        .map((emp: any) => emp.id)
         .filter((id: any) => id !== null && id !== undefined);
 
-      if (userIds.length === 0) {
-        // If no employees have user_id, return all employees (fallback)
-        setEmployees(allEmployees);
+      if (employeeIds.length === 0) {
+        // If no employees, return empty array
+        setEmployees([]);
         return;
       }
 
-      // Fetch active users
+      // Fetch active users by employee_id (not by user id which is UUID)
       const { data: activeUsers, error: usersError } = await supabase
         .from('users')
-        .select('id, is_active')
-        .in('id', userIds)
+        .select('employee_id, is_active')
+        .in('employee_id', employeeIds)
         .eq('is_active', true);
 
       if (usersError) {
@@ -152,19 +152,15 @@ const CallsLedgerPage: React.FC = () => {
         return;
       }
 
-      // Create a set of active user IDs for quick lookup
-      const activeUserIds = new Set(
-        (activeUsers || []).map((user: any) => user.id?.toString())
+      // Create a set of active employee IDs for quick lookup
+      const activeEmployeeIds = new Set(
+        (activeUsers || []).map((user: any) => user.employee_id?.toString())
       );
 
       // Filter employees to only those with active users
       const activeEmployees = allEmployees.filter((emp: any) => {
-        // Include employee if they have a user_id that's in the active users list
-        if (emp.user_id) {
-          return activeUserIds.has(emp.user_id.toString());
-        }
-        // If employee has no user_id, exclude them (only show employees with active users)
-        return false;
+        // Include employee if their ID is in the active users list
+        return activeEmployeeIds.has(emp.id.toString());
       });
 
       setEmployees(activeEmployees);

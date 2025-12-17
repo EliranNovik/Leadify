@@ -4331,19 +4331,19 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 z-50 bg-gradient-to-br" style={{ background: 'linear-gradient(to bottom right, rgba(62, 40, 205, 0.05), rgba(59, 130, 246, 0.05))' }}>
+      <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
         <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
-          <p className="text-gray-600 font-medium">Loading RMQ Messages...</p>
-          </div>
+          <p className="text-gray-600 dark:text-gray-300 font-medium">Loading RMQ Messages...</p>
+        </div>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-gradient-to-br flex overflow-hidden" style={{ background: 'linear-gradient(to bottom right, rgba(62, 40, 205, 0.05), rgba(59, 130, 246, 0.05))' }}>
+    <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden">
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-base-100 border-r border-base-300 flex-col shadow-lg">
         {/* Header */}
@@ -5097,7 +5097,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f9fafb'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -6113,7 +6113,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f9fafb'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
