@@ -171,7 +171,7 @@ const getCurrencySymbol = (currencyCode?: string) => {
   }
   
   // Map currency codes to symbols
-  const upperCode = trimmedCode.toUpperCase();
+  const upperCode = strCode.toUpperCase();
   switch (upperCode) {
     case 'USD':
     case 'US$':
@@ -217,10 +217,10 @@ const getCurrencySymbol = (currencyCode?: string) => {
       return 'TRY';
     default:
       // If it's a short string that looks like a symbol, return it
-      if (trimmedCode.length <= 3 && !trimmedCode.match(/^[A-Z]{3}$/)) {
-        return trimmedCode;
+      if (strCode.length <= 3 && !strCode.match(/^[A-Z]{3}$/)) {
+        return strCode;
       }
-      return trimmedCode; // Return as-is if we can't map it
+      return strCode; // Return as-is if we can't map it
   }
 };
 
@@ -3854,7 +3854,7 @@ useEffect(() => {
         <button
           key={`${variant}-${stageOption.id}`}
           type="button"
-          className="w-full px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-center transition-all group hover:bg-gray-100 dark:hover:bg-gray-800/70 hover:scale-105 hover:shadow-md"
+          className="w-full px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-center transition-all group hover:bg-base-200 hover:scale-105 hover:shadow-md"
           onClick={() => {
             setStageDropdownAnchor(null);
             handleStageChange(stageOption.id);
@@ -3907,7 +3907,7 @@ useEffect(() => {
       <div
         className={`absolute ${
           overlayAnchor === 'badge' ? 'right-0' : 'right-0'
-        } mt-2 w-72 rounded-2xl border border-purple-200/70 bg-white/95 dark:bg-gray-900/95 shadow-2xl z-[60] overflow-hidden backdrop-blur`}
+        } mt-2 w-72 rounded-2xl border border-base-300 bg-base-100/95 shadow-2xl z-[60] overflow-hidden backdrop-blur`}
       >
         <div
           ref={getListRef(overlayAnchor)}
@@ -3915,7 +3915,7 @@ useEffect(() => {
         >
           {previousStages.length > 0 && (
             <div className="space-y-2">
-              <span className="text-[11px] uppercase tracking-[0.32em] text-gray-400 dark:text-gray-500 block text-center">
+              <span className="text-[11px] uppercase tracking-[0.32em] text-base-content/60 block text-center">
                 Previous
               </span>
               {previousStages.map(stageOption => renderStageOption(stageOption, 'previous'))}
@@ -8045,7 +8045,7 @@ useEffect(() => {
 
   if (selectedClient && areStagesEquivalent(currentStageName, 'Created')) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-gray-500">
+      <li className="px-2 py-2 text-sm text-base-content/70">
         No action available
       </li>
     );
@@ -8061,7 +8061,7 @@ useEffect(() => {
               (document.activeElement as HTMLElement)?.blur();
             }}
           >
-            <PencilSquareIcon className="w-5 h-5 text-black" />
+            <PencilSquareIcon className="w-5 h-5 text-base-content" />
             Communication started
           </a>
         </li>
@@ -8079,13 +8079,13 @@ useEffect(() => {
       <>
         {/* <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowPaymentsPlanDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
-            <BanknotesIcon className="w-5 h-5 text-black" />
+            <BanknotesIcon className="w-5 h-5 text-base-content" />
             Payments plan
           </a>
         </li> */}
         <li>
           <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { updateLeadStage('payment_request_sent'); (document.activeElement as HTMLElement)?.blur(); }}>
-            <CurrencyDollarIcon className="w-5 h-5 text-black" />
+            <CurrencyDollarIcon className="w-5 h-5 text-base-content" />
             Payment request sent
           </a>
         </li>
@@ -8094,7 +8094,7 @@ useEffect(() => {
     );
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Success')) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-gray-500">
+      <li className="px-2 py-2 text-sm text-base-content/70">
         No action available
       </li>
     );
@@ -8139,7 +8139,7 @@ useEffect(() => {
   }
   else if (selectedClient && areStagesEquivalent(currentStageName, 'Case Closed')) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-gray-500">
+      <li className="px-2 py-2 text-sm text-base-content/70">
         No action available
       </li>
     );
@@ -8154,7 +8154,7 @@ useEffect(() => {
     return isUnactivated;
   })()) {
     dropdownItems = (
-      <li className="px-2 py-2 text-sm text-gray-500">
+      <li className="px-2 py-2 text-sm text-base-content/70">
         Please activate lead in actions first.
       </li>
     );
@@ -9357,7 +9357,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         <div className="max-w-2xl mx-auto">
           {/* Unactivated Lead Compact Card */}
           <div 
-            className="bg-white rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-gray-200 overflow-hidden"
+            className="bg-base-100 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-base-300 overflow-hidden"
             onClick={() => {
               console.log('🔍 Clicking unactivated view to expand');
               console.log('🔍 Current isUnactivatedView before setting:', isUnactivatedView);
@@ -9445,21 +9445,21 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {/* Topic */}
                   {selectedClient.topic && (
                     <div className="flex items-center gap-2">
-                      <DocumentTextIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600 font-medium">{selectedClient.topic}</span>
+                      <DocumentTextIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80 font-medium">{selectedClient.topic}</span>
                     </div>
                   )}
 
                   {/* Email */}
                   <div className="flex items-center gap-2">
-                    <EnvelopeIcon className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-600">{selectedClient.email || 'No email'}</span>
+                    <EnvelopeIcon className="w-4 h-4 text-base-content/60" />
+                    <span className="text-sm text-base-content/80">{selectedClient.email || 'No email'}</span>
                   </div>
 
                   {/* Category */}
                   <div className="flex items-center gap-2">
-                    <TagIcon className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-600">{selectedClient.category || 'Not specified'}</span>
+                    <TagIcon className="w-4 h-4 text-base-content/60" />
+                    <span className="text-sm text-base-content/80">{selectedClient.category || 'Not specified'}</span>
                   </div>
                 </div>
 
@@ -9468,37 +9468,37 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {/* Scheduler */}
                   {selectedClient.scheduler && (
                     <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">Scheduler: {selectedClient.scheduler}</span>
+                      <UserIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80">Scheduler: {selectedClient.scheduler}</span>
                     </div>
                   )}
 
                   {/* Handler */}
                   {selectedClient.handler && selectedClient.handler !== 'Not assigned' && (
                     <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">Handler: {selectedClient.handler}</span>
+                      <UserIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80">Handler: {selectedClient.handler}</span>
                     </div>
                   )}
 
                   {/* Closer */}
                   {selectedClient.closer && (
                     <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">Closer: {selectedClient.closer}</span>
+                      <UserIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80">Closer: {selectedClient.closer}</span>
                     </div>
                   )}
 
                   {/* Phone */}
                   <div className="flex items-center gap-2">
-                    <PhoneIcon className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-600">{selectedClient.phone || 'No phone'}</span>
+                    <PhoneIcon className="w-4 h-4 text-base-content/60" />
+                    <span className="text-sm text-base-content/80">{selectedClient.phone || 'No phone'}</span>
                   </div>
 
                   {/* Created Date */}
                   <div className="flex items-center gap-2">
-                    <CalendarIcon className="w-4 h-4 text-gray-400" />
-                    <span className="text-sm text-gray-500">
+                    <CalendarIcon className="w-4 h-4 text-base-content/60" />
+                    <span className="text-sm text-base-content/70">
                       Created: {selectedClient.created_at ? new Date(selectedClient.created_at).toLocaleDateString() : 'Unknown'}
                     </span>
                   </div>
@@ -9548,10 +9548,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
                 return isUnactivated;
               })() && (
-                <div className="pt-3 border-t border-gray-100 space-y-2">
+                <div className="pt-3 border-t border-base-300 space-y-2">
                   <div className="flex items-center gap-2">
-                    <NoSymbolIcon className="w-4 h-4 text-red-400" />
-                    <span className="text-sm text-red-600 font-medium">
+                    <NoSymbolIcon className="w-4 h-4 text-error" />
+                    <span className="text-sm text-error font-medium">
                       {(() => {
                         const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
                         // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
@@ -9579,16 +9579,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                   {selectedClient.unactivated_by && (
                     <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">
+                      <UserIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80">
                         Unactivated by: {selectedClient.unactivated_by}
                       </span>
                     </div>
                   )}
                   {selectedClient.unactivated_at && (
                     <div className="flex items-center gap-2">
-                      <CalendarIcon className="w-4 h-4 text-gray-400" />
-                      <span className="text-sm text-gray-600">
+                      <CalendarIcon className="w-4 h-4 text-base-content/60" />
+                      <span className="text-sm text-base-content/80">
                         Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
                           year: 'numeric',
                           month: 'short',
@@ -9605,8 +9605,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               {/* Click to Expand Hint */}
               <div className="p-3">
                 <div className="flex items-center gap-2">
-                  <InformationCircleIcon className="w-4 h-4 text-gray-500" />
-                  <span className="text-sm text-black font-medium">Click to view full details</span>
+                  <InformationCircleIcon className="w-4 h-4 text-base-content/70" />
+                  <span className="text-sm text-base-content font-medium">Click to view full details</span>
                 </div>
               </div>
             </div>
@@ -9626,18 +9626,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   }
   
   return (
-    <div className="min-h-screen bg-white dark:bg-gray-900">
+    <div className="min-h-screen bg-base-100">
       {/* Sticky Header - appears when scrolled down, positioned below main header */}
       {showStickyHeader && selectedClient && (
-        <div className="fixed top-16 left-0 md:left-[100px] right-0 z-[45] bg-white dark:bg-gray-800 shadow-lg border-b border-gray-200 dark:border-gray-700 transition-all duration-300 ease-in-out">
+        <div className="fixed top-16 left-0 md:left-[100px] right-0 z-[45] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
           <div className="max-w-7xl mx-auto px-4 py-3">
             {/* Mobile View - Only lead number, client name, and stage badge */}
             <div className="md:hidden flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0 flex-1">
-                <span className="text-base font-bold text-gray-900 dark:text-white whitespace-nowrap">
+                <span className="text-base font-bold text-base-content whitespace-nowrap">
                   #{selectedClient.lead_number || selectedClient.id}
                 </span>
-                <span className="text-base font-semibold text-gray-700 dark:text-gray-300 truncate">
+                <span className="text-base font-semibold text-base-content/90 truncate">
                   {selectedClient.name || 'Unnamed Lead'}
                 </span>
               </div>
@@ -9679,7 +9679,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
                       }
                     }}
-                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    className="p-2 rounded-lg hover:bg-base-200 transition-colors"
                     title="Previous tab"
                     aria-label="Previous tab"
                   >
@@ -9703,7 +9703,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         setActiveTab(tabs[0].id); // Wrap to first tab
                       }
                     }}
-                    className="p-2 rounded-lg hover:bg-gray-100 dark:hover:bg-gray-700 transition-colors"
+                    className="p-2 rounded-lg hover:bg-base-200 transition-colors"
                     title="Next tab"
                     aria-label="Next tab"
                   >
@@ -9711,14 +9711,14 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </button>
                 </div>
                 <div className="flex items-center gap-3 min-w-0 flex-wrap">
-                  <span className="text-lg font-bold text-gray-900 dark:text-white whitespace-nowrap">
+                  <span className="text-lg font-bold text-base-content whitespace-nowrap">
                     #{selectedClient.lead_number || selectedClient.id}
                   </span>
-                  <span className="text-lg font-semibold text-gray-700 dark:text-gray-300 truncate">
+                  <span className="text-lg font-semibold text-base-content/90 truncate">
                     {selectedClient.name || 'Unnamed Lead'}
                   </span>
                   {selectedClient.next_followup && (
-                    <div className="flex items-center gap-1.5 text-sm text-gray-600 dark:text-gray-400 whitespace-nowrap">
+                    <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
                       <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
                       <span className="font-medium">
                         {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
@@ -9759,7 +9759,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 {/* Topic/Category - same size as stage badge */}
                 {selectedClient.category && (
                   <span 
-                    className="badge text-sm px-4 py-2 font-bold shadow-sm bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 border-gray-200 dark:border-gray-600 whitespace-nowrap flex items-center gap-2"
+                    className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
                   >
                     <TagIcon className="w-4 h-4 flex-shrink-0" />
                     <span className="hidden sm:inline">{selectedClient.category}</span>
@@ -9773,7 +9773,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
 
       {/* Background loading indicator */}
       {backgroundLoading && (
-        <div className="fixed top-4 right-4 z-40 bg-blue-100 text-blue-800 px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
+        <div className="fixed top-4 right-4 z-40 bg-info/20 text-info-content px-3 py-2 rounded-lg shadow-lg flex items-center gap-2 text-sm">
           <div className="loading loading-spinner loading-xs"></div>
           Loading additional data...
         </div>
@@ -10097,11 +10097,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
             <div className="flex flex-col gap-1 flex-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="text-lg font-bold text-gray-900 whitespace-nowrap">
+                <span className="text-lg font-bold text-base-content whitespace-nowrap">
                   {selectedClient ? getDisplayLeadNumber(selectedClient) : '---'}
                 </span>
-                <span className="text-lg font-bold text-gray-900">-</span>
-                <span className="text-xl font-bold text-gray-700 truncate">
+                <span className="text-lg font-bold text-base-content">-</span>
+                <span className="text-xl font-bold text-base-content/90 truncate">
                   {selectedClient ? (selectedClient.name || '---') : '---'}
                 </span>
               </div>
@@ -10116,12 +10116,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           {/* Client info and Progress boxes - Horizontally scrollable on mobile */}
           <div className="flex flex-row gap-3 w-full -mx-4 px-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory md:overflow-x-visible">
             {/* Client Information Box */}
-            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-hidden hover:shadow-lg transition-shadow duration-200">
+            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-hidden hover:shadow-lg transition-shadow duration-200">
               <div className="h-full flex flex-col">
                 {/* Header with collapse button */}
                 <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
                   <div className="flex items-center gap-3 flex-1">
-                    <span className="text-base font-semibold text-gray-900">Client Information</span>
+                    <span className="text-base font-semibold text-base-content">Client Information</span>
                   </div>
                   <button
                     onClick={() => {
@@ -10133,9 +10133,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     aria-label={isClientInfoCollapsed ? "Expand" : "Collapse"}
                   >
                     {isClientInfoCollapsed ? (
-                      <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                      <ChevronRightIcon className="w-5 h-5 text-base-content/80" />
                     ) : (
-                      <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                      <ChevronDownIcon className="w-5 h-5 text-base-content/80" />
                     )}
                   </button>
                 </div>
@@ -10155,12 +10155,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
             
             {/* Progress & Follow-up Box */}
-            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-gradient-to-br from-white to-gray-50 rounded-2xl shadow-md border border-gray-200/60 overflow-visible hover:shadow-lg transition-shadow duration-200">
+            <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-visible hover:shadow-lg transition-shadow duration-200">
               <div className="h-full flex flex-col">
                 {/* Header with collapse button - no icon on mobile */}
                 <div className="flex items-center justify-between gap-3 mb-4 md:hidden p-3.5 pb-0">
                   <div className="flex items-center gap-3 flex-1">
-                    <span className="text-base font-semibold text-gray-900">Progress & Follow-up</span>
+                    <span className="text-base font-semibold text-base-content">Progress & Follow-up</span>
                   </div>
                   <button
                     onClick={() => {
@@ -10172,9 +10172,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     aria-label={isProgressCollapsed ? "Expand" : "Collapse"}
                   >
                     {isProgressCollapsed ? (
-                      <ChevronRightIcon className="w-5 h-5 text-gray-600" />
+                      <ChevronRightIcon className="w-5 h-5 text-base-content/80" />
                     ) : (
-                      <ChevronDownIcon className="w-5 h-5 text-gray-600" />
+                      <ChevronDownIcon className="w-5 h-5 text-base-content/80" />
                     )}
                   </button>
                 </div>
@@ -10195,7 +10195,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                   <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
                                 </label>
                                 {dropdownItems && (
-                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
                                     {dropdownItems}
                                   </ul>
                                 )}
@@ -10323,7 +10323,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                 <span>Actions</span>
                                 <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
                               </label>
-                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
+                              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
                                 {(() => {
                                   const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                                   const isUnactivated = isLegacy
@@ -10335,10 +10335,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                 ) : (
                                   <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
                                 )}
-                                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                                <li><a className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
                                 <li>
                                   <a
-                                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                    className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
                                     onClick={async () => {
                                       if (!selectedClient?.id) return;
                                       
@@ -10421,18 +10421,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
                 </button>
                 {isDuplicateDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-2 bg-white rounded-lg shadow-xl border border-gray-200 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                  <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
                     {duplicateContacts.map((dup, idx) => (
                       <div
                         key={`${dup.contactId}-${dup.leadId}-${idx}`}
-                        className="p-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer"
+                        className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
                         onClick={() => {
                           navigate(`/clients/${dup.leadNumber}`);
                           setIsDuplicateDropdownOpen(false);
                         }}
                       >
-                        <div className="font-semibold text-gray-800">{dup.contactName}</div>
-                        <div className="text-sm text-gray-600">Lead {dup.leadNumber}: {dup.leadName}</div>
+                        <div className="font-semibold text-base-content">{dup.contactName}</div>
+                        <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
                         <div className="flex items-center gap-2 mt-1 flex-wrap">
                           {dup.stage && (
                             <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
@@ -10445,7 +10445,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             </span>
                           )}
                         </div>
-                        <div className="text-xs text-gray-500 mt-1">
+                        <div className="text-xs text-base-content/70 mt-1">
                           Matches: {dup.matchingFields.join(', ')}
                         </div>
                       </div>
@@ -11351,7 +11351,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         </div>
 
         {/* Tab Content - full width, white background */}
-        <div className="w-full bg-white dark:bg-gray-900 min-h-screen">
+        <div className="w-full bg-base-100 min-h-screen">
           <div
             key={`${activeTab}-${interactionCount}`}
             className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"

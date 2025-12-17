@@ -2177,7 +2177,14 @@ const ScheduledReport = () => {
       const precommunicationStageIds = collectStageIds('Precommunication', [11, 0]);
       const communicationStartedStageIds = collectStageIds('Communication Started', [15]);
       const setAsUnactiveStageIds = collectStageIds('Set As Unactive', [91]);
-      const meetingScheduledStageIds = collectStageIds('Meeting Scheduled', [20]);
+      const meetingScheduledStageIds = collectStageIds('Meeting Scheduled', [20, 55]); // Include "Another meeting" stage (55)
+      const anotherMeetingStageIds = collectStageIds('Another meeting', [55]);
+      // Merge "Another meeting" into meeting scheduled
+      anotherMeetingStageIds.forEach(id => {
+        if (!meetingScheduledStageIds.includes(id)) {
+          meetingScheduledStageIds.push(id);
+        }
+      });
       console.log('🔍 Scheduled Report - stage ID collections:', {
         precommunicationStageIds,
         communicationStartedStageIds,
@@ -2217,7 +2224,7 @@ const ScheduledReport = () => {
         if (name) setAsUnactiveStageNameSet.add(name);
       });
 
-      const meetingScheduledStageNameSet = new Set<string>(['meetingscheduled']);
+      const meetingScheduledStageNameSet = new Set<string>(['meetingscheduled', 'anothermeeting']);
       meetingScheduledStageIds.forEach(id => {
         const name = stageIdToNormalizedName[Number(id)];
         if (name) meetingScheduledStageNameSet.add(name);
@@ -2705,6 +2712,7 @@ const ScheduledReport = () => {
           meetingStageEntries.push({
             leadKey: leadIdentifierKey,
             fallbackIdentifier: entry.creator_id ?? null,
+            cdate: entry.cdate, // Store the creation date for matching with meetings
           });
           return;
         }
@@ -2853,14 +2861,42 @@ const ScheduledReport = () => {
         return null;
       };
 
-      meetingStageEntries.forEach(({ leadKey, fallbackIdentifier }) => {
-        const schedulerInfo = resolveSchedulerForLead(leadKey, fallbackIdentifier);
-        if (!schedulerInfo) return;
-
-        recordMeetingForScheduler(schedulerInfo.key, leadKey);
-        ensureStageLeadSets(schedulerInfo.key);
-        stageLeadSets[schedulerInfo.key].meetingScheduled.add(leadKey);
-        globalStageLeadSet.add(leadKey);
+      // Group meeting stage entries by leadKey for date-based matching
+      const meetingStageEntriesByLead = new Map<string, Array<{ fallbackIdentifier: any; cdate: string }>>();
+      meetingStageEntries.forEach(({ leadKey, fallbackIdentifier, cdate }) => {
+        if (!meetingStageEntriesByLead.has(leadKey)) {
+          meetingStageEntriesByLead.set(leadKey, []);
+        }
+        meetingStageEntriesByLead.get(leadKey)!.push({ fallbackIdentifier, cdate });
+      });
+      
+      // Sort entries by date for each lead (oldest first for chronological processing)
+      meetingStageEntriesByLead.forEach((entries, leadKey) => {
+        entries.sort((a, b) => new Date(a.cdate).getTime() - new Date(b.cdate).getTime());
+      });
+      
+      // Process ALL meeting stage entries (count each stage change)
+      // This ensures that multiple "meeting scheduled" stage changes for the same lead are all counted
+      meetingStageEntries.forEach(({ leadKey, fallbackIdentifier, cdate }) => {
+        // Use the creator_id from THIS specific stage entry (not the lead's scheduler field)
+        const schedulerInfo = normalizeIdentifier(fallbackIdentifier);
+        
+        if (!schedulerInfo) {
+          // If we can't normalize the creator_id, try fallback resolution
+          const fallbackSchedulerInfo = resolveSchedulerForLead(leadKey, fallbackIdentifier);
+          if (!fallbackSchedulerInfo) return;
+          
+          recordMeetingForScheduler(fallbackSchedulerInfo.key, leadKey);
+          ensureStageLeadSets(fallbackSchedulerInfo.key);
+          stageLeadSets[fallbackSchedulerInfo.key].meetingScheduled.add(leadKey);
+          globalStageLeadSet.add(leadKey);
+        } else {
+          // Found the employee directly from the stage entry's creator_id
+          recordMeetingForScheduler(schedulerInfo.key, leadKey);
+          ensureStageLeadSets(schedulerInfo.key);
+          stageLeadSets[schedulerInfo.key].meetingScheduled.add(leadKey);
+          globalStageLeadSet.add(leadKey);
+        }
       });
 
       deferredStageAssignments.forEach(({ stageType, leadKey, fallbackIdentifier }) => {

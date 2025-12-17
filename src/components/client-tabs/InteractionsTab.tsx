@@ -26,6 +26,9 @@ import {
   MagnifyingGlassIcon,
   PlusIcon,
   DocumentTextIcon,
+  LinkIcon,
+  UserPlusIcon,
+  CheckIcon,
 } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { supabase } from '../../lib/supabase';
@@ -350,23 +353,13 @@ const formatEmailHtmlForDisplay = (html: string | null | undefined): string => {
   // Remove leading/trailing whitespace
   content = content.trim();
   
-  // Check if content contains Hebrew/RTL text
-  const textOnly = content.replace(/<[^>]*>/g, '');
-  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
-  
-  // If content doesn't already have a wrapper div with direction, add one
-  // But only if it's plain content or doesn't already have direction attributes
-  const hasDirection = /dir\s*=\s*["'](rtl|ltr)["']/i.test(content);
+  // If content doesn't already have a wrapper div with direction, add one with auto direction
+  const hasDirection = /dir\s*=\s*["'](rtl|ltr|auto)["']/i.test(content);
   const hasWrapperDiv = /^<div[^>]*dir/i.test(content.trim());
   
   if (!hasDirection && !hasWrapperDiv) {
-    // Wrap with proper direction and styling
-    if (isRTL) {
-      content = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
-    } else {
-      // Still wrap for consistent styling, but with LTR
-      content = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
-    }
+    // Wrap with auto direction - let browser determine based on content
+    content = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${content}</div>`;
   }
   
   return content;
@@ -500,16 +493,8 @@ const convertBodyToHtml = (text: string) => {
     .replace(/\r/g, '\n')    // Handle old Mac line endings
     .replace(/\n/g, '<br>'); // Convert to HTML line breaks
   
-  // Check if content contains Hebrew/RTL text
-  const textOnly = result.replace(/<[^>]*>/g, '');
-  const isRTL = /[\u0590-\u05FF]/.test(textOnly);
-  
-  // Wrap with proper direction and styling
-  if (isRTL) {
-    result = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-  } else {
-    result = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-  }
+  // Wrap with auto direction - let the browser determine based on content
+  result = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
   
   return result;
 };
@@ -768,6 +753,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [showComposeLinkForm, setShowComposeLinkForm] = useState(false);
   const [composeLinkLabel, setComposeLinkLabel] = useState('');
   const [composeLinkUrl, setComposeLinkUrl] = useState('');
+  
+  // Lead contacts modal state
+  const [showComposeContactsModal, setShowComposeContactsModal] = useState(false);
+  const [composeLeadContacts, setComposeLeadContacts] = useState<ContactInfo[]>([]);
+  const [composeSelectedContactIds, setComposeSelectedContactIds] = useState<Set<number>>(new Set());
+  const [loadingComposeContacts, setLoadingComposeContacts] = useState(false);
+  
   const [composeTemplates, setComposeTemplates] = useState<EmailTemplate[]>([]);
   const [composeTemplateSearch, setComposeTemplateSearch] = useState('');
   const [composeTemplateDropdownOpen, setComposeTemplateDropdownOpen] = useState(false);
@@ -1178,6 +1170,59 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     });
 
     handleCancelComposeLink();
+  };
+
+  // Handle opening compose contacts modal
+  const handleOpenComposeContactsModal = async () => {
+    if (!client) return;
+    
+    setShowComposeContactsModal(true);
+    setLoadingComposeContacts(true);
+    setComposeSelectedContactIds(new Set());
+    
+    try {
+      const isLegacyLead = typeof client.id === 'string' && client.id.startsWith('legacy_');
+      const contacts = await fetchLeadContacts(client.id, isLegacyLead);
+      
+      // Filter only contacts with valid emails
+      const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
+      setComposeLeadContacts(contactsWithEmail);
+    } catch (error) {
+      console.error('Error fetching lead contacts:', error);
+      toast.error('Failed to load contacts');
+      setComposeLeadContacts([]);
+    } finally {
+      setLoadingComposeContacts(false);
+    }
+  };
+  
+  // Toggle compose contact selection
+  const toggleComposeContactSelection = (contactId: number) => {
+    setComposeSelectedContactIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(contactId)) {
+        newSet.delete(contactId);
+      } else {
+        newSet.add(contactId);
+      }
+      return newSet;
+    });
+  };
+  
+  // Add selected compose contacts to recipients
+  const handleAddSelectedComposeContacts = () => {
+    const selectedContacts = composeLeadContacts.filter(c => composeSelectedContactIds.has(c.id));
+    const newRecipients = selectedContacts
+      .map(c => c.email!)
+      .filter(email => email && !composeToRecipients.includes(email));
+    
+    if (newRecipients.length > 0) {
+      setComposeToRecipients(prev => [...prev, ...newRecipients]);
+      toast.success(`Added ${newRecipients.length} contact(s) to recipients`);
+    }
+    
+    setShowComposeContactsModal(false);
+    setComposeSelectedContactIds(new Set());
   };
 
   // Helper function to check if text contains Hebrew
@@ -4937,9 +4982,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           {row.content && row.kind !== 'call' && (
                             <div 
                               className="text-sm sm:text-base text-gray-700 break-words mb-4"
-                              dir={getTextDirection(row.content)}
+                              dir="auto"
                               style={{ 
-                                textAlign: containsRTL(row.content) ? 'right' : 'left',
                                 lineHeight: '1.6'
                               }}
                             >
@@ -4948,8 +4992,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                 <>
                                   <div 
                                     className="font-bold text-base sm:text-lg mb-2 text-gray-900"
-                                    dir={getTextDirection(row.subject)}
-                                    style={{ textAlign: containsRTL(row.subject) ? 'right' : 'left' }}
+                                    dir="auto"
                                   >
                                     {row.subject}
                                   </div>
@@ -5419,8 +5462,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                               <div className="mb-2">
                                 <div 
                                   className="text-sm font-semibold text-gray-900" 
-                                  dir={containsRTL(message.subject || '') ? 'rtl' : 'ltr'}
-                                  style={{ textAlign: containsRTL(message.subject || '') ? 'right' : 'left' }}
+                                  dir="auto"
                                 >
                                   {message.subject || '(no subject)'}
                                 </div>
@@ -5435,10 +5477,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     wordBreak: 'break-word', 
                                     overflowWrap: 'anywhere',
                                     whiteSpace: 'normal', // Use normal wrapping since we handle breaks with <br> tags
-                                    lineHeight: '1.6', // Ensure proper line spacing
-                                    textAlign: containsRTL(message.bodyPreview) ? 'right' : 'left'
+                                    lineHeight: '1.6' // Ensure proper line spacing
                                   }}
-                                  dir={containsRTL(message.bodyPreview) ? 'rtl' : 'ltr'}
+                                  dir="auto"
                                 />
                               ) : (
                                 <div className="text-gray-500 italic" dir="ltr" style={{ textAlign: 'left' }}>No content available</div>
@@ -5521,130 +5562,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         </div>
                         {composeRecipientError && <p className="text-sm text-error">{composeRecipientError}</p>}
 
-                        <div className="space-y-3" ref={composeTemplateDropdownRef}>
-                          <div className="flex flex-wrap items-center gap-3">
-                            <label className="text-sm font-semibold">Template</label>
-                            <div className="relative w-full sm:w-64">
-                              <input
-                                type="text"
-                                className="input input-bordered w-full pr-8"
-                                placeholder="Search templates..."
-                                value={composeTemplateSearch}
-                                onChange={event => {
-                                  setComposeTemplateSearch(event.target.value);
-                                  if (!composeTemplateDropdownOpen) {
-                                    setComposeTemplateDropdownOpen(true);
-                                  }
-                                }}
-                                onFocus={() => {
-                                  if (!composeTemplateDropdownOpen) {
-                                    setComposeTemplateDropdownOpen(true);
-                                  }
-                                }}
-                                onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
-                              />
-                              <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                              {composeTemplateDropdownOpen && (
-                                <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                                  {filteredComposeTemplates.length === 0 ? (
-                                    <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
-                                  ) : (
-                                    filteredComposeTemplates.map(template => (
-                                      <div
-                                        key={template.id}
-                                        className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                                        onMouseDown={e => e.preventDefault()}
-                                        onClick={() => handleComposeTemplateSelect(template)}
-                                      >
-                                        <div className="font-medium">{template.name}</div>
-                                        {(template.placementName || template.languageName) && (
-                                          <div className="text-xs text-gray-500 mt-1">
-                                            {template.placementName && <span>{template.placementName}</span>}
-                                            {template.placementName && template.languageName && <span> • </span>}
-                                            {template.languageName && <span>{template.languageName}</span>}
-                                          </div>
-                                        )}
-                                      </div>
-                                    ))
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                            {selectedComposeTemplateId !== null && (
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => {
-                                  setSelectedComposeTemplateId(null);
-                                  setComposeTemplateSearch('');
-                    setComposeBody('');
-                    setComposeBodyIsRTL(false);
-                    // Use selected contact's name if available, otherwise use client name
-                    const nameToUse = selectedContactForEmail?.contact.name || client.name;
-                    const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
-                    setComposeSubject(defaultSubjectValue);
-                  }}
-                >
-                  Clear
-                </button>
-              )}
-            </div>
-                          
-                          {/* Language and Placement Filters */}
-                          <div className="flex flex-wrap items-center gap-3">
-                            <div className="relative w-full sm:w-48">
-                              <select
-                                className="select select-bordered w-full text-sm"
-                                value={composeTemplateLanguageFilter || ''}
-                                onChange={(e) => {
-                                  setComposeTemplateLanguageFilter(e.target.value || null);
-                                  if (!composeTemplateDropdownOpen) {
-                                    setComposeTemplateDropdownOpen(true);
-                                  }
-                                }}
-                              >
-                                <option value="">All Languages</option>
-                                {availableLanguages.map(lang => (
-                                  <option key={lang.id} value={lang.id}>
-                                    {lang.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            <div className="relative w-full sm:w-48">
-                              <select
-                                className="select select-bordered w-full text-sm"
-                                value={composeTemplatePlacementFilter || ''}
-                                onChange={(e) => {
-                                  setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
-                                  if (!composeTemplateDropdownOpen) {
-                                    setComposeTemplateDropdownOpen(true);
-                                  }
-                                }}
-                              >
-                                <option value="">All Placements</option>
-                                {availablePlacements.map(placement => (
-                                  <option key={placement.id} value={placement.id}>
-                                    {placement.name}
-                                  </option>
-                                ))}
-                              </select>
-                            </div>
-                            {(composeTemplateLanguageFilter || composeTemplatePlacementFilter !== null) && (
-                              <button
-                                type="button"
-                                className="btn btn-ghost btn-sm"
-                                onClick={() => {
-                                  setComposeTemplateLanguageFilter(null);
-                                  setComposeTemplatePlacementFilter(null);
-                                }}
-                              >
-                                Clear Filters
-                              </button>
-                            )}
-                          </div>
-                        </div>
-
                   <input
                     type="text"
                     placeholder="Subject"
@@ -5653,16 +5570,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                   />
 
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <label className="font-semibold text-sm">Body</label>
-                          <button
-                            type="button"
-                            className="btn btn-xs btn-outline"
-                            onClick={() => setShowComposeLinkForm(prev => !prev)}
-                          >
-                            {showComposeLinkForm ? 'Hide Link Form' : 'Add Link'}
-                          </button>
-                        </div>
+                        <label className="font-semibold text-sm">Body</label>
 
                         {showComposeLinkForm && (
                           <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -5774,61 +5682,328 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   )}
                   
                   </div>
-                    <div className="px-4 py-4 border-t border-gray-200 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between md:px-6 lg:px-10">
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => fileInputRef.current?.click()}
-                          className="btn btn-ghost btn-sm"
-                        >
-                          <PaperClipIcon className="w-4 h-4" />
-                          <span className="hidden sm:inline">Attach</span>
-                        </button>
-                        <input
-                          ref={fileInputRef}
-                          type="file"
-                          multiple
-                          onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                          className="hidden"
-                        />
-                        {/* AI Suggestions Button */}
+                    <div className="px-4 py-4 border-t border-gray-200 flex items-center justify-between gap-4 md:px-6 lg:px-10">
+                      {/* Left side - Buttons and Template Filters */}
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {/* Circle action buttons */}
+                        <div className="flex items-center gap-3">
+                          {/* Attach Files Button */}
+                          <button
+                            type="button"
+                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
+                            style={{ 
+                              backgroundColor: '#4218CC', 
+                              width: '44px', 
+                              height: '44px'
+                            }}
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={sending}
+                            title="Attach files"
+                          >
+                            <PaperClipIcon className="w-6 h-6" />
+                          </button>
+                          <input
+                            ref={fileInputRef}
+                            type="file"
+                            multiple
+                            onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                            className="hidden"
+                          />
+                          
+                          {/* AI Suggestions Button */}
+                          <button
+                            type="button"
+                            onClick={handleAISuggestions}
+                            disabled={isLoadingAI || !client}
+                            className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
+                            style={{ 
+                              backgroundColor: '#4218CC', 
+                              width: '44px', 
+                              height: '44px'
+                            }}
+                            title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                          >
+                            {isLoadingAI ? (
+                              <span className="loading loading-spinner loading-sm" />
+                            ) : (
+                              <SparklesIcon className="w-6 h-6" />
+                            )}
+                          </button>
+                          
+                          {/* Add Link Button */}
+                          <button
+                            type="button"
+                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                              showComposeLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                            }`}
+                            style={{ 
+                              backgroundColor: '#4218CC', 
+                              width: '44px', 
+                              height: '44px'
+                            }}
+                            onClick={() => setShowComposeLinkForm(prev => !prev)}
+                            disabled={sending}
+                            title={showComposeLinkForm ? 'Hide link form' : 'Add link'}
+                          >
+                            <LinkIcon className="w-6 h-6" />
+                          </button>
+                          
+                          {/* Add Contacts from Lead Button */}
+                          <button
+                            type="button"
+                            className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                              showComposeContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                            }`}
+                            style={{ 
+                              backgroundColor: '#4218CC', 
+                              width: '44px', 
+                              height: '44px'
+                            }}
+                            onClick={handleOpenComposeContactsModal}
+                            disabled={sending || !client}
+                            title="Add contacts from lead"
+                          >
+                            <UserPlusIcon className="w-6 h-6" />
+                          </button>
+                        </div>
+                        
+                        {/* Divider */}
+                        <div className="w-px h-8 bg-base-300 hidden sm:block" />
+                        
+                        {/* Template filters */}
+                        <div className="flex items-center gap-2 flex-wrap" ref={composeTemplateDropdownRef}>
+                          {/* Language Filter */}
+                          <select
+                            className="select select-bordered select-sm w-28 text-sm"
+                            value={composeTemplateLanguageFilter || ''}
+                            onChange={(e) => {
+                              setComposeTemplateLanguageFilter(e.target.value || null);
+                              if (!composeTemplateDropdownOpen) {
+                                setComposeTemplateDropdownOpen(true);
+                              }
+                            }}
+                          >
+                            <option value="">Language</option>
+                            {availableLanguages.map(lang => (
+                              <option key={lang.id} value={lang.id}>
+                                {lang.name}
+                              </option>
+                            ))}
+                          </select>
+                          
+                          {/* Placement Filter */}
+                          <select
+                            className="select select-bordered select-sm w-36 text-sm"
+                            value={composeTemplatePlacementFilter ?? ''}
+                            onChange={(e) => {
+                              setComposeTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
+                              if (!composeTemplateDropdownOpen) {
+                                setComposeTemplateDropdownOpen(true);
+                              }
+                            }}
+                          >
+                            <option value="">Placement</option>
+                            {availablePlacements.map(placement => (
+                              <option key={placement.id} value={placement.id}>
+                                {placement.name}
+                              </option>
+                            ))}
+                          </select>
+                          
+                          {/* Template Search */}
+                          <div className="relative w-40">
+                            <input
+                              type="text"
+                              className="input input-bordered input-sm w-full pr-8"
+                              placeholder="Templates..."
+                              value={composeTemplateSearch}
+                              onChange={event => {
+                                setComposeTemplateSearch(event.target.value);
+                                if (!composeTemplateDropdownOpen) {
+                                  setComposeTemplateDropdownOpen(true);
+                                }
+                              }}
+                              onFocus={() => {
+                                if (!composeTemplateDropdownOpen) {
+                                  setComposeTemplateDropdownOpen(true);
+                                }
+                              }}
+                              onBlur={() => setTimeout(() => setComposeTemplateDropdownOpen(false), 150)}
+                            />
+                            <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                            {composeTemplateDropdownOpen && (
+                              <div className="absolute bottom-full mb-1 z-20 w-72 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                                {filteredComposeTemplates.length === 0 ? (
+                                  <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                                ) : (
+                                  filteredComposeTemplates.map(template => (
+                                    <div
+                                      key={template.id}
+                                      className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                                      onMouseDown={e => e.preventDefault()}
+                                      onClick={() => handleComposeTemplateSelect(template)}
+                                    >
+                                      <div className="font-medium">{template.name}</div>
+                                      {(template.placementName || template.languageName) && (
+                                        <div className="text-xs text-gray-500 mt-1">
+                                          {template.placementName && <span>{template.placementName}</span>}
+                                          {template.placementName && template.languageName && <span> • </span>}
+                                          {template.languageName && <span>{template.languageName}</span>}
+                                        </div>
+                                      )}
+                                    </div>
+                                  ))
+                                )}
+                              </div>
+                            )}
+                          </div>
+                          
+                          {/* Clear Filters Button */}
+                          {(selectedComposeTemplateId !== null || composeTemplateLanguageFilter || composeTemplatePlacementFilter !== null) && (
+                            <button
+                              type="button"
+                              className="btn btn-ghost btn-sm btn-circle"
+                              onClick={() => {
+                                setSelectedComposeTemplateId(null);
+                                setComposeTemplateSearch('');
+                                setComposeBody('');
+                                setComposeBodyIsRTL(false);
+                                const nameToUse = selectedContactForEmail?.contact.name || client.name;
+                                const defaultSubjectValue = `[${client.lead_number}] - ${nameToUse} - ${client.topic || ''}`;
+                                setComposeSubject(defaultSubjectValue);
+                              }}
+                              title="Clear filters"
+                            >
+                              <XMarkIcon className="w-4 h-4" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      
+                      {/* Right side - Send button only */}
+                      <button
+                        onClick={handleSendEmail}
+                        disabled={sending || !composeBody.trim()}
+                        className="btn btn-primary min-w-[100px] flex items-center gap-2"
+                      >
+                        {sending ? (
+                          <span className="loading loading-spinner loading-sm" />
+                        ) : (
+                          <>
+                            <PaperAirplaneIcon className="w-4 h-4" />
+                            Send
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+                </div>,
+                document.body
+              )}
+              
+              {/* Lead Contacts Modal */}
+              {showComposeContactsModal && createPortal(
+                <div className="fixed inset-0 z-[10004] flex items-center justify-center">
+                  <div 
+                    className="absolute inset-0 bg-black/50" 
+                    onClick={() => setShowComposeContactsModal(false)} 
+                  />
+                  <div className="relative z-10 bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+                    {/* Modal Header */}
+                    <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+                      <div>
+                        <h3 className="text-lg font-semibold text-gray-900">Select Contacts</h3>
+                        <p className="text-sm text-gray-500">Add contacts from this lead to recipients</p>
+                      </div>
+                      <button
+                        onClick={() => setShowComposeContactsModal(false)}
+                        className="btn btn-ghost btn-sm btn-circle"
+                      >
+                        <XMarkIcon className="w-5 h-5" />
+                      </button>
+                    </div>
+                    
+                    {/* Modal Body */}
+                    <div className="px-5 py-4 max-h-[320px] overflow-y-auto">
+                      {loadingComposeContacts ? (
+                        <div className="flex items-center justify-center py-8">
+                          <span className="loading loading-spinner loading-md text-primary" />
+                          <span className="ml-2 text-gray-500">Loading contacts...</span>
+                        </div>
+                      ) : composeLeadContacts.length === 0 ? (
+                        <div className="text-center py-8 text-gray-500">
+                          <UserPlusIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                          <p>No contacts with email found for this lead</p>
+                        </div>
+                      ) : (
+                        <div className="space-y-2">
+                          {composeLeadContacts.map(contact => {
+                            const isSelected = composeSelectedContactIds.has(contact.id);
+                            const alreadyAdded = composeToRecipients.includes(contact.email!);
+                            
+                            return (
+                              <div
+                                key={contact.id}
+                                className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                                  alreadyAdded 
+                                    ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed'
+                                    : isSelected 
+                                      ? 'bg-purple-50 border-purple-300' 
+                                      : 'bg-white border-gray-200 hover:bg-gray-50'
+                                }`}
+                                onClick={() => !alreadyAdded && toggleComposeContactSelection(contact.id)}
+                              >
+                                <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                                  alreadyAdded
+                                    ? 'bg-gray-300 border-gray-300'
+                                    : isSelected 
+                                      ? 'bg-[#4218CC] border-[#4218CC]' 
+                                      : 'border-gray-300'
+                                }`}>
+                                  {(isSelected || alreadyAdded) && <CheckIcon className="w-3 h-3 text-white" />}
+                                </div>
+                                <div className="flex-1 min-w-0">
+                                  <div className="flex items-center gap-2">
+                                    <span className="font-medium text-gray-900 truncate">{contact.name}</span>
+                                    {contact.isMain && (
+                                      <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Main</span>
+                                    )}
+                                    {alreadyAdded && (
+                                      <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">Added</span>
+                                    )}
+                                  </div>
+                                  <p className="text-sm text-gray-500 truncate">{contact.email}</p>
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                    
+                    {/* Modal Footer */}
+                    <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-between bg-gray-50">
+                      <span className="text-sm text-gray-500">
+                        {composeSelectedContactIds.size > 0 
+                          ? `${composeSelectedContactIds.size} contact(s) selected`
+                          : 'Select contacts to add'}
+                      </span>
+                      <div className="flex gap-2">
                         <button
                           type="button"
-                          onClick={handleAISuggestions}
-                          disabled={isLoadingAI || !client}
-                          className={`flex-shrink-0 px-3 py-2 rounded-full flex items-center justify-center transition-all text-sm font-medium ${
-                            isLoadingAI
-                              ? 'bg-blue-500 text-white'
-                              : 'bg-white border border-gray-300 text-gray-600 hover:bg-gray-100'
-                          } ${!client ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}
-                          title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
-                        >
-                          {isLoadingAI ? (
-                            <div className="loading loading-spinner loading-sm"></div>
-                          ) : (
-                            'AI'
-                          )}
-                        </button>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => setShowCompose(false)}
-                          className="btn btn-outline btn-sm flex-1 sm:flex-none"
+                          className="btn btn-ghost btn-sm"
+                          onClick={() => setShowComposeContactsModal(false)}
                         >
                           Cancel
                         </button>
                         <button
-                          onClick={handleSendEmail}
-                          disabled={sending || !composeBody.trim()}
-                          className="btn btn-primary btn-sm flex-1 sm:flex-none"
+                          type="button"
+                          className="btn btn-sm text-white"
+                          style={{ backgroundColor: '#4218CC' }}
+                          onClick={handleAddSelectedComposeContacts}
+                          disabled={composeSelectedContactIds.size === 0}
                         >
-                          {sending ? (
-                            <div className="loading loading-spinner loading-xs"></div>
-                          ) : (
-                            <>
-                              <PaperAirplaneIcon className="w-4 h-4" />
-                              Send
-                            </>
-                          )}
+                          Add Selected
                         </button>
                       </div>
                     </div>
@@ -5836,6 +6011,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>,
                 document.body
               )}
+              
               {!showCompose && (
                 <button
                   onClick={() => {

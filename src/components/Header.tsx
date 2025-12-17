@@ -3354,7 +3354,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
               <div
                 ref={searchDropdownRef}
-                className="bg-white rounded-xl shadow-xl border border-gray-200 max-h-96 overflow-y-auto"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto"
                 style={{
                   width: searchDropdownStyle.width,
                 }}
@@ -3366,7 +3366,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 }}
               >
             {isSearching || isAdvancedSearching ? (
-              <div className="p-4 text-center text-gray-500">
+              <div className="p-4 text-center text-base-content/70">
                 <div className="loading loading-spinner loading-sm"></div>
                 <span className="ml-2">Searching...</span>
               </div>
@@ -3384,7 +3384,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                     <button
                       key={uniqueKey}
                       onClick={() => handleSearchResultClick(result)}
-                      className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors rounded-lg border border-gray-200 relative"
+                      className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
                     >
                       <div className="absolute top-2 right-2 z-10">
                         {getStageBadge(result.stage)}
@@ -3397,20 +3397,20 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         </div>
                         <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
                           <div className="mb-1">
-                            <p className="text-[10px] md:text-base font-semibold text-gray-900 break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                            <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                               {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                             </p>
                           </div>
                           <div className="mb-1">
-                            <span className="text-xs text-gray-500 font-mono">{result.lead_number}</span>
+                            <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
                           </div>
                           {result.category && (
-                            <p className="text-sm text-gray-600 truncate">
+                            <p className="text-sm text-base-content/80 truncate">
                               <span className="font-medium">Category:</span> {result.category}
                             </p>
                           )}
                           {result.topic && (
-                            <p className="text-sm text-gray-600 truncate">
+                            <p className="text-sm text-base-content/80 truncate">
                               <span className="font-medium">Topic:</span> {result.topic}
                             </p>
                           )}
@@ -3421,7 +3421,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 })}
               </div>
             ) : searchValue.trim() ? (
-              <div className="text-center py-8 text-gray-500">
+              <div className="text-center py-8 text-base-content/70">
                 <p className="text-sm">No contacts found</p>
                 <p className="text-xs mt-1">Try a different search term</p>
               </div>
@@ -3433,7 +3433,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             {showFilterDropdown && (
               <div 
                 ref={filterDropdownRef} 
-                className="bg-white rounded-xl shadow-xl border border-gray-200 p-6 animate-fadeInUp min-w-80"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80"
                 onMouseEnter={() => {
                   isMouseOverSearchRef.current = true;
                 }}
@@ -3443,8 +3443,8 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               >
                 <div className="mb-4 flex justify-between items-start">
                   <div>
-                    <h3 className="text-lg font-semibold text-gray-900 mb-2">Advanced Filters</h3>
-                    <p className="text-sm text-gray-600">Filter search results by specific criteria</p>
+                    <h3 className="text-lg font-semibold text-base-content mb-2">Advanced Filters</h3>
+                    <p className="text-sm text-base-content/80">Filter search results by specific criteria</p>
                   </div>
                   <button
                     onClick={closeFilterDropdown}
@@ -3840,17 +3840,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 
             {showNotifications && (
               <div
-                className={`glassy-notification-box shadow-xl rounded-xl overflow-hidden z-50 ${
+                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${
                   isMobile
                     ? 'fixed inset-x-0 top-[72px] w-[calc(100vw-16px)] mx-auto text-[11px]'
                     : 'absolute right-0 mt-2 w-80 text-sm'
                 }`}
               >
-                <div className="p-4 border-b border-base-200">
+                <div className="p-4 border-b border-gray-200">
                   <div className="flex justify-between items-center">
-                    <h3 className="font-semibold">Messages</h3>
+                    <h3 className="font-semibold text-gray-900">Messages</h3>
                     <button 
-                      className="btn btn-ghost btn-xs whitespace-nowrap hover:bg-gray-100 hover:text-gray-800"
+                      className="btn btn-ghost btn-xs whitespace-nowrap text-gray-700 hover:text-gray-900"
                       onClick={markAllAsRead}
                     >
                       Read
@@ -3860,7 +3860,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 <div className="max-h-96 overflow-y-auto">
                   {/* WhatsApp Leads Messages Section - Only for superusers */}
                   {isSuperUser && whatsappLeadsMessages.length > 0 && (
-                    <div className="border-b border-base-200">
+                    <div className="border-b border-gray-200">
                       <div className="p-3 bg-green-50 border-b border-green-100">
                         <div className="flex items-center gap-2">
                           <FaWhatsapp className="w-4 h-4 text-green-600" />
@@ -3929,7 +3929,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   )}
                   {/* Email Leads Messages Section - Only for superusers */}
                   {isSuperUser && emailLeadMessages.length > 0 && (
-                    <div className="border-b border-base-200">
+                    <div className="border-b border-gray-200">
                       <div className="p-3 bg-blue-50 border-b border-blue-100">
                         <div className="flex items-center gap-2">
                           <EnvelopeIcon className="w-4 h-4 text-blue-600" />
@@ -4002,7 +4002,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   
                   {/* RMQ Messages Section */}
                   {currentUser && (
-                    <div className="border-b border-base-200">
+                    <div className="border-b border-gray-200">
                       <div className="p-3 bg-purple-50 border-b border-purple-100">
                         <div className="flex items-center gap-2">
                           <ChatBubbleLeftRightIcon className="w-4 h-4 text-purple-600" />
@@ -4066,7 +4066,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   
                   {/* Lead Assignment Notifications */}
                   {assignmentNotifications.length > 0 && (
-                    <div className="border-b border-base-200">
+                    <div className="border-b border-gray-200">
                       <div className="p-3 bg-purple-50 border-b border-purple-100">
                         <div className="flex items-center gap-2">
                           <UserGroupIcon className="w-4 h-4 text-purple-600" />
@@ -4207,11 +4207,68 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       />
       
       <style>{`
-        .glassy-notification-box {
-          background: #ffffff;
-          backdrop-filter: none;
-          -webkit-backdrop-filter: none;
-          border-radius: 1rem;
+        .notification-dropdown {
+          background-color: #ffffff !important;
+          opacity: 1 !important;
+        }
+        /* Dark background in dark mode */
+        .dark .notification-dropdown {
+          background: #1f2937 !important;
+          background-color: #1f2937 !important;
+          backdrop-filter: none !important;
+          -webkit-backdrop-filter: none !important;
+          opacity: 1 !important;
+        }
+        /* Force light text colors in dark mode */
+        .dark .notification-dropdown .text-gray-900 {
+          color: #f9fafb !important;
+        }
+        .dark .notification-dropdown .text-gray-800 {
+          color: #f3f4f6 !important;
+        }
+        .dark .notification-dropdown .text-gray-700 {
+          color: #e5e7eb !important;
+        }
+        .dark .notification-dropdown .text-gray-600 {
+          color: #d1d5db !important;
+        }
+        .dark .notification-dropdown .text-gray-500 {
+          color: #9ca3af !important;
+        }
+        /* Ensure borders are visible in dark mode */
+        .dark .notification-dropdown .border-gray-200 {
+          border-color: #374151 !important;
+        }
+        .dark .notification-dropdown .border-gray-100,
+        .dark .notification-dropdown .border-green-100,
+        .dark .notification-dropdown .border-blue-100,
+        .dark .notification-dropdown .border-purple-100 {
+          border-color: #374151 !important;
+        }
+        /* Update colored section backgrounds for dark mode */
+        .dark .notification-dropdown .bg-green-50 {
+          background-color: #1f3a2e !important;
+        }
+        .dark .notification-dropdown .bg-blue-50 {
+          background-color: #1e2a3a !important;
+        }
+        .dark .notification-dropdown .bg-purple-50 {
+          background-color: #2a1f3a !important;
+        }
+        /* Remove hover effects in dark mode - use very high specificity */
+        .dark .notification-dropdown div.hover\:bg-green-50:hover,
+        .dark .notification-dropdown div.hover\:bg-blue-50:hover,
+        .dark .notification-dropdown div.hover\:bg-purple-50:hover,
+        .dark .notification-dropdown button.hover\:bg-green-50:hover,
+        .dark .notification-dropdown button.hover\:bg-blue-50:hover,
+        .dark .notification-dropdown button.hover\:bg-purple-50:hover {
+          background-color: transparent !important;
+        }
+        /* Override any element with hover background classes */
+        .dark .notification-dropdown [class*="hover:bg-green-50"]:hover,
+        .dark .notification-dropdown [class*="hover:bg-blue-50"]:hover,
+        .dark .notification-dropdown [class*="hover:bg-purple-50"]:hover {
+          background-color: transparent !important;
         }
         .search-input-placeholder::placeholder {
           font-size: 16px !important;

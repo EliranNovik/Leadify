@@ -198,631 +198,275 @@ body, html, #root {
   --dark-shadow: rgba(76, 111, 255, 0.1);
 }
 
-/* --- Global Dark Mode Background and Box Styling --- */
-@layer utilities {
-  /* Smooth transitions for theme switching */
-  body, html, #root {
-    transition: background-color 0.3s cubic-bezier(0.4, 0, 0.2, 1), color 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    font-family: var(--font-main), 'Saira', sans-serif !important;
-    font-optical-sizing: auto;
-    font-weight: 500;
-  }
-  
-  /* Set the main background with gradient matching login page */
-  .dark body, .dark html, .dark #root {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-    color: var(--dark-text) !important;
-    min-height: 100vh;
-  }
-  
-  /* Main containers - transparent/glassmorphism backgrounds */
-  .dark .bg-white,
-  .dark .bg-base-100,
-  .dark .bg-gray-50,
-  .dark .bg-slate-50,
-  .dark .bg-gray-100,
-  .dark .bg-base-200,
-  .dark .bg-base-300 {
-    background: rgba(255, 255, 255, 0.05) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  
-  /* Cards with glassmorphism styling */
-  .dark .card,
-  .dark .glass-card,
-  .dark .suggestion-card,
-  .dark .rounded-2xl,
-  .dark .rounded-xl,
-  .dark .rounded-lg {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* Card hover effects */
-  .dark .card:hover,
-  .dark .glass-card:hover,
-  .dark .suggestion-card:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
-    background: rgba(255, 255, 255, 0.15) !important;
-  }
-
-  /* Sidebar nav overrides */
-  .dark .sidebar-link,
-  .dark .sidebar-sublink {
-    background: transparent !important;
-    box-shadow: none !important;
-  }
-
-  .dark .sidebar-link:hover,
-  .dark .sidebar-sublink:hover {
-    background: rgba(255, 255, 255, 0.12) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35) !important;
-  }
-
-  .dark .sidebar-link--active,
-  .dark .sidebar-sublink--active {
-    background: rgba(255, 255, 255, 0.15) !important;
-    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.45) !important;
-  }
-  
-  /* Secondary containers */
-  .dark .bg-gray-200,
-  .dark .bg-slate-100,
-  .dark .bg-slate-200 {
-    background: rgba(255, 255, 255, 0.08) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  /* Enhanced shadows with blue accent */
-  .dark .shadow,
-  .dark .shadow-md,
-  .dark .shadow-lg,
-  .dark .shadow-xl {
-    box-shadow: 0 4px 12px var(--dark-shadow), 0 2px 4px rgba(0, 0, 0, 0.1) !important;
-  }
-  
-  /* Ensure text is white in dark mode for all content */
-  .dark .bg-white *,
-  .dark .bg-base-100 *,
-  .dark .bg-gray-50 *,
-  .dark .bg-slate-50 *,
-  .dark .bg-gray-100 *,
-  .dark .bg-base-200 *,
-  .dark .bg-base-300 *,
-  .dark .card *,
-  .dark .glass-card *,
-  .dark .suggestion-card *,
-  .dark .rounded-2xl *,
-  .dark .rounded-xl *,
-  .dark .rounded-lg * {
-    color: #ffffff !important;
-    transition: color 0.3s ease;
-  }
-  
-  /* Override DaisyUI card backgrounds in dark mode */
-  .dark .card {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* Modal overlay - DaisyUI modals */
-  .modal {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  .modal.modal-open {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  .dark .modal,
-  .dark .modal.modal-open {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* Custom portal-based modals - target all fixed inset-0 */
-  .dark .fixed.inset-0 {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* Override specific background classes on fixed modals */
-  .dark .fixed.inset-0.bg-white,
-  .dark .fixed.inset-0.bg-base-100,
-  .dark .fixed.inset-0.bg-black,
-  .dark .fixed.inset-0[class*="bg-black/"],
-  .dark .fixed.inset-0[class*="bg-white"] {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* Nested fixed inset-0 divs (like WhatsAppPage inside WhatsAppModal) */
-  .dark .fixed.inset-0 .fixed.inset-0,
-  .dark .fixed.inset-0 > .fixed.inset-0 {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* Nested divs inside fixed modals - overlay backgrounds */
-  .dark .fixed.inset-0 > .fixed.inset-0[class*="bg-black"],
-  .dark .fixed.inset-0 .fixed.inset-0.bg-white {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* dialog native fallback */
-  .modal::backdrop,
-  dialog::backdrop {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  .dark .modal::backdrop,
-  .dark dialog::backdrop {
-    background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
-  }
-
-  /* Modal content - solid backgrounds */
-  .modal-box {
-    background: #ffffff !important;
-    border-radius: var(--border-radius) !important;
-  }
-
-  .dark .modal-box {
-    background: linear-gradient(145deg, rgba(11, 30, 61, 0.96), rgba(15, 76, 117, 0.94), rgba(6, 182, 212, 0.92)) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55) !important;
-  }
-
-  /* Modal content containers inside fixed modals - make them opaque */
-  .dark .fixed.inset-0.bg-white > div:not([class*="absolute"]):not([class*="fixed"]):first-child,
-  .dark .fixed.inset-0 > .bg-white:not([class*="absolute"]):not([class*="fixed"]),
-  .dark .fixed.inset-0 > .bg-base-100:not([class*="absolute"]):not([class*="fixed"]),
-  .dark .fixed.inset-0 > .relative.bg-white,
-  .dark .fixed.inset-0 > .relative.bg-base-100 {
-    background: linear-gradient(145deg, rgba(11, 30, 61, 0.96), rgba(15, 76, 117, 0.94), rgba(6, 182, 212, 0.92)) !important;
-    color: #ffffff !important;
-  }
-
-  /* Nested fixed modals - ensure inner content has solid background */
-  .dark .fixed.inset-0 .fixed.inset-0 > div:not([class*="absolute"]):first-child {
-    background: linear-gradient(145deg, rgba(11, 30, 61, 0.96), rgba(15, 76, 117, 0.94), rgba(6, 182, 212, 0.92)) !important;
-    color: #ffffff !important;
-  }
-  
-  /* Modern input fields */
-  .dark input,
-  .dark textarea,
-  .dark select {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    font-family: var(--font-main), 'Saira', sans-serif !important;
-  }
-  
-  /* Input focus states with white accent */
-  .dark input:focus,
-  .dark textarea:focus,
-  .dark select:focus {
-    background: rgba(255, 255, 255, 0.15) !important;
-    border: 2px solid rgba(255, 255, 255, 0.4) !important;
-    outline: none !important;
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  /* Modern placeholder styling */
-  .dark input::placeholder,
-  .dark textarea::placeholder {
-    color: var(--dark-text-secondary) !important;
-    opacity: 0.7;
-  }
-  
-  /* Modern button styling */
-  .dark .btn {
-    background: rgba(255, 255, 255, 0.15) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    font-weight: 600 !important;
-    font-family: var(--font-main), 'Saira', sans-serif !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
-  }
-  
-  .dark .btn:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
-    background: rgba(255, 255, 255, 0.2) !important;
-    border-color: rgba(255, 255, 255, 0.3) !important;
-  }
-  
-  /* Clean navigation styling */
-  .dark .navbar,
-  .dark .menu {
-    background: rgba(255, 255, 255, 0.1) !important;
-    border: none !important;
-    backdrop-filter: blur(10px) !important;
-  }
-  
-  /* Modern sidebar with gradient - no outline */
-  .dark .drawer-side {
-    background: rgba(255, 255, 255, 0.1) !important;
-    border: none !important;
-    outline: none !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* Remove sidebar container outline */
-  .dark .drawer-side > * {
-    border: none !important;
-    outline: none !important;
-  }
-  
-  /* Override DaisyUI disabled button styles for white buttons */
-  .notify-btn-disabled.btn:disabled,
-  .notify-btn-disabled.btn[disabled] {
-    background-color: #ffffff !important;
-    opacity: 1 !important;
-    color: #111827 !important;
-    border-color: #d1d5db !important;
-  }
-  
-  /* Navigation elements */
-  .dark .navbar .btn,
-  .dark .navbar .dropdown-content,
-  .dark .navbar .menu-item {
-    background: rgba(255, 255, 255, 0.05) !important;
-    border: none !important;
-    color: var(--dark-text) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  
-  .dark .navbar .btn:hover {
-    background: rgba(255, 255, 255, 0.15) !important;
-    transform: translateY(-1px) !important;
-  }
-  
-  /* Modern table styling */
-  .dark .table,
-  .dark .table-zebra tbody tr:nth-child(even) {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  .dark .table-zebra tbody tr:nth-child(odd) {
-    background: rgba(255, 255, 255, 0.05) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  /* Clean toast notifications */
-  .dark .toast {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* Subtle divider styling */
-  .dark .divider {
-    border-color: rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  /* Modern dropdown styling */
-  .dark .dropdown-content {
-    background: rgba(255, 255, 255, 0.1) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* Clean badge styling */
-  .dark .badge {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-  }
-  
-  /* Performance percentage badges */
-  .dark .badge-success,
-  .dark .badge-primary,
-  .dark .badge-secondary,
-  .dark .badge-accent,
-  .dark .badge-info,
-  .dark .badge-warning,
-  .dark .badge-error {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-  }
-  
-  /* Percentage badges with specific colors */
-  .dark .badge-success {
-    background: rgba(34, 197, 94, 0.1) !important;
-    color: #4ade80 !important;
-    border-color: #4ade80 !important;
-  }
-  
-  .dark .badge-warning {
-    background: rgba(251, 191, 36, 0.1) !important;
-    color: #fbbf24 !important;
-    border-color: #fbbf24 !important;
-  }
-  
-  .dark .badge-error {
-    background: rgba(239, 68, 68, 0.1) !important;
-    color: #f87171 !important;
-    border-color: #f87171 !important;
-  }
-  
-  /* Modern progress bar */
-  .dark .progress {
-    background: rgba(255, 255, 255, 0.1) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: var(--border-radius) !important;
-  }
-  
-  .dark .progress::-webkit-progress-value {
-    background: linear-gradient(90deg, rgba(255, 255, 255, 0.3) 0%, rgba(255, 255, 255, 0.5) 100%) !important;
-  }
-  
-  /* Clean tab styling */
-  .dark .tabs .tab {
-    color: var(--dark-text-secondary) !important;
-    background: rgba(255, 255, 255, 0.05) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: var(--border-radius) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  
-  .dark .tabs .tab-active {
-    color: var(--dark-text) !important;
-    background: rgba(255, 255, 255, 0.15) !important;
-    border: 2px solid rgba(255, 255, 255, 0.3) !important;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
-  }
-  
-  /* AI Chat Window Styling */
-  .dark .ai-chat-window,
-  .dark .chat-window,
-  .dark .chat-container {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-  
-  /* AI Chat messages */
-  .dark .chat-message,
-  .dark .message-bubble,
-  .dark .ai-message,
-  .dark .user-message {
-    background: rgba(255, 255, 255, 0.08) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.1) !important;
-    border-radius: var(--border-radius) !important;
-  }
-  
-  /* AI Chat input */
-  .dark .chat-input,
-  .dark .ai-chat-input {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-  }
-  
-  /* AI Chat buttons */
-  .dark .chat-send-btn,
-  .dark .ai-chat-btn {
-    background: rgba(255, 255, 255, 0.15) !important;
-    color: var(--dark-text) !important;
-    border: 1px solid rgba(255, 255, 255, 0.2) !important;
-    border-radius: var(--border-radius) !important;
-    transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
-  }
-  
-  .dark .chat-send-btn:hover,
-  .dark .ai-chat-btn:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
-    background: rgba(255, 255, 255, 0.2) !important;
-  }
-  
-  /* AI Chat header */
-  .dark .chat-header,
-  .dark .ai-chat-header {
-    background: rgba(255, 255, 255, 0.1) !important;
-    color: var(--dark-text) !important;
-    border-bottom: 1px solid rgba(255, 255, 255, 0.1) !important;
-  }
-  
-  /* AI Chat scrollbar */
-  .dark .chat-messages::-webkit-scrollbar {
-    width: 8px;
-  }
-  
-  .dark .chat-messages::-webkit-scrollbar-track {
-    background: rgba(255, 255, 255, 0.05) !important;
-    border-radius: 4px;
-  }
-  
-  .dark .chat-messages::-webkit-scrollbar-thumb {
-    background: rgba(255, 255, 255, 0.2) !important;
-    border-radius: 4px;
-  }
-  
-  .dark .chat-messages::-webkit-scrollbar-thumb:hover {
-    background: rgba(255, 255, 255, 0.3) !important;
-  }
-
-  /* Alternative green theme */
-  .theme-alt body,
-  .theme-alt html,
-  .theme-alt #root {
-    background: #ffffff !important;
-    color: #052e16 !important;
-    min-height: 100vh;
-  }
-
-  .theme-alt .bg-white,
-  .theme-alt .bg-base-100,
-  .theme-alt .bg-gray-50,
-  .theme-alt .bg-slate-50,
-  .theme-alt .bg-gray-100,
-  .theme-alt .bg-base-200,
-  .theme-alt .bg-base-300 {
-    background: #ffffff !important;
-    color: #052e16 !important;
-    border: 1px solid rgba(6, 95, 70, 0.08) !important;
-    box-shadow: 0 8px 18px rgba(15, 118, 110, 0.08) !important;
-  }
-
-  .theme-alt .card,
-  .theme-alt .glass-card,
-  .theme-alt .suggestion-card,
-  .theme-alt .rounded-2xl,
-  .theme-alt .rounded-xl,
-  .theme-alt .rounded-lg {
-    background: rgba(255, 255, 255, 0.75) !important;
-    color: #111827 !important;
-    border: 1px solid rgba(6, 95, 70, 0.08) !important;
-    box-shadow: 0 16px 35px rgba(15, 118, 110, 0.12) !important;
-    backdrop-filter: blur(8px) !important;
-  }
-
-  .theme-alt .card:hover,
-  .theme-alt .glass-card:hover,
-  .theme-alt .suggestion-card:hover {
-    transform: translateY(-2px) !important;
-    box-shadow: 0 22px 40px rgba(15, 118, 110, 0.16) !important;
-    border-color: rgba(34, 197, 94, 0.45) !important;
-  }
-
-  .theme-alt .shadow,
-  .theme-alt .shadow-md,
-  .theme-alt .shadow-lg,
-  .theme-alt .shadow-xl {
-    box-shadow: 0 12px 28px rgba(5, 46, 22, 0.2) !important;
-  }
-
-  .theme-alt .btn,
-  .theme-alt .btn-outline {
-    background: #ffffff !important;
-    color: #0b7242 !important;
-    border: 1px solid rgba(15, 118, 110, 0.25) !important;
-    box-shadow: 0 8px 18px rgba(15, 118, 110, 0.12) !important;
-  }
-
-  .theme-alt .btn:hover,
-  .theme-alt .btn-outline:hover {
-    transform: translateY(-1px) !important;
-    background: #f0fdf4 !important;
-    border-color: rgba(34, 197, 94, 0.5) !important;
-  }
-
-  .theme-alt .btn-circle,
-  .theme-alt .btn.btn-circle,
-  .theme-alt .btn-circle.btn-ghost {
-    background: #ffffff !important;
-    color: #0b7242 !important;
-    border: 1px solid rgba(15, 118, 110, 0.25) !important;
-    box-shadow: 0 6px 14px rgba(15, 118, 110, 0.12) !important;
-  }
-
-  .theme-alt .btn-circle:hover {
-    background: #d9f99d !important;
-  }
-
-  .theme-alt .badge,
-  .theme-alt .badge-primary,
-  .theme-alt .badge-secondary,
-  .theme-alt .badge-success,
-  .theme-alt .badge-accent,
-  .theme-alt .badge-info,
-  .theme-alt .badge-warning,
-  .theme-alt .badge-error {
-    background: #ecfdf3 !important;
-    color: #0b7242 !important;
-    border: 1px solid rgba(34, 197, 94, 0.35) !important;
-    border-radius: var(--border-radius) !important;
-  }
-
-  .theme-alt .table,
-  .theme-alt .table-zebra tbody tr:nth-child(even),
-  .theme-alt .table-zebra tbody tr:nth-child(odd) {
-    background: #ffffff !important;
-    color: #052e16 !important;
-    border: 1px solid rgba(6, 95, 70, 0.12) !important;
-  }
-
-  .theme-alt .modal,
-  .theme-alt .modal.modal-open {
-    background: rgba(255, 255, 255, 0.92) !important;
-  }
-
-  .theme-alt .modal-box {
-    background: #ffffff !important;
-    color: #052e16 !important;
-    border: 1px solid rgba(6, 95, 70, 0.18) !important;
-    box-shadow: 0 20px 45px rgba(15, 118, 110, 0.2) !important;
-  }
-
-  .theme-alt .navbar,
-  .theme-alt .menu,
-  .theme-alt .drawer-side {
-    background: #ffffff !important;
-    border: 1px solid rgba(6, 95, 70, 0.08) !important;
-    box-shadow: 0 8px 18px rgba(15, 118, 110, 0.08) !important;
-  }
-
-  .theme-alt .sidebar-link,
-  .theme-alt .sidebar-sublink {
-    background: transparent !important;
-    box-shadow: none !important;
-    color: #065f46 !important;
-  }
-
-  .theme-alt .sidebar-link:hover,
-  .theme-alt .sidebar-sublink:hover {
-    background: rgba(34, 197, 94, 0.12) !important;
-    box-shadow: none !important;
-  }
-
-  .theme-alt .sidebar-link--active,
-  .theme-alt .sidebar-sublink--active {
-    background: rgba(34, 197, 94, 0.15) !important;
-    border-left: 3px solid #22c55e !important;
-    box-shadow: none !important;
-  }
-
-  .theme-alt .text-white {
-    color: #0f172a !important;
-  }
-
-  .theme-alt [class*="text-white/"] {
-    color: #14532d !important;
-  }
+/* --- DARK MODE STYLING --- */
+/* Apply gradient background to root elements in dark mode */
+html.dark {
+  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%);
 }
+
+html.dark body {
+  background: transparent;
+  color: #ffffff;
+}
+
+/* Page containers - transparent to show gradient */
+html.dark .bg-base-100,
+html.dark .bg-white,
+html.dark .min-h-screen,
+html.dark .h-screen {
+  background: transparent !important;
+  color: #ffffff !important;
+}
+
+/* Ensure main content is visible */
+html.dark main {
+  background: transparent !important;
+}
+
+/* Secondary containers with glassmorphism */
+html.dark .bg-gray-50,
+html.dark .bg-gray-100,
+html.dark .bg-base-200,
+html.dark .bg-base-300,
+html.dark .bg-slate-50,
+html.dark .bg-slate-100 {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Cards and rounded elements with glassmorphism styling */
+html.dark .card,
+html.dark .glass-card,
+html.dark .suggestion-card,
+html.dark .rounded-2xl,
+html.dark .rounded-xl,
+html.dark .rounded-lg {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.3) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Card hover effects */
+html.dark .card:hover,
+html.dark .glass-card:hover,
+html.dark .suggestion-card:hover {
+  transform: translateY(-2px) !important;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+}
+
+/* Sidebar should keep its own styling - exclude from rounded styling */
+html.dark .sidebar-link,
+html.dark .sidebar-sublink,
+html.dark div.fixed.left-4 {
+  border: none !important;
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+}
+
+/* Header/navbar styling */
+html.dark .navbar {
+  background: rgba(11, 30, 61, 0.95) !important;
+  color: #ffffff !important;
+  backdrop-filter: blur(10px) !important;
+}
+
+/* Modern input fields */
+html.dark input,
+html.dark textarea,
+html.dark select {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+}
+
+html.dark input:focus,
+html.dark textarea:focus,
+html.dark select:focus {
+  background: rgba(255, 255, 255, 0.15) !important;
+  border: 2px solid rgba(255, 255, 255, 0.4) !important;
+  outline: none !important;
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.1) !important;
+}
+
+html.dark input::placeholder,
+html.dark textarea::placeholder {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+/* Modern button styling */
+html.dark .btn {
+  background: rgba(255, 255, 255, 0.15) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3) !important;
+}
+
+html.dark .btn:hover {
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4) !important;
+  background: rgba(255, 255, 255, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.3) !important;
+}
+
+/* Sidebar nav overrides */
+html.dark .sidebar-link,
+html.dark .sidebar-sublink {
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+html.dark .sidebar-link:hover,
+html.dark .sidebar-sublink:hover {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+/* Table styling */
+html.dark .table {
+  background: rgba(255, 255, 255, 0.05) !important;
+  color: #ffffff !important;
+}
+
+html.dark .table-zebra tbody tr:nth-child(even) {
+  background: rgba(255, 255, 255, 0.08) !important;
+}
+
+html.dark .table-zebra tbody tr:nth-child(odd) {
+  background: rgba(255, 255, 255, 0.03) !important;
+}
+
+/* Badge styling */
+html.dark .badge {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Dropdown styling */
+html.dark .dropdown-content {
+  background: rgba(11, 30, 61, 0.95) !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
+/* Modal styling with solid gradient background */
+html.dark .modal-box {
+  background: linear-gradient(145deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55) !important;
+}
+
+/* DaisyUI modal backdrop */
+html.dark .modal {
+  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+}
+
+html.dark .modal.modal-open {
+  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+}
+
+html.dark .modal::backdrop,
+html.dark dialog::backdrop {
+  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+}
+
+/* Slide-over panels - only specific modal panels, not all fixed elements */
+html.dark .animate-slideInRight.bg-base-100,
+html.dark .animate-slideInRight.bg-white {
+  background: linear-gradient(145deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+}
+
+/* Tab styling */
+html.dark .tabs .tab {
+  color: rgba(255, 255, 255, 0.7) !important;
+}
+
+html.dark .tabs .tab-active {
+  color: #ffffff !important;
+  background: rgba(255, 255, 255, 0.15) !important;
+  border-radius: 8px !important;
+}
+
+/* All text should be white in dark mode */
+html.dark .text-base-content,
+html.dark .text-gray-900,
+html.dark .text-gray-800,
+html.dark .text-gray-700,
+html.dark .text-gray-600,
+html.dark .text-black,
+html.dark .text-slate-900,
+html.dark .text-slate-800,
+html.dark .text-slate-700 {
+  color: #ffffff !important;
+}
+
+html.dark .text-gray-500,
+html.dark .text-gray-400,
+html.dark .text-slate-500,
+html.dark .text-slate-400,
+html.dark .text-base-content\/90,
+html.dark .text-base-content\/80,
+html.dark .text-base-content\/70,
+html.dark .text-base-content\/60 {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+/* Ensure all content inside containers is white */
+html.dark .bg-white *,
+html.dark .bg-base-100 *,
+html.dark .bg-gray-50 *,
+html.dark .bg-slate-50 *,
+html.dark .bg-gray-100 *,
+html.dark .bg-base-200 *,
+html.dark .bg-base-300 *,
+html.dark .card *,
+html.dark .glass-card *,
+html.dark .rounded-2xl *,
+html.dark .rounded-xl *,
+html.dark .rounded-lg * {
+  color: #ffffff !important;
+}
+
+/* Enhanced shadows */
+html.dark .shadow,
+html.dark .shadow-md,
+html.dark .shadow-lg,
+html.dark .shadow-xl {
+  box-shadow: 0 4px 12px rgba(76, 111, 255, 0.1), 0 2px 4px rgba(0, 0, 0, 0.1) !important;
+}
+
+/* Progress bars */
+html.dark .progress {
+  background: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Dividers */
+html.dark .divider {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+}
+
+/* Toast notifications */
+html.dark .toast {
+  background: rgba(255, 255, 255, 0.1) !important;
+  color: #ffffff !important;
+  border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
+  backdrop-filter: blur(8px) !important;
+}
+
 
 input[type=number].no-arrows::-webkit-inner-spin-button, 
 input[type=number].no-arrows::-webkit-outer-spin-button {

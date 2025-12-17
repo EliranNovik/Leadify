@@ -401,7 +401,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                   {item.path && !hasSubItems && (
                     <Link
                       to={item.path}
-                      className={`sidebar-link flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer group/sidebar-link hover:bg-white/10 hover:text-white relative
+                      className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer group/sidebar-link hover:bg-white/10 hover:text-white relative
                         ${isActive ? 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300' : 'text-white/80'}`}
                     >
                       <Icon className={`w-6 h-6 min-w-[1.5rem] ${isActive ? 'text-cyan-300' : 'text-white/80 group-hover/sidebar-link:text-white'}`} />
@@ -413,7 +413,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                   {hasSubItems && (
                     <>
                       <button
-                        className={`sidebar-link flex items-center gap-4 px-4 py-3 rounded-xl transition-all duration-200 cursor-pointer w-full group/sidebar-link hover:bg-white/10 hover:text-white
+                        className={`sidebar-link flex items-center gap-4 px-4 py-3 transition-all duration-200 cursor-pointer w-full group/sidebar-link hover:bg-white/10 hover:text-white
                           ${isActive ? 'sidebar-link--active text-cyan-200 font-bold border-l-4 border-cyan-300' : 'text-white/80'}`}
                         onClick={() => setExpandedMenu(isExpanded ? null : item.label)}
                         type="button"
@@ -433,7 +433,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                               <Link
                                 key={subIdx}
                                 to={sub.path!}
-                                className={`sidebar-sublink flex items-center gap-3 px-3 py-2 rounded-lg transition-all duration-200 cursor-pointer hover:bg-white/10 hover:text-white
+                                className={`sidebar-sublink flex items-center gap-3 px-3 py-2 transition-all duration-200 cursor-pointer hover:bg-white/10 hover:text-white
                                   ${isSubActive ? 'sidebar-sublink--active text-cyan-200 font-semibold border-l-4 border-cyan-300' : 'text-white/80'}`}
                                 onClick={() => setExpandedMenu(item.label)}
                               >

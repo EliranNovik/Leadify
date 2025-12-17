@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { createPortal } from 'react-dom';
-import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, PaperAirplaneIcon, PaperClipIcon, MagnifyingGlassIcon, ChevronDownIcon, ChevronUpIcon, PlusIcon, DocumentTextIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
 import { toast } from 'react-hot-toast';
 import { supabase } from '../lib/supabase';
 import { appendEmailSignature } from '../lib/emailSignature';
@@ -416,6 +416,18 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   const [showLinkForm, setShowLinkForm] = useState(false);
   const [linkLabel, setLinkLabel] = useState('');
   const [linkUrl, setLinkUrl] = useState('');
+  
+  // Lead contacts modal state
+  const [showContactsModal, setShowContactsModal] = useState(false);
+  const [modalLeadContacts, setModalLeadContacts] = useState<ContactInfo[]>([]);
+  const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(new Set());
+  const [loadingContacts, setLoadingContacts] = useState(false);
+  
+  // AI suggestions state
+  const [isLoadingAI, setIsLoadingAI] = useState(false);
+  const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
+  const [showAISuggestions, setShowAISuggestions] = useState(false);
+  
   const [templates, setTemplates] = useState<EmailTemplate[]>([]);
   const [templateSearch, setTemplateSearch] = useState('');
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
@@ -461,6 +473,69 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   // State for lead contacts (all contacts associated with the client)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
+
+  // Handle AI suggestions
+  const handleAISuggestions = async () => {
+    if (!client || isLoadingAI) return;
+
+    setIsLoadingAI(true);
+    setShowAISuggestions(true);
+    
+    try {
+      const requestType = composeBody.trim() ? 'improve' : 'suggest';
+      
+      const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${import.meta.env.VITE_SUPABASE_ANON_KEY}`
+        },
+        body: JSON.stringify({
+          currentMessage: composeBody.trim(),
+          conversationHistory: emails.map(msg => ({
+            id: msg.id,
+            direction: msg.direction === 'outgoing' ? 'out' : 'in',
+            message: msg.body_preview || msg.body_html || '',
+            sent_at: msg.date,
+            sender_name: msg.sender_name || msg.from
+          })),
+          clientName: client.name,
+          requestType
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Request failed with status ${response.status}`);
+      }
+
+      const result = await response.json();
+      
+      if (result.success) {
+        const suggestion = result.suggestion.trim();
+        setAiSuggestions([suggestion]);
+      } else {
+        if (result.code === 'OPENAI_QUOTA') {
+          toast.error('AI quota exceeded. Please check plan/billing or try again later.');
+          setAiSuggestions(['Sorry, AI is temporarily unavailable (quota exceeded).']);
+          return;
+        }
+        throw new Error(result.error || 'Failed to get AI suggestions');
+      }
+    } catch (error) {
+      console.error('Error getting AI suggestions:', error);
+      toast.error('Failed to get AI suggestions. Please try again later.');
+      setAiSuggestions(['Sorry, AI suggestions are not available right now.']);
+    } finally {
+      setIsLoadingAI(false);
+    }
+  };
+
+  // Apply AI suggestion
+  const applyAISuggestion = (suggestion: string) => {
+    setComposeBody(suggestion);
+    setShowAISuggestions(false);
+    setAiSuggestions([]);
+  };
 
   const extractHtmlBody = (html: string) => {
     if (!html) return html;
@@ -1519,18 +1594,99 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
   };
 
   const handleInsertLink = () => {
-    if (!linkUrl.trim()) return;
-    const linkMarkdown = `[${linkLabel || linkUrl}](${linkUrl})`;
-    setComposeBody(prev => prev + '\n\n' + linkMarkdown);
-    setShowLinkForm(false);
-    setLinkLabel('');
-    setLinkUrl('');
+    const formattedUrl = normaliseUrl(linkUrl);
+    if (!formattedUrl) {
+      toast.error('Please provide a valid URL (including the domain).');
+      return;
+    }
+
+    const label = linkLabel.trim();
+    setComposeBody(prev => {
+      const existing = prev || '';
+      const trimmedExisting = existing.replace(/\s*$/, '');
+      // If label is provided, create HTML anchor tag with label as clickable text
+      // If no label, just use the URL (convertBodyToHtml will make it clickable)
+      const linkLine = label 
+        ? `<a href="${formattedUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">${label}</a>`
+        : formattedUrl;
+      return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
+    });
+
+    handleCancelLink();
+  };
+  
+  const normaliseUrl = (value: string) => {
+    if (!value) return '';
+    let url = value.trim();
+    if (!url) return '';
+    if (!/^https?:\/\//i.test(url)) {
+      url = `https://${url}`;
+    }
+    try {
+      const parsed = new URL(url);
+      return parsed.toString();
+    } catch (error) {
+      return '';
+    }
   };
 
   const handleCancelLink = () => {
     setShowLinkForm(false);
     setLinkLabel('');
     setLinkUrl('');
+  };
+
+  // Handle opening contacts modal
+  const handleOpenContactsModal = async () => {
+    if (!client) return;
+    
+    setShowContactsModal(true);
+    setLoadingContacts(true);
+    setSelectedContactIds(new Set());
+    
+    try {
+      const isLegacyLead = typeof client.id === 'string' && client.id.startsWith('legacy_');
+      const contacts = await fetchLeadContacts(client.id, isLegacyLead);
+      
+      // Filter only contacts with valid emails
+      const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
+      setModalLeadContacts(contactsWithEmail);
+    } catch (error) {
+      console.error('Error fetching lead contacts:', error);
+      toast.error('Failed to load contacts');
+      setModalLeadContacts([]);
+    } finally {
+      setLoadingContacts(false);
+    }
+  };
+  
+  // Toggle contact selection
+  const toggleContactSelection = (contactId: number) => {
+    setSelectedContactIds(prev => {
+      const newSet = new Set(prev);
+      if (newSet.has(contactId)) {
+        newSet.delete(contactId);
+      } else {
+        newSet.add(contactId);
+      }
+      return newSet;
+    });
+  };
+  
+  // Add selected contacts to recipients
+  const handleAddSelectedContacts = () => {
+    const selectedContacts = modalLeadContacts.filter(c => selectedContactIds.has(c.id));
+    const newRecipients = selectedContacts
+      .map(c => c.email!)
+      .filter(email => email && !toRecipients.includes(email));
+    
+    if (newRecipients.length > 0) {
+      setToRecipients(prev => [...prev, ...newRecipients]);
+      toast.success(`Added ${newRecipients.length} contact(s) to recipients`);
+    }
+    
+    setShowContactsModal(false);
+    setSelectedContactIds(new Set());
   };
 
   return (
@@ -1960,130 +2116,6 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
               </div>
               {recipientError && <p className="text-sm text-error">{recipientError}</p>}
 
-              <div className="space-y-3" ref={templateDropdownRef}>
-                <div className="flex flex-wrap items-center gap-3">
-                  <label className="text-sm font-semibold">Template</label>
-                  <div className="relative w-full sm:w-64">
-                    <input
-                      type="text"
-                      className="input input-bordered w-full pr-8"
-                      placeholder="Search templates..."
-                      value={templateSearch}
-                      onChange={event => {
-                        setTemplateSearch(event.target.value);
-                        if (!templateDropdownOpen) {
-                          setTemplateDropdownOpen(true);
-                        }
-                      }}
-                      onFocus={() => {
-                        if (!templateDropdownOpen) {
-                          setTemplateDropdownOpen(true);
-                        }
-                      }}
-                      onBlur={() => setTimeout(() => setTemplateDropdownOpen(false), 150)}
-                    />
-                    <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
-                    {templateDropdownOpen && (
-                      <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
-                        {filteredTemplates.length === 0 ? (
-                          <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
-                        ) : (
-                          filteredTemplates.map(template => (
-                            <div
-                              key={template.id}
-                              className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
-                              onMouseDown={e => e.preventDefault()}
-                              onClick={() => handleTemplateSelect(template)}
-                            >
-                              <div className="font-medium">{template.name}</div>
-                              {(template.placementName || template.languageName) && (
-                                <div className="text-xs text-gray-500 mt-1">
-                                  {template.placementName && <span>{template.placementName}</span>}
-                                  {template.placementName && template.languageName && <span> • </span>}
-                                  {template.languageName && <span>{template.languageName}</span>}
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  {selectedTemplateId !== null && (
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => {
-                      setSelectedTemplateId(null);
-                      setTemplateSearch('');
-                      setComposeBody('');
-                      setComposeBodyIsRTL(false);
-                      if (client) {
-                        const defaultSubject = `[${client.lead_number}] - ${client.name} - ${client.topic || ''}`;
-                        setComposeSubject(defaultSubject);
-                      }
-                      }}
-                    >
-                      Clear
-                    </button>
-                  )}
-                </div>
-                
-                {/* Language and Placement Filters */}
-                <div className="flex flex-wrap items-center gap-3">
-                  <div className="relative w-full sm:w-48">
-                    <select
-                      className="select select-bordered w-full text-sm"
-                      value={templateLanguageFilter || ''}
-                      onChange={(e) => {
-                        setTemplateLanguageFilter(e.target.value || null);
-                        if (!templateDropdownOpen) {
-                          setTemplateDropdownOpen(true);
-                        }
-                      }}
-                    >
-                      <option value="">All Languages</option>
-                      {availableLanguages.map(lang => (
-                        <option key={lang.id} value={lang.id}>
-                          {lang.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div className="relative w-full sm:w-48">
-                    <select
-                      className="select select-bordered w-full text-sm"
-                      value={templatePlacementFilter || ''}
-                      onChange={(e) => {
-                        setTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
-                        if (!templateDropdownOpen) {
-                          setTemplateDropdownOpen(true);
-                        }
-                      }}
-                    >
-                      <option value="">All Placements</option>
-                      {availablePlacements.map(placement => (
-                        <option key={placement.id} value={placement.id}>
-                          {placement.name}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  {(templateLanguageFilter || templatePlacementFilter !== null) && (
-                    <button
-                      type="button"
-                      className="btn btn-ghost btn-sm"
-                      onClick={() => {
-                        setTemplateLanguageFilter(null);
-                        setTemplatePlacementFilter(null);
-                      }}
-                    >
-                      Clear Filters
-                    </button>
-                  )}
-                </div>
-              </div>
-
               <input
                 type="text"
                 placeholder="Subject"
@@ -2092,16 +2124,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
               />
 
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <label className="font-semibold text-sm">Body</label>
-                <button
-                  type="button"
-                  className="btn btn-xs btn-outline"
-                  onClick={() => setShowLinkForm(prev => !prev)}
-                >
-                  {showLinkForm ? 'Hide Link Form' : 'Add Link'}
-                </button>
-              </div>
+              <label className="font-semibold text-sm">Body</label>
 
               {showLinkForm && (
                 <div className="flex flex-col gap-3 md:flex-row md:items-end bg-base-200/70 border border-base-300 rounded-lg p-3">
@@ -2141,6 +2164,43 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 </div>
               )}
 
+              {/* AI Suggestions Dropdown */}
+              {showAISuggestions && (
+                <div className="mb-4 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="text-sm font-semibold text-gray-900">
+                      {composeBody.trim() ? 'AI Message Improvement' : 'AI Suggestions'}
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setShowAISuggestions(false);
+                        setAiSuggestions([]);
+                      }}
+                      className="btn btn-ghost btn-xs"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  </div>
+                  
+                  <div className="space-y-2">
+                    {isLoadingAI ? (
+                      <div className="text-center text-gray-500 py-4">
+                        <div className="loading loading-spinner loading-sm"></div>
+                        <span className="ml-2">Getting AI suggestions...</span>
+                      </div>
+                    ) : aiSuggestions.length > 0 ? (
+                      <div 
+                        className="w-full p-4 rounded-lg border border-gray-200 bg-white cursor-pointer hover:bg-gray-100 transition-colors"
+                        onClick={() => applyAISuggestion(aiSuggestions[0])}
+                      >
+                        <div className="text-sm text-gray-900">{aiSuggestions[0]}</div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              )}
+
               <textarea
                 placeholder="Type your message..."
                 value={composeBody}
@@ -2174,43 +2234,328 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                 </div>
               )}
             </div>
-            <div className="px-6 py-4 border-t border-gray-200 flex flex-col sm:flex-row gap-3 justify-between">
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="btn btn-ghost btn-sm"
-                >
-                  <PaperClipIcon className="w-4 h-4" />
-                  <span className="hidden sm:inline">Attach</span>
-                </button>
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
-                  className="hidden"
-                />
+            <div className="px-6 py-4 border-t border-gray-200 flex items-center justify-between gap-4">
+              {/* Left side - Buttons and Template Filters */}
+              <div className="flex items-center gap-4 flex-wrap">
+                {/* Circle action buttons */}
+                <div className="flex items-center gap-3">
+                  {/* Attach Files Button */}
+                  <button
+                    type="button"
+                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
+                    style={{ 
+                      backgroundColor: '#4218CC', 
+                      width: '44px', 
+                      height: '44px'
+                    }}
+                    onClick={() => fileInputRef.current?.click()}
+                    disabled={sending}
+                    title="Attach files"
+                  >
+                    <PaperClipIcon className="w-6 h-6" />
+                  </button>
+                  <input
+                    ref={fileInputRef}
+                    type="file"
+                    multiple
+                    onChange={(e) => e.target.files && handleAttachmentUpload(e.target.files)}
+                    className="hidden"
+                  />
+                  
+                  {/* AI Suggestions Button */}
+                  <button
+                    type="button"
+                    onClick={handleAISuggestions}
+                    disabled={isLoadingAI || !client}
+                    className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
+                    style={{ 
+                      backgroundColor: '#4218CC', 
+                      width: '44px', 
+                      height: '44px'
+                    }}
+                    title={composeBody.trim() ? "Improve message with AI" : "Get AI suggestions"}
+                  >
+                    {isLoadingAI ? (
+                      <span className="loading loading-spinner loading-sm" />
+                    ) : (
+                      <SparklesIcon className="w-6 h-6" />
+                    )}
+                  </button>
+                  
+                  {/* Add Link Button */}
+                  <button
+                    type="button"
+                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                      showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    }`}
+                    style={{ 
+                      backgroundColor: '#4218CC', 
+                      width: '44px', 
+                      height: '44px'
+                    }}
+                    onClick={() => setShowLinkForm(prev => !prev)}
+                    disabled={sending}
+                    title={showLinkForm ? 'Hide link form' : 'Add link'}
+                  >
+                    <LinkIcon className="w-6 h-6" />
+                  </button>
+                  
+                  {/* Add Contacts from Lead Button */}
+                  <button
+                    type="button"
+                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
+                      showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                    }`}
+                    style={{ 
+                      backgroundColor: '#4218CC', 
+                      width: '44px', 
+                      height: '44px'
+                    }}
+                    onClick={handleOpenContactsModal}
+                    disabled={sending || !client}
+                    title="Add contacts from lead"
+                  >
+                    <UserPlusIcon className="w-6 h-6" />
+                  </button>
+                </div>
+                
+                {/* Divider */}
+                <div className="w-px h-8 bg-base-300 hidden sm:block" />
+                
+                {/* Template filters */}
+                <div className="flex items-center gap-2 flex-wrap">
+                  {/* Language Filter */}
+                  <select
+                    className="select select-bordered select-sm w-28 text-sm"
+                    value={templateLanguageFilter || ''}
+                    onChange={(e) => {
+                      setTemplateLanguageFilter(e.target.value || null);
+                      if (!templateDropdownOpen) {
+                        setTemplateDropdownOpen(true);
+                      }
+                    }}
+                  >
+                    <option value="">Language</option>
+                    {availableLanguages.map(lang => (
+                      <option key={lang.id} value={lang.id}>
+                        {lang.name}
+                      </option>
+                    ))}
+                  </select>
+                  
+                  {/* Placement Filter */}
+                  <select
+                    className="select select-bordered select-sm w-36 text-sm"
+                    value={templatePlacementFilter ?? ''}
+                    onChange={(e) => {
+                      setTemplatePlacementFilter(e.target.value ? Number(e.target.value) : null);
+                      if (!templateDropdownOpen) {
+                        setTemplateDropdownOpen(true);
+                      }
+                    }}
+                  >
+                    <option value="">Placement</option>
+                    {availablePlacements.map(placement => (
+                      <option key={placement.id} value={placement.id}>
+                        {placement.name}
+                      </option>
+                    ))}
+                  </select>
+                  
+                  {/* Template Search */}
+                  <div className="relative w-40" ref={templateDropdownRef}>
+                    <input
+                      type="text"
+                      className="input input-bordered input-sm w-full pr-8"
+                      placeholder="Templates..."
+                      value={templateSearch}
+                      onChange={event => {
+                        setTemplateSearch(event.target.value);
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                      onFocus={() => {
+                        if (!templateDropdownOpen) {
+                          setTemplateDropdownOpen(true);
+                        }
+                      }}
+                      onBlur={() => setTimeout(() => setTemplateDropdownOpen(false), 150)}
+                    />
+                    <ChevronDownIcon className="absolute right-2 top-1/2 transform -translate-y-1/2 w-4 h-4 text-gray-400" />
+                    {templateDropdownOpen && (
+                      <div className="absolute bottom-full mb-1 z-20 w-72 bg-white border border-gray-300 rounded-md shadow-lg max-h-56 overflow-y-auto">
+                        {filteredTemplates.length === 0 ? (
+                          <div className="px-3 py-2 text-sm text-gray-500">No templates found</div>
+                        ) : (
+                          filteredTemplates.map(template => (
+                            <div
+                              key={template.id}
+                              className="px-3 py-2 hover:bg-gray-100 cursor-pointer text-sm"
+                              onMouseDown={e => e.preventDefault()}
+                              onClick={() => handleTemplateSelect(template)}
+                            >
+                              <div className="font-medium">{template.name}</div>
+                              {(template.placementName || template.languageName) && (
+                                <div className="text-xs text-gray-500 mt-1">
+                                  {template.placementName && <span>{template.placementName}</span>}
+                                  {template.placementName && template.languageName && <span> • </span>}
+                                  {template.languageName && <span>{template.languageName}</span>}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+                    )}
+                  </div>
+                  
+                  {/* Clear Filters Button */}
+                  {(selectedTemplateId !== null || templateLanguageFilter || templatePlacementFilter !== null) && (
+                    <button
+                      type="button"
+                      className="btn btn-ghost btn-sm btn-circle"
+                      onClick={() => {
+                        setSelectedTemplateId(null);
+                        setTemplateSearch('');
+                        setComposeBody('');
+                        setComposeBodyIsRTL(false);
+                        if (client) {
+                          setComposeSubject(`[${client.lead_number}] - ${client.name} - ${client.topic || ''}`);
+                        }
+                      }}
+                      title="Clear filters"
+                    >
+                      <XMarkIcon className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
               </div>
-              <div className="flex items-center gap-2">
+              
+              {/* Right side - Send button only */}
+              <button
+                onClick={handleSendEmail}
+                disabled={sending || !composeBody.trim()}
+                className="btn btn-primary min-w-[100px] flex items-center gap-2"
+              >
+                {sending ? (
+                  <span className="loading loading-spinner loading-sm" />
+                ) : (
+                  <>
+                    <PaperAirplaneIcon className="w-4 h-4" />
+                    Send
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
+      
+      {/* Lead Contacts Modal */}
+      {showContactsModal && createPortal(
+        <div className="fixed inset-0 z-[10002] flex items-center justify-center">
+          <div 
+            className="absolute inset-0 bg-black/50" 
+            onClick={() => setShowContactsModal(false)} 
+          />
+          <div className="relative z-10 bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
+            {/* Modal Header */}
+            <div className="px-5 py-4 border-b border-gray-200 flex items-center justify-between">
+              <div>
+                <h3 className="text-lg font-semibold text-gray-900">Select Contacts</h3>
+                <p className="text-sm text-gray-500">Add contacts from this lead to recipients</p>
+              </div>
+              <button
+                onClick={() => setShowContactsModal(false)}
+                className="btn btn-ghost btn-sm btn-circle"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            
+            {/* Modal Body */}
+            <div className="px-5 py-4 max-h-[320px] overflow-y-auto">
+              {loadingContacts ? (
+                <div className="flex items-center justify-center py-8">
+                  <span className="loading loading-spinner loading-md text-primary" />
+                  <span className="ml-2 text-gray-500">Loading contacts...</span>
+                </div>
+              ) : modalLeadContacts.length === 0 ? (
+                <div className="text-center py-8 text-gray-500">
+                  <UserPlusIcon className="w-12 h-12 mx-auto mb-2 opacity-50" />
+                  <p>No contacts with email found for this lead</p>
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  {modalLeadContacts.map(contact => {
+                    const isSelected = selectedContactIds.has(contact.id);
+                    const alreadyAdded = toRecipients.includes(contact.email!);
+                    
+                    return (
+                      <div
+                        key={contact.id}
+                        className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
+                          alreadyAdded 
+                            ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed'
+                            : isSelected 
+                              ? 'bg-purple-50 border-purple-300' 
+                              : 'bg-white border-gray-200 hover:bg-gray-50'
+                        }`}
+                        onClick={() => !alreadyAdded && toggleContactSelection(contact.id)}
+                      >
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${
+                          alreadyAdded
+                            ? 'bg-gray-300 border-gray-300'
+                            : isSelected 
+                              ? 'bg-[#4218CC] border-[#4218CC]' 
+                              : 'border-gray-300'
+                        }`}>
+                          {(isSelected || alreadyAdded) && <CheckIcon className="w-3 h-3 text-white" />}
+                        </div>
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-gray-900 truncate">{contact.name}</span>
+                            {contact.isMain && (
+                              <span className="text-xs bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded">Main</span>
+                            )}
+                            {alreadyAdded && (
+                              <span className="text-xs bg-gray-200 text-gray-600 px-1.5 py-0.5 rounded">Added</span>
+                            )}
+                          </div>
+                          <p className="text-sm text-gray-500 truncate">{contact.email}</p>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            
+            {/* Modal Footer */}
+            <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-between bg-gray-50">
+              <span className="text-sm text-gray-500">
+                {selectedContactIds.size > 0 
+                  ? `${selectedContactIds.size} contact(s) selected`
+                  : 'Select contacts to add'}
+              </span>
+              <div className="flex gap-2">
                 <button
-                  onClick={() => setShowCompose(false)}
-                  className="btn btn-outline btn-sm"
+                  type="button"
+                  className="btn btn-ghost btn-sm"
+                  onClick={() => setShowContactsModal(false)}
                 >
                   Cancel
                 </button>
                 <button
-                  onClick={handleSendEmail}
-                  disabled={sending || !composeBody.trim()}
-                  className="btn btn-primary btn-sm"
+                  type="button"
+                  className="btn btn-sm text-white"
+                  style={{ backgroundColor: '#4218CC' }}
+                  onClick={handleAddSelectedContacts}
+                  disabled={selectedContactIds.size === 0}
                 >
-                  {sending ? (
-                    <div className="loading loading-spinner loading-xs"></div>
-                  ) : (
-                    <>
-                      <PaperAirplaneIcon className="w-4 h-4" />
-                      Send
-                    </>
-                  )}
+                  Add Selected
                 </button>
               </div>
             </div>
