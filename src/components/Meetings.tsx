@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { CalendarIcon, ClockIcon, MapPinIcon, UserIcon, LinkIcon, VideoCameraIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, ClockIcon, MapPinIcon, UserIcon, LinkIcon, VideoCameraIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, QuestionMarkCircleIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import { Link } from 'react-router-dom';
 import { getStageName } from '../lib/stageUtils';
@@ -27,6 +27,10 @@ interface Meeting {
   stage?: string | number;
   leadManager?: string;
   isStaffMeeting?: boolean; // Flag to identify staff meetings
+  // Expert status fields
+  eligibility_status?: string | null;
+  expert_examination?: number | null;
+  is_legacy?: boolean;
 }
 
 interface MeetingRecord {
@@ -56,6 +60,8 @@ interface MeetingRecord {
     handler?: string;
     balance?: number | string | null;
     balance_currency?: string | null;
+    eligibility_status?: string | null;
+    lead_type?: string;
   };
   legacy_lead?: {
     id: number;
@@ -71,6 +77,8 @@ interface MeetingRecord {
     currency_id?: number;
     closer_id?: string | number;
     case_handler_id?: string | number;
+    expert_examination?: number;
+    lead_type?: string;
   };
 }
 
@@ -152,6 +160,76 @@ const Meetings: React.FC = () => {
     return locationLower === 'online' || locationLower === 'teams' || locationLower === 'zoom';
   };
 
+  // Helper function to get expert status icon and color
+  const getExpertStatusIcon = (meeting: Meeting) => {
+    let status: string | number | null = null;
+    const isLegacy = meeting.is_legacy || false;
+
+    // Get the appropriate status based on lead type
+    if (isLegacy) {
+      status = meeting.expert_examination ?? null;
+    } else {
+      status = meeting.eligibility_status || null;
+    }
+
+    // For legacy leads with expert_examination
+    if (isLegacy && status !== null) {
+      const examStatus = Number(status);
+      
+      if (examStatus === 1) {
+        return (
+          <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Not Feasible">
+            <XCircleIcon className="w-4 h-4" />
+          </span>
+        );
+      } else if (examStatus === 5) {
+        return (
+          <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Feasible (further check)">
+            <ExclamationTriangleIcon className="w-4 h-4" />
+          </span>
+        );
+      } else if (examStatus === 8) {
+        return (
+          <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Feasible (no check)">
+            <CheckCircleIcon className="w-4 h-4" />
+          </span>
+        );
+      }
+    }
+
+    // For new leads with eligibility_status
+    if (!isLegacy && status) {
+      const statusStr = String(status);
+      
+      if (statusStr === 'not_feasible') {
+        return (
+          <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Not Feasible">
+            <XCircleIcon className="w-4 h-4" />
+          </span>
+        );
+      } else if (statusStr === 'feasible_no_check') {
+        return (
+          <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Feasible (no check)">
+            <CheckCircleIcon className="w-4 h-4" />
+          </span>
+        );
+      } else if (statusStr === 'feasible_with_check') {
+        return (
+          <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Feasible (with check)">
+            <ExclamationTriangleIcon className="w-4 h-4" />
+          </span>
+        );
+      }
+    }
+
+    // Default: Not checked
+    return (
+      <span className="w-7 h-7 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md ml-2" title="Expert opinion not checked">
+        <QuestionMarkCircleIcon className="w-4 h-4" />
+      </span>
+    );
+  };
+
   useEffect(() => {
     const fetchMeetings = async () => {
       try {
@@ -224,7 +302,8 @@ const Meetings: React.FC = () => {
               closer,
               handler,
               balance,
-              balance_currency
+              balance_currency,
+              eligibility_status
             ),
             legacy_lead:leads_lead!legacy_lead_id (
               id,
@@ -239,7 +318,8 @@ const Meetings: React.FC = () => {
               total,
               currency_id,
               closer_id,
-              case_handler_id
+              case_handler_id,
+              expert_examination
             )
           `)
           .or(`meeting_date.eq.${todayStr},meeting_date.eq.${tomorrowStr}`)
@@ -604,7 +684,11 @@ const Meetings: React.FC = () => {
                 }
               }
               return '';
-            })()
+            })(),
+            // Expert status fields
+            eligibility_status: meeting.lead?.eligibility_status || null,
+            expert_examination: meeting.legacy_lead?.expert_examination ?? null,
+            is_legacy: !!meeting.legacy_lead
           };
         });
 
@@ -868,7 +952,12 @@ const Meetings: React.FC = () => {
               </td>
               <td className="font-medium">{meeting.name}</td>
               <td>{meeting.topic}</td>
-              <td>{meeting.expert}</td>
+              <td>
+                <div className="flex items-center">
+                  <span>{meeting.expert}</span>
+                  {getExpertStatusIcon(meeting)}
+                </div>
+              </td>
               <td>{meeting.helper || '---'}</td>
               <td>{meeting.leadManager || '---'}</td>
               <td>{meeting.scheduler || '---'}</td>
@@ -925,6 +1014,7 @@ const Meetings: React.FC = () => {
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <UserIcon className="w-5 h-5" />
             <span>{meeting.expert}</span>
+            {getExpertStatusIcon(meeting)}
           </div>
           <div className="flex items-center gap-2 text-base-content/70 text-sm">
             <span className="font-semibold">Helper:</span>

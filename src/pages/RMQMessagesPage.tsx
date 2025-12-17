@@ -5097,7 +5097,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#ffffff',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -6113,7 +6113,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : '#ffffff',
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',

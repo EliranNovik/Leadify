@@ -870,7 +870,7 @@ const formatEmailBody = async (
         let historyQuery = supabase
           .from('scheduling_info_history')
           .select('*')
-          .order('created_at', { ascending: false });
+          .order('created_at', { ascending: false});
         
         if (isLegacyLead) {
           const legacyId = client.id.toString().replace('legacy_', '');
@@ -882,6 +882,40 @@ const formatEmailBody = async (
         const { data: historyData, error: historyError } = await historyQuery;
         
         if (historyError) throw historyError;
+        
+        // Fetch from follow_ups table
+        let followUpsQuery = supabase
+          .from('follow_ups')
+          .select(`
+            *,
+            users!user_id (
+              full_name,
+              email
+            )
+          `)
+          .order('created_at', { ascending: false });
+        
+        if (isLegacyLead) {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          followUpsQuery = followUpsQuery.eq('lead_id', legacyId);
+        } else {
+          followUpsQuery = followUpsQuery.eq('new_lead_id', client.id);
+        }
+        
+        const { data: followUpsData, error: followUpsError } = await followUpsQuery;
+        
+        if (followUpsError) {
+          console.error('Error fetching follow-ups:', followUpsError);
+        }
+        
+        // Transform follow_ups data to match scheduling_history format
+        const followUpsHistory = (followUpsData || []).map((entry: any) => ({
+          id: entry.id,
+          next_followup: entry.date,
+          created_by: entry.users?.full_name || 'Unknown',
+          created_at: entry.created_at,
+          from_followups: true,
+        }));
         
         // Fetch from lead_notes table for scheduling-related notes
         // Only fetch for new leads (legacy leads don't have lead_notes)
@@ -912,7 +946,8 @@ const formatEmailBody = async (
         
         // Merge and sort by created_at (newest first)
         const allHistory = [
-          ...(historyData || []).map((entry: any) => ({ ...entry, from_notes: false })),
+          ...(historyData || []).map((entry: any) => ({ ...entry, from_notes: false, from_followups: false })),
+          ...followUpsHistory,
           ...notesData,
         ].sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
         

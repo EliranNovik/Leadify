@@ -5,6 +5,7 @@ import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName,
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
 import { fetchAllLeads, fetchLeadById, searchLeads, type CombinedLead } from '../lib/legacyLeadsApi';
 import { getUnactivationReasonFromId } from '../lib/unactivationReasons';
+import { saveFollowUp } from '../lib/followUpsManager';
 import BalanceEditModal from './BalanceEditModal';
 import {
   PencilIcon,
@@ -54,6 +55,7 @@ import {
   PlayIcon,
   EyeIcon,
   ClockIcon,
+  Bars3Icon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -1631,8 +1633,15 @@ const handlerSearchContainerRef = useRef<HTMLDivElement | null>(null);
 const [successStageHandlerSearch, setSuccessStageHandlerSearch] = useState('');
 const [filteredSuccessStageHandlerOptions, setFilteredSuccessStageHandlerOptions] = useState<HandlerOption[]>([]);
 const [showSuccessStageHandlerDropdown, setShowSuccessStageHandlerDropdown] = useState(false);
-const successStageHandlerContainerRef = useRef<HTMLDivElement | null>(null);
+const successStageHandlerContainerRef = useRef<HTMLDivElement | null>(null); // Mobile ref
+const successStageHandlerContainerRefDesktop = useRef<HTMLDivElement | null>(null); // Desktop ref
 const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useState(false);
+
+  // Mobile edge dropdowns state
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const [showMobileStagesDropdown, setShowMobileStagesDropdown] = useState(false);
+  const [showMobileActionsDropdown, setShowMobileActionsDropdown] = useState(false);
+  const [showMobileClientInfo, setShowMobileClientInfo] = useState(false);
 
   // State and helpers for lead stages
   const [availableStages, setAvailableStages] = useState<Array<{ id: number; name: string; colour?: string | null }>>([]);
@@ -3719,6 +3728,13 @@ useEffect(() => {
         ? String(rawClientId)
         : '';
 
+    console.log('🎯 assignSuccessStageHandler called:', {
+      option,
+      handlerLabel,
+      handlerIdNumeric,
+      clientId: rawClientId
+    });
+
     setIsUpdatingSuccessStageHandler(true);
     try {
       const isLegacyLead =
@@ -3726,17 +3742,22 @@ useEffect(() => {
 
       // If handler is being assigned (not cleared), change stage to 105 (Handler Set)
       const shouldUpdateStage = handlerLabel && handlerLabel.trim() !== '';
+      console.log('📊 Should update stage?', shouldUpdateStage, 'Handler label:', handlerLabel);
+      
       let handlerSetStageId: number | null = null;
       let actor: any = null;
       let stageTimestamp: string | null = null;
 
       if (shouldUpdateStage) {
         handlerSetStageId = getStageIdOrWarn('Handler Set');
+        console.log('🔍 Handler Set stage ID:', handlerSetStageId);
         if (handlerSetStageId === null) {
           handlerSetStageId = 105; // Fallback to numeric ID if name resolution fails
+          console.log('⚠️ Using fallback stage ID: 105');
         }
         actor = await fetchStageActorInfo();
         stageTimestamp = new Date().toISOString();
+        console.log('👤 Actor:', actor, 'Timestamp:', stageTimestamp);
       }
 
       if (isLegacyLead) {
@@ -3749,15 +3770,22 @@ useEffect(() => {
           updatePayload.stage = handlerSetStageId;
           updatePayload.stage_changed_by = actor.fullName;
           updatePayload.stage_changed_at = stageTimestamp;
+          console.log('✅ Adding stage update to payload for legacy lead');
         }
 
+        console.log('📤 Updating legacy lead with payload:', updatePayload);
         const { error } = await supabase
           .from('leads_lead')
           .update(updatePayload)
           .eq('id', legacyId);
-        if (error) throw error;
+        if (error) {
+          console.error('❌ Error updating legacy lead:', error);
+          throw error;
+        }
+        console.log('✅ Legacy lead updated successfully');
 
         if (shouldUpdateStage && handlerSetStageId !== null && actor) {
+          console.log('📝 Recording stage change for legacy lead');
           await recordLeadStageChange({
             lead: selectedClient,
             stage: handlerSetStageId,
@@ -3781,15 +3809,22 @@ useEffect(() => {
           updatePayload.stage = handlerSetStageId;
           updatePayload.stage_changed_by = actor.fullName;
           updatePayload.stage_changed_at = stageTimestamp;
+          console.log('✅ Adding stage update to payload for new lead');
         }
 
+        console.log('📤 Updating new lead with payload:', updatePayload);
         const { error } = await supabase
           .from('leads')
           .update(updatePayload)
           .eq('id', rawClientId);
-        if (error) throw error;
+        if (error) {
+          console.error('❌ Error updating new lead:', error);
+          throw error;
+        }
+        console.log('✅ New lead updated successfully');
 
         if (shouldUpdateStage && handlerSetStageId !== null && actor) {
+          console.log('📝 Recording stage change for new lead');
           await recordLeadStageChange({
             lead: selectedClient,
             stage: handlerSetStageId,
@@ -3799,21 +3834,27 @@ useEffect(() => {
         }
       }
 
+      console.log('🔄 Updating local client state...');
       setSelectedClient((prev: any) => {
         if (!prev) return prev;
-        return {
+        const updated = {
           ...prev,
           case_handler_id: handlerIdNumeric,
           handler: handlerLabel || '',
           closer: handlerLabel || null,
           ...(shouldUpdateStage && handlerSetStageId !== null ? { stage: handlerSetStageId } : {}),
         };
+        console.log('📊 Updated client state:', { oldStage: prev.stage, newStage: updated.stage });
+        return updated;
       });
 
+      console.log('🔄 Refreshing client data from database...');
       await refreshClientData(rawClientId ?? clientIdString);
+      
+      console.log('✅ Handler assignment complete!');
       toast.success(handlerLabel ? 'Case handler assigned and stage updated to Handler Set.' : 'Case handler cleared.');
     } catch (error) {
-      console.error('Error updating case handler for success stage:', error);
+      console.error('❌ Error updating case handler for success stage:', error);
       toast.error('Failed to update case handler. Please try again.');
     } finally {
       setIsUpdatingSuccessStageHandler(false);
@@ -3938,7 +3979,7 @@ useEffect(() => {
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className={`badge badge-sm ml-2 px-4 py-2 min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${
+          className={`badge badge-sm ${anchor === 'mobile' ? 'ml-0 px-3 py-1.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${
             isSuperuser 
               ? 'cursor-pointer hover:scale-[1.02]' 
               : 'cursor-default'
@@ -3946,10 +3987,10 @@ useEffect(() => {
           style={{
             background: fallbackStageColour,
             color: badgeTextColour,
-            fontSize: '0.95rem',
+            fontSize: anchor === 'mobile' ? '0.75rem' : '0.95rem',
             fontWeight: 600,
-            borderRadius: '0.65rem',
-            minHeight: '2rem',
+            borderRadius: anchor === 'mobile' ? '0.5rem' : '0.65rem',
+            minHeight: anchor === 'mobile' ? '1.5rem' : '2rem',
             border: `2px solid ${fallbackStageColour}`,
             boxShadow: '0 8px 22px rgba(17, 24, 39, 0.12)',
           }}
@@ -5196,12 +5237,34 @@ useEffect(() => {
         return;
       }
       
+      // Save follow-up to new follow_ups table
+      if (nextFollowup) {
+        console.log('💾 Saving follow-up to follow_ups table:', {
+          leadId: selectedClient.id,
+          nextFollowup,
+          isLegacy: isLegacyLead
+        });
+        const { data: followUpData, error: followUpError } = await saveFollowUp(
+          selectedClient.id,
+          nextFollowup
+          // userId will be fetched from current auth user in saveFollowUp
+        );
+        if (followUpError) {
+          console.error('❌ Error saving follow-up:', followUpError);
+          toast.error('Failed to save follow-up date. Please try again.');
+          // Don't throw - continue with other updates
+        } else {
+          console.log('✅ Follow-up saved successfully:', followUpData);
+        }
+      } else {
+        console.log('ℹ️ No follow-up date to save (nextFollowup is empty)');
+      }
+      
       if (isLegacyLead) {
         // For legacy leads, map fields to leads_lead table columns
         const legacyCommunicationStageId = communicationStageId ?? 15;
         updateData = {
           meeting_scheduling_notes: meetingNotes,
-          next_followup: nextFollowup,
           followup_log: followup, // Map to followup_log column
           potential_applicants: potentialApplicants,
         };
@@ -5253,7 +5316,6 @@ useEffect(() => {
         // For new leads, update the leads table
         updateData = {
           meeting_scheduling_notes: meetingNotes,
-          next_followup: nextFollowup,
           followup: followup,
           potential_applicants: potentialApplicants,
         };
@@ -5707,6 +5769,27 @@ useEffect(() => {
     return map;
   }, [handlerOptions]);
 
+  // Filter success stage handler options when search term changes
+  useEffect(() => {
+    console.log('🔍 Filtering handler options, search term:', successStageHandlerSearch);
+    if (!successStageHandlerSearch || successStageHandlerSearch.trim() === '') {
+      console.log('📋 No search term, showing all options:', handlerOptions.length);
+      setFilteredSuccessStageHandlerOptions(handlerOptions);
+    } else {
+      const searchLower = successStageHandlerSearch.toLowerCase();
+      const filtered = handlerOptions.filter(option =>
+        option.label.toLowerCase().includes(searchLower)
+      );
+      console.log('📋 Filtered options:', filtered.length, 'matches');
+      setFilteredSuccessStageHandlerOptions(filtered);
+    }
+  }, [successStageHandlerSearch, handlerOptions]);
+
+  // Track dropdown visibility changes
+  useEffect(() => {
+    console.log('👁️ Success handler dropdown visibility changed:', showSuccessStageHandlerDropdown);
+  }, [showSuccessStageHandlerDropdown]);
+
 useEffect(() => {
   if (!showSuccessDrawer) return;
   const currentLabel =
@@ -5801,19 +5884,37 @@ useEffect(() => {
 }, [successStageHandlerSearch, handlerOptions]);
 
 useEffect(() => {
-  if (!showSuccessStageHandlerDropdown) return;
+  if (!showSuccessStageHandlerDropdown) {
+    console.log('🔴 Success handler dropdown is closed, not adding click-outside listener');
+    return;
+  }
+
+  console.log('🟢 Success handler dropdown is open, adding click-outside listener');
 
   const handleClickOutside = (event: MouseEvent) => {
-    if (
-      successStageHandlerContainerRef.current &&
-      !successStageHandlerContainerRef.current.contains(event.target as Node)
-    ) {
+    const mobileContains = successStageHandlerContainerRef.current?.contains(event.target as Node);
+    const desktopContains = successStageHandlerContainerRefDesktop.current?.contains(event.target as Node);
+    
+    console.log('🖱️ Click-outside handler fired', {
+      target: event.target,
+      hasMobileContainer: !!successStageHandlerContainerRef.current,
+      hasDesktopContainer: !!successStageHandlerContainerRefDesktop.current,
+      mobileContains,
+      desktopContains
+    });
+    
+    // Close dropdown only if click is outside BOTH containers
+    if (!mobileContains && !desktopContains) {
+      console.log('❌ Click was OUTSIDE both containers - closing dropdown');
       setShowSuccessStageHandlerDropdown(false);
+    } else {
+      console.log('✅ Click was INSIDE a container - keeping dropdown open');
     }
   };
 
   document.addEventListener('mousedown', handleClickOutside);
   return () => {
+    console.log('🧹 Removing click-outside listener');
     document.removeEventListener('mousedown', handleClickOutside);
   };
 }, [showSuccessStageHandlerDropdown]);
@@ -9843,13 +9944,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
             )}
             
-            <div 
-              className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg px-5 py-3 mb-3 w-full max-w-xs cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-              onClick={() => setIsBalanceModalOpen(true)}
-              title="Click to edit balance"
-            >
+            {/* Balance and Stage badges in one line on mobile */}
+            <div className="flex items-center gap-2 mb-3 w-full">
+              <div 
+                className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl shadow-lg px-3 py-2 flex-1 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
+                onClick={() => setIsBalanceModalOpen(true)}
+                title="Click to edit balance"
+              >
               <div className="text-center">
-                <div className="text-white text-2xl font-bold whitespace-nowrap">
+                <div className="text-white text-base font-bold whitespace-nowrap truncate">
                   {(() => {
                     // For new leads, use balance column. For legacy, use total
                     const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
@@ -9933,7 +10036,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   })()}
                 </div>
                 {/* Always show Total */}
-                <div className="text-white text-sm opacity-90 mt-1">
+                <div className="text-white text-xs opacity-90 mt-1">
                   Total: {(() => {
                     const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
                     // Get currency symbol - prioritize computed values from refreshClientData
@@ -9958,7 +10061,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   })()}
                 </div>
                 {/* Always show Potential Value */}
-                <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
+                <div className="text-white text-xs opacity-90 mt-1.5 pt-1.5 border-t border-white/20">
                   <div className="font-medium">Potential Value:</div>
                   <div className="text-white">
                     {(() => {
@@ -9997,42 +10100,44 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                 </div>
               </div>
+              </div>
+
+              {/* Stage Badge - Same line */}
+              <div className="flex flex-col gap-1.5 flex-shrink-0">
+                {selectedClient?.stage !== null &&
+                  selectedClient?.stage !== undefined &&
+                  selectedClient?.stage !== '' && (
+                    <>
+                      {getStageBadge(selectedClient.stage, 'mobile')}
+                      {/* Meeting Scheduled badge directly under stage */}
+                      {hasScheduledMeetings && nextMeetingDate && (
+                        <button
+                          onClick={() => setActiveTab('meeting')}
+                          className="badge badge-sm px-3 py-1.5 shadow-md cursor-pointer animate-pulse font-semibold whitespace-nowrap"
+                          style={{
+                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                            color: 'white',
+                            borderColor: '#10b981',
+                            fontSize: '0.7rem',
+                            minHeight: '1.5rem',
+                          }}
+                        >
+                          Meeting: {(() => {
+                            const date = new Date(nextMeetingDate);
+                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                          })()}
+                        </button>
+                      )}
+                    </>
+                  )}
+              </div>
             </div>
 
+            {/* Action Buttons - Below badges */}
             {selectedClient?.stage !== null &&
               selectedClient?.stage !== undefined &&
               selectedClient?.stage !== '' && (
                 <div className="flex justify-center items-center gap-2 mb-2 flex-wrap">
-                  {getStageBadge(selectedClient.stage, 'mobile')}
-                  {/* Meeting Scheduled Badge */}
-                  {hasScheduledMeetings && nextMeetingDate && (
-                    <button
-                      onClick={() => setActiveTab('meeting')}
-                      className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
-                      style={{
-                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                        color: 'white',
-                        borderColor: '#10b981',
-                        padding: '0.5rem 1rem',
-                        minHeight: '3.5rem',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        fontSize: '0.875rem',
-                        lineHeight: '1.25rem',
-                      }}
-                    >
-                      <span className="flex flex-col items-center gap-0.5">
-                        <span className="font-semibold">Meeting Scheduled</span>
-                        <span className="text-xs font-medium opacity-90">
-                          {(() => {
-                            const date = new Date(nextMeetingDate);
-                            return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
-                          })()}
-                        </span>
-                      </span>
-                    </button>
-                  )}
                   {areStagesEquivalent(currentStageName, 'Handler Set') && (
                     <button
                       type="button"
@@ -10076,18 +10181,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
               )}
 
-            {/* Applicants (same logic as desktop) */}
-            {(() => {
-              const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-              const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
-              return applicantsCount && applicantsCount > 0 ? (
-                <div className="text-center mb-2">
-                  <div className="text-black text-lg font-semibold">
-                    {applicantsCount} applicant{applicantsCount !== 1 ? 's' : ''}
-                  </div>
-                </div>
-              ) : null;
-            })()}
           </div>
 
           {/* Client Header - Lead number with language badge below, name aligned with lead number */}
@@ -10105,16 +10198,46 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {selectedClient ? (selectedClient.name || '---') : '---'}
                 </span>
               </div>
-              {selectedClient?.language && (
-                <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
-                  {selectedClient.language}
-                </span>
-              )}
+              
+              {/* Category and Topic - plain text */}
+              <div className="flex items-center gap-2 flex-wrap text-sm text-base-content/70">
+                {selectedClient?.category && (
+                  <span className="font-medium">
+                    {selectedClient.category}
+                  </span>
+                )}
+                {selectedClient?.category && selectedClient?.topic && (
+                  <span>•</span>
+                )}
+                {selectedClient?.topic && (
+                  <span className="font-medium">
+                    {selectedClient.topic}
+                  </span>
+                )}
+              </div>
+              
+              {/* Language and Applicant badges */}
+              <div className="flex items-center gap-2 flex-wrap">
+                {selectedClient?.language && (
+                  <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
+                    {selectedClient.language}
+                  </span>
+                )}
+                {(() => {
+                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                  const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
+                  return applicantsCount && applicantsCount > 0 ? (
+                    <span className="badge badge-lg bg-gradient-to-r from-blue-500 to-indigo-500 text-white font-bold border-0 shadow-md px-4 py-3">
+                      {applicantsCount}
+                    </span>
+                  ) : null;
+                })()}
+              </div>
             </div>
           </div>
 
-          {/* Client info and Progress boxes - Horizontally scrollable on mobile */}
-          <div className="flex flex-row gap-3 w-full -mx-4 px-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory md:overflow-x-visible">
+          {/* Client info and Progress boxes - Horizontally scrollable on mobile - HIDDEN ON MOBILE: Accessed via menu button */}
+          <div className="hidden lg:flex flex-row gap-3 w-full -mx-4 px-4 overflow-x-auto scrollbar-hide snap-x snap-mandatory md:overflow-x-visible">
             {/* Client Information Box */}
             <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-hidden hover:shadow-lg transition-shadow duration-200">
               <div className="h-full flex flex-col">
@@ -10212,22 +10335,31 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                       placeholder="Not assigned"
                                       value={successStageHandlerSearch}
                                       onChange={e => {
+                                        console.log('📝 Input onChange:', e.target.value);
                                         setSuccessStageHandlerSearch(e.target.value);
                                         setShowSuccessStageHandlerDropdown(true);
+                                        console.log('✅ Set dropdown to show');
                                       }}
                                       onFocus={() => {
+                                        console.log('🎯 Input onFocus - showing dropdown');
                                         setShowSuccessStageHandlerDropdown(true);
                                         setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                      }}
+                                      onBlur={() => {
+                                        console.log('👋 Input onBlur');
                                       }}
                                       autoComplete="off"
                                       disabled={isUpdatingSuccessStageHandler}
                                     />
-                                    {showSuccessStageHandlerDropdown && (
-                                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                    {showSuccessStageHandlerDropdown && (() => {
+                                      console.log('🎨 Rendering success handler dropdown with', filteredSuccessStageHandlerOptions.length, 'options');
+                                      return (
+                                      <div className="absolute z-[9999] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                                         <button
                                           type="button"
                                           className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
                                           onClick={() => {
+                                            console.log('🖱️ Clear handler clicked');
                                             setSuccessStageHandlerSearch('');
                                             setShowSuccessStageHandlerDropdown(false);
                                             setFilteredSuccessStageHandlerOptions(handlerOptions);
@@ -10244,6 +10376,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                               key={option.id}
                                               className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
                                               onClick={() => {
+                                                console.log('🖱️ Dropdown option clicked:', option);
                                                 setSuccessStageHandlerSearch(option.label);
                                                 setShowSuccessStageHandlerDropdown(false);
                                                 setFilteredSuccessStageHandlerOptions(handlerOptions);
@@ -10260,7 +10393,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                           </div>
                                         )}
                                       </div>
-                                    )}
+                                      );
+                                    })()}
                                   </div>
                                 </div>
                               )}
@@ -10850,7 +10984,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
                             <div className="flex flex-col items-start gap-1">
                               <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                              <div ref={successStageHandlerContainerRef} className="relative w-full">
+                              <div ref={successStageHandlerContainerRefDesktop} className="relative w-full">
                                 <input
                                   type="text"
                                   className="input input-bordered w-full"
@@ -11080,8 +11214,209 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
           </div>
         </div>
-        {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs */}
-        <div className="md:hidden px-4 py-3 space-y-3">
+        {/* Mobile: Edge-positioned arrow buttons */}
+        <div className="lg:hidden">
+          {/* Right Edge - Menu Button */}
+          <button
+            onClick={() => {
+              setShowMobileMenu(!showMobileMenu);
+              setShowMobileStagesDropdown(false);
+              setShowMobileActionsDropdown(false);
+            }}
+            className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
+            style={{ backgroundColor: '#4218CC' }}
+          >
+            <Bars3Icon className="w-6 h-6 text-white" />
+          </button>
+
+          {/* Mobile Menu - Choose Client Info, Stages or Actions */}
+          {showMobileMenu && (
+            <>
+              <div 
+                className="fixed inset-0 z-40 bg-black/20"
+                onClick={() => setShowMobileMenu(false)}
+              />
+              <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
+                <button
+                  onClick={() => {
+                    setShowMobileMenu(false);
+                    setShowMobileClientInfo(true);
+                    setShowMobileStagesDropdown(false);
+                    setShowMobileActionsDropdown(false);
+                  }}
+                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+                >
+                  <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMobileMenu(false);
+                    setShowMobileStagesDropdown(true);
+                    setShowMobileActionsDropdown(false);
+                    setShowMobileClientInfo(false);
+                  }}
+                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+                >
+                  <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
+                </button>
+                <button
+                  onClick={() => {
+                    setShowMobileMenu(false);
+                    setShowMobileStagesDropdown(false);
+                    setShowMobileActionsDropdown(true);
+                    setShowMobileClientInfo(false);
+                  }}
+                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
+                >
+                  <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
+                </button>
+              </div>
+            </>
+          )}
+
+          {/* Mobile Stages Dropdown */}
+          {showMobileStagesDropdown && (
+            <>
+              <div 
+                className="fixed inset-0 z-40 bg-black/20"
+                onClick={() => setShowMobileStagesDropdown(false)}
+              />
+              <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
+                    <button
+                      onClick={() => setShowMobileStagesDropdown(false)}
+                      className="btn btn-ghost btn-sm btn-circle"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                  {dropdownItems && (
+                    <ul className="menu p-0">
+                      {dropdownItems}
+                    </ul>
+                  )}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Mobile Actions Dropdown */}
+          {showMobileActionsDropdown && (
+            <>
+              <div 
+                className="fixed inset-0 z-40 bg-black/20"
+                onClick={() => setShowMobileActionsDropdown(false)}
+              />
+              <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
+                    <button
+                      onClick={() => setShowMobileActionsDropdown(false)}
+                      className="btn btn-ghost btn-sm btn-circle"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <ul className="menu p-0">
+                    {(() => {
+                      const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                      const isUnactivated = isLegacy
+                        ? (selectedClient?.status === 10)
+                        : (selectedClient?.status === 'inactive');
+                      return isUnactivated;
+                    })() ? (
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                    ) : (
+                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                    )}
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"><StarIcon className="w-5 h-5 text-amber-500" /><span className="font-medium">Ask for recommendation</span></a></li>
+                    <li>
+                      <a
+                        className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
+                        onClick={async () => {
+                          if (!selectedClient?.id) return;
+                          
+                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          const leadId = isLegacyLead 
+                            ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                            : selectedClient.id;
+                          const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                          if (isInHighlightsState) {
+                            await removeFromHighlights(leadId, isLegacyLead);
+                          } else {
+                            await addToHighlights(leadId, leadNumber, isLegacyLead);
+                          }
+                          
+                          setShowMobileActionsDropdown(false);
+                        }}
+                      >
+                        {isInHighlightsState ? (
+                          <>
+                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                            <span className="font-medium">Remove from Highlights</span>
+                          </>
+                        ) : (
+                          <>
+                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                            <span className="font-medium">Add to Highlights</span>
+                          </>
+                        )}
+                      </a>
+                    </li>
+                    <li>
+                      <a
+                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                        onClick={() => {
+                          openEditLeadDrawer();
+                          setShowMobileActionsDropdown(false);
+                        }}
+                      >
+                        <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                        <span className="font-medium">Edit lead</span>
+                      </a>
+                    </li>
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  </ul>
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Mobile Client Information Panel */}
+          {showMobileClientInfo && (
+            <>
+              <div 
+                className="fixed inset-0 z-40 bg-black/20"
+                onClick={() => setShowMobileClientInfo(false)}
+              />
+              <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
+                <div className="p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
+                    <button
+                      onClick={() => setShowMobileClientInfo(false)}
+                      className="btn btn-ghost btn-sm btn-circle"
+                    >
+                      <XMarkIcon className="w-5 h-5" />
+                    </button>
+                  </div>
+                  <ClientInformationBox 
+                    selectedClient={selectedClient} 
+                    getEmployeeDisplayName={getEmployeeDisplayName}
+                    onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+        </div>
+
+        {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
+        <div className="hidden px-4 py-3 space-y-3">
           {/* First row: Stages and Actions buttons */}
           <div className="flex flex-row gap-3 w-full">
             <div className="flex flex-col flex-1 gap-3">
@@ -11285,17 +11620,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         </div>
 
         {/* Tabs Navigation - Mobile */}
-        <div className="md:hidden px-6 py-4">
+        <div className="md:hidden px-4 py-2">
               
               <div
                 ref={mobileTabsRef}
-                className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-4 px-4"
+                className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-2 px-2"
                 style={{ WebkitOverflowScrolling: 'touch' }}
               >
                 {/* Scroll indicator - fade gradient on left */}
                 {canScrollLeft && (
                   <div 
-                    className="absolute left-0 top-0 bottom-0 w-12 pointer-events-none z-30"
+                    className="absolute left-0 top-0 bottom-0 w-8 pointer-events-none z-30"
                     style={{
                       background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
                     }}
@@ -11304,19 +11639,19 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 {/* Scroll indicator - fade gradient on right */}
                 {canScrollRight && (
                   <div 
-                    className="absolute right-0 top-0 bottom-0 w-12 pointer-events-none z-30"
+                    className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none z-30"
                     style={{
                       background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
                     }}
                   />
                 )}
-                <div className="flex gap-2 pb-1 min-w-max">
+                <div className="flex gap-1.5 pb-1 min-w-max">
                   {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
                     return (
                       <button
                         key={tab.id}
-                        className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
+                        className={`relative flex flex-col items-center justify-center p-2 rounded-lg transition-all duration-300 min-w-[65px] ${
                           isActive
                             ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
                             : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
@@ -11324,9 +11659,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         onClick={() => setActiveTab(tab.id)}
                       >
                         <div className="relative">
-                          <tab.icon className={`w-6 h-6 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                          <tab.icon className={`w-4 h-4 mb-0.5 ${isActive ? 'text-white' : 'text-gray-500'}`} />
                           {tab.id === 'interactions' && tab.badge && (
-                            <div className={`absolute -top-2 -right-2 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
+                            <div className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center ${
                               isActive 
                                 ? 'bg-white/20 text-white' 
                                 : 'bg-purple-100 text-purple-700'
@@ -11335,13 +11670,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             </div>
                           )}
                         </div>
-                        <span className={`text-xs font-semibold truncate max-w-[70px] ${
+                        <span className={`text-[10px] font-semibold truncate max-w-[60px] ${
                           isActive ? 'text-white' : 'text-gray-600'
                         }`}>
                           {tab.label}
                         </span>
                         {isActive && (
-                          <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
+                          <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
                         )}
                       </button>
                     );

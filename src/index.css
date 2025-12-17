@@ -357,35 +357,266 @@ html.dark .dropdown-content {
   backdrop-filter: blur(8px) !important;
 }
 
-/* Modal styling with solid gradient background */
+/* Modal styling with frosted glass background */
 html.dark .modal-box {
-  background: linear-gradient(145deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  background: rgba(15, 23, 42, 0.85) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
   border-radius: 12px !important;
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55) !important;
 }
 
-/* DaisyUI modal backdrop */
+/* DaisyUI modal backdrop - darker with blur */
 html.dark .modal {
-  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  background: rgba(11, 30, 61, 0.75) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
 }
 
 html.dark .modal.modal-open {
-  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  background: rgba(11, 30, 61, 0.75) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
 }
 
 html.dark .modal::backdrop,
 html.dark dialog::backdrop {
-  background: linear-gradient(135deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  background: rgba(11, 30, 61, 0.75) !important;
+  backdrop-filter: blur(8px) !important;
+  -webkit-backdrop-filter: blur(8px) !important;
 }
 
-/* Slide-over panels - only specific modal panels, not all fixed elements */
+/* Don't use these overly broad selectors - they affect Clients.tsx */
+
+/* Slide-over panels with frosted glass */
 html.dark .animate-slideInRight.bg-base-100,
 html.dark .animate-slideInRight.bg-white {
-  background: linear-gradient(145deg, #0b1e3d 0%, #0f4c75 55%, #06b6d4 100%) !important;
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55) !important;
+}
+
+/* Ensure text color for modals */
+html.dark [class*="WhatsApp"],
+html.dark [class*="Email"],
+html.dark [class*="RMQ"] {
+  color: #ffffff !important;
+}
+
+/* === RMQ Messages Page Dark Mode Styling === */
+
+/* RMQ main container background */
+html.dark .z-50.fixed.inset-0.bg-gradient-to-br {
+  background: linear-gradient(to bottom right, rgba(15, 23, 42, 0.95), rgba(11, 30, 61, 0.95)) !important;
+}
+
+/* RMQ sidebar and main containers */
+html.dark .z-50 .bg-base-100,
+html.dark .z-50 .bg-white {
+  background: rgba(15, 23, 42, 0.85) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ conversation list items */
+html.dark .z-50 .bg-white.p-4.border-b,
+html.dark .z-50 .hover\:bg-gray-50:hover {
+  background: rgba(30, 41, 59, 0.5) !important;
+}
+
+html.dark .z-50 .hover\:bg-gray-50:hover {
+  background: rgba(51, 65, 85, 0.6) !important;
+}
+
+/* RMQ message bubbles - keep them distinct */
+html.dark .z-50 .bg-blue-600,
+html.dark .z-50 .bg-blue-500 {
+  background: rgba(59, 130, 246, 0.9) !important;
+}
+
+html.dark .z-50 .bg-gray-100 {
+  background: rgba(51, 65, 85, 0.6) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ borders */
+html.dark .z-50 .border-gray-100,
+html.dark .z-50 .border-gray-200 {
+  border-color: rgba(71, 85, 105, 0.3) !important;
+}
+
+/* RMQ buttons and hover states */
+html.dark .z-50 .btn-ghost {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+html.dark .z-50 .btn-ghost:hover {
+  background: rgba(51, 65, 85, 0.5) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ dropdowns and popovers */
+html.dark .z-50 .absolute.bg-white.border.rounded-lg,
+html.dark .z-50 .absolute.bg-white.border.rounded-xl {
+  background: rgba(30, 41, 59, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(71, 85, 105, 0.5) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ lead search dropdown */
+html.dark .lead-search-dropdown {
+  background: rgba(30, 41, 59, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(71, 85, 105, 0.5) !important;
+}
+
+/* RMQ modal dialogs (create group, etc) */
+html.dark .z-50 > div > .bg-white.rounded-2xl,
+html.dark .z-50 > div > .bg-white.rounded-lg {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border: 1px solid rgba(255, 255, 255, 0.1) !important;
+}
+
+/* RMQ text colors */
+html.dark .z-50 .text-gray-700,
+html.dark .z-50 .text-gray-600,
+html.dark .z-50 .text-gray-500 {
+  color: rgba(255, 255, 255, 0.8) !important;
+}
+
+html.dark .z-50 .text-gray-400 {
+  color: rgba(255, 255, 255, 0.6) !important;
+}
+
+/* RMQ active/selected states */
+html.dark .z-50 .bg-blue-50,
+html.dark .z-50 .bg-purple-50 {
+  background: rgba(79, 70, 229, 0.2) !important;
+}
+
+/* RMQ dividers */
+html.dark .z-50 .divide-gray-100 > * {
+  border-color: rgba(71, 85, 105, 0.3) !important;
+}
+
+/* RMQ media viewer (z-[60]) */
+html.dark .z-\[60\].fixed.inset-0.bg-black {
+  background: rgba(0, 0, 0, 0.95) !important;
+}
+
+/* RMQ input fields */
+html.dark .z-50 input,
+html.dark .z-50 textarea,
+html.dark .z-40 input,
+html.dark .z-40 textarea {
+  background: rgba(30, 41, 59, 0.6) !important;
+  border-color: rgba(71, 85, 105, 0.5) !important;
+  color: #ffffff !important;
+}
+
+html.dark .z-50 input::placeholder,
+html.dark .z-50 textarea::placeholder,
+html.dark .z-40 input::placeholder,
+html.dark .z-40 textarea::placeholder {
+  color: rgba(255, 255, 255, 0.5) !important;
+}
+
+html.dark .z-50 input:focus,
+html.dark .z-50 textarea:focus,
+html.dark .z-40 input:focus,
+html.dark .z-40 textarea:focus {
+  background: rgba(30, 41, 59, 0.8) !important;
+  border-color: rgba(99, 102, 241, 0.6) !important;
+}
+
+/* RMQ mobile view (z-40) */
+html.dark .z-40.fixed.inset-0 {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+}
+
+html.dark .z-40 .bg-white,
+html.dark .z-40 .bg-gray-50,
+html.dark .z-40 .bg-gray-100 {
+  background: rgba(30, 41, 59, 0.6) !important;
+  color: #ffffff !important;
+}
+
+html.dark .z-40 .border-gray-100,
+html.dark .z-40 .border-gray-200 {
+  border-color: rgba(71, 85, 105, 0.3) !important;
+}
+
+/* RMQ Chat Area Container Background - Must override inline backgroundColor: '#ffffff' */
+/* Using high specificity to override inline styles */
+html.dark div.rmq-messages-area.flex-1.overflow-y-auto.p-4,
+html.dark .z-50 div.rmq-messages-area.flex-1.overflow-y-auto.p-4,
+html.dark .z-40 div.rmq-messages-area.flex-1.overflow-y-auto.p-4,
+html.dark div.rmq-messages-area.relative,
+html.dark .z-50 div.rmq-messages-area.relative,
+html.dark .z-40 div.rmq-messages-area.relative {
+  background-color: transparent !important;
+  background-image: none !important;
+  background: transparent !important;
+}
+
+/* RMQ Message Bubbles - Override hardcoded bg-white */
+html.dark .rmq-messages-area .bg-white.rounded-2xl,
+html.dark .rmq-messages-area .bg-white.rounded-bl-md,
+html.dark .rmq-messages-area .border.bg-white {
+  background: rgba(51, 65, 85, 0.8) !important;
+  border-color: rgba(71, 85, 105, 0.5) !important;
+  color: #ffffff !important;
+}
+
+html.dark .rmq-messages-area .bg-base-100.rounded-2xl,
+html.dark .rmq-messages-area .bg-base-100.rounded-br-md {
+  background: rgba(51, 65, 85, 0.6) !important;
+  color: #ffffff !important;
+}
+
+/* Ensure message text is visible */
+html.dark .rmq-messages-area .text-base-content {
+  color: #ffffff !important;
+}
+
+/* RMQ sent messages - keep the green gradient visible */
+html.dark .rmq-messages-area .text-white.rounded-br-md {
+  /* Keep the inline gradient style, just ensure text is white */
+  color: #ffffff !important;
+}
+
+/* Catch-all for any remaining white backgrounds in RMQ chat area */
+html.dark .z-50 .rmq-messages-area .bg-white,
+html.dark .z-40 .rmq-messages-area .bg-white {
+  background: rgba(51, 65, 85, 0.8) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ loading indicator and empty states */
+html.dark .z-50 .inline-block.rounded-2xl,
+html.dark .z-40 .inline-block.rounded-2xl {
+  background: rgba(51, 65, 85, 0.6) !important;
+  color: #ffffff !important;
+}
+
+/* RMQ system messages and notifications */
+html.dark .z-50 .bg-gray-50.text-gray-500,
+html.dark .z-40 .bg-gray-50.text-gray-500 {
+  background: rgba(51, 65, 85, 0.4) !important;
+  color: rgba(255, 255, 255, 0.7) !important;
 }
 
 /* Tab styling */
@@ -493,6 +724,81 @@ input[type=number].no-arrows {
   .hide-client-header-mobile > div.text-black {
     display: block !important;
   }
+}
+
+/* --- Frosted Glass Effects for Dark Mode --- */
+
+/* Sidebar frosted glass - Light mode keeps gradient */
+.sidebar-frosted-glass {
+  background-color: #3E2BCD;
+  border-color: rgba(255, 255, 255, 0.1);
+}
+
+/* Sidebar frosted glass - Dark mode */
+html.dark .sidebar-frosted-glass {
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
+}
+
+/* Notification dropdown frosted glass */
+.notification-dropdown {
+  background-color: #ffffff !important;
+  opacity: 1 !important;
+}
+
+html.dark .notification-dropdown {
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
+  opacity: 1 !important;
+}
+
+/* Quick actions dropdown frosted glass */
+html.dark [data-dropdown-menu] {
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
+}
+
+/* Search dropdown frosted glass */
+html.dark .search-dropdown {
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
+}
+
+/* Filter dropdown frosted glass */
+html.dark .filter-dropdown {
+  background: rgba(15, 23, 42, 0.7) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
+}
+
+/* Specific targeting for WhatsApp, Email, RMQ modals only (z-[9999]) */
+html.dark .z-\[9999\].fixed.inset-0.bg-white,
+html.dark .z-\[9999\].fixed.inset-0 {
+  background: rgba(15, 23, 42, 0.95) !important;
+  backdrop-filter: blur(20px) !important;
+  -webkit-backdrop-filter: blur(20px) !important;
+}
+
+/* Modal overlay backgrounds for high z-index modals */
+html.dark .z-\[9998\].fixed.inset-0,
+html.dark .z-\[9999\] .fixed.inset-0.bg-black\/50 {
+  background: rgba(11, 30, 61, 0.85) !important;
+  backdrop-filter: blur(12px) !important;
+  -webkit-backdrop-filter: blur(12px) !important;
 }
 
 /* --- Print styles for ProformaViewPage --- */

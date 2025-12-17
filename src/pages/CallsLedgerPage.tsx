@@ -555,45 +555,6 @@ const CallsLedgerPage: React.FC = () => {
                   </div>
                   <div className="flex items-center gap-2">
                     <button
-                      className="btn btn-outline btn-sm"
-                      onClick={handleQuickSyncToday}
-                      disabled={isSyncing}
-                      title="Sync today's calls from 1com"
-                    >
-                      {isSyncing ? (
-                        <span className="loading loading-spinner loading-xs"></span>
-                      ) : (
-                        <CloudArrowDownIcon className="w-4 h-4" />
-                      )}
-                      <span className="hidden sm:inline">Sync Today</span>
-                    </button>
-                    <button
-                      className="btn btn-outline btn-sm"
-                      onClick={handleQuickSyncLast3Days}
-                      disabled={isSyncing}
-                      title="Sync calls from 1com for the last 3 days"
-                    >
-                      {isSyncing ? (
-                        <span className="loading loading-spinner loading-xs"></span>
-                      ) : (
-                        <CloudArrowDownIcon className="w-4 h-4" />
-                      )}
-                      <span className="hidden sm:inline">Sync Last 3 Days</span>
-                    </button>
-                    <button
-                      className="btn btn-primary btn-sm"
-                      onClick={handleSyncFromOneCom}
-                      disabled={isSyncing}
-                      title="Sync calls from 1com for selected date range"
-                    >
-                      {isSyncing ? (
-                        <span className="loading loading-spinner loading-xs"></span>
-                      ) : (
-                        <ArrowPathIcon className="w-4 h-4" />
-                      )}
-                      <span className="hidden sm:inline">Sync 1com</span>
-                    </button>
-                    <button
                       className="btn btn-outline btn-sm btn-info"
                       onClick={() => navigate('/cti/pop?phone=')}
                       title="Test CTI Popup Modal"

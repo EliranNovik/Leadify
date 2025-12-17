@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon } from '@heroicons/react/24/outline';
+import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
 import { FileText, PencilLine } from 'lucide-react';
@@ -60,6 +60,7 @@ interface LeadForPipeline {
   total?: number | null;
   meeting_total_currency_id?: number | null;
   expert_id?: string | null;
+  expert_examination?: number | null;
   language_id?: number | null;
   language?: string | null;
   latest_interaction?: string;
@@ -128,6 +129,110 @@ const getFollowUpColor = (followUpDateStr: string | null | undefined): string =>
   }
 };
 
+// Helper function to get employee display name from ID (copied from CalendarPage.tsx)
+const getEmployeeDisplayName = (employeeId: string | number | null | undefined, allEmployees: any[]): string => {
+  if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
+  // Find employee in the loaded employees array
+  // Convert both to string for comparison since employeeId might be bigint
+  const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+  return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
+};
+
+// Helper function to get expert display name
+const getExpertDisplayName = (lead: LeadForPipeline, allEmployees: any[]): string => {
+  // Use expert field - might be name or ID
+  if (lead.expert) {
+    // If it's a number, look it up in employees
+    if (!isNaN(Number(lead.expert))) {
+      return getEmployeeDisplayName(lead.expert, allEmployees);
+    }
+    // Otherwise it's already a name
+    return lead.expert;
+  }
+  return 'Unassigned';
+};
+
+// Helper function to get expert status icon and color (copied from CalendarPage.tsx)
+const getExpertStatusIcon = (lead: LeadForPipeline) => {
+  // For NEW leads: use eligibility_status field (text values)
+  // For LEGACY leads: use expert_examination field (numeric values)
+  if (lead.lead_type !== 'legacy') {
+    const eligibilityStatus = lead.eligibility_status;
+    
+    if (!eligibilityStatus || eligibilityStatus === '') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+          <QuestionMarkCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    }
+
+    if (eligibilityStatus === 'not_feasible') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+          <XCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    } else if (eligibilityStatus === 'feasible_no_check') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+          <CheckCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    } else if (eligibilityStatus === 'feasible_with_check') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+          <ExclamationTriangleIcon className="w-6 h-6" />
+        </span>
+      );
+    }
+
+    return (
+      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+        <QuestionMarkCircleIcon className="w-6 h-6" />
+      </span>
+    );
+  }
+
+  // For legacy leads, check expert_examination field with numeric values
+  // 0 = Not checked, 1 = Not Feasible, 5 = Feasible (further check), 8 = Feasible (no check)
+  const expertExamination = lead.expert_examination;
+
+  if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+    return (
+      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+        <QuestionMarkCircleIcon className="w-6 h-6" />
+      </span>
+    );
+  }
+
+  if (expertExamination === 1 || expertExamination === '1') {
+    return (
+      <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+        <XCircleIcon className="w-6 h-6" />
+      </span>
+    );
+  } else if (expertExamination === 5 || expertExamination === '5') {
+    return (
+      <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+        <ExclamationTriangleIcon className="w-6 h-6" />
+      </span>
+    );
+  } else if (expertExamination === 8 || expertExamination === '8') {
+    return (
+      <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+        <CheckCircleIcon className="w-6 h-6" />
+      </span>
+    );
+  }
+
+  return (
+    <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion status unknown">
+      <QuestionMarkCircleIcon className="w-6 h-6" />
+    </span>
+  );
+};
+
 // Removed LABEL_OPTIONS - now fetched from misc_leadtag table
 
 const PipelinePage: React.FC = () => {
@@ -151,8 +256,9 @@ const PipelinePage: React.FC = () => {
   const [contacts, setContacts] = useState<any[]>([]);
   const [contactsLoading, setContactsLoading] = useState(false);
   
-  // State to store all categories for name lookup (same as Clients.tsx)
+  // State to store all categories and employees for name lookup (same as CalendarPage.tsx)
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]);
   
   // State for countries (for Country column with business hours indicator)
   const [allCountries, setAllCountries] = useState<any[]>([]);
@@ -576,11 +682,12 @@ const PipelinePage: React.FC = () => {
   } | null>(null);
   const [loadingMyStats, setLoadingMyStats] = useState(false);
 
-  // Fetch categories on component mount (same as Clients.tsx)
+  // Fetch categories and employees on component mount (same as CalendarPage.tsx)
   useEffect(() => {
-    const fetchCategories = async () => {
+    const fetchCategoriesAndEmployees = async () => {
       try {
-        const { data, error } = await supabase
+        // Fetch categories
+        const { data: categoriesData, error: categoriesError } = await supabase
           .from('misc_category')
           .select(`
             id,
@@ -593,17 +700,58 @@ const PipelinePage: React.FC = () => {
           `)
           .order('name', { ascending: true });
         
-        if (error) {
-          console.error('PipelinePage: Error fetching categories:', error);
-        } else if (data) {
-          setAllCategories(data);
+        if (categoriesError) {
+          console.error('PipelinePage: Error fetching categories:', categoriesError);
+        } else if (categoriesData) {
+          setAllCategories(categoriesData);
+        }
+
+        // Fetch employees (copied from CalendarPage.tsx)
+        const { data: employeesData, error: employeesError } = await supabase
+          .from('users')
+          .select(`
+            email,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              bonuses_role
+            )
+          `)
+          .not('employee_id', 'is', null)
+          .eq('is_active', true);
+        
+        if (!employeesError && employeesData) {
+          // Process the data to match the expected format
+          const processedEmployees = employeesData
+            .filter(user => user.tenants_employee && user.email)
+            .map(user => {
+              const employee = user.tenants_employee as any;
+              return {
+                id: employee.id,
+                display_name: employee.display_name,
+                bonuses_role: employee.bonuses_role
+              };
+            })
+            .sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+          // Deduplicate by employee ID to prevent duplicates
+          const uniqueEmployeesMap = new Map();
+          processedEmployees.forEach(emp => {
+            if (!uniqueEmployeesMap.has(emp.id)) {
+              uniqueEmployeesMap.set(emp.id, emp);
+            }
+          });
+          const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+          
+          setAllEmployees(uniqueEmployees);
         }
       } catch (err) {
-        console.error('PipelinePage: Exception while fetching categories:', err);
+        console.error('PipelinePage: Exception while fetching categories/employees:', err);
       }
     };
 
-    fetchCategories();
+    fetchCategoriesAndEmployees();
   }, []);
 
   // Dynamically collect all unique stages from leads with proper stage names
@@ -863,6 +1011,7 @@ const PipelinePage: React.FC = () => {
                   category_id,
                   stage,
                   eligible,
+                  eligibility_status,
                   number_of_applicants_meeting,
                   potential_applicants_meeting,
                   balance,
@@ -971,6 +1120,7 @@ const PipelinePage: React.FC = () => {
                   category_id,
                   stage,
                   eligible,
+                  eligibility_status,
                   unactivated_at,
                   number_of_applicants_meeting,
                   potential_applicants_meeting,
@@ -1250,7 +1400,8 @@ const PipelinePage: React.FC = () => {
               description,
               special_notes,
               expert_notes,
-              handler_notes
+              handler_notes,
+              expert_examination
             `)
             .limit(1000)
             .eq('status', 0); // Only fetch leads where status is 0
@@ -5175,12 +5326,6 @@ const PipelinePage: React.FC = () => {
                     {lead.label && (
                       <span className="ml-2 px-2 py-1 rounded-full text-xs font-semibold bg-primary/10 text-primary border-2 border-primary">{lead.label}</span>
                     )}
-                    {/* Label display */}
-                    {lead.eligibility_status && lead.eligibility_status !== '' ? (
-                      <AcademicCapIcon className="w-6 h-6 text-green-400 ml-4" title="Feasibility chosen" />
-                    ) : (
-                      <QuestionMarkCircleIcon className="w-6 h-6 text-yellow-400 ml-2" title="Feasibility not chosen" />
-                    )}
                   </div>
                   {/* Stage */}
                   <div className="flex justify-between items-center py-1">
@@ -5234,6 +5379,16 @@ const PipelinePage: React.FC = () => {
                       <span className="text-sm font-bold text-gray-800 ml-2">
                         {lead.potential_applicants_meeting ?? 'N/A'}
                       </span>
+                    </div>
+                    {/* Expert */}
+                    <div className="flex justify-between items-center py-1">
+                      <span className="text-sm font-semibold text-gray-500">Expert</span>
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-gray-800">
+                          {getExpertDisplayName(lead, allEmployees)}
+                        </span>
+                        {getExpertStatusIcon(lead)}
+                      </div>
                     </div>
                     {/* Follow Up Date */}
                     <div className="flex justify-between items-center py-1">
@@ -5403,6 +5558,7 @@ const PipelinePage: React.FC = () => {
                 <th className="cursor-pointer select-none py-3 px-2 text-center" onClick={() => handleSort('potential_applicants')}>
                   Potential Applicants {sortColumn === 'potential_applicants' && <span className="ml-1">{sortDirection === 'asc' ? '▲' : '▼'}</span>}
                 </th>
+                <th className="py-3 px-2 text-center">Expert</th>
                 <th className="py-3 px-2 text-center">Country</th>
                 <th className="py-3 px-2 text-center">Language</th>
                 <th className="py-3 px-2 text-center rounded-r-xl">Tags</th>
@@ -5411,7 +5567,7 @@ const PipelinePage: React.FC = () => {
             <tbody>
               {isLoading ? (
                 <tr>
-                  <td colSpan={13} className="text-center py-12">
+                  <td colSpan={14} className="text-center py-12">
                     <div className="flex flex-col items-center justify-center gap-4">
                       <div className="loading loading-spinner loading-lg text-primary"></div>
                       <p className="text-base font-medium text-base-content/70">
@@ -5421,7 +5577,7 @@ const PipelinePage: React.FC = () => {
                   </td>
                 </tr>
               ) : sortedLeads.length === 0 ? (
-                <tr><td colSpan={13} className="text-center py-8 text-base-content/60">No leads found</td></tr>
+                <tr><td colSpan={14} className="text-center py-8 text-base-content/60">No leads found</td></tr>
               ) : (
                 sortedLeads.map((lead, idx) => {
                   const isExpanded = expandedRows.has(lead.id);
@@ -5495,6 +5651,15 @@ const PipelinePage: React.FC = () => {
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.number_of_applicants_meeting ?? 'N/A'}</td>
                     {/* Potential Applicants */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">{lead.potential_applicants_meeting ?? 'N/A'}</td>
+                    {/* Expert Status */}
+                    <td className="px-2 py-3 md:py-4 text-center">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="text-xs sm:text-sm text-gray-700 font-medium">
+                          {getExpertDisplayName(lead, allEmployees)}
+                        </span>
+                        {getExpertStatusIcon(lead)}
+                      </div>
+                    </td>
                     {/* Country */}
                     <td className="px-2 py-3 md:py-4 text-center truncate">
                       <div className="flex items-center justify-center gap-1">
@@ -5555,7 +5720,7 @@ const PipelinePage: React.FC = () => {
                   {/* Collapsible Content Row */}
                   {isExpanded && (
                     <tr>
-                      <td colSpan={13} className="px-4 py-4 bg-white border-b-2 border-gray-200">
+                      <td colSpan={14} className="px-4 py-4 bg-white border-b-2 border-gray-200">
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                           {/* Comments */}
                           <div className="bg-white border border-gray-200 rounded-2xl shadow-lg overflow-hidden">

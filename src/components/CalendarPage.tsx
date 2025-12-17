@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -1116,36 +1116,36 @@ const CalendarPage: React.FC = () => {
         // Load today's meetings with department JOINs - include legacy_lead join for meetings with legacy_lead_id
         console.log('🔍 Executing JOIN query for meetings on date:', today);
         const { data: todayMeetingsData, error: todayMeetingsError } = await supabase
-          .from('meetings')
-          .select(`
-            id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
-            meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-            attendance_probability, complexity, car_number, calendar_type,
-            lead:leads!client_id(
-              id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
-              expert, probability, phone, email, number_of_applicants_meeting,
-              meeting_confirmation, meeting_confirmation_by,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!department_id(id, name)
-                )
-              )
-            ),
-            legacy_lead:leads_lead!legacy_lead_id(
-              id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-              meeting_location_id, meeting_confirmation, meeting_confirmation_by,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!department_id(id, name)
-                )
+        .from('meetings')
+        .select(`
+          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
+          meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+          attendance_probability, complexity, car_number, calendar_type,
+          lead:leads!client_id(
+            id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
+            expert, probability, phone, email, number_of_applicants_meeting,
+            meeting_confirmation, meeting_confirmation_by, eligibility_status,
+            misc_category!category_id(
+              id, name, parent_id,
+              misc_maincategory!parent_id(
+                id, name, department_id,
+                tenant_departement!department_id(id, name)
               )
             )
-          `)
+          ),
+          legacy_lead:leads_lead!legacy_lead_id(
+            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+            total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+            meeting_location_id, meeting_confirmation, meeting_confirmation_by,
+            misc_category!category_id(
+              id, name, parent_id,
+              misc_maincategory!parent_id(
+                id, name, department_id,
+                tenant_departement!department_id(id, name)
+              )
+            )
+          )
+        `)
           .eq('meeting_date', today)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_time', { ascending: true });
@@ -1232,37 +1232,37 @@ const CalendarPage: React.FC = () => {
         
         // Load all regular meetings with department JOINs - include legacy_lead join for meetings with legacy_lead_id
         const { data: meetingsData, error: meetingsError } = await supabase
-          .from('meetings')
-          .select(`
-            id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
-            meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-            attendance_probability, complexity, car_number, calendar_type,
-            lead:leads!client_id(
-              id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
-              balance, balance_currency, expert_notes, expert, probability, phone, email, 
-              meeting_confirmation, meeting_confirmation_by,
-              manual_interactions, number_of_applicants_meeting, meeting_collection_id,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!department_id(id, name)
-                )
-              )
-            ),
-            legacy_lead:leads_lead!legacy_lead_id(
-              id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-              total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-              meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement!department_id(id, name)
-                )
+        .from('meetings')
+        .select(`
+          id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
+          meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+          attendance_probability, complexity, car_number, calendar_type,
+          lead:leads!client_id(
+            id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
+            balance, balance_currency, expert_notes, expert, probability, phone, email, 
+            meeting_confirmation, meeting_confirmation_by, eligibility_status,
+            manual_interactions, number_of_applicants_meeting, meeting_collection_id,
+            misc_category!category_id(
+              id, name, parent_id,
+              misc_maincategory!parent_id(
+                id, name, department_id,
+                tenant_departement!department_id(id, name)
               )
             )
-          `)
+          ),
+          legacy_lead:leads_lead!legacy_lead_id(
+            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+            total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+            meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
+            misc_category!category_id(
+              id, name, parent_id,
+              misc_maincategory!parent_id(
+                id, name, department_id,
+                tenant_departement!department_id(id, name)
+              )
+            )
+          )
+        `)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_date', { ascending: false });
 
@@ -1865,7 +1865,7 @@ const CalendarPage: React.FC = () => {
       if (uniqueClientIds.length > 0) {
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads')
-          .select('id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting')
+          .select('id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status')
           .in('id', uniqueClientIds)
           .limit(500);
 
@@ -2675,17 +2675,96 @@ const CalendarPage: React.FC = () => {
       .replace(/\b\w/g, char => char.toUpperCase());
   };
 
+  // Helper function to get expert status icon and color
+  const getExpertStatusIcon = (lead: any, meeting: any) => {
+    if (meeting.calendar_type === 'staff') {
+      return null;
+    }
+
+    // For NEW leads: use eligibility_status field (text values)
+    // For LEGACY leads: use expert_examination field (numeric values)
+    if (lead.lead_type !== 'legacy') {
+      const eligibilityStatus = lead.eligibility_status;
+      
+      if (!eligibilityStatus || eligibilityStatus === '') {
+        return (
+          <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+            <QuestionMarkCircleIcon className="w-6 h-6" />
+          </span>
+        );
+      }
+
+      if (eligibilityStatus === 'not_feasible') {
+        return (
+          <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+            <XCircleIcon className="w-6 h-6" />
+          </span>
+        );
+      } else if (eligibilityStatus === 'feasible_no_check') {
+        return (
+          <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+            <CheckCircleIcon className="w-6 h-6" />
+          </span>
+        );
+      } else if (eligibilityStatus === 'feasible_with_check') {
+        return (
+          <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+            <ExclamationTriangleIcon className="w-6 h-6" />
+          </span>
+        );
+      }
+
+      return (
+        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+          <QuestionMarkCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    }
+
+    // For legacy leads, check expert_examination field with numeric values
+    // 0 = Not checked, 1 = Not Feasible, 5 = Feasible (further check), 8 = Feasible (no check)
+    const expertExamination = lead.expert_examination;
+
+    if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+          <QuestionMarkCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    }
+
+    if (expertExamination === 1 || expertExamination === '1') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+          <XCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    } else if (expertExamination === 5 || expertExamination === '5') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+          <ExclamationTriangleIcon className="w-6 h-6" />
+        </span>
+      );
+    } else if (expertExamination === 8 || expertExamination === '8') {
+      return (
+        <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+          <CheckCircleIcon className="w-6 h-6" />
+        </span>
+      );
+    }
+
+    return (
+      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion status unknown">
+        <QuestionMarkCircleIcon className="w-6 h-6" />
+      </span>
+    );
+  };
+
   // Mobile-friendly meeting card component
   const renderMeetingCard = (meeting: any) => {
     const lead = meeting.lead || {};
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
-    // For legacy leads, check expert_examination column (0 = not checked/question mark, 5/8 = checked/graduation cap)
-    // For new leads, check expert_notes array
-    const hasExpertNotes = meeting.calendar_type === 'staff' ? false : 
-      (lead.lead_type === 'legacy' && lead.expert_examination !== undefined && lead.expert_examination !== null ? 
-        (String(lead.expert_examination).trim() !== '0' && String(lead.expert_examination).trim() !== '') : 
-        (Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false));
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
@@ -2747,11 +2826,7 @@ const CalendarPage: React.FC = () => {
               );
             })()}
             {/* Expert status indicator */}
-            {hasExpertNotes ? (
-              <AcademicCapIcon className="w-6 h-6 md:w-7 md:h-7 text-green-400 ml-4" title="Expert opinion exists" />
-            ) : (
-              <QuestionMarkCircleIcon className="w-6 h-6 md:w-7 md:h-7 text-yellow-400 ml-2" title="No expert opinion" />
-            )}
+            {getExpertStatusIcon(lead, meeting)}
           </div>
 
           {/* Stage */}
@@ -3050,12 +3125,6 @@ const CalendarPage: React.FC = () => {
     const lead = meeting.lead || {};
     const isExpanded = expandedMeetingId === meeting.id;
     const expandedData = expandedMeetingData[meeting.id] || {};
-    // For legacy leads, check expert_examination column (0 = not checked/question mark, 5/8 = checked/graduation cap)
-    // For new leads, check expert_notes array
-    const hasExpertNotes = meeting.calendar_type === 'staff' ? false : 
-      (lead.lead_type === 'legacy' && lead.expert_examination !== undefined && lead.expert_examination !== null ? 
-        (String(lead.expert_examination).trim() !== '0' && String(lead.expert_examination).trim() !== '') : 
-        (Array.isArray(lead.expert_notes) ? lead.expert_notes.length > 0 : false));
     const probability = lead.probability ?? meeting.probability;
     // Convert probability to number if it's a string
     const probabilityNumber = typeof probability === 'string' ? parseFloat(probability) : probability;
@@ -3139,14 +3208,91 @@ const CalendarPage: React.FC = () => {
               : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '0')}
           </td>
           <td className="hidden lg:table-cell">
-            <span className="inline-flex items-center">
-              {hasExpertNotes ? (
-                <AcademicCapIcon className="w-4 h-4 sm:w-5 sm:h-5 text-green-500 mr-1" title="Expert opinion exists" />
-              ) : (
-                <QuestionMarkCircleIcon className="w-4 h-4 sm:w-5 sm:h-5 text-yellow-400 mr-1" title="No expert opinion" />
-              )}
+            <div className="flex flex-col gap-1">
               <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}</span>
-            </span>
+              {(() => {
+                if (meeting.calendar_type === 'staff') {
+                  return null;
+                }
+
+                // For NEW leads: use eligibility_status field (text values)
+                // For LEGACY leads: use expert_examination field (numeric values)
+                if (lead.lead_type !== 'legacy') {
+                  const eligibilityStatus = lead.eligibility_status;
+                  
+                  if (!eligibilityStatus || eligibilityStatus === '') {
+                    return (
+                      <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                        <QuestionMarkCircleIcon className="w-5 h-5" />
+                      </span>
+                    );
+                  }
+
+                  if (eligibilityStatus === 'not_feasible') {
+                    return (
+                      <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+                        <XCircleIcon className="w-5 h-5" />
+                      </span>
+                    );
+                  } else if (eligibilityStatus === 'feasible_no_check') {
+                    return (
+                      <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+                        <CheckCircleIcon className="w-5 h-5" />
+                      </span>
+                    );
+                  } else if (eligibilityStatus === 'feasible_with_check') {
+                    return (
+                      <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+                        <ExclamationTriangleIcon className="w-5 h-5" />
+                      </span>
+                    );
+                  }
+
+                  return (
+                    <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                      <QuestionMarkCircleIcon className="w-5 h-5" />
+                    </span>
+                  );
+                }
+
+                const expertExamination = lead.expert_examination;
+
+                if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+                  return (
+                    <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                      <QuestionMarkCircleIcon className="w-5 h-5" />
+                    </span>
+                  );
+                }
+
+                if (expertExamination === 1 || expertExamination === '1') {
+                  return (
+                    <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+                      <XCircleIcon className="w-5 h-5" />
+                    </span>
+                  );
+                } else if (expertExamination === 5 || expertExamination === '5') {
+                  return (
+                    <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+                      <ExclamationTriangleIcon className="w-5 h-5" />
+                    </span>
+                  );
+                } else if (expertExamination === 8 || expertExamination === '8') {
+                  return (
+                    <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+                      <CheckCircleIcon className="w-5 h-5" />
+                    </span>
+                  );
+                }
+
+                return (
+                  <span className="px-2 py-1 rounded-full bg-gray-400 text-white gap-1 inline-flex items-center font-semibold shadow-md text-xs" title="Expert opinion status unknown">
+                    <QuestionMarkCircleIcon className="w-3 h-3" />
+                    Unknown
+                  </span>
+                );
+              })()}
+            </div>
           </td>
           <td className="hidden md:table-cell text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
           <td>
@@ -3958,13 +4104,92 @@ const CalendarPage: React.FC = () => {
                                   
                                   {/* Expert */}
                                   <td className="text-base">
-                                    <div className="flex items-center gap-1">
+                                    <div className="flex flex-col gap-2">
                                       <span>{meeting.lead?.expert || 'N/A'}</span>
-                                      {meeting.lead?.expert_notes ? (
-                                        <AcademicCapIcon className="w-4 h-4 text-green-600 flex-shrink-0" title="Expert search completed" />
-                                      ) : (
-                                        <QuestionMarkCircleIcon className="w-4 h-4 text-yellow-600 flex-shrink-0" title="Expert search pending" />
-                                      )}
+                                      {(() => {
+                                        if (meeting.calendar_type === 'staff') {
+                                          return null;
+                                        }
+
+                                        const lead = meeting.lead || {};
+                                        
+                                        // For NEW leads: use eligibility_status field (text values)
+                                        // For LEGACY leads: use expert_examination field (numeric values)
+                                        if (lead.lead_type !== 'legacy') {
+                                          const eligibilityStatus = lead.eligibility_status;
+                                          
+                                          if (!eligibilityStatus || eligibilityStatus === '') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                                                <QuestionMarkCircleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          }
+
+                                          if (eligibilityStatus === 'not_feasible') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+                                                <XCircleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          } else if (eligibilityStatus === 'feasible_no_check') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+                                                <CheckCircleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          } else if (eligibilityStatus === 'feasible_with_check') {
+                                            return (
+                                              <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+                                                <ExclamationTriangleIcon className="w-5 h-5" />
+                                              </span>
+                                            );
+                                          }
+
+                                          return (
+                                            <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                                              <QuestionMarkCircleIcon className="w-5 h-5" />
+                                            </span>
+                                          );
+                                        }
+
+                                        const expertExamination = lead.expert_examination;
+
+                                        if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
+                                          return (
+                                            <span className="w-9 h-9 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+                                              <QuestionMarkCircleIcon className="w-5 h-5" />
+                                            </span>
+                                          );
+                                        }
+
+                                        if (expertExamination === 1 || expertExamination === '1') {
+                                          return (
+                                            <span className="w-9 h-9 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+                                              <XCircleIcon className="w-5 h-5" />
+                                            </span>
+                                          );
+                                        } else if (expertExamination === 5 || expertExamination === '5') {
+                                          return (
+                                            <span className="w-9 h-9 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+                                              <ExclamationTriangleIcon className="w-5 h-5" />
+                                            </span>
+                                          );
+                                        } else if (expertExamination === 8 || expertExamination === '8') {
+                                          return (
+                                            <span className="w-9 h-9 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+                                              <CheckCircleIcon className="w-5 h-5" />
+                                            </span>
+                                          );
+                                        }
+
+                                        return (
+                                          <span className="px-2 py-1 rounded-full bg-gray-400 text-white gap-1 inline-flex items-center font-semibold shadow-md text-xs" title="Expert opinion status unknown">
+                                            <QuestionMarkCircleIcon className="w-3 h-3" />
+                                            Unknown
+                                          </span>
+                                        );
+                                      })()}
                                     </div>
                                   </td>
                                   

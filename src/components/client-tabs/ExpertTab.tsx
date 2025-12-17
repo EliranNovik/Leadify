@@ -1318,8 +1318,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     ? selectedEligibilityLabel || 'No feasibility'
     : (isLegacyLead 
       ? (eligibilityStatus.value ? selectedEligibilityLabel : 'Not checked')
-      : (selectedSection && eligibilityStatus.value
-        ? `${selectedSectionLabel} - ${selectedEligibilityLabel}`
+      : (eligibilityStatus.value
+        ? (selectedSection 
+          ? `${selectedSectionLabel} - ${selectedEligibilityLabel}`
+          : selectedEligibilityLabel)
         : 'Not checked')
     );
 

@@ -3354,7 +3354,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
               <div
                 ref={searchDropdownRef}
-                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown"
                 style={{
                   width: searchDropdownStyle.width,
                 }}
@@ -3433,7 +3433,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             {showFilterDropdown && (
               <div 
                 ref={filterDropdownRef} 
-                className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80"
+                className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80 filter-dropdown"
                 onMouseEnter={() => {
                   isMouseOverSearchRef.current = true;
                 }}
@@ -4211,12 +4211,13 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
           background-color: #ffffff !important;
           opacity: 1 !important;
         }
-        /* Dark background in dark mode */
+        /* Frosted glass effect in dark mode */
         .dark .notification-dropdown {
-          background: #1f2937 !important;
-          background-color: #1f2937 !important;
-          backdrop-filter: none !important;
-          -webkit-backdrop-filter: none !important;
+          background: rgba(15, 23, 42, 0.7) !important;
+          backdrop-filter: blur(20px) !important;
+          -webkit-backdrop-filter: blur(20px) !important;
+          border-color: rgba(255, 255, 255, 0.1) !important;
+          box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.37) !important;
           opacity: 1 !important;
         }
         /* Force light text colors in dark mode */
