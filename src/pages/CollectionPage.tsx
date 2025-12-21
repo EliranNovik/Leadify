@@ -581,15 +581,168 @@ const CollectionPage: React.FC = () => {
     if (tab === 'no_payment') {
       const fetchLeads = async () => {
         setLoading(true);
-        const { data, error } = await supabase
-          .from('leads')
-          .select('id, lead_number, name, date_signed, balance, stage, collection_label, collection_comments')
-          .in('stage', ['Client Signed Agreement', 'Client signed agreement']);
-        if (!error && data) {
-          setLeads(data);
-        } else {
+        
+        try {
+          // Step 1: Fetch signed contracts to get signed_at and total_amount
+          const { data: contractRows, error: contractsError } = await supabase
+            .from('contracts')
+            .select('id, client_id, legacy_id, signed_at, total_amount')
+            .not('signed_at', 'is', null)
+            .eq('status', 'signed');
+          
+          if (contractsError) {
+            console.error('Error fetching contracts:', contractsError);
+            setLeads([]);
+            setLoading(false);
+            return;
+          }
+          
+          // Map contracts by lead ID
+          const newLeadContracts = new Map<string, { signedAt: string; totalAmount: number | null }>();
+          const legacyContracts = new Map<number, { signedAt: string; totalAmount: number | null }>();
+          
+          (contractRows || []).forEach(row => {
+            if (!row?.signed_at) return;
+            const signedAt = row.signed_at as string;
+            const totalAmount = row.total_amount ?? null;
+            
+            if (row.client_id) {
+              const clientId = row.client_id.toString();
+              const existing = newLeadContracts.get(clientId);
+              if (!existing || new Date(signedAt).getTime() > new Date(existing.signedAt).getTime()) {
+                newLeadContracts.set(clientId, { signedAt, totalAmount });
+              }
+            }
+            
+            if (row.legacy_id !== null && row.legacy_id !== undefined) {
+              const legacyId = Number(row.legacy_id);
+              if (Number.isFinite(legacyId)) {
+                const existing = legacyContracts.get(legacyId);
+                if (!existing || new Date(signedAt).getTime() > new Date(existing.signedAt).getTime()) {
+                  legacyContracts.set(legacyId, { signedAt, totalAmount });
+                }
+              }
+            }
+          });
+          
+          // Step 2: Fetch stage 60 records for new leads
+          const newLeadStageDates = new Map<string, string>();
+          const { data: newLeadStageResponse, error: newLeadStageError } = await supabase
+            .from('leads_leadstage')
+            .select('id, newlead_id, stage, cdate, date')
+            .not('newlead_id', 'is', null)
+            .eq('stage', 60);
+          
+          if (!newLeadStageError) {
+            (newLeadStageResponse || []).forEach(record => {
+              const leadId = record.newlead_id?.toString?.();
+              if (!leadId) return;
+              const timestamp = record.date || record.cdate || null;
+              if (!timestamp) return;
+              const existingTimestamp = newLeadStageDates.get(leadId);
+              const nextTime = new Date(timestamp).getTime();
+              if (!existingTimestamp) {
+                newLeadStageDates.set(leadId, timestamp);
+                return;
+              }
+              const existingTime = new Date(existingTimestamp).getTime();
+              if (Number.isNaN(existingTime) || (!Number.isNaN(nextTime) && nextTime > existingTime)) {
+                newLeadStageDates.set(leadId, timestamp);
+              }
+            });
+          }
+          
+          // Step 3: Fetch leads with date_signed
+          const newLeadsWithDateSigned = new Map<string, string>();
+          const { data: dateSignedData, error: dateSignedError } = await supabase
+            .from('leads')
+            .select('id, date_signed')
+            .not('date_signed', 'is', null);
+          
+          if (!dateSignedError) {
+            (dateSignedData || []).forEach(lead => {
+              if (lead?.id && lead?.date_signed) {
+                const leadId = lead.id.toString();
+                const existingTimestamp = newLeadsWithDateSigned.get(leadId);
+                const signedTime = new Date(lead.date_signed).getTime();
+                if (!existingTimestamp) {
+                  newLeadsWithDateSigned.set(leadId, lead.date_signed);
+                } else {
+                  const existingTime = new Date(existingTimestamp).getTime();
+                  if (Number.isNaN(existingTime) || (!Number.isNaN(signedTime) && signedTime > existingTime)) {
+                    newLeadsWithDateSigned.set(leadId, lead.date_signed);
+                  }
+                }
+              }
+            });
+          }
+          
+          // Step 4: Combine all sources for new leads
+          const combinedNewLeadIdSet = new Set<string>();
+          newLeadContracts.forEach((_info, clientId) => combinedNewLeadIdSet.add(clientId));
+          newLeadStageDates.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
+          newLeadsWithDateSigned.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
+          
+          // Step 5: Fetch full lead data
+          let newLeadsData: any[] = [];
+          const allNewLeadIds = Array.from(combinedNewLeadIdSet).filter(Boolean);
+          if (allNewLeadIds.length > 0) {
+            const { data: newLeadsResponse, error: newLeadsError } = await supabase
+              .from('leads')
+              .select(`
+                id,
+                lead_number,
+                manual_id,
+                name,
+                created_at,
+                category,
+                category_id,
+                stage,
+                date_signed,
+                currency_id,
+                balance,
+                balance_currency,
+                proposal_total,
+                proposal_currency,
+                collection_label,
+                collection_comments
+              `)
+              .in('id', allNewLeadIds);
+            
+            if (!newLeadsError) {
+              newLeadsData = newLeadsResponse || [];
+            }
+          }
+          
+          // Step 6: Process new leads with contract data
+          const processedLeads = newLeadsData.map(lead => {
+            const contractInfo = newLeadContracts.get(String(lead.id));
+            const stageDate = newLeadStageDates.get(String(lead.id));
+            const dateSignedValue = newLeadsWithDateSigned.get(String(lead.id));
+            
+            // Get sign date from multiple sources
+            const signDate = contractInfo?.signedAt || stageDate || dateSignedValue || lead.date_signed || null;
+            
+            // Get total amount from multiple sources
+            const balanceAmount = typeof lead.balance === 'number' ? lead.balance : 0;
+            const proposalAmount = typeof lead.proposal_total === 'number' ? lead.proposal_total : 0;
+            const contractAmount = contractInfo?.totalAmount ?? 0;
+            const totalAmount = contractAmount || balanceAmount || proposalAmount || 0;
+            
+            return {
+              ...lead,
+              date_signed: signDate,
+              balance: totalAmount,
+              lead_type: 'new',
+            };
+          });
+          
+          setLeads(processedLeads);
+        } catch (error) {
+          console.error('Error fetching no payment leads:', error);
           setLeads([]);
         }
+        
         setLoading(false);
       };
       fetchLeads();
@@ -1047,9 +1200,17 @@ const CollectionPage: React.FC = () => {
   const [awaitingDateFrom, setAwaitingDateFrom] = useState('');
   const [awaitingDateTo, setAwaitingDateTo] = useState('');
 
-  // Paid Cases tab date range filter
-  const [paidCasesDateFrom, setPaidCasesDateFrom] = useState('');
-  const [paidCasesDateTo, setPaidCasesDateTo] = useState('');
+  // Paid Cases tab date range filter - default to last 30 days
+  const getThirtyDaysAgo = () => {
+    const date = new Date();
+    date.setDate(date.getDate() - 30);
+    return date.toISOString().split('T')[0];
+  };
+  const getToday = () => {
+    return new Date().toISOString().split('T')[0];
+  };
+  const [paidCasesDateFrom, setPaidCasesDateFrom] = useState(getThirtyDaysAgo());
+  const [paidCasesDateTo, setPaidCasesDateTo] = useState(getToday());
 
   // Helper to determine if a payment is overdue
   const isOverdue = (dueDate: string) => {
@@ -1434,7 +1595,7 @@ const CollectionPage: React.FC = () => {
                   <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
                 )}
               </button>
-              <button
+              {/* <button
                 className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
                   tab === 'paid'
                     ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
@@ -1446,7 +1607,7 @@ const CollectionPage: React.FC = () => {
                 {tab === 'paid' && (
                   <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
                 )}
-              </button>
+              </button> */}
               <button
                 className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] flex-1 ${
                   tab === 'paid_cases'
@@ -1492,7 +1653,7 @@ const CollectionPage: React.FC = () => {
                     <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
                   )}
                 </button>
-                <button
+                {/* <button
                   className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
                     tab === 'paid'
                       ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
@@ -1504,7 +1665,7 @@ const CollectionPage: React.FC = () => {
                   {tab === 'paid' && (
                     <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-1.5 h-1.5 bg-white dark:bg-gray-800 rounded-full"></div>
                   )}
-                </button>
+                </button> */}
                 <button
                   className={`relative flex flex-col items-center justify-center p-3 rounded-xl transition-all duration-300 min-w-[80px] ${
                     tab === 'paid_cases'
@@ -1542,11 +1703,11 @@ const CollectionPage: React.FC = () => {
         <>
           <div className="space-y-4 mb-6">
             {/* Date Range */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Date Signed:</label>
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Date Signed:</label>
               <div className="flex flex-col sm:flex-row gap-2 w-full">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
+                <div className="flex flex-col gap-1 flex-1">
+                  <span className="text-xs text-gray-500">From:</span>
                   <input
                     type="date"
                     className="input input-bordered input-sm w-full"
@@ -1554,8 +1715,8 @@ const CollectionPage: React.FC = () => {
                     onChange={e => setNoPaymentDateFrom(e.target.value)}
                   />
                 </div>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
+                <div className="flex flex-col gap-1 flex-1">
+                  <span className="text-xs text-gray-500">To:</span>
                   <input
                     type="date"
                     className="input input-bordered input-sm w-full"
@@ -1568,8 +1729,8 @@ const CollectionPage: React.FC = () => {
             
             {/* Filters Row */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-                <label className="font-semibold text-sm whitespace-nowrap">Label:</label>
+              <div className="flex flex-col gap-2">
+                <label className="font-semibold text-sm">Label:</label>
                 <select
                   className="select select-bordered w-full"
                   value={noPaymentLabel}
@@ -1581,8 +1742,8 @@ const CollectionPage: React.FC = () => {
                   ))}
                 </select>
               </div>
-              <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-                <label className="font-semibold text-sm whitespace-nowrap">Comments:</label>
+              <div className="flex flex-col gap-2">
+                <label className="font-semibold text-sm">Comments:</label>
                 <select
                   className="select select-bordered w-full"
                   value={noPaymentComments}
@@ -1596,8 +1757,8 @@ const CollectionPage: React.FC = () => {
             </div>
             
             {/* Search Bar */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Search:</label>
               <input
                 type="text"
                 className="input input-bordered w-full"
@@ -1776,8 +1937,8 @@ const CollectionPage: React.FC = () => {
         <>
           <div className="space-y-4 mb-6">
             {/* Status Filter */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Status:</label>
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Status:</label>
               <select
                 className="select select-bordered w-full md:w-auto"
                 value={awaitingStatusFilter}
@@ -1791,11 +1952,11 @@ const CollectionPage: React.FC = () => {
             </div>
             
             {/* Date Range */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Due Date:</label>
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Due Date:</label>
               <div className="flex flex-col sm:flex-row gap-2 w-full">
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">From:</span>
+                <div className="flex flex-col gap-1 flex-1">
+                  <span className="text-xs text-gray-500">From:</span>
                   <input
                     type="date"
                     className="input input-bordered input-sm w-full"
@@ -1803,8 +1964,8 @@ const CollectionPage: React.FC = () => {
                     onChange={e => setAwaitingDateFrom(e.target.value)}
                   />
                 </div>
-                <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-                  <span className="text-xs text-gray-500 sm:hidden">To:</span>
+                <div className="flex flex-col gap-1 flex-1">
+                  <span className="text-xs text-gray-500">To:</span>
                   <input
                     type="date"
                     className="input input-bordered input-sm w-full"
@@ -1816,8 +1977,8 @@ const CollectionPage: React.FC = () => {
             </div>
             
             {/* Search Bar */}
-            <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-              <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+            <div className="flex flex-col gap-2">
+              <label className="font-semibold text-sm">Search:</label>
               <input
                 type="text"
                 className="input input-bordered w-full"
@@ -2025,7 +2186,7 @@ const CollectionPage: React.FC = () => {
           )}
         </>
       )}
-      {tab === 'paid' && (
+      {false && tab === 'paid' && (
         <>
           {filteredPaidMeetings.length === 0 ? (
             <div className="text-center text-gray-500 mt-12">No paid meetings found.</div>
@@ -2137,35 +2298,19 @@ const CollectionPage: React.FC = () => {
                       </button>
                     </div>
                   </div>
-                  {row.collection_comments && row.collection_comments.length > 0 && (
-                    <div className="absolute left-5 bottom-5 max-w-[60%] flex items-end">
-                      <div className="flex items-start gap-2">
-                        <div className="flex-shrink-0 w-7 h-7 rounded-full bg-primary flex items-center justify-center shadow text-white text-sm font-bold">
-                          <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M21 12c0 4-4.03 7-9 7a9.77 9.77 0 01-4-.8l-4.28 1.07a1 1 0 01-1.21-1.21l1.07-4.28A7.94 7.94 0 013 12c0-4 4.03-7 9-7s9 3 9 7z"/></svg>
-                        </div>
-                        <div className="relative bg-white border border-base-200 rounded-2xl px-4 py-2 shadow-md text-sm text-base-content/90" style={{minWidth: '120px'}}>
-                          <div className="font-medium leading-snug max-w-xs truncate" title={row.collection_comments[row.collection_comments.length - 1].text}>{row.collection_comments[row.collection_comments.length - 1].text}</div>
-                          <div className="text-[11px] text-base-content/50 text-right mt-1">
-                            {row.collection_comments[row.collection_comments.length - 1].user} · {new Date(row.collection_comments[row.collection_comments.length - 1].timestamp).toLocaleString()}
-                          </div>
-                          <div className="absolute left-[-10px] bottom-2 w-0 h-0 border-t-8 border-t-transparent border-b-8 border-b-transparent border-r-8 border-r-white border-l-0"></div>
-                        </div>
-                      </div>
-                    </div>
-                  )}
                 </div>
               ))}
             </div>
           )}
         </>
       )}
-  
-  {tab === 'paid_cases' && (
+
+      {tab === 'paid_cases' && (
     <>
       <div className="space-y-4 mb-6">
         {/* Order Filter */}
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-          <label className="font-semibold text-sm whitespace-nowrap">Order:</label>
+        <div className="flex flex-col gap-2">
+          <label className="font-semibold text-sm">Order:</label>
           <select
             className="select select-bordered w-full md:w-auto"
             value={paidCasesOrderFilter}
@@ -2180,11 +2325,11 @@ const CollectionPage: React.FC = () => {
         </div>
         
         {/* Date Range */}
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-          <label className="font-semibold text-sm whitespace-nowrap">Date Paid:</label>
+        <div className="flex flex-col gap-2">
+          <label className="font-semibold text-sm">Date Paid:</label>
           <div className="flex flex-col sm:flex-row gap-2 w-full">
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-              <span className="text-xs text-gray-500 sm:hidden">From:</span>
+            <div className="flex flex-col gap-1 flex-1">
+              <span className="text-xs text-gray-500">From:</span>
               <input
                 type="date"
                 className="input input-bordered input-sm w-full"
@@ -2192,8 +2337,8 @@ const CollectionPage: React.FC = () => {
                 onChange={e => setPaidCasesDateFrom(e.target.value)}
               />
             </div>
-            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-1 flex-1">
-              <span className="text-xs text-gray-500 sm:hidden">To:</span>
+            <div className="flex flex-col gap-1 flex-1">
+              <span className="text-xs text-gray-500">To:</span>
               <input
                 type="date"
                 className="input input-bordered input-sm w-full"
@@ -2205,8 +2350,8 @@ const CollectionPage: React.FC = () => {
         </div>
         
         {/* Search Bar */}
-        <div className="flex flex-col md:flex-row items-start md:items-center gap-2">
-          <label className="font-semibold text-sm whitespace-nowrap">Search:</label>
+        <div className="flex flex-col gap-2">
+          <label className="font-semibold text-sm">Search:</label>
           <input
             type="text"
             className="input input-bordered w-full"

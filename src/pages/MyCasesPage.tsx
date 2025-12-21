@@ -1564,34 +1564,34 @@ const MyCasesPage: React.FC = () => {
           <table className="table w-full table-compact sm:table-normal">
             <thead>
               <tr className="bg-white">
-                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Case
                 </th>
-                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Follow-up
                 </th>
-                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Client
                 </th>
-                <th className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[150px]">
                   Category
                 </th>
-                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Language
                 </th>
-                <th className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-left text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Country
                 </th>
-                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-center text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-center text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[80px]">
                   Applicants
                 </th>
-                <th className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Value
                 </th>
-                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[120px]">
                   Stage
                 </th>
-                <th className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider">
+                <th className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 text-right text-[10px] sm:text-xs font-medium text-gray-900 uppercase tracking-wider min-w-[100px]">
                   Actions
                 </th>
               </tr>
@@ -1605,7 +1605,7 @@ const MyCasesPage: React.FC = () => {
                   }`}
                   onClick={() => handleRowSelect(caseItem.id)}
                 >
-                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
+                  <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 min-w-[100px]">
                     <div className="flex items-center gap-2">
                       {/* Document icon for all cases */}
                       <svg className="w-4 h-4 sm:w-5 sm:h-5 text-primary flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
@@ -1630,7 +1630,7 @@ const MyCasesPage: React.FC = () => {
                       </span>
                     </div>
                   </td>
-                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                  <td className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[120px]">
                     {caseItem.next_followup ? (
                       <span className={`px-2 py-1 rounded font-semibold text-xs ${getFollowUpColor(caseItem.next_followup)}`}>
                         {(() => {
@@ -1651,12 +1651,12 @@ const MyCasesPage: React.FC = () => {
                       </span>
                     ) : '—'}
                   </td>
-                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
-                    <div className="whitespace-nowrap">
+                  <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[120px]">
+                    <div className="max-w-[150px] whitespace-normal break-words leading-tight">
                       {caseItem.client_name}
                     </div>
                     <div className="md:hidden text-[10px] text-gray-500 mt-0.5 space-y-0.5">
-                      <div className="whitespace-nowrap">{caseItem.category}</div>
+                      <div className="max-w-[150px] whitespace-normal break-words leading-tight">{caseItem.category}</div>
                       {caseItem.value !== null && caseItem.value !== undefined && (
                         <div className="whitespace-nowrap font-medium text-gray-700">
                           {caseItem.currency || '₪'}{typeof caseItem.value === 'number' ? caseItem.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : caseItem.value}
@@ -1664,15 +1664,15 @@ const MyCasesPage: React.FC = () => {
                       )}
                     </div>
                   </td>
-                  <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
-                    <div className="max-w-[150px] lg:max-w-none truncate lg:whitespace-nowrap">
+                  <td className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[150px]">
+                    <div className="max-w-[180px] whitespace-normal break-words leading-tight">
                       {caseItem.category}
                     </div>
                   </td>
-                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                  <td className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[100px]">
                     {caseItem.language || '—'}
                   </td>
-                  <td className="hidden lg:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm">
+                  <td className="hidden lg:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-gray-900 text-xs sm:text-sm min-w-[120px]">
                     <div className="flex items-center gap-2">
                       <span>{caseItem.country || '—'}</span>
                       {caseItem.country && (() => {
@@ -1690,10 +1690,10 @@ const MyCasesPage: React.FC = () => {
                       })()}
                     </div>
                   </td>
-                  <td className="px-1 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm">
+                  <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-center text-gray-900 text-xs sm:text-sm min-w-[80px]">
                     {caseItem.applicants_count || 0}
                   </td>
-                  <td className="hidden md:table-cell px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right text-gray-900 text-xs sm:text-sm">
+                  <td className="hidden md:table-cell px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right text-gray-900 text-xs sm:text-sm min-w-[100px]">
                     {caseItem.value !== null && caseItem.value !== undefined ? (
                       <span className="font-medium">
                         {caseItem.currency || '₪'}{typeof caseItem.value === 'number' ? caseItem.value.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 }) : caseItem.value}
@@ -1702,14 +1702,14 @@ const MyCasesPage: React.FC = () => {
                       <span className="text-gray-400">—</span>
                     )}
                   </td>
-                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right">
+                  <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 text-right min-w-[120px]">
                     <div className="flex items-center justify-end gap-2">
                       <span className="text-xs sm:text-sm text-black">
                         {caseItem.stage}
                       </span>
                     </div>
                   </td>
-                  <td className="px-2 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4">
+                  <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 min-w-[100px]">
                     <div className="flex items-center justify-end gap-2">
                       {/* Missing Payment Plan button - show if no payment plan exists */}
                       {!caseItem.hasPaymentPlan && (

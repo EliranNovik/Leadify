@@ -37,6 +37,7 @@ import WhatsAppTemplatesManager from './WhatsAppTemplatesManager';
 import EmailTemplatesManager from './EmailTemplatesManager';
 import EmailTemplatesPlacementManager from './EmailTemplatesPlacementManager';
 import PublicMessagesManager from './PublicMessagesManager';
+import WebhookSettingsManager from './WebhookSettingsManager';
 import { useAdminRole } from '../../hooks/useAdminRole';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
@@ -70,7 +71,7 @@ const ADMIN_TABS: AdminTab[] = [
   {
     label: 'Hooks',
     icon: LinkIcon,
-    subcategories: ['Access Logs'],
+    subcategories: ['Access Logs', 'Settings'],
     requiresAdmin: true,
   },
   {
@@ -176,7 +177,7 @@ const AdminPage: React.FC = () => {
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
   
   // State for sidebar collapse and employee data
-  const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(true);
+  const [isSidebarOpen, setIsSidebarOpen] = useState(false);
   const [employeeData, setEmployeeData] = useState<{
     department?: string;
     bonusRole?: string;
@@ -804,104 +805,110 @@ const AdminPage: React.FC = () => {
 
   return (
     <div className="flex h-screen bg-base-100 w-full overflow-hidden">
-      {/* Left Sidebar - Desktop Tabs as Sidebar */}
-      <aside 
-        className="hidden md:flex flex-col fixed left-0 top-0 bottom-0 overflow-hidden transition-all duration-500 ease-in-out"
-        style={{ width: isSidebarCollapsed ? '64px' : '256px' }}
-        onMouseEnter={() => setIsSidebarCollapsed(false)}
-        onMouseLeave={() => setIsSidebarCollapsed(true)}
-      >
-        <div className="border-b border-gray-200 flex-shrink-0 px-4 py-3 flex items-center justify-between relative">
-          <div className="flex-1">
-            <h2 className={`text-xl font-bold text-gray-900 transition-opacity ${isSidebarCollapsed ? 'opacity-0 w-0 h-0' : 'opacity-100'}`}>
-              {!isSidebarCollapsed && 'Admin Menu'}
-            </h2>
-            <div className={`absolute left-0 right-0 flex justify-center pointer-events-none ${!isSidebarCollapsed ? 'hidden' : ''}`} style={{ top: '12px' }}>
-              <span className="text-2xl font-bold text-gray-900">A</span>
+      {/* Desktop Sidebar Overlay */}
+      {isSidebarOpen && (
+        <div className="fixed inset-0 z-[10000] hidden md:flex">
+          {/* Backdrop */}
+          <div 
+            className="absolute inset-0 bg-black/50 backdrop-blur-sm"
+            onClick={() => setIsSidebarOpen(false)}
+          />
+          {/* Sidebar Panel */}
+          <aside className="relative w-80 bg-white shadow-2xl overflow-y-auto">
+            <div className="border-b border-gray-200 flex-shrink-0 px-4 py-3 flex items-center justify-between">
+              <h2 className="text-xl font-bold text-gray-900">Admin Menu</h2>
+              <button
+                onClick={() => setIsSidebarOpen(false)}
+                className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
+                title="Close sidebar"
+              >
+                <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
             </div>
-          </div>
-          <button
-            onClick={() => setIsSidebarCollapsed(prev => !prev)}
-            className="p-2 rounded-lg hover:bg-gray-100 transition-colors"
-            title={isSidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-          >
-            {isSidebarCollapsed ? (
-              <ChevronDoubleRightIcon className="w-5 h-5 text-gray-600" />
-            ) : (
-              <ChevronDoubleLeftIcon className="w-5 h-5 text-gray-600" />
-            )}
-          </button>
-        </div>
-        <div className="flex-1 overflow-y-auto pt-2">
-          {ADMIN_TABS.filter(tab => {
-            const hasAccess = !tab.requiresAdmin || isAdmin;
-            return hasAccess;
-          }).map((tab, i) => {
-            const Icon = tab.icon;
-            return (
-              <div key={tab.label} className="mb-2">
-                  <button
-                    onClick={() => setOpenTab(openTab === i ? null : i)}
-                    className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-between'} p-3 mx-2 rounded-lg transition-all ${
-                      openTab === i
-                        ? 'bg-primary text-white shadow-md'
-                        : 'hover:bg-gray-100 text-gray-900'
-                    }`}
-                  >
-                    <div className="flex items-center gap-3">
-                      <Icon className="w-6 h-6" />
-                      {!isSidebarCollapsed && <span className="font-semibold">{tab.label}</span>}
-                    </div>
-                    {!isSidebarCollapsed && (
+            <div className="flex-1 overflow-y-auto pt-2">
+              {ADMIN_TABS.filter(tab => {
+                const hasAccess = !tab.requiresAdmin || isAdmin;
+                return hasAccess;
+              }).map((tab, i) => {
+                const Icon = tab.icon;
+                return (
+                  <div key={tab.label} className="mb-2">
+                    <button
+                      onClick={() => setOpenTab(openTab === i ? null : i)}
+                      className={`w-full flex items-center justify-between p-3 mx-2 rounded-lg transition-all ${
+                        openTab === i
+                          ? 'bg-primary text-white shadow-md'
+                          : 'hover:bg-gray-100 text-gray-900'
+                      }`}
+                    >
+                      <div className="flex items-center gap-3">
+                        <Icon className="w-6 h-6" />
+                        <span className="font-semibold">{tab.label}</span>
+                      </div>
                       <ChevronDownIcon
                         className={`w-5 h-5 transition-transform ${openTab === i ? 'rotate-180' : ''}`}
                       />
-                    )}
-                  </button>
-                {openTab === i && !isSidebarCollapsed && (
-                <div className="mt-2 space-y-1 ml-6">
-                  {tab.subcategories.map((sub, j) => (
-                    <button
-                      key={sub}
-                      onClick={() => {
-                        setSelected({ tab: i, sub: j });
-                        setOpenTab(null);
-                      }}
-                      className={`w-full text-left px-4 py-2 rounded-lg transition-all ${
-                        selected.tab === i && selected.sub === j
-                          ? 'bg-primary/10 text-primary font-semibold'
-                          : 'text-gray-700 hover:bg-gray-100'
-                      }`}
-                    >
-                      {sub}
                     </button>
-                  ))}
+                    {openTab === i && (
+                      <div className="mt-2 space-y-1 ml-6">
+                        {tab.subcategories.map((sub, j) => (
+                          <button
+                            key={sub}
+                            onClick={() => {
+                              setSelected({ tab: i, sub: j });
+                              setOpenTab(null);
+                              setIsSidebarOpen(false);
+                            }}
+                            className={`w-full text-left px-4 py-2 rounded-lg transition-all ${
+                              selected.tab === i && selected.sub === j
+                                ? 'bg-primary/10 text-primary font-semibold'
+                                : 'text-gray-700 hover:bg-gray-100'
+                            }`}
+                          >
+                            {sub}
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+            
+            {/* Footer with User Info and Logout */}
+            <div className="p-4 border-t border-gray-200 flex-shrink-0 space-y-3">
+              <div className="space-y-1">
+                <div className="font-semibold text-gray-900">
+                  {currentUser?.first_name || currentUser?.email}
                 </div>
-              )}
+                {employeeData?.bonusRole && (
+                  <div className="text-sm text-gray-600">{getRoleDisplayName(employeeData.bonusRole)}</div>
+                )}
+              </div>
+              <button
+                onClick={handleLogout}
+                className="w-full flex items-center justify-start p-2 rounded-lg transition-all hover:bg-red-50 text-red-600"
+              >
+                <ArrowRightOnRectangleIcon className="w-5 h-5" />
+                <span className="ml-2 font-medium">Logout</span>
+              </button>
             </div>
-            );
-          })}
+          </aside>
         </div>
-        
-        {/* Footer with User Info and Logout */}
-        <div className="p-4 border-t border-gray-200 flex-shrink-0 space-y-3">
-          <div className={`space-y-1 ${isSidebarCollapsed ? 'hidden' : ''}`}>
-            <div className="font-semibold text-gray-900">
-              {currentUser?.first_name || currentUser?.email}
-            </div>
-            {employeeData?.bonusRole && (
-              <div className="text-sm text-gray-600">{getRoleDisplayName(employeeData.bonusRole)}</div>
-            )}
-          </div>
-          <button
-            onClick={handleLogout}
-            className={`w-full flex items-center ${isSidebarCollapsed ? 'justify-center' : 'justify-start'} p-2 rounded-lg transition-all hover:bg-red-50 text-red-600`}
-          >
-            <ArrowRightOnRectangleIcon className="w-5 h-5" />
-            {!isSidebarCollapsed && <span className="ml-2 font-medium">Logout</span>}
-          </button>
-        </div>
-      </aside>
+      )}
+
+      {/* Desktop Menu Button */}
+      <button
+        onClick={() => setIsSidebarOpen(true)}
+        className="hidden md:block fixed top-1/2 -translate-y-1/2 left-6 z-50 p-3 bg-primary text-white rounded-full shadow-lg hover:shadow-xl transition-all hover:scale-105"
+        title="Open menu"
+      >
+        <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+        </svg>
+      </button>
 
       {/* Mobile Sidebar */}
       {isMobileSidebarOpen && (
@@ -976,7 +983,6 @@ const AdminPage: React.FC = () => {
       {/* Main Content Area */}
       <div 
         className="flex-1 overflow-y-auto px-2 sm:px-3 md:px-6 py-4 md:py-6 transition-all duration-300"
-        style={{ marginLeft: window.innerWidth >= 768 ? (isSidebarCollapsed ? '64px' : '256px') : '0' }}
       >
       {/* Admin Search */}
       <div className="max-w-3xl mx-auto mb-8 w-full" ref={searchBoxRef}>
@@ -1319,7 +1325,7 @@ const AdminPage: React.FC = () => {
 
 
         {/* Content Area */}
-        <div className="bg-base-100 rounded-xl shadow p-4 md:p-8 min-h-[200px] mt-4 md:mt-8">
+        <div className="min-h-[200px] mt-4 md:mt-8">
         {/* Welcome message for non-admin users */}
         {!isAdmin && selected.tab === null && selected.sub === null && (
           <div className="text-center py-8">
@@ -1364,6 +1370,9 @@ const AdminPage: React.FC = () => {
             ) : selectedTab?.label === 'Hooks' &&
             selectedTab?.subcategories[selected.sub] === 'Access Logs' ? (
               <div className="w-full"><AccessLogsManager /></div>
+            ) : selectedTab?.label === 'Hooks' &&
+            selectedTab?.subcategories[selected.sub] === 'Settings' ? (
+              <div className="w-full"><WebhookSettingsManager /></div>
             ) : selectedTab?.label === 'Accounting' &&
             selectedTab?.subcategories[selected.sub] === 'Currencies' ? (
               <div className="w-full"><CurrenciesManager /></div>

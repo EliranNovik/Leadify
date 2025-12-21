@@ -1,5 +1,33 @@
 const supabase = require('../config/supabase');
 
+// Helper function to check if webhook is enabled
+async function isWebhookEnabled() {
+  try {
+    const { data, error } = await supabase
+      .from('webhook_settings')
+      .select('is_active')
+      .limit(1)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error checking webhook settings:', error);
+      // If table doesn't exist or error, assume enabled (safe default)
+      return true;
+    }
+
+    // If no settings found, assume enabled
+    if (!data) {
+      return true;
+    }
+
+    return data.is_active === true;
+  } catch (err) {
+    console.error('Error in isWebhookEnabled:', err);
+    // On error, assume enabled (safe default)
+    return true;
+  }
+}
+
 const FACEBOOK_VERIFY_TOKEN = process.env.VERIFY_TOKEN;
 const FB_GRAPH_VERSION = process.env.FB_GRAPH_VERSION || 'v21.0';
 
@@ -112,6 +140,17 @@ const webhookController = {
   async catchFormData(req, res) {
     try {
       console.log('📥 Received webhook data:', req.body);
+      
+      // Check if webhook is enabled
+      const webhookEnabled = await isWebhookEnabled();
+      if (!webhookEnabled) {
+        console.log('⛔ Webhook is disabled. Rejecting incoming request.');
+        return res.status(503).json({ 
+          success: false,
+          error: 'Webhook endpoint is currently disabled',
+          message: 'The webhook is temporarily unavailable. Please try again later or contact support.'
+        });
+      }
       
       // Log the received form data
       // Accept both 'source_code' and 'lead_source' as aliases
@@ -516,6 +555,16 @@ const webhookController = {
     console.log('🎯 Request body type:', typeof req.body);
     console.log('🎯 Request body:', JSON.stringify(req.body, null, 2));
     console.log('='.repeat(80));
+    
+    // Check if webhook is enabled BEFORE acknowledging to Facebook
+    const webhookEnabled = await isWebhookEnabled();
+    if (!webhookEnabled) {
+      console.log('⛔ Webhook is disabled. Rejecting Facebook lead webhook.');
+      return res.status(503).json({ 
+        success: false,
+        error: 'Webhook endpoint is currently disabled'
+      });
+    }
     
     // Always acknowledge to Facebook immediately to prevent retries
     // We'll process asynchronously

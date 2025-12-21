@@ -674,7 +674,7 @@ const ExpertPage: React.FC = () => {
           `)
           .or('eligibility_status.is.null,eligibility_status.eq.""')
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
-          .lt('stage', 60) // Exclude leads that have already passed stage 60 (Client signed agreement)
+          .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
         // Filter new leads by expert field if we have user's employee ID
@@ -730,7 +730,7 @@ const ExpertPage: React.FC = () => {
           .eq('expert_examination', 0) // Only fetch leads where expert_examination is 0
           .gte('meeting_date', '2025-01-01') // Only fetch leads with meeting dates from 2025 onwards
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
-          .lt('stage', 60) // Exclude leads that have already passed stage 60 (Client signed agreement)
+          .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
         // Filter legacy leads by expert_id if we have the employee ID
@@ -1485,81 +1485,78 @@ const ExpertPage: React.FC = () => {
             onChange={e => setSearchQuery(e.target.value)}
           />
         </div>
-        {/* Filters Row */}
-        <div className="flex flex-row flex-wrap gap-4 w-full">
-          {/* Meeting Date Range Filter */}
-          <div className="flex flex-col min-w-[360px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">Meeting Date</label>
-            <div className="flex items-center gap-2">
-              <input
-                type="date"
-                className="input input-bordered w-full max-w-[160px]"
-                value={filterMeetingDateFrom}
-                onChange={e => setFilterMeetingDateFrom(e.target.value)}
-                placeholder="From"
-              />
-              <span className="mx-2 text-base-content/50">-</span>
-              <input
-                type="date"
-                className="input input-bordered w-full max-w-[160px]"
-                value={filterMeetingDateTo}
-                onChange={e => setFilterMeetingDateTo(e.target.value)}
-                placeholder="To"
-              />
-            </div>
+        {/* Meeting Date Range Filter */}
+        <div className="flex flex-col min-w-[360px]">
+          <label className="text-xs font-semibold text-base-content/70 mb-1">Meeting Date</label>
+          <div className="flex items-center gap-2">
+            <input
+              type="date"
+              className="input input-bordered w-full max-w-[160px]"
+              value={filterMeetingDateFrom}
+              onChange={e => setFilterMeetingDateFrom(e.target.value)}
+              placeholder="From"
+            />
+            <span className="mx-2 text-base-content/50">-</span>
+            <input
+              type="date"
+              className="input input-bordered w-full max-w-[160px]"
+              value={filterMeetingDateTo}
+              onChange={e => setFilterMeetingDateTo(e.target.value)}
+              placeholder="To"
+            />
           </div>
-          {/* Meeting Date Sort Filter */}
-          <div className="flex flex-col min-w-[160px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">Meeting Date Sort</label>
-            <select
-              className="select select-bordered w-full"
-              value={meetingSort}
-              onChange={e => setMeetingSort(e.target.value as 'upcoming' | 'past')}
-            >
-              <option value="upcoming">Upcoming Meetings</option>
-              <option value="past">Past Meetings</option>
-            </select>
-          </div>
-          {/* Filter by Tag */}
-          <div className="flex flex-col min-w-[180px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">Tag</label>
-            <select
-              className="select select-bordered w-full"
-              value={tagFilter}
-              onChange={e => setTagFilter(e.target.value)}
-            >
-              <option value="">All</option>
-              {availableTags.map(tag => (
-                <option key={tag} value={tag}>{tag}</option>
-              ))}
-            </select>
-          </div>
-          {/* My Stats Button */}
-          <div className="flex flex-col min-w-[140px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
-            <button
-              className="btn btn-primary w-full"
-              onClick={() => setShowMyStatsModal(true)}
-            >
-              <ChartBarIcon className="w-4 h-4 mr-2" />
-              My Stats
-            </button>
-          </div>
-          {/* View Toggle Button (Icon Only) */}
-          <div className="flex flex-col min-w-[40px]">
-            <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
-            <button
-              className="btn btn-outline btn-primary w-full"
-              onClick={() => setViewMode(viewMode === 'box' ? 'list' : 'box')}
-              title={viewMode === 'box' ? 'Switch to List View' : 'Switch to Box View'}
-            >
-              {viewMode === 'box' ? (
-                <Bars3Icon className="w-5 h-5" />
-              ) : (
-                <Squares2X2Icon className="w-5 h-5" />
-              )}
-            </button>
-          </div>
+        </div>
+        {/* Meeting Date Sort Filter */}
+        <div className="flex flex-col min-w-[160px]">
+          <label className="text-xs font-semibold text-base-content/70 mb-1">Meeting Date Sort</label>
+          <select
+            className="select select-bordered w-full"
+            value={meetingSort}
+            onChange={e => setMeetingSort(e.target.value as 'upcoming' | 'past')}
+          >
+            <option value="upcoming">Upcoming Meetings</option>
+            <option value="past">Past Meetings</option>
+          </select>
+        </div>
+        {/* Filter by Tag */}
+        <div className="flex flex-col min-w-[180px]">
+          <label className="text-xs font-semibold text-base-content/70 mb-1">Tag</label>
+          <select
+            className="select select-bordered w-full"
+            value={tagFilter}
+            onChange={e => setTagFilter(e.target.value)}
+          >
+            <option value="">All</option>
+            {availableTags.map(tag => (
+              <option key={tag} value={tag}>{tag}</option>
+            ))}
+          </select>
+        </div>
+        {/* My Stats Button */}
+        <div className="flex flex-col min-w-[140px]">
+          <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
+          <button
+            className="btn btn-primary w-full"
+            onClick={() => setShowMyStatsModal(true)}
+          >
+            <ChartBarIcon className="w-4 h-4 mr-2" />
+            My Stats
+          </button>
+        </div>
+        {/* View Toggle Button (Icon Only) */}
+        <div className="flex flex-col min-w-[40px]">
+          <label className="text-xs font-semibold text-base-content/70 mb-1">&nbsp;</label>
+          <button
+            className="btn btn-outline btn-primary w-full"
+            onClick={() => setViewMode(viewMode === 'box' ? 'list' : 'box')}
+            title={viewMode === 'box' ? 'Switch to List View' : 'Switch to Box View'}
+          >
+            {viewMode === 'box' ? (
+              <Bars3Icon className="w-5 h-5" />
+            ) : (
+              <Squares2X2Icon className="w-5 h-5" />
+            )}
+          </button>
         </div>
       </div>
 
@@ -1702,11 +1699,16 @@ const ExpertPage: React.FC = () => {
                       const formattedDate = `${day}/${month}/${year}`;
                       // Format time (HH:mm:ss to HH:mm)
                       const formattedTime = timeOnly ? timeOnly.substring(0, 5) : '';
-                      const displayText = formattedTime ? `${formattedDate} - ${formattedTime}` : formattedDate;
                       const colorClass = getMeetingColor(meetingDateStr);
                       return (
-                        <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${colorClass}`}>
-                          {displayText}
+                        <span className={`text-sm font-bold ml-2 px-2 py-1 rounded ${colorClass} whitespace-normal break-words leading-tight inline-block`}>
+                          {formattedDate}
+                          {formattedTime && (
+                            <>
+                              <br />
+                              {formattedTime}
+                            </>
+                          )}
                   </span>
                       );
                     })() : <span className="text-sm font-bold ml-2">N/A</span>}
@@ -1886,11 +1888,16 @@ const ExpertPage: React.FC = () => {
                       const formattedDate = `${day}/${month}/${year}`;
                       // Format time (HH:mm:ss to HH:mm)
                       const formattedTime = timeOnly ? timeOnly.substring(0, 5) : '';
-                      const displayText = formattedTime ? `${formattedDate} - ${formattedTime}` : formattedDate;
                       const colorClass = getMeetingColor(meetingDateStr);
                       return (
-                        <span className={`px-2 py-1 rounded font-semibold ${colorClass}`}>
-                          {displayText}
+                        <span className={`px-2 py-1 rounded font-semibold ${colorClass} whitespace-normal break-words leading-tight inline-block`}>
+                          {formattedDate}
+                          {formattedTime && (
+                            <>
+                              <br />
+                              {formattedTime}
+                            </>
+                          )}
                         </span>
                       );
                     })() : 'N/A'}
@@ -1903,9 +1910,9 @@ const ExpertPage: React.FC = () => {
                   <td className="text-xs sm:text-sm">{getDisplayValue(lead)}</td>
                   <td className="text-xs sm:text-sm">
                     {lead.tags && lead.tags.length > 0 ? (
-                      <div className="flex flex-wrap gap-1 justify-center">
+                      <div className="flex flex-wrap gap-1 justify-center max-w-[150px] mx-auto">
                         {lead.tags.map((tag, idx) => (
-                          <span key={idx} className="badge badge-outline badge-primary font-semibold text-xs">{tag}</span>
+                          <span key={idx} className="badge badge-outline badge-primary font-semibold text-xs whitespace-normal break-words leading-tight">{tag}</span>
                         ))}
                       </div>
                     ) : (

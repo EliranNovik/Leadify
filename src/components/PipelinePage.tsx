@@ -132,103 +132,113 @@ const getFollowUpColor = (followUpDateStr: string | null | undefined): string =>
 // Helper function to get employee display name from ID (copied from CalendarPage.tsx)
 const getEmployeeDisplayName = (employeeId: string | number | null | undefined, allEmployees: any[]): string => {
   if (!employeeId || employeeId === '---' || employeeId === '--') return '--';
+  
+  // Convert to number if it's a string number
+  const numericId = typeof employeeId === 'string' ? parseInt(employeeId) : employeeId;
+  
   // Find employee in the loaded employees array
   // Convert both to string for comparison since employeeId might be bigint
-  const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
+  const employee = allEmployees.find((emp: any) => {
+    const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+    return empId.toString() === numericId.toString();
+  });
+  
+  if (!employee) {
+    console.warn('⚠️ PipelinePage - Employee not found for ID:', employeeId, 'Available employees:', allEmployees.length);
+  }
+  
   return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
 };
 
-// Helper function to get expert display name
+// Helper function to get expert display name (copied from Meetings.tsx)
 const getExpertDisplayName = (lead: LeadForPipeline, allEmployees: any[]): string => {
-  // Use expert field - might be name or ID
-  if (lead.expert) {
-    // If it's a number, look it up in employees
-    if (!isNaN(Number(lead.expert))) {
-      return getEmployeeDisplayName(lead.expert, allEmployees);
-    }
-    // Otherwise it's already a name
-    return lead.expert;
+  // For legacy leads, use expert_id
+  if (lead.lead_type === 'legacy' && lead.expert_id) {
+    const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
+    return expertName !== lead.expert_id.toString() ? expertName : '--';
   }
-  return 'Unassigned';
+  
+  // For new leads, check expert field (might be name or ID)
+  if (lead.expert) {
+    // If it's already a name (not a number), return it
+    if (isNaN(Number(lead.expert))) {
+      return lead.expert;
+    }
+    // Otherwise, try to look it up as an ID
+    const expertName = getEmployeeDisplayName(lead.expert, allEmployees);
+    return expertName;
+  }
+  
+  return '--';
 };
 
 // Helper function to get expert status icon and color (copied from CalendarPage.tsx)
+// Helper function to get expert status icon (copied from Meetings.tsx)
 const getExpertStatusIcon = (lead: LeadForPipeline) => {
-  // For NEW leads: use eligibility_status field (text values)
-  // For LEGACY leads: use expert_examination field (numeric values)
-  if (lead.lead_type !== 'legacy') {
-    const eligibilityStatus = lead.eligibility_status;
+  let status: string | number | null = null;
+  const isLegacy = lead.lead_type === 'legacy';
+
+  // Get the appropriate status based on lead type
+  if (isLegacy) {
+    status = lead.expert_examination ?? null;
+  } else {
+    status = lead.eligibility_status || null;
+  }
+
+  // For legacy leads with expert_examination
+  if (isLegacy && status !== null) {
+    const examStatus = Number(status);
     
-    if (!eligibilityStatus || eligibilityStatus === '') {
+    if (examStatus === 1) {
       return (
-        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-          <QuestionMarkCircleIcon className="w-6 h-6" />
+        <span className="w-7 h-7 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+          <XCircleIcon className="w-4 h-4" />
+        </span>
+      );
+    } else if (examStatus === 5) {
+      return (
+        <span className="w-7 h-7 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+          <ExclamationTriangleIcon className="w-4 h-4" />
+        </span>
+      );
+    } else if (examStatus === 8) {
+      return (
+        <span className="w-7 h-7 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+          <CheckCircleIcon className="w-4 h-4" />
         </span>
       );
     }
+  }
 
-    if (eligibilityStatus === 'not_feasible') {
+  // For new leads with eligibility_status
+  if (!isLegacy && status) {
+    const statusStr = String(status);
+    
+    if (statusStr === 'not_feasible') {
       return (
-        <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-          <XCircleIcon className="w-6 h-6" />
+        <span className="w-7 h-7 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+          <XCircleIcon className="w-4 h-4" />
         </span>
       );
-    } else if (eligibilityStatus === 'feasible_no_check') {
+    } else if (statusStr === 'feasible_no_check') {
       return (
-        <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-          <CheckCircleIcon className="w-6 h-6" />
+        <span className="w-7 h-7 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+          <CheckCircleIcon className="w-4 h-4" />
         </span>
       );
-    } else if (eligibilityStatus === 'feasible_with_check') {
+    } else if (statusStr === 'feasible_with_check') {
       return (
-        <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
-          <ExclamationTriangleIcon className="w-6 h-6" />
+        <span className="w-7 h-7 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+          <ExclamationTriangleIcon className="w-4 h-4" />
         </span>
       );
     }
-
-    return (
-      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-        <QuestionMarkCircleIcon className="w-6 h-6" />
-      </span>
-    );
   }
 
-  // For legacy leads, check expert_examination field with numeric values
-  // 0 = Not checked, 1 = Not Feasible, 5 = Feasible (further check), 8 = Feasible (no check)
-  const expertExamination = lead.expert_examination;
-
-  if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
-    return (
-      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-        <QuestionMarkCircleIcon className="w-6 h-6" />
-      </span>
-    );
-  }
-
-  if (expertExamination === 1 || expertExamination === '1') {
-    return (
-      <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-        <XCircleIcon className="w-6 h-6" />
-      </span>
-    );
-  } else if (expertExamination === 5 || expertExamination === '5') {
-    return (
-      <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
-        <ExclamationTriangleIcon className="w-6 h-6" />
-      </span>
-    );
-  } else if (expertExamination === 8 || expertExamination === '8') {
-    return (
-      <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-        <CheckCircleIcon className="w-6 h-6" />
-      </span>
-    );
-  }
-
+  // Default: Not checked
   return (
-    <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion status unknown">
-      <QuestionMarkCircleIcon className="w-6 h-6" />
+    <span className="w-7 h-7 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+      <QuestionMarkCircleIcon className="w-4 h-4" />
     </span>
   );
 };
@@ -268,6 +278,11 @@ const PipelinePage: React.FC = () => {
   
   // State for contact dropdown
   const [openContactDropdown, setOpenContactDropdown] = useState<string | number | null>(null);
+  const [dropdownPosition, setDropdownPosition] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  
+  // Refs for contact dropdown and main cards
+  const contactButtonRefs = useRef<{ [key: string | number]: HTMLButtonElement | null }>({});
+  const mainCardRefs = useRef<{ [key: string | number]: HTMLDivElement | null }>({});
   
   // State for row selection and action menu
   const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
@@ -706,45 +721,18 @@ const PipelinePage: React.FC = () => {
           setAllCategories(categoriesData);
         }
 
-        // Fetch employees (copied from CalendarPage.tsx)
+        // Fetch ALL employees directly from tenants_employee table
+        // This ensures we have all employees, even those without user accounts
         const { data: employeesData, error: employeesError } = await supabase
-          .from('users')
-          .select(`
-            email,
-            employee_id,
-            tenants_employee!employee_id(
-              id,
-              display_name,
-              bonuses_role
-            )
-          `)
-          .not('employee_id', 'is', null)
-          .eq('is_active', true);
+          .from('tenants_employee')
+          .select('id, display_name, bonuses_role')
+          .order('display_name', { ascending: true });
         
         if (!employeesError && employeesData) {
-          // Process the data to match the expected format
-          const processedEmployees = employeesData
-            .filter(user => user.tenants_employee && user.email)
-            .map(user => {
-              const employee = user.tenants_employee as any;
-              return {
-                id: employee.id,
-                display_name: employee.display_name,
-                bonuses_role: employee.bonuses_role
-              };
-            })
-            .sort((a, b) => a.display_name.localeCompare(b.display_name));
-
-          // Deduplicate by employee ID to prevent duplicates
-          const uniqueEmployeesMap = new Map();
-          processedEmployees.forEach(emp => {
-            if (!uniqueEmployeesMap.has(emp.id)) {
-              uniqueEmployeesMap.set(emp.id, emp);
-            }
-          });
-          const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
-          
-          setAllEmployees(uniqueEmployees);
+          console.log('📋 PipelinePage - Fetched employees:', employeesData.length);
+          setAllEmployees(employeesData);
+        } else {
+          console.error('❌ PipelinePage - Error fetching employees:', employeesError);
         }
       } catch (err) {
         console.error('PipelinePage: Exception while fetching categories/employees:', err);
@@ -973,7 +961,7 @@ const PipelinePage: React.FC = () => {
           // Define allowed stage IDs based on pipeline mode
           const allowedStageIds = pipelineMode === 'closer' 
             ? ['20', '21', '30', '40', '50', '55', '60', '70']
-            : ['10', '15', '20', '21', '30', '40', '50'];
+            : ['10', '15', '20', '21', '30', '40']; // Scheduler: exclude stage 50 and above
           
           console.log('🔍 Pipeline Debug - Fetching leads', {
             pipelineMode,
@@ -5315,9 +5303,10 @@ const PipelinePage: React.FC = () => {
               <div
                 key={lead.id}
                 ref={el => (mainCardRefs.current[Number(lead.id)] = el)}
-                className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16"
+                className={`bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
+                onClick={() => handleRowSelect(lead.id)}
               >
-                <div onClick={() => handleRowClick(lead)} className="flex-1 cursor-pointer flex flex-col">
+                <div className="flex-1 flex flex-col">
                   {/* Lead Number and Name */}
                   <div className="mb-3 flex items-center gap-2 pr-20">
                     <span className="text-sm font-semibold text-gray-400 tracking-widest">{lead.lead_number}</span>
@@ -5438,67 +5427,6 @@ const PipelinePage: React.FC = () => {
                       <span>Meeting: {lead.meetings[0].meeting_date}</span>
                     </div>
                   )}
-                </div>
-                {/* Action Buttons */}
-                <div className="mt-4 flex gap-2 items-center justify-end flex-wrap" onClick={e => e.stopPropagation()}>
-                  {/* Contact Dropdown */}
-                  <div className="relative contact-dropdown">
-                    <button
-                      ref={el => { contactButtonRefs.current[lead.id] = el; }}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        toggleContactDropdown(lead.id);
-                      }}
-                      className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                      title="Contact"
-                    >
-                      <ChatBubbleLeftRightIcon className="w-5 h-5" />
-                    </button>
-                  </div>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleTimeline(lead);
-                    }}
-                    className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                    title="Timeline"
-                  >
-                    <ClockIcon className="w-5 h-5" />
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleEditLead(lead);
-                    }}
-                    className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                    title="Edit Lead"
-                  >
-                    <PencilSquareIcon className="w-5 h-5" />
-                  </button>
-                  
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleViewClient(lead);
-                    }}
-                    className="btn btn-outline btn-sm btn-primary rounded-full hover:scale-105 transition-transform"
-                    title="View Client"
-                  >
-                    <EyeIcon className="w-5 h-5" />
-                  </button>
-                  
-                  <button
-                    className="btn btn-outline btn-sm btn-info flex items-center justify-center rounded-full hover:scale-105 transition-transform group"
-                    title="Highlight"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      handleHighlight(lead);
-                    }}
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={2} stroke="currentColor" className="w-5 h-5 text-blue-500 group-hover:text-white transition-colors"><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v2m0 14v2m9-9h-2M5 12H3m15.364-6.364l-1.414 1.414M6.05 17.95l-1.414 1.414m12.728 0l-1.414-1.414M6.05 6.05L4.636 4.636" /></svg>
-                  </button>
                 </div>
                 {/* Most recent comment at the bottom left */}
                 {lead.comments && lead.comments.length > 0 ? (
@@ -5628,14 +5556,14 @@ const PipelinePage: React.FC = () => {
                       ) : 'N/A'}
                     </td>
                     {/* Stage */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">
-                      <span className="text-xs sm:text-sm text-gray-700">
+                    <td className="px-2 py-3 md:py-4 text-center">
+                      <span className="text-xs sm:text-sm text-gray-700 max-w-[120px] whitespace-normal break-words leading-tight inline-block">
                         {lead.stage ? getStageName(lead.stage) : 'N/A'}
                       </span>
                     </td>
                     {/* Category */}
-                    <td className="px-2 py-3 md:py-4 text-center truncate">
-                      <span className="text-xs sm:text-sm text-gray-700">
+                    <td className="px-2 py-3 md:py-4 text-center">
+                      <span className="text-xs sm:text-sm text-gray-700 max-w-[150px] whitespace-normal break-words leading-tight inline-block">
                         {lead.category ? lead.category : (lead.category_id ? getCategoryName(lead.category_id) : 'N/A')}
                       </span>
                     </td>

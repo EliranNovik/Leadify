@@ -2600,25 +2600,23 @@ const SchedulerToolPage: React.FC = () => {
           </div>
           
           {/* View Toggle */}
-          <div className="flex items-center gap-2">
-            <span className="text-sm text-gray-600 hidden sm:inline"></span>
-            <div className="btn-group">
-              <button
-                onClick={() => setViewMode('box')}
-                className={`btn btn-sm ${viewMode === 'box' ? 'btn-primary' : 'btn-outline'}`}
-                title="Box View"
-              >
-                <Squares2X2Icon className="w-4 h-4" />
-              </button>
-              <button
-                onClick={() => setViewMode('table')}
-                className={`btn btn-sm ${viewMode === 'table' ? 'btn-primary' : 'btn-outline'}`}
-                title="Table View"
-              >
+          <button
+            onClick={toggleViewMode}
+            className="btn btn-sm btn-primary gap-2"
+            title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
+          >
+            {viewMode === 'box' ? (
+              <>
                 <TableCellsIcon className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
+                <span className="hidden sm:inline">Table View</span>
+              </>
+            ) : (
+              <>
+                <Squares2X2Icon className="w-4 h-4" />
+                <span className="hidden sm:inline">Box View</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
@@ -2969,12 +2967,12 @@ const SchedulerToolPage: React.FC = () => {
                 {/* Header */}
                 <div onClick={() => handleRowSelect(lead.id)} className={`cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
                   <div className="flex justify-between items-start mb-2">
-                    <div className="flex items-center gap-2 flex-1 min-w-0">
+                    <div className="flex flex-col gap-2 flex-1 min-w-0">
+                      {getStageBadge(lead.stage)}
                       <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate flex-1">
                         {lead.name || 'No Name'}
                       </h2>
                     </div>
-                    {getStageBadge(lead.stage)}
                   </div>
                   
                   <p className="text-sm text-base-content/60 font-mono mb-4">
@@ -3016,176 +3014,197 @@ const SchedulerToolPage: React.FC = () => {
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M3.055 11H5a2 2 0 012 2v1a2 2 0 002 2 2 2 0 012 2v2.945M8 3.935V5.5A2.5 2.5 0 0010.5 8h.5a2 2 0 012 2 2 2 0 104 0 2 2 0 012-2h1.064M15 20.488V18a2 2 0 012-2h3.064M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
                       <span className="truncate">{lead.country || 'N/A'}</span>
                     </div>
+                    <div className="flex items-center gap-2" title="Value">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                      <span className="font-medium truncate">{formatCurrency(lead.total, lead.balance_currency)}</span>
+                    </div>
+                    <div className="flex items-center gap-2" title="Tags">
+                      <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>
+                      <span className="truncate text-xs">{lead.tags || 'N/A'}</span>
+                    </div>
                   </div>
 
-                  <div className="mt-4 pt-4 border-t border-base-200/50">
-                    <p className="text-sm font-semibold text-base-content/80">{lead.topic || 'No topic specified'}</p>
+                  <div className="mt-4 pt-4 border-t border-base-200/50 flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs font-semibold text-gray-600">Eligible:</span>
+                      <input
+                        type="checkbox"
+                        className="toggle toggle-success toggle-sm"
+                        checked={lead.eligible || false}
+                        onChange={(e) => {
+                          e.stopPropagation();
+                          handleToggleEligible(lead);
+                        }}
+                        onClick={(e) => e.stopPropagation()}
+                        title="Toggle Eligible"
+                      />
+                    </div>
                   </div>
                 </div>
 
-                {/* Action Buttons */}
-                <div className="mt-4 flex flex-row gap-2 justify-between items-center">
-                {/* Left side - Eligible Toggle */}
-                <div className="flex items-center gap-2">
-                  {/* Eligible Toggle */}
-                  <input
-                    type="checkbox"
-                    className="toggle toggle-success toggle-sm"
-                    checked={lead.eligible || false}
-                    onChange={(e) => {
-                      e.stopPropagation();
-                      handleToggleEligible(lead);
-                    }}
-                    onClick={(e) => e.stopPropagation()}
-                    title="Eligible"
-                  />
-                </div>
-              </div>
-
-              {/* Expanded Notes Section */}
-              {expandedRows.has(lead.id) && (
-                <div className="mt-1 p-1 border-t border-gray-100">
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-1.5">
+                {/* Collapsible Notes Section */}
+                {expandedRows.has(lead.id) && (
+                  <div className="mt-4 p-3 border-t border-gray-200 space-y-4">
                     {/* Facts of Case */}
-                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
-                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">Facts of Case</h6>
-                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
-                        {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
-                          <div className="space-y-2">
-                            <textarea
-                              value={editValues[`${lead.id}_facts`] || ''}
-                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-[10px] p-1"
-                              rows={2}
-                              placeholder="Enter facts of case..."
-                              dir="auto"
-                            />
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => saveEdit(lead.id, 'facts')}
-                                className="btn btn-xs btn-primary text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={cancelEditing}
-                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
-                              {lead.facts || <span className="text-gray-400 italic text-[9px]">No facts provided</span>}
-                            </p>
+                    <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <h6 className="font-semibold text-sm text-gray-800">Facts of Case</h6>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEditing(lead.id, 'facts', lead.facts || '');
+                          }}
+                          className="btn btn-xs btn-outline btn-primary"
+                          title="Edit facts"
+                        >
+                          <PencilSquareIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {editingField?.leadId === lead.id && editingField?.field === 'facts' ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editValues[`${lead.id}_facts`] || ''}
+                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_facts`]: e.target.value }))}
+                            className="textarea textarea-bordered w-full text-sm"
+                            rows={3}
+                            placeholder="Enter facts of case..."
+                            dir="auto"
+                          />
+                          <div className="flex gap-2">
                             <button
-                              onClick={() => startEditing(lead.id, 'facts', lead.facts || '')}
-                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
-                              title="Edit facts"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                saveEdit(lead.id, 'facts');
+                              }}
+                              className="btn btn-xs btn-primary"
                             >
-                              <PencilSquareIcon className="w-2.5 h-2.5" />
+                              Save
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                cancelEditing();
+                              }}
+                              className="btn btn-xs btn-outline"
+                            >
+                              Cancel
                             </button>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
+                          {lead.facts || <span className="text-gray-400 italic">No facts provided</span>}
+                        </p>
+                      )}
                     </div>
 
                     {/* Special Notes */}
-                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
-                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">Special Notes</h6>
-                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
-                        {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
-                          <div className="space-y-2">
-                            <textarea
-                              value={editValues[`${lead.id}_special_notes`] || ''}
-                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-[10px] p-1"
-                              rows={2}
-                              placeholder="Enter special notes..."
-                              dir="auto"
-                            />
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => saveEdit(lead.id, 'special_notes')}
-                                className="btn btn-xs btn-warning text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={cancelEditing}
-                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
-                              {lead.special_notes || <span className="text-gray-400 italic text-[9px]">No special notes</span>}
-                            </p>
+                    <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <h6 className="font-semibold text-sm text-gray-800">Special Notes</h6>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEditing(lead.id, 'special_notes', lead.special_notes || '');
+                          }}
+                          className="btn btn-xs btn-outline btn-primary"
+                          title="Edit special notes"
+                        >
+                          <PencilSquareIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {editingField?.leadId === lead.id && editingField?.field === 'special_notes' ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editValues[`${lead.id}_special_notes`] || ''}
+                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_special_notes`]: e.target.value }))}
+                            className="textarea textarea-bordered w-full text-sm"
+                            rows={3}
+                            placeholder="Enter special notes..."
+                            dir="auto"
+                          />
+                          <div className="flex gap-2">
                             <button
-                              onClick={() => startEditing(lead.id, 'special_notes', lead.special_notes || '')}
-                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
-                              title="Edit special notes"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                saveEdit(lead.id, 'special_notes');
+                              }}
+                              className="btn btn-xs btn-warning"
                             >
-                              <PencilSquareIcon className="w-2.5 h-2.5" />
+                              Save
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                cancelEditing();
+                              }}
+                              className="btn btn-xs btn-outline"
+                            >
+                              Cancel
                             </button>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
+                          {lead.special_notes || <span className="text-gray-400 italic">No special notes</span>}
+                        </p>
+                      )}
                     </div>
 
                     {/* General Notes */}
-                    <div className="bg-white p-1.5 rounded-md shadow-sm border border-gray-200 overflow-hidden">
-                      <h6 className="font-semibold text-[10px] text-gray-800 mb-0.5">General Notes</h6>
-                      <div className="space-y-0.5 max-h-16 overflow-y-auto overflow-x-hidden">
-                        {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
-                          <div className="space-y-2">
-                            <textarea
-                              value={editValues[`${lead.id}_general_notes`] || ''}
-                              onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
-                              className="textarea textarea-bordered w-full text-[10px] p-1"
-                              rows={2}
-                              placeholder="Enter general notes..."
-                              dir="auto"
-                            />
-                            <div className="flex gap-1">
-                              <button
-                                onClick={() => saveEdit(lead.id, 'general_notes')}
-                                className="btn btn-xs btn-success text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Save
-                              </button>
-                              <button
-                                onClick={cancelEditing}
-                                className="btn btn-xs btn-outline text-[9px] px-1 py-0.5 h-5"
-                              >
-                                Cancel
-                              </button>
-                            </div>
-                          </div>
-                        ) : (
-                          <div className="flex items-start justify-between gap-2">
-                            <p className="text-[10px] text-gray-700 whitespace-pre-wrap break-words leading-tight flex-1 min-w-0" dir="auto">
-                              {lead.general_notes || <span className="text-gray-400 italic text-[9px]">No general notes</span>}
-                            </p>
+                    <div className="bg-white p-3 rounded-lg shadow-sm border border-gray-200">
+                      <div className="flex items-center justify-between mb-2">
+                        <h6 className="font-semibold text-sm text-gray-800">General Notes</h6>
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startEditing(lead.id, 'general_notes', lead.general_notes || '');
+                          }}
+                          className="btn btn-xs btn-outline btn-primary"
+                          title="Edit general notes"
+                        >
+                          <PencilSquareIcon className="w-3 h-3" />
+                        </button>
+                      </div>
+                      {editingField?.leadId === lead.id && editingField?.field === 'general_notes' ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editValues[`${lead.id}_general_notes`] || ''}
+                            onChange={(e) => setEditValues(prev => ({ ...prev, [`${lead.id}_general_notes`]: e.target.value }))}
+                            className="textarea textarea-bordered w-full text-sm"
+                            rows={3}
+                            placeholder="Enter general notes..."
+                            dir="auto"
+                          />
+                          <div className="flex gap-2">
                             <button
-                              onClick={() => startEditing(lead.id, 'general_notes', lead.general_notes || '')}
-                              className="btn btn-xs btn-outline btn-primary flex-shrink-0 h-5 w-5 p-0"
-                              title="Edit general notes"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                saveEdit(lead.id, 'general_notes');
+                              }}
+                              className="btn btn-xs btn-success"
                             >
-                              <PencilSquareIcon className="w-2.5 h-2.5" />
+                              Save
+                            </button>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                cancelEditing();
+                              }}
+                              className="btn btn-xs btn-outline"
+                            >
+                              Cancel
                             </button>
                           </div>
-                        )}
-                      </div>
+                        </div>
+                      ) : (
+                        <p className="text-sm text-gray-700 whitespace-pre-wrap break-words leading-relaxed min-h-[60px]" dir="auto">
+                          {lead.general_notes || <span className="text-gray-400 italic">No general notes</span>}
+                        </p>
+                      )}
                     </div>
                   </div>
-                </div>
-              )}
+                )}
               </div>
             </div>
             );
@@ -3266,7 +3285,9 @@ const SchedulerToolPage: React.FC = () => {
                         </div>
                       </td>
                     <td className="text-xs sm:text-sm text-gray-600 pl-1">
-                      {formatDate(lead.created_at)}
+                      <div className="max-w-[100px] whitespace-normal break-words leading-tight">
+                        {formatDate(lead.created_at)}
+                      </div>
                     </td>
                     <td className="text-xs sm:text-sm text-gray-700">
                       {lead.stage ? lead.stage.replace(/_/g, ' ') : 'Unknown'}

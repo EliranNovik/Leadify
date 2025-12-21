@@ -1,9 +1,10 @@
 import React, { useMemo, useState, useEffect } from 'react';
-import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
+import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon } from '@heroicons/react/24/solid';
 import { XMarkIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
+import EditContractsReport from '../components/reports/EditContractsReport';
 import { supabase } from '../lib/supabase';
 import EmployeeLeadDrawer, {
   EmployeeLeadDrawerItem,
@@ -9689,6 +9690,12 @@ const reports: ReportSection[] = [
       { label: 'Sum Active', icon: BriefcaseIcon, component: SumActiveReport },
     ],
   },
+  {
+    category: 'Tools',
+    items: [
+      { label: 'Edit Contracts', icon: DocumentTextIcon, component: EditContractsReport },
+    ],
+  },
 ];
 
 export default function ReportsPage() {
@@ -9696,8 +9703,44 @@ export default function ReportsPage() {
   const [selectedReport, setSelectedReport] = useState<ReportItem | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [showSearchDropdown, setShowSearchDropdown] = useState<boolean>(false);
+  const [isSuperUser, setIsSuperUser] = useState<boolean>(false);
 
   console.log('Selected report:', selectedReport);
+
+  // Fetch superuser status
+  useEffect(() => {
+    const fetchSuperUserStatus = async () => {
+      try {
+        const { data: { user } } = await supabase.auth.getUser();
+        if (user) {
+          const { data: userData, error: userError } = await supabase
+            .from('users')
+            .select('is_superuser')
+            .eq('auth_id', user.id)
+            .single();
+
+          // If not found by auth_id, try by email
+          if ((userError || !userData) && user.email) {
+            const { data: userByEmail } = await supabase
+              .from('users')
+              .select('is_superuser')
+              .eq('email', user.email)
+              .maybeSingle();
+            
+            if (userByEmail) {
+              setIsSuperUser(userByEmail.is_superuser === true || userByEmail.is_superuser === 'true' || userByEmail.is_superuser === 1);
+            }
+          } else if (userData) {
+            setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching superuser status:', error);
+      }
+    };
+
+    fetchSuperUserStatus();
+  }, []);
 
   // Close dropdown when report is selected
   useEffect(() => {
@@ -9707,14 +9750,21 @@ export default function ReportsPage() {
     }
   }, [selectedReport]);
 
-  // Filter reports based on search query
+  // Filter reports based on search query and superuser status
   const filteredReports = useMemo(() => {
+    // First filter by superuser status
+    let reportsToFilter = reports;
+    if (!isSuperUser) {
+      reportsToFilter = reports.filter(section => section.category !== 'Tools');
+    }
+
+    // Then filter by search query
     if (!searchQuery.trim()) {
-      return reports;
+      return reportsToFilter;
     }
 
     const query = searchQuery.toLowerCase().trim();
-    return reports
+    return reportsToFilter
       .map((section) => {
         const filteredItems = section.items.filter((item) => {
           const matchesLabel = item.label.toLowerCase().includes(query);
@@ -9728,7 +9778,7 @@ export default function ReportsPage() {
         };
       })
       .filter((section) => section.items.length > 0);
-  }, [searchQuery]);
+  }, [searchQuery, isSuperUser]);
 
   return (
     <div className="p-0 md:p-6 space-y-8">
