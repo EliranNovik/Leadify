@@ -126,33 +126,68 @@ function fillAllPlaceholders(text: string, customPricing: any, client: any, cont
     // Handle pricing tiers
     if (customPricing.pricing_tiers) {
       const currency = customPricing.currency || 'USD';
-      const tierStructure = [
-        { key: '1', label: 'For one applicant' },
-        { key: '2', label: 'For 2 applicants' },
-        { key: '3', label: 'For 3 applicants' },
-        { key: '4-7', label: 'For 4-7 applicants' },
-        { key: '8-9', label: 'For 8-9 applicants' },
-        { key: '10-15', label: 'For 10-15 applicants' },
-        { key: '16+', label: 'For 16 applicants or more' }
-      ];
+      
+      // Get all available tiers in order
+      const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
+      const availableTiers = tierOrder.filter(key => 
+        customPricing.pricing_tiers[key] !== undefined && 
+        customPricing.pricing_tiers[key] !== null &&
+        customPricing.pricing_tiers[key] !== 0
+      );
+      
+      let currentTierIndex = 0;
+      
+      // Handle {{price_per_applicant}} placeholders with sequential fallback
+      while (result.includes('{{price_per_applicant}}')) {
+        const placeholderIndex = result.indexOf('{{price_per_applicant}}');
+        const contextBefore = result.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
+        
+        let tierKey: string | null = null;
+        const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
+        
+        // Check for tier patterns - support both English and Hebrew
+        if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant/i.test(recentContext) ||
+            /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
+          tierKey = '16+';
+        } else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext) ||
+                   /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
+          tierKey = '10-15';
+        } else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext) ||
+                   /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
+          tierKey = '8-9';
+        } else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext) ||
+                   /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
+          tierKey = '4-7';
+        } else if (/\b3\s+applicant/i.test(recentContext) ||
+                   /\b3\s*מבקש/i.test(recentContext)) {
+          tierKey = '3';
+        } else if (/\b2\s+applicant/i.test(recentContext) ||
+                   /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
+          tierKey = '2';
+        } else if (/\b1\s+applicant|one\s+applicant/i.test(recentContext) ||
+                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
+          tierKey = '1';
+        }
+        
+        // Sequential fallback if no match
+        if (!tierKey && currentTierIndex < availableTiers.length) {
+          tierKey = availableTiers[currentTierIndex];
+          currentTierIndex++;
+        }
+        
+        if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
+          result = result.replace('{{price_per_applicant}}', `${currency} ${(customPricing.pricing_tiers[tierKey] || 0).toLocaleString()}`);
+        } else {
+          result = result.replace('{{price_per_applicant}}', `${currency} 0`);
+        }
+      }
 
-      // Handle {{price_per_applicant}} placeholders
-      tierStructure.forEach(tier => {
-        const lineRegex = new RegExp(`(${tier.label}[^\n]*?):?\s*\{\{price_per_applicant\}\}`, 'g');
-        result = result.replace(lineRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
-      });
-
-      // Also handle specific tier placeholders that might be in the template
-      tierStructure.forEach(tier => {
-        const placeholder = `{{price_${tier.key}}}`;
-        result = result.replace(new RegExp(placeholder, 'g'), `${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
-      });
-
-      // Handle any existing pricing lines that need to be updated
-      tierStructure.forEach(tier => {
-        // Replace lines that already have a price but need updating
-        const existingPriceRegex = new RegExp(`(${tier.label}[^\\n]*?):?\\s*[₪$]\\s*[\\d,]+`, 'g');
-        result = result.replace(existingPriceRegex, `$1: ${currency} ${(customPricing.pricing_tiers[tier.key] || 0).toLocaleString()}`);
+      // Also handle specific tier placeholders like {{price_1}}, {{price_2}}, etc.
+      tierOrder.forEach(tierKey => {
+        if (customPricing.pricing_tiers[tierKey] !== undefined) {
+          const placeholder = `{{price_${tierKey}}}`;
+          result = result.replace(new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), `${currency} ${(customPricing.pricing_tiers[tierKey] || 0).toLocaleString()}`);
+        }
       });
     }
   }
@@ -307,6 +342,16 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
       if (customPricing.pricing_tiers) {
         const currency = customPricing.currency || 'USD';
         
+        // Get all available tiers in order
+        const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
+        const availableTiers = tierOrder.filter(key => 
+          customPricing.pricing_tiers[key] !== undefined && 
+          customPricing.pricing_tiers[key] !== null &&
+          customPricing.pricing_tiers[key] !== 0
+        );
+        
+        let currentTierIndex = 0;
+        
         // Find each {{price_per_applicant}} placeholder and replace it based on context
         // Look backwards from the placeholder to find the tier number
         while (text.includes('{{price_per_applicant}}')) {
@@ -318,31 +363,49 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
           let tierKey: string | null = null;
           
           // Check for tier patterns in order of specificity (most specific first)
-          // Try to match patterns anywhere in the context before the placeholder
+          // Support both English and Hebrew patterns
           
-          // 16+ patterns
-          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore)) {
+          // 16+ patterns (English and Hebrew)
+          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(contextBefore) ||
+              /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(contextBefore)) {
             tierKey = '16+';
           }
-          // 10-15 patterns - match "10-15 applicants:" or "10-15 applicant:" (more flexible)
-          else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore)) {
+          // 10-15 patterns
+          else if (/10\s*[-–]\s*15\s+applicant/i.test(contextBefore) ||
+                   /10\s*[-–]\s*15\s*מבקש/i.test(contextBefore)) {
             tierKey = '10-15';
           }
-          // 8-9 patterns - match "8-9 applicants:" or "8-9 applicant:"
-          else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore)) {
+          // 8-9 patterns
+          else if (/8\s*[-–]\s*9\s+applicant/i.test(contextBefore) ||
+                   /8\s*[-–]\s*9\s*מבקש/i.test(contextBefore)) {
             tierKey = '8-9';
           }
-          // 4-7 patterns - match "4-7 applicants:" or "4-7 applicant:"
-          else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore)) {
+          // 4-7 patterns
+          else if (/4\s*[-–]\s*7\s+applicant/i.test(contextBefore) ||
+                   /4\s*[-–]\s*7\s*מבקש/i.test(contextBefore)) {
             tierKey = '4-7';
           }
-          // Single numbers - check for exact matches
-          else if (/\b3\s+applicant/i.test(contextBefore)) {
+          // 3 applicants
+          else if (/\b3\s+applicant/i.test(contextBefore) ||
+                   /\b3\s*מבקש/i.test(contextBefore)) {
             tierKey = '3';
-          } else if (/\b2\s+applicant/i.test(contextBefore)) {
+          }
+          // 2 applicants
+          else if (/\b2\s+applicant/i.test(contextBefore) ||
+                   /\b2\s*מבקש|שני\s*מבקש/i.test(contextBefore)) {
             tierKey = '2';
-          } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(contextBefore)) {
+          }
+          // 1 applicant - including "לכל מבקש" (for each applicant)
+          else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(contextBefore) ||
+                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(contextBefore)) {
             tierKey = '1';
+          }
+          
+          // If no specific tier matched, use sequential replacement from available tiers
+          if (!tierKey && currentTierIndex < availableTiers.length) {
+            tierKey = availableTiers[currentTierIndex];
+            console.log(`📝 Using sequential tier: ${tierKey} (index ${currentTierIndex} of ${availableTiers.length})`);
+            currentTierIndex++;
           }
           
           if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
@@ -351,7 +414,7 @@ function fillPlaceholdersInTiptapContent(content: any, customPricing: any, clien
             text = text.replace('{{price_per_applicant}}', replacement);
             console.log(`✅ fillPlaceholdersInTiptapContent: Replaced {{price_per_applicant}} for tier ${tierKey} with ${replacement}`);
           } else {
-            // If no tier matched, log warning with full context
+            // If no tier matched, use 0
             const recentContext = contextBefore.substring(contextBefore.length - 80);
             console.warn('⚠️ fillPlaceholdersInTiptapContent: Could not determine tier for {{price_per_applicant}}. Recent context:', recentContext);
             text = text.replace('{{price_per_applicant}}', `${currency} 0`);
@@ -691,7 +754,18 @@ const ContractPage: React.FC = () => {
   // TipTap editor setup for editing - must be called before any early returns
   const editor = useEditor({
     extensions: [
-      StarterKit,
+      StarterKit.configure({
+        paragraph: {
+          HTMLAttributes: {
+            dir: 'auto',
+          },
+        },
+        heading: {
+          HTMLAttributes: {
+            dir: 'auto',
+          },
+        },
+      }),
       Placeholder.configure({ placeholder: 'Edit contract...' }),
       TextAlign.configure({ types: ['heading', 'paragraph'] }),
       Highlight,
@@ -1589,7 +1663,21 @@ const ContractPage: React.FC = () => {
     // Always prefer custom_content if it exists (preserves user edits in both edit and view mode)
     // Otherwise use template.content to ensure we have placeholders to replace
     // When pricing changes, we'll still update placeholders in the current content
-    const content = contract.custom_content || template.content;
+    // IMPORTANT: Preprocess custom_content to ensure all {{text}} and {{signature}} have IDs
+    let content = contract.custom_content || template.content;
+    
+    // If using custom_content, ensure it's preprocessed to add IDs to placeholders
+    if (contract.custom_content) {
+      // Check if content has generic placeholders without IDs
+      const contentStr = JSON.stringify(content);
+      const hasGenericText = /\{\{text\}\}/.test(contentStr);
+      const hasGenericSig = /\{\{signature\}\}/.test(contentStr);
+      
+      if (hasGenericText || hasGenericSig) {
+        console.log('🔧 Custom content has generic placeholders, preprocessing...');
+        content = preprocessTemplatePlaceholders(content);
+      }
+    }
     
     if (!content) return;
 
@@ -2295,6 +2383,13 @@ const ContractPage: React.FC = () => {
   };
 
   // Helper to render TipTap JSON as React elements, with support for dynamic fields in 'View as Client' mode
+  // Helper function to detect RTL text (Hebrew, Arabic)
+  const isRTL = (text: string): boolean => {
+    if (!text) return false;
+    const rtlChars = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+    return rtlChars.test(text);
+  };
+
   const renderTiptapContent = (
     content: any,
     keyPrefix = '',
@@ -2827,41 +2922,74 @@ const ContractPage: React.FC = () => {
       if (text && customPricing && customPricing.pricing_tiers && text.includes('{{price_per_applicant}}')) {
         const currency = customPricing.currency || 'USD';
         
+        // Get all available tiers in order
+        const tierOrder = ['1', '2', '3', '4-7', '8-9', '10-15', '16+'];
+        const availableTiers = tierOrder.filter(key => 
+          customPricing.pricing_tiers[key] !== undefined && 
+          customPricing.pricing_tiers[key] !== null &&
+          customPricing.pricing_tiers[key] !== 0
+        );
+        
+        let currentTierIndex = 0;
+        
         // Find each {{price_per_applicant}} placeholder and replace it based on context
         while (text.includes('{{price_per_applicant}}')) {
           const placeholderIndex = text.indexOf('{{price_per_applicant}}');
-          const contextBefore = text.substring(Math.max(0, placeholderIndex - 150), placeholderIndex);
+          const contextBefore = text.substring(Math.max(0, placeholderIndex - 200), placeholderIndex);
           
           let tierKey: string | null = null;
           
-          // Check for tier patterns in order of specificity
+          // Check for tier patterns in order of specificity (most specific first)
+          // Support both English and Hebrew patterns
           const recentContext = contextBefore.substring(Math.max(0, contextBefore.length - 80));
           
-          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(recentContext)) {
+          // 16+ patterns (English and Hebrew)
+          if (/16\s*\+\s*applicant|16\s+or\s+more\s+applicant|16\s+applicant.*or\s+more/i.test(recentContext) ||
+              /16\+?\s*מבקש|מעל\s*16|מ-?16\s*ומעלה/i.test(recentContext)) {
             tierKey = '16+';
-          } else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext)) {
+          }
+          // 10-15 patterns
+          else if (/10\s*[-–]\s*15\s+applicant/i.test(recentContext) ||
+                   /10\s*[-–]\s*15\s*מבקש/i.test(recentContext)) {
             tierKey = '10-15';
-          } else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext)) {
+          }
+          // 8-9 patterns
+          else if (/8\s*[-–]\s*9\s+applicant/i.test(recentContext) ||
+                   /8\s*[-–]\s*9\s*מבקש/i.test(recentContext)) {
             tierKey = '8-9';
-          } else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext)) {
+          }
+          // 4-7 patterns
+          else if (/4\s*[-–]\s*7\s+applicant/i.test(recentContext) ||
+                   /4\s*[-–]\s*7\s*מבקש/i.test(recentContext)) {
             tierKey = '4-7';
-          } else if (/\b3\s+applicant/i.test(recentContext)) {
+          }
+          // 3 applicants
+          else if (/\b3\s+applicant/i.test(recentContext) ||
+                   /\b3\s*מבקש/i.test(recentContext)) {
             tierKey = '3';
-          } else if (/\b2\s+applicant/i.test(recentContext)) {
+          }
+          // 2 applicants
+          else if (/\b2\s+applicant/i.test(recentContext) ||
+                   /\b2\s*מבקש|שני\s*מבקש/i.test(recentContext)) {
             tierKey = '2';
-          } else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext)) {
+          }
+          // 1 applicant - including "לכל מבקש" (for each applicant)
+          else if (/\b1\s+applicant|one\s+applicant|For\s+one\s+applicant/i.test(recentContext) ||
+                   /\b1\s*מבקש|מבקש\s*אחד|לכל\s*מבקש/i.test(recentContext)) {
             tierKey = '1';
           }
           
-          // Debug logging
-          if (!tierKey) {
-            console.log('🔍 renderTiptapContent: Could not match tier. Recent context:', recentContext);
+          // If no specific tier matched, use sequential replacement from available tiers
+          if (!tierKey && currentTierIndex < availableTiers.length) {
+            tierKey = availableTiers[currentTierIndex];
+            console.log(`📝 renderTiptapContent: Using sequential tier ${tierKey} (index ${currentTierIndex} of ${availableTiers.length})`);
+            currentTierIndex++;
           }
           
           if (tierKey && customPricing.pricing_tiers[tierKey] !== undefined) {
             const price = (customPricing.pricing_tiers[tierKey] || 0).toLocaleString();
             text = text.replace('{{price_per_applicant}}', `${currency} ${price}`);
-            console.log(`✅ renderTiptapContent: Replaced {{price_per_applicant}} for tier ${tierKey} with ${currency} ${price}. Context:`, recentContext);
+            console.log(`✅ renderTiptapContent: Replaced {{price_per_applicant}} for tier ${tierKey} with ${currency} ${price}`);
           } else {
             console.warn('⚠️ renderTiptapContent: Could not determine tier. Recent context:', recentContext);
             text = text.replace('{{price_per_applicant}}', `${currency} 0`);
@@ -3008,26 +3136,128 @@ const ContractPage: React.FC = () => {
         const paragraphContent = renderTiptapContent(content.content, keyPrefix + '-p', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex);
         // Only render paragraph if it has content
         if (paragraphContent && (typeof paragraphContent === 'string' ? paragraphContent.trim() : true)) {
-          return <p key={keyPrefix} className="mb-3">{paragraphContent}</p>;
+          // Check if there's a saved text alignment from the admin
+          const savedTextAlign = content.attrs?.textAlign;
+          
+          if (savedTextAlign) {
+            // Use the saved alignment from admin
+            return (
+              <p 
+                key={keyPrefix} 
+                className="mb-3"
+                style={{ textAlign: savedTextAlign }}
+              >
+                {paragraphContent}
+              </p>
+            );
+          } else {
+            // No saved alignment - auto-detect RTL
+            const paragraphText = content.content?.map((n: any) => n.text || '').join('') || '';
+            const isRTLParagraph = isRTL(paragraphText);
+            return (
+              <p 
+                key={keyPrefix} 
+                className="mb-3"
+                dir={isRTLParagraph ? 'rtl' : 'ltr'}
+                style={{ 
+                  textAlign: isRTLParagraph ? 'right' : 'left',
+                  direction: isRTLParagraph ? 'rtl' : 'ltr'
+                }}
+              >
+                {paragraphContent}
+              </p>
+            );
+          }
         }
         return null;
       case 'heading':
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
-        return React.createElement(
-          HeadingTag,
-          { key: keyPrefix },
-          renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
-        );
+        
+        // Check if there's a saved text alignment from the admin
+        const savedHeadingAlign = content.attrs?.textAlign;
+        
+        if (savedHeadingAlign) {
+          // Use the saved alignment from admin
+          return React.createElement(
+            HeadingTag,
+            { 
+              key: keyPrefix,
+              style: { textAlign: savedHeadingAlign }
+            },
+            renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
+          );
+        } else {
+          // No saved alignment - auto-detect RTL
+          const headingText = content.content?.map((n: any) => n.text || '').join('') || '';
+          const isRTLHeading = isRTL(headingText);
+          return React.createElement(
+            HeadingTag,
+            { 
+              key: keyPrefix,
+              dir: isRTLHeading ? 'rtl' : 'ltr',
+              style: {
+                textAlign: isRTLHeading ? 'right' : 'left',
+                direction: isRTLHeading ? 'rtl' : 'ltr'
+              }
+            },
+            renderTiptapContent(content.content, keyPrefix + '-h', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)
+          );
+        }
       case 'bulletList':
-        return <ul key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ul', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}</ul>;
+        const bulletListText = JSON.stringify(content.content);
+        const isRTLBulletList = isRTL(bulletListText);
+        return (
+          <ul 
+            key={keyPrefix}
+            dir={isRTLBulletList ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLBulletList ? 'right' : 'left' }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-ul', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
+          </ul>
+        );
       case 'orderedList':
-        return <ol key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-ol', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}</ol>;
+        const orderedListText = JSON.stringify(content.content);
+        const isRTLOrderedList = isRTL(orderedListText);
+        return (
+          <ol 
+            key={keyPrefix}
+            dir={isRTLOrderedList ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLOrderedList ? 'right' : 'left' }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-ol', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
+          </ol>
+        );
       case 'listItem':
-        return <li key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-li', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}</li>;
+        const listItemText = content.content?.map((n: any) => {
+          if (n.type === 'paragraph' && n.content) {
+            return n.content.map((c: any) => c.text || '').join('');
+          }
+          return '';
+        }).join('') || '';
+        const isRTLListItem = isRTL(listItemText);
+        return (
+          <li 
+            key={keyPrefix}
+            dir={isRTLListItem ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLListItem ? 'right' : 'left' }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-li', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
+          </li>
+        );
       case 'blockquote':
-        return <blockquote key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-bq', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}</blockquote>;
+        const blockquoteText = JSON.stringify(content.content);
+        const isRTLBlockquote = isRTL(blockquoteText);
+        return (
+          <blockquote 
+            key={keyPrefix}
+            dir={isRTLBlockquote ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLBlockquote ? 'right' : 'left' }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-bq', asClient, signaturePads, applicantPriceIndex, paymentPlanIndex, isReadOnly, placeholderIndex)}
+          </blockquote>
+        );
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -3598,11 +3828,31 @@ const ContractPage: React.FC = () => {
           const hasInputFields = React.isValidElement(paragraphContent) ||
             (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
 
+          // Check if there's a saved text alignment from the admin
+          const savedSignedAlign = content.attrs?.textAlign;
+          
+          let styleProps;
+          if (savedSignedAlign) {
+            // Use the saved alignment from admin
+            styleProps = { style: { textAlign: savedSignedAlign } };
+          } else {
+            // No saved alignment - auto-detect RTL
+            const signedParagraphText = content.content?.map((n: any) => n.text || '').join('') || '';
+            const isRTLSignedParagraph = isRTL(signedParagraphText);
+            styleProps = {
+              dir: isRTLSignedParagraph ? 'rtl' as const : 'ltr' as const,
+              style: {
+                textAlign: isRTLSignedParagraph ? 'right' as const : 'left' as const,
+                direction: isRTLSignedParagraph ? 'rtl' as const : 'ltr' as const
+              }
+            };
+          }
+
           if (hasInputFields) {
             // Use div instead of p to avoid DOM nesting issues with input fields
-            return <div key={keyPrefix} className="mb-3">{paragraphContent}</div>;
+            return <div key={keyPrefix} className="mb-3" {...styleProps}>{paragraphContent}</div>;
           } else {
-            return <p key={keyPrefix} className="mb-3">{paragraphContent}</p>;
+            return <p key={keyPrefix} className="mb-3" {...styleProps}>{paragraphContent}</p>;
           }
         }
         return null;
@@ -3610,17 +3860,78 @@ const ContractPage: React.FC = () => {
         const level = content.attrs?.level || 1;
         const headingTags = ['h1', 'h2', 'h3', 'h4', 'h5', 'h6'];
         const HeadingTag = headingTags[Math.max(0, Math.min(5, level - 1))] || 'h1';
-        return React.createElement(
-          HeadingTag,
-          { key: keyPrefix },
-          renderSignedContractContent(content.content, keyPrefix + '-h')
-        );
+        
+        // Check if there's a saved text alignment from the admin
+        const savedSignedHeadingAlign = content.attrs?.textAlign;
+        
+        if (savedSignedHeadingAlign) {
+          // Use the saved alignment from admin
+          return React.createElement(
+            HeadingTag,
+            { 
+              key: keyPrefix,
+              style: { textAlign: savedSignedHeadingAlign }
+            },
+            renderSignedContractContent(content.content, keyPrefix + '-h')
+          );
+        } else {
+          // No saved alignment - auto-detect RTL
+          const signedHeadingText = content.content?.map((n: any) => n.text || '').join('') || '';
+          const isRTLSignedHeading = isRTL(signedHeadingText);
+          return React.createElement(
+            HeadingTag,
+            { 
+              key: keyPrefix,
+              dir: isRTLSignedHeading ? 'rtl' : 'ltr',
+              style: {
+                textAlign: isRTLSignedHeading ? 'right' : 'left',
+                direction: isRTLSignedHeading ? 'rtl' : 'ltr'
+              }
+            },
+            renderSignedContractContent(content.content, keyPrefix + '-h')
+          );
+        }
       case 'bulletList':
-        return <ul key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-ul')}</ul>;
+        const signedBulletListText = JSON.stringify(content.content);
+        const isRTLSignedBulletList = isRTL(signedBulletListText);
+        return (
+          <ul 
+            key={keyPrefix}
+            dir={isRTLSignedBulletList ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLSignedBulletList ? 'right' : 'left' }}
+          >
+            {renderSignedContractContent(content.content, keyPrefix + '-ul')}
+          </ul>
+        );
       case 'orderedList':
-        return <ol key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-ol')}</ol>;
+        const signedOrderedListText = JSON.stringify(content.content);
+        const isRTLSignedOrderedList = isRTL(signedOrderedListText);
+        return (
+          <ol 
+            key={keyPrefix}
+            dir={isRTLSignedOrderedList ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLSignedOrderedList ? 'right' : 'left' }}
+          >
+            {renderSignedContractContent(content.content, keyPrefix + '-ol')}
+          </ol>
+        );
       case 'listItem':
-        return <li key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-li')}</li>;
+        const signedListItemText = content.content?.map((n: any) => {
+          if (n.type === 'paragraph' && n.content) {
+            return n.content.map((c: any) => c.text || '').join('');
+          }
+          return '';
+        }).join('') || '';
+        const isRTLSignedListItem = isRTL(signedListItemText);
+        return (
+          <li 
+            key={keyPrefix}
+            dir={isRTLSignedListItem ? 'rtl' : 'ltr'}
+            style={{ textAlign: isRTLSignedListItem ? 'right' : 'left' }}
+          >
+            {renderSignedContractContent(content.content, keyPrefix + '-li')}
+          </li>
+        );
       case 'blockquote':
         return <blockquote key={keyPrefix}>{renderSignedContractContent(content.content, keyPrefix + '-bq')}</blockquote>;
       case 'horizontalRule':
@@ -4014,10 +4325,10 @@ const ContractPage: React.FC = () => {
       </div>
 
       {/* Main Content */}
-      <div className="w-full px-2 sm:px-6 xl:px-16 2xl:px-32 py-8 print-content-wrapper">
-        <div className="relative">
+      <div className="w-full px-2 sm:px-6 xl:pl-16 2xl:pl-32 py-8 print-content-wrapper">
+        <div className="relative min-h-screen">
           {/* Contract Content */}
-          <div className="w-full transition-all duration-300 xl:mr-[550px] 2xl:mr-[600px]">
+          <div className="w-full transition-all duration-300 xl:pr-[580px]">
             <div ref={contractContentRef} id="contract-print-area" className="text-gray-900 leading-relaxed [&_.ProseMirror_p]:mb-3">
                   {editing ? (
                     <>
@@ -4095,16 +4406,18 @@ const ContractPage: React.FC = () => {
             </div>
           </div>
 
-          {/* Sidebar - Fixed to right edge */}
+          {/* Sidebar - Fixed to right edge of viewport */}
           <div 
-            className="fixed right-0 z-40 transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto"
+            className="fixed top-0 right-0 z-30 transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto"
             style={{
-              top: `${headerHeight}px`,
-              height: `calc(100vh - ${headerHeight}px)`,
-              width: '550px'
+              top: `${headerHeight + 32}px`,
+              height: `calc(100vh - ${headerHeight + 32}px)`,
+              width: '560px',
+              paddingLeft: '16px',
+              paddingRight: '16px'
             }}
           >
-            <div className="space-y-6 p-6">
+            <div className="space-y-6">
               {/* Contract Details Box */}
               <div className={`rounded-lg shadow-lg border border-gray-200 transition-all duration-300 select-none overflow-hidden ${
                 isContractDetailsExpanded 
@@ -5658,6 +5971,67 @@ const ContractPage: React.FC = () => {
         }
         input[type=number].no-arrows {
           -moz-appearance: textfield;
+        }
+        
+        /* TipTap Editor Styling - Edit Mode */
+        .ProseMirror {
+          min-height: 100% !important;
+          padding: 1.5rem;
+          outline: none;
+        }
+        
+        /* RTL support for Hebrew/Arabic text */
+        .ProseMirror p[dir="rtl"],
+        .ProseMirror h1[dir="rtl"],
+        .ProseMirror h2[dir="rtl"],
+        .ProseMirror h3[dir="rtl"],
+        .ProseMirror h4[dir="rtl"],
+        .ProseMirror h5[dir="rtl"],
+        .ProseMirror h6[dir="rtl"],
+        .ProseMirror li[dir="rtl"],
+        .ProseMirror blockquote[dir="rtl"] {
+          text-align: right !important;
+          direction: rtl !important;
+        }
+        
+        .ProseMirror p[dir="ltr"],
+        .ProseMirror h1[dir="ltr"],
+        .ProseMirror h2[dir="ltr"],
+        .ProseMirror h3[dir="ltr"],
+        .ProseMirror h4[dir="ltr"],
+        .ProseMirror h5[dir="ltr"],
+        .ProseMirror h6[dir="ltr"],
+        .ProseMirror li[dir="ltr"],
+        .ProseMirror blockquote[dir="ltr"] {
+          text-align: left !important;
+          direction: ltr !important;
+        }
+        
+        .ProseMirror ul[dir="rtl"],
+        .ProseMirror ol[dir="rtl"] {
+          padding-right: 2rem;
+          padding-left: 0;
+          text-align: right;
+          direction: rtl;
+        }
+        
+        .ProseMirror ul[dir="ltr"],
+        .ProseMirror ol[dir="ltr"] {
+          padding-left: 2rem;
+          padding-right: 0;
+          text-align: left;
+          direction: ltr;
+        }
+        
+        /* Auto-detect direction for Hebrew/Arabic */
+        .ProseMirror p,
+        .ProseMirror h1,
+        .ProseMirror h2,
+        .ProseMirror h3,
+        .ProseMirror h4,
+        .ProseMirror h5,
+        .ProseMirror h6 {
+          unicode-bidi: plaintext;
         }
         
         /* Ensure read-only mode has identical styling to edit mode */

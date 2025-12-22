@@ -310,9 +310,23 @@ const ContractTemplatesManager: React.FC = () => {
   // Memoize to prevent unnecessary re-renders
   // Note: StarterKit already includes Link and Underline, so we don't add them separately
   const editorExtensions = useMemo(() => [
-    StarterKit,
+    StarterKit.configure({
+      paragraph: {
+        HTMLAttributes: {
+          dir: 'auto',
+        },
+      },
+      heading: {
+        HTMLAttributes: {
+          dir: 'auto',
+        },
+      },
+    }),
     Placeholder.configure({ placeholder: 'Write your contract template here...' }),
-    TextAlign.configure({ types: ['heading', 'paragraph'] }),
+    TextAlign.configure({ 
+      types: ['heading', 'paragraph'],
+      alignments: ['left', 'center', 'right', 'justify'],
+    }),
     Highlight,
     Color,
     TextStyle,
@@ -750,7 +764,7 @@ const ContractTemplatesManager: React.FC = () => {
       preserveWhitespace: 'full',
     },
     onUpdate: ({ editor }) => {
-      // No-op, handled on save
+      // No-op, RTL handled by CSS
     },
   });
 
@@ -1174,6 +1188,13 @@ const ContractTemplatesManager: React.FC = () => {
     }
   };
 
+  // Helper function to detect RTL text (Hebrew, Arabic)
+  const isRTL = (text: string): boolean => {
+    if (!text) return false;
+    const rtlChars = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F\u0750-\u077F\u08A0-\u08FF\uFB50-\uFDFF\uFE70-\uFEFF]/;
+    return rtlChars.test(text);
+  };
+
   // Render preview with React components for dynamic fields
   const renderPreview = () => {
     if (!editor) return null;
@@ -1358,26 +1379,92 @@ const ContractTemplatesManager: React.FC = () => {
       // Render block nodes
       switch (node.type) {
         case 'paragraph':
-          return <p key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</p>;
+          // Detect if paragraph contains RTL text
+          const paragraphText = node.content?.map((n: any) => n.text || '').join('') || '';
+          const isRTLParagraph = isRTL(paragraphText);
+          return (
+            <p 
+              key={key} 
+              dir={isRTLParagraph ? 'rtl' : 'ltr'}
+              style={{ 
+                textAlign: isRTLParagraph ? 'right' : 'left',
+                direction: isRTLParagraph ? 'rtl' : 'ltr'
+              }}
+            >
+              {node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}
+            </p>
+          );
         case 'heading':
           const level = node.attrs?.level || 1;
+          const headingText = node.content?.map((n: any) => n.text || '').join('') || '';
+          const isRTLHeading = isRTL(headingText);
+          const headingStyle = {
+            textAlign: isRTLHeading ? 'right' as const : 'left' as const,
+            direction: isRTLHeading ? 'rtl' as const : 'ltr' as const
+          };
+          const headingDir = isRTLHeading ? 'rtl' : 'ltr';
           switch (level) {
-            case 1: return <h1 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
-            case 2: return <h2 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h2>;
-            case 3: return <h3 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h3>;
-            case 4: return <h4 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h4>;
-            case 5: return <h5 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h5>;
-            case 6: return <h6 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h6>;
-            default: return <h1 key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
+            case 1: return <h1 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
+            case 2: return <h2 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h2>;
+            case 3: return <h3 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h3>;
+            case 4: return <h4 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h4>;
+            case 5: return <h5 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h5>;
+            case 6: return <h6 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h6>;
+            default: return <h1 key={key} dir={headingDir} style={headingStyle}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</h1>;
           }
         case 'bulletList':
-          return <ul key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</ul>;
+          const bulletListText = JSON.stringify(node.content);
+          const isRTLBulletList = isRTL(bulletListText);
+          return (
+            <ul 
+              key={key} 
+              dir={isRTLBulletList ? 'rtl' : 'ltr'}
+              style={{ textAlign: isRTLBulletList ? 'right' : 'left' }}
+            >
+              {node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}
+            </ul>
+          );
         case 'orderedList':
-          return <ol key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</ol>;
+          const orderedListText = JSON.stringify(node.content);
+          const isRTLOrderedList = isRTL(orderedListText);
+          return (
+            <ol 
+              key={key} 
+              dir={isRTLOrderedList ? 'rtl' : 'ltr'}
+              style={{ textAlign: isRTLOrderedList ? 'right' : 'left' }}
+            >
+              {node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}
+            </ol>
+          );
         case 'listItem':
-          return <li key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</li>;
+          const listItemText = node.content?.map((n: any) => {
+            if (n.type === 'paragraph' && n.content) {
+              return n.content.map((c: any) => c.text || '').join('');
+            }
+            return '';
+          }).join('') || '';
+          const isRTLListItem = isRTL(listItemText);
+          return (
+            <li 
+              key={key}
+              dir={isRTLListItem ? 'rtl' : 'ltr'}
+              style={{ textAlign: isRTLListItem ? 'right' : 'left' }}
+            >
+              {node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}
+            </li>
+          );
         case 'blockquote':
-          return <blockquote key={key}>{node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}</blockquote>;
+          const blockquoteText = JSON.stringify(node.content);
+          const isRTLBlockquote = isRTL(blockquoteText);
+          return (
+            <blockquote 
+              key={key}
+              dir={isRTLBlockquote ? 'rtl' : 'ltr'}
+              style={{ textAlign: isRTLBlockquote ? 'right' : 'left' }}
+            >
+              {node.content?.map((n: any, i: number) => renderNode(n, key + '-' + i))}
+            </blockquote>
+          );
         case 'horizontalRule':
           return <hr key={key} />;
         case 'hardBreak':
@@ -2011,6 +2098,55 @@ const ContractTemplatesManager: React.FC = () => {
                   display: flex;
                   flex-direction: column;
                   min-height: 0;
+                }
+                /* RTL support for Hebrew/Arabic text */
+                .ProseMirror p[dir="rtl"],
+                .ProseMirror h1[dir="rtl"],
+                .ProseMirror h2[dir="rtl"],
+                .ProseMirror h3[dir="rtl"],
+                .ProseMirror h4[dir="rtl"],
+                .ProseMirror h5[dir="rtl"],
+                .ProseMirror h6[dir="rtl"],
+                .ProseMirror li[dir="rtl"],
+                .ProseMirror blockquote[dir="rtl"] {
+                  text-align: right !important;
+                  direction: rtl !important;
+                }
+                .ProseMirror p[dir="ltr"],
+                .ProseMirror h1[dir="ltr"],
+                .ProseMirror h2[dir="ltr"],
+                .ProseMirror h3[dir="ltr"],
+                .ProseMirror h4[dir="ltr"],
+                .ProseMirror h5[dir="ltr"],
+                .ProseMirror h6[dir="ltr"],
+                .ProseMirror li[dir="ltr"],
+                .ProseMirror blockquote[dir="ltr"] {
+                  text-align: left !important;
+                  direction: ltr !important;
+                }
+                .ProseMirror ul[dir="rtl"],
+                .ProseMirror ol[dir="rtl"] {
+                  padding-right: 2rem;
+                  padding-left: 0;
+                  text-align: right;
+                  direction: rtl;
+                }
+                .ProseMirror ul[dir="ltr"],
+                .ProseMirror ol[dir="ltr"] {
+                  padding-left: 2rem;
+                  padding-right: 0;
+                  text-align: left;
+                  direction: ltr;
+                }
+                /* Auto-detect direction for Hebrew/Arabic */
+                .ProseMirror p,
+                .ProseMirror h1,
+                .ProseMirror h2,
+                .ProseMirror h3,
+                .ProseMirror h4,
+                .ProseMirror h5,
+                .ProseMirror h6 {
+                  unicode-bidi: plaintext;
                 }
               `}</style>
                 <div className="overflow-y-auto flex-1 tiptap-editor-container" style={{ maxHeight: '65vh', overscrollBehavior: 'contain' }}>

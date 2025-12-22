@@ -965,6 +965,30 @@ const PublicContractView: React.FC = () => {
     return 'Enter text';
   };
 
+  // Helper function to detect RTL text (Hebrew/Arabic)
+  const isRTL = (text: string): boolean => {
+    if (!text || typeof text !== 'string') return false;
+    // Check for Hebrew (U+0590 to U+05FF) or Arabic (U+0600 to U+06FF) characters
+    const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF]/;
+    return rtlRegex.test(text);
+  };
+
+  // Helper function to extract text content from TipTap content
+  const extractTextContent = (content: any): string => {
+    if (!content) return '';
+    if (typeof content === 'string') return content;
+    if (Array.isArray(content)) {
+      return content.map(extractTextContent).join(' ');
+    }
+    if (content.type === 'text' && content.text) {
+      return content.text;
+    }
+    if (content.content) {
+      return extractTextContent(content.content);
+    }
+    return '';
+  };
+
   function renderTiptapContent(
     content: any,
     keyPrefix = '',
@@ -1203,14 +1227,29 @@ const PublicContractView: React.FC = () => {
                     </div>
                   )}
                   {/* Date field popup - always show if empty */}
-                  {isEmpty && (
-                    <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                      isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                    }`}>
-                      Please select a date (required)
-                      <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                    </div>
-                  )}
+                  {isEmpty && (() => {
+                    const isTextRTL = isRTL(text);
+                    return (
+                      <div 
+                        className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap"
+                        style={{
+                          [isTextRTL ? 'right' : 'left']: '100%',
+                          [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
+                          opacity: isHighlighted ? 1 : 0,
+                          transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
+                        }}
+                      >
+                        Please select a date (required)
+                        <div 
+                          className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
+                          style={{
+                            [isTextRTL ? 'left' : 'right']: '100%',
+                            [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
+                          }}
+                        ></div>
+                      </div>
+                    );
+                  })()}
                 </span>
               );
             }
@@ -1374,14 +1413,29 @@ const PublicContractView: React.FC = () => {
                         <span className="relative">Required</span>
                       </div>
                     )}
-                    {isEmpty && (
-                      <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                        isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                      }`}>
-                        Please select a date (required)
-                        <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                      </div>
-                    )}
+                    {isEmpty && (() => {
+                      const isTextRTL = isRTL(text);
+                      return (
+                        <div 
+                          className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap"
+                          style={{
+                            [isTextRTL ? 'right' : 'left']: '100%',
+                            [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
+                            opacity: isHighlighted ? 1 : 0,
+                            transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
+                          }}
+                        >
+                          Please select a date (required)
+                          <div 
+                            className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
+                            style={{
+                              [isTextRTL ? 'left' : 'right']: '100%',
+                              [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
+                            }}
+                          ></div>
+                        </div>
+                      );
+                    })()}
                   </span>
                 );
               }
@@ -1485,14 +1539,29 @@ const PublicContractView: React.FC = () => {
                     </div>
                   )}
                   {/* Popup for applicant fields */}
-                  {isEmpty && !contract?.status && (
-                    <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                      isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                    }`}>
-                      Please fill in applicant name (required)
-                      <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                    </div>
-                  )}
+                  {isEmpty && !contract?.status && (() => {
+                    const isTextRTL = isRTL(text);
+                    return (
+                      <div 
+                        className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap"
+                        style={{
+                          [isTextRTL ? 'right' : 'left']: '100%',
+                          [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
+                          opacity: isHighlighted ? 1 : 0,
+                          transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
+                        }}
+                      >
+                        Please fill in applicant name (required)
+                        <div 
+                          className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
+                          style={{
+                            [isTextRTL ? 'left' : 'right']: '100%',
+                            [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
+                          }}
+                        ></div>
+                      </div>
+                    );
+                  })()}
                 </div>
               );
               
@@ -1610,23 +1679,53 @@ const PublicContractView: React.FC = () => {
                   </div>
                 )}
                 {/* Popup for applicant fields explaining to fill all applicants */}
-                {isApplicantField && isEmpty && !contract?.status && (
-                  <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                    isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                  }`}>
-                    Please fill in applicant {applicantFieldIndex >= 0 ? applicantFieldIndex + 1 : ''} name (required)
-                    <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                  </div>
-                )}
+                {isApplicantField && isEmpty && !contract?.status && (() => {
+                  const isTextRTL = isRTL(text);
+                  return (
+                    <div 
+                      className={`absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap`}
+                      style={{
+                        [isTextRTL ? 'right' : 'left']: '100%',
+                        [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
+                        opacity: isHighlighted ? 1 : 0,
+                        transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
+                      }}
+                    >
+                      Please fill in applicant {applicantFieldIndex >= 0 ? applicantFieldIndex + 1 : ''} name (required)
+                      <div 
+                        className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
+                        style={{
+                          [isTextRTL ? 'left' : 'right']: '100%',
+                          [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
+                        }}
+                      ></div>
+                    </div>
+                  );
+                })()}
                 {/* Regular popup for non-applicant required fields */}
-                {needsAttention && !isApplicantField && (
-                  <div className={`absolute left-full ml-2 top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                    isHighlighted ? 'opacity-100 translate-x-0' : 'opacity-0 translate-x-2'
-                  }`}>
-                    Please fill in this field
-                    <div className="absolute right-full top-1/2 transform -translate-y-1/2 border-4 border-transparent border-r-gray-900"></div>
-                  </div>
-                )}
+                {needsAttention && !isApplicantField && (() => {
+                  const isTextRTL = isRTL(text);
+                  return (
+                    <div 
+                      className={`absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap`}
+                      style={{
+                        [isTextRTL ? 'right' : 'left']: '100%',
+                        [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
+                        opacity: isHighlighted ? 1 : 0,
+                        transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
+                      }}
+                    >
+                      Please fill in this field
+                      <div 
+                        className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
+                        style={{
+                          [isTextRTL ? 'left' : 'right']: '100%',
+                          [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
+                        }}
+                      ></div>
+                    </div>
+                  );
+                })()}
               </span>
             );
           } else if (sigMatch) {
@@ -1712,16 +1811,22 @@ const PublicContractView: React.FC = () => {
                     <span className="relative">Required</span>
                   </div>
                 )}
-                {needsAttention && (
-                  <div className={`absolute right-0 top-full mt-2 md:bottom-full md:top-auto md:mb-2 md:left-1/2 md:transform md:-translate-x-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap ${
-                    isHighlighted ? 'opacity-100' : 'opacity-0'
-                  }`} style={{ 
-                    maxWidth: 'calc(100vw - 40px)'
-                  }}>
-                    Please sign in the box below
-                    <div className="absolute -top-1 left-4 md:top-full md:left-1/2 md:transform md:-translate-x-1/2 md:-mt-1 border-4 border-transparent border-b-gray-900 md:border-t-gray-900 md:border-b-transparent"></div>
-                  </div>
-                )}
+                {needsAttention && (() => {
+                  const isTextRTL = isRTL(text);
+                  return (
+                    <div 
+                      className="absolute right-0 top-full mt-2 md:bottom-full md:top-auto md:mb-2 md:left-1/2 md:transform md:-translate-x-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap"
+                      style={{ 
+                        maxWidth: 'calc(100vw - 40px)',
+                        opacity: isHighlighted ? 1 : 0,
+                        [isTextRTL ? 'right' : 'left']: isTextRTL ? '0' : 'auto'
+                      }}
+                    >
+                      Please sign in the box below
+                      <div className="absolute -top-1 left-4 md:top-full md:left-1/2 md:transform md:-translate-x-1/2 md:-mt-1 border-4 border-transparent border-b-gray-900 md:border-t-gray-900 md:border-b-transparent"></div>
+                    </div>
+                  );
+                })()}
               </span>
             );
           } else if (placeholder === '\n') {
@@ -1844,11 +1949,34 @@ const PublicContractView: React.FC = () => {
           const hasInputFields = React.isValidElement(paragraphContent) || 
             (Array.isArray(paragraphContent) && paragraphContent.some(item => React.isValidElement(item)));
           
+          // Extract text to determine direction
+          const textContent = extractTextContent(content.content);
+          const direction = isRTL(textContent) ? 'rtl' : 'ltr';
+          const textAlign = isRTL(textContent) ? 'right' : 'left';
+          
           if (hasInputFields) {
             // Use div instead of p to avoid DOM nesting issues with input fields
-            return <div key={keyPrefix} className="mb-2 md:mb-3 text-sm md:text-base">{paragraphContent}</div>;
+            return (
+              <div 
+                key={keyPrefix} 
+                className="mb-2 md:mb-3 text-sm md:text-base" 
+                dir={direction}
+                style={{ textAlign }}
+              >
+                {paragraphContent}
+              </div>
+            );
           } else {
-            return <p key={keyPrefix} className="mb-2 md:mb-3 text-sm md:text-base">{paragraphContent}</p>;
+            return (
+              <p 
+                key={keyPrefix} 
+                className="mb-2 md:mb-3 text-sm md:text-base" 
+                dir={direction}
+                style={{ textAlign }}
+              >
+                {paragraphContent}
+              </p>
+            );
           }
         }
         return null;
@@ -1865,25 +1993,85 @@ const PublicContractView: React.FC = () => {
           h6: 'text-xs md:text-sm'
         };
         const sizeClass = headingSizes[HeadingTag as keyof typeof headingSizes] || 'text-base md:text-lg';
+        
+        // Extract text to determine direction
+        const textContent = extractTextContent(content.content);
+        const direction = isRTL(textContent) ? 'rtl' : 'ltr';
+        const textAlign = isRTL(textContent) ? 'right' : 'left';
+        
         return React.createElement(
           HeadingTag,
-          { key: keyPrefix, className: `${sizeClass} font-semibold mb-2 md:mb-3` },
+          { 
+            key: keyPrefix, 
+            className: `${sizeClass} font-semibold mb-2 md:mb-3`,
+            dir: direction,
+            style: { textAlign }
+          },
           renderTiptapContent(content.content, keyPrefix + '-h', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)
         );
       }
-      case 'bulletList':
+      case 'bulletList': {
         // Remove bullet points - render as plain div without list styling
-        return <div key={keyPrefix} className="text-sm md:text-base mb-2 md:mb-3">{renderTiptapContent(content.content, keyPrefix + '-ul', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</div>;
-      case 'orderedList':
+        const bulletTextContent = extractTextContent(content.content);
+        const bulletDirection = isRTL(bulletTextContent) ? 'rtl' : 'ltr';
+        const bulletAlign = isRTL(bulletTextContent) ? 'right' : 'left';
+        return (
+          <div 
+            key={keyPrefix} 
+            className="text-sm md:text-base mb-2 md:mb-3" 
+            dir={bulletDirection}
+            style={{ textAlign: bulletAlign }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-ul', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}
+          </div>
+        );
+      }
+      case 'orderedList': {
         // Remove numbering - render as plain div without list styling
-        const listContentStr = JSON.stringify(content);
-        const listContent = renderTiptapContent(content.content, keyPrefix + '-ol', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex);
-        return <div key={keyPrefix} className="text-sm md:text-base mb-2 md:mb-3">{listContent}</div>;
-      case 'listItem':
+        const orderedTextContent = extractTextContent(content.content);
+        const orderedDirection = isRTL(orderedTextContent) ? 'rtl' : 'ltr';
+        const orderedAlign = isRTL(orderedTextContent) ? 'right' : 'left';
+        return (
+          <div 
+            key={keyPrefix} 
+            className="text-sm md:text-base mb-2 md:mb-3" 
+            dir={orderedDirection}
+            style={{ textAlign: orderedAlign }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-ol', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}
+          </div>
+        );
+      }
+      case 'listItem': {
         // Remove list item styling - render as plain div
-        return <div key={keyPrefix} className="text-sm md:text-base">{renderTiptapContent(content.content, keyPrefix + '-li', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</div>;
-      case 'blockquote':
-        return <blockquote key={keyPrefix}>{renderTiptapContent(content.content, keyPrefix + '-bq', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}</blockquote>;
+        const listItemTextContent = extractTextContent(content.content);
+        const listItemDirection = isRTL(listItemTextContent) ? 'rtl' : 'ltr';
+        const listItemAlign = isRTL(listItemTextContent) ? 'right' : 'left';
+        return (
+          <div 
+            key={keyPrefix} 
+            className="text-sm md:text-base" 
+            dir={listItemDirection}
+            style={{ textAlign: listItemAlign }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-li', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}
+          </div>
+        );
+      }
+      case 'blockquote': {
+        const blockquoteTextContent = extractTextContent(content.content);
+        const blockquoteDirection = isRTL(blockquoteTextContent) ? 'rtl' : 'ltr';
+        const blockquoteAlign = isRTL(blockquoteTextContent) ? 'right' : 'left';
+        return (
+          <blockquote 
+            key={keyPrefix} 
+            dir={blockquoteDirection}
+            style={{ textAlign: blockquoteAlign }}
+          >
+            {renderTiptapContent(content.content, keyPrefix + '-bq', signaturePads, applicantPriceIndex, paymentPlanIndex, placeholderIndex)}
+          </blockquote>
+        );
+      }
       case 'horizontalRule':
         return <hr key={keyPrefix} />;
       case 'hardBreak':
@@ -2098,7 +2286,7 @@ const PublicContractView: React.FC = () => {
         }
       `}</style>
       
-      {/* CSS for animations */}
+      {/* CSS for animations and RTL support */}
       <style>{`
         @keyframes fade-in {
           from {
@@ -2149,6 +2337,88 @@ const PublicContractView: React.FC = () => {
         input[type="date"]::-webkit-calendar-picker-indicator {
           cursor: pointer;
           opacity: 1;
+        }
+        
+        /* RTL support for Hebrew/Arabic text in contract content */
+        #contract-print-area p[dir="rtl"],
+        #contract-print-area h1[dir="rtl"],
+        #contract-print-area h2[dir="rtl"],
+        #contract-print-area h3[dir="rtl"],
+        #contract-print-area h4[dir="rtl"],
+        #contract-print-area h5[dir="rtl"],
+        #contract-print-area h6[dir="rtl"],
+        #contract-print-area li[dir="rtl"],
+        #contract-print-area blockquote[dir="rtl"],
+        #contract-print-area div[dir="rtl"] {
+          text-align: right !important;
+          direction: rtl !important;
+        }
+        
+        #contract-print-area p[dir="ltr"],
+        #contract-print-area h1[dir="ltr"],
+        #contract-print-area h2[dir="ltr"],
+        #contract-print-area h3[dir="ltr"],
+        #contract-print-area h4[dir="ltr"],
+        #contract-print-area h5[dir="ltr"],
+        #contract-print-area h6[dir="ltr"],
+        #contract-print-area li[dir="ltr"],
+        #contract-print-area blockquote[dir="ltr"],
+        #contract-print-area div[dir="ltr"] {
+          text-align: left !important;
+          direction: ltr !important;
+        }
+        
+        #contract-print-area ul[dir="rtl"],
+        #contract-print-area ol[dir="rtl"] {
+          padding-right: 2rem;
+          padding-left: 0;
+          text-align: right;
+          direction: rtl;
+        }
+        
+        #contract-print-area ul[dir="ltr"],
+        #contract-print-area ol[dir="ltr"] {
+          padding-left: 2rem;
+          padding-right: 0;
+          text-align: left;
+          direction: ltr;
+        }
+        
+        /* Auto-detect direction for Hebrew/Arabic - key for line breaks and text flow */
+        #contract-print-area p,
+        #contract-print-area h1,
+        #contract-print-area h2,
+        #contract-print-area h3,
+        #contract-print-area h4,
+        #contract-print-area h5,
+        #contract-print-area h6,
+        #contract-print-area div {
+          unicode-bidi: plaintext;
+        }
+        
+        /* Preserve original font weights - don't force bold */
+        #contract-print-area p {
+          font-weight: normal;
+        }
+        
+        #contract-print-area div:not(.prose h1):not(.prose h2):not(.prose h3):not(.prose h4):not(.prose h5):not(.prose h6) {
+          font-weight: normal;
+        }
+        
+        /* Only bold text that has explicit bold marks */
+        #contract-print-area b,
+        #contract-print-area strong {
+          font-weight: bold;
+        }
+        
+        /* Headings should be bold by default */
+        #contract-print-area h1,
+        #contract-print-area h2,
+        #contract-print-area h3,
+        #contract-print-area h4,
+        #contract-print-area h5,
+        #contract-print-area h6 {
+          font-weight: 600;
         }
       `}</style>
     </div>
