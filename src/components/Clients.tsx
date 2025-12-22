@@ -69,6 +69,7 @@ import FinancesTab from './client-tabs/FinancesTab';
 import { useMsal } from '@azure/msal-react';
 import { loginRequest } from '../msalConfig';
 import { createTeamsMeeting, sendEmail, createCalendarEventWithAttendee } from '../lib/graph';
+import { generateICSFromDateTime } from '../lib/icsGenerator';
 import { sendEmailViaBackend } from '../lib/mailboxApi';
 import { useAuthContext } from '../contexts/AuthContext';
 import { ClientInteractionsCache, ClientTabProps } from '../types/client';
@@ -85,6 +86,168 @@ import ProgressFollowupBox from './ProgressFollowupBox';
 import SendPriceOfferModal from './SendPriceOfferModal';
 import { addToHighlights, removeFromHighlights, isInHighlights } from '../lib/highlightsUtils';
 import { replaceEmailTemplateParams } from '../lib/emailTemplateParams';
+
+// Template parsing and formatting utilities (from MeetingTab.tsx)
+const parseTemplateContent = (rawContent: string | null | undefined): string => {
+  if (!rawContent) return '';
+
+  const sanitizeTemplateText = (text: string) => {
+    if (!text) return '';
+    return text
+      .split('\n')
+      .map(line => line.replace(/\s+$/g, ''))
+      .join('\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .trim();
+  };
+
+  const tryParseDelta = (input: string) => {
+    try {
+      const parsed = JSON.parse(input);
+      const ops = parsed?.delta?.ops || parsed?.ops;
+      if (Array.isArray(ops)) {
+        const text = ops
+          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
+          .join('');
+        return sanitizeTemplateText(text);
+      }
+    } catch (error) {
+      // ignore
+    }
+    return null;
+  };
+
+  const cleanHtml = (input: string) => {
+    let text = input;
+    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
+    if (htmlMatch) {
+      text = htmlMatch[1];
+    }
+    text = text
+      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
+      .replace(/^{|}$/g, '')
+      .replace(/&nbsp;/gi, ' ')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+      .replace(/\r/g, '')
+      .replace(/\\/g, '\\');
+    return sanitizeTemplateText(text);
+  };
+
+  let text = tryParseDelta(rawContent);
+  if (text !== null) {
+    return text;
+  }
+
+  text = tryParseDelta(
+    rawContent
+      .replace(/^"|"$/g, '')
+      .replace(/\\"/g, '"')
+      .replace(/\\n/g, '\n')
+      .replace(/\\t/g, '\t')
+  );
+  if (text !== null) {
+    return text;
+  }
+
+  const normalised = rawContent
+    .replace(/\\"/g, '"')
+    .replace(/\r/g, '')
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t');
+  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
+  const inserts: string[] = [];
+  let match: RegExpExecArray | null;
+  while ((match = insertRegex.exec(normalised))) {
+    inserts.push(match[1]);
+  }
+  if (inserts.length > 0) {
+    const combined = inserts.join('');
+    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+    return sanitizeTemplateText(decoded);
+  }
+
+  return sanitizeTemplateText(cleanHtml(rawContent));
+};
+
+// Helper to check if text contains RTL characters
+const containsRTL = (text?: string | null): boolean => {
+  if (!text) return false;
+  const rtlRegex = /[\u0590-\u05FF\u0600-\u06FF\u0700-\u074F]/;
+  return rtlRegex.test(text);
+};
+
+// Format email body with line breaks and RTL support
+const formatEmailBody = async (
+  template: string, 
+  recipientName: string,
+  context?: {
+    client?: any;
+    meetingDate?: string;
+    meetingTime?: string;
+    meetingLocation?: string;
+    meetingLink?: string;
+  }
+): Promise<string> => {
+  if (!template) return '';
+  
+  let htmlBody = template;
+  
+  // If context is provided, use centralized template replacement
+  if (context?.client) {
+    const templateContext = {
+      clientId: context.client?.id || null,
+      clientName: context.client?.name || recipientName,
+      contactName: recipientName,
+      leadNumber: context.client?.lead_number || null,
+      topic: context.client?.topic || null,
+      meetingDate: context.meetingDate || null,
+      meetingTime: context.meetingTime || null,
+      meetingLocation: context.meetingLocation || null,
+      meetingLink: context.meetingLink || null,
+    };
+    
+    htmlBody = await replaceEmailTemplateParams(template, templateContext);
+  } else {
+    // Fallback: just replace {name}
+    htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
+  }
+  
+  // Preserve line breaks: convert \n to <br> if not already in HTML
+  // Check if content already has HTML structure
+  const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
+  
+  if (!hasHtmlTags) {
+    // Plain text: convert line breaks to <br> and preserve spacing
+    htmlBody = htmlBody
+      .replace(/\r\n/g, '\n')  // Normalize line endings
+      .replace(/\r/g, '\n')    // Handle old Mac line endings
+      .replace(/\n/g, '<br>'); // Convert to HTML line breaks
+  } else {
+    // Has HTML: ensure <br> tags are preserved, convert remaining \n
+    htmlBody = htmlBody
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
+      .replace(/\n/g, '<br>'); // Convert any remaining newlines
+  }
+  
+  // Detect if content contains Hebrew/RTL text
+  const isRTL = containsRTL(htmlBody);
+  
+  // Wrap in div with proper direction and styling
+  if (isRTL) {
+    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  } else {
+    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
+  }
+  
+  return htmlBody;
+};
 
 const getContrastingTextColor = (hexColor?: string | null) => {
   if (!hexColor) return '#111827';
@@ -299,196 +462,6 @@ async function fetchCurrentUserFullName() {
     return 'System User';
   }
 }
-
-// Helper function to detect RTL text (Hebrew)
-const containsRTL = (text?: string | null): boolean => {
-  if (!text) return false;
-  return /[\u0590-\u05FF]/.test(text);
-};
-
-// Helper function to parse template content from database
-const parseTemplateContent = (rawContent: string | null | undefined): string => {
-  if (!rawContent) return '';
-
-  const sanitizeTemplateText = (text: string) => {
-    if (!text) return '';
-    return text
-      .split('\n')
-      .map(line => line.replace(/\s+$/g, ''))
-      .join('\n')
-      .replace(/\n{3,}/g, '\n\n')
-      .replace(/[ \t]+\n/g, '\n')
-      .trim();
-  };
-
-  const tryParseDelta = (input: string) => {
-    try {
-      const parsed = JSON.parse(input);
-      const ops = parsed?.delta?.ops || parsed?.ops;
-      if (Array.isArray(ops)) {
-        const text = ops
-          .map((op: any) => (typeof op?.insert === 'string' ? op.insert : ''))
-          .join('');
-        return sanitizeTemplateText(text);
-      }
-    } catch (error) {
-      // ignore
-    }
-    return null;
-  };
-
-  const cleanHtml = (input: string) => {
-    let text = input;
-    const htmlMatch = text.match(/html\s*:\s*(.*)/is);
-    if (htmlMatch) {
-      text = htmlMatch[1];
-    }
-    text = text
-      .replace(/^{?delta\s*:\s*\{.*?\},?/is, '')
-      .replace(/^{|}$/g, '')
-      .replace(/&nbsp;/gi, ' ')
-      .replace(/<br\s*\/?>/gi, '\n')
-      .replace(/<\/p>/gi, '\n')
-      .replace(/<[^>]+>/g, '')
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-      .replace(/\r/g, '')
-      .replace(/\\/g, '\\');
-    return sanitizeTemplateText(text);
-  };
-
-  let text = tryParseDelta(rawContent);
-  if (text !== null) {
-    return text;
-  }
-
-  text = tryParseDelta(
-    rawContent
-      .replace(/^"|"$/g, '')
-      .replace(/\\"/g, '"')
-      .replace(/\\n/g, '\n')
-      .replace(/\\t/g, '\t')
-  );
-  if (text !== null) {
-    return text;
-  }
-
-  const normalised = rawContent
-    .replace(/\\"/g, '"')
-    .replace(/\r/g, '')
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t');
-  const insertRegex = /"?insert"?\s*:\s*"([^"\n]*)"/g;
-  const inserts: string[] = [];
-  let match: RegExpExecArray | null;
-  while ((match = insertRegex.exec(normalised))) {
-    inserts.push(match[1]);
-  }
-  if (inserts.length > 0) {
-    const combined = inserts.join('');
-    const decoded = combined.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
-    return sanitizeTemplateText(decoded);
-  }
-
-  return sanitizeTemplateText(cleanHtml(rawContent));
-};
-
-// Helper function to preserve line breaks and format HTML with RTL support
-const formatEmailBody = async (
-  template: string,
-  recipientName: string,
-  context?: {
-    client?: any;
-    meeting?: any;
-    meetingDate?: string;
-    meetingTime?: string;
-    meetingLocation?: string;
-    meetingLink?: string;
-  }
-): Promise<string> => {
-  if (!template) return '';
-  
-  let htmlBody = template;
-  
-  // If context is provided, use centralized template replacement
-  if (context?.client || context?.meeting) {
-    const isLegacyLead = context.client?.lead_type === 'legacy' ||
-                         (context.client?.id && context.client.id.toString().startsWith('legacy_'));
-    
-    let clientId: string | null = null;
-    let legacyId: number | null = null;
-    
-    if (isLegacyLead) {
-      if (context.client?.id) {
-        const numeric = parseInt(context.client.id.toString().replace(/[^0-9]/g, ''), 10);
-        legacyId = isNaN(numeric) ? null : numeric;
-        clientId = legacyId?.toString() || null;
-      }
-    } else {
-      clientId = context.client?.id || null;
-    }
-    
-    const templateContext = {
-      clientId,
-      legacyId,
-      clientName: context.client?.name || recipientName,
-      contactName: recipientName,
-      leadNumber: context.client?.lead_number || null,
-      topic: context.client?.topic || null,
-      leadType: context.client?.lead_type || null,
-      meetingDate: context.meetingDate || null,
-      meetingTime: context.meetingTime || null,
-      meetingLocation: context.meetingLocation || null,
-      meetingLink: context.meetingLink || null,
-    };
-    
-    htmlBody = await replaceEmailTemplateParams(template, templateContext);
-  } else {
-    // Fallback: just replace {name} for backward compatibility
-    htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
-  }
-  
-  // CRITICAL: Always preserve line breaks by converting \n to <br> tags
-  // Normalize line endings first
-  htmlBody = htmlBody
-    .replace(/\r\n/g, '\n')
-    .replace(/\r/g, '\n');
-  
-  // Normalize multiple consecutive line breaks (collapse 3+ to 2 for paragraph spacing)
-  htmlBody = htmlBody.replace(/\n{3,}/g, '\n\n');
-  
-  // Protect existing <br> tags with a placeholder
-  const brPlaceholder = '__BR_PLACEHOLDER_TEMP__';
-  htmlBody = htmlBody.replace(/<br\s*\/?>/gi, brPlaceholder);
-  
-  // Convert all remaining newlines to <br> tags
-  // Handle double newlines (paragraph breaks) separately
-  htmlBody = htmlBody.replace(/\n\n/g, '__PARA_BREAK_TEMP__');
-  htmlBody = htmlBody.replace(/\n/g, '<br>');
-  htmlBody = htmlBody.replace(/__PARA_BREAK_TEMP__/g, '<br><br>');
-  
-  // Restore original <br> tags
-  htmlBody = htmlBody.replace(new RegExp(brPlaceholder, 'g'), '<br>');
-  
-  // Clean up any <br> tags that ended up inside HTML tag boundaries
-  htmlBody = htmlBody.replace(/<([^>]+)<br>([^>]*)>/gi, '<$1 $2>');
-  htmlBody = htmlBody.replace(/<([^>]*)<br>([^>]+)>/gi, '<$1 $2>');
-  
-  // Collapse 3+ consecutive <br> tags to exactly 2
-  htmlBody = htmlBody.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
-  
-  // Detect if content contains Hebrew/RTL text
-  const isRTL = containsRTL(htmlBody);
-  
-  // Wrap in div with proper direction and styling
-  if (isRTL) {
-    htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  } else {
-    htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
-  }
-  
-  return htmlBody;
-};
 
 const Clients: React.FC<ClientsProps> = ({
   selectedClient,
@@ -2438,12 +2411,6 @@ useEffect(() => {
       const scrollY = Math.max(windowScrollY, mainScrollTop);
       
       const shouldShow = scrollY > scrollThreshold;
-      
-      // Debug logging (can be removed later)
-      if (process.env.NODE_ENV === 'development') {
-        console.log('Scroll detection:', { scrollY, scrollThreshold, shouldShow, windowScrollY, mainScrollTop });
-      }
-      
       setShowStickyHeader(shouldShow);
     };
 
@@ -3906,14 +3873,14 @@ useEffect(() => {
         <button
           key={`${variant}-${stageOption.id}`}
           type="button"
-          className="w-full px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-center transition-all group hover:bg-base-200 hover:scale-105 hover:shadow-md"
+          className="w-full px-3 py-2.5 rounded-xl border border-transparent flex items-center justify-center transition-all group hover:opacity-80"
           onClick={() => {
             setStageDropdownAnchor(null);
             handleStageChange(stageOption.id);
           }}
         >
           <span
-            className="inline-flex items-center px-3 py-1 rounded-lg text-sm font-semibold shadow-sm transition-all group-hover:scale-110 group-hover:shadow-lg"
+            className="inline-flex items-center justify-center px-3 py-1 rounded-lg text-sm font-semibold shadow-sm transition-opacity w-48"
             style={{
               backgroundColor: stageColour,
               color: badgeTextColour,
@@ -3959,7 +3926,7 @@ useEffect(() => {
       <div
         className={`absolute ${
           overlayAnchor === 'badge' ? 'right-0' : 'right-0'
-        } mt-2 w-72 rounded-2xl border border-base-300 bg-base-100/95 shadow-2xl z-[60] overflow-hidden backdrop-blur`}
+        } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[60] overflow-hidden`}
       >
         <div
           ref={getListRef(overlayAnchor)}
@@ -4308,7 +4275,7 @@ useEffect(() => {
           isLegacy: selectedClient.id.toString().startsWith('legacy_')
         });
         const categoryName = selectedClient.category || 'No Category';
-        const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - ${meetingFormData.brief || 'Meeting'}`;
+        const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
         console.log('Creating meeting in calendar:', meetingFormData.calendar);
         
         try {
@@ -4320,7 +4287,7 @@ useEffect(() => {
             calendar: meetingFormData.calendar,
             manager: meetingFormData.manager,
             helper: meetingFormData.helper,
-            brief: meetingFormData.brief,
+            brief: '', // Brief removed from UI
             attendance_probability: meetingFormData.attendance_probability,
             complexity: meetingFormData.complexity,
             car_number: meetingFormData.car_number,
@@ -4870,6 +4837,348 @@ useEffect(() => {
         })();
       }
 
+      // Automatically send the appropriate meeting invitation email (only for regular meetings, not paid)
+      if (meetingType === 'regular' && insertedData && insertedData.length > 0 && selectedClient.email) {
+        const newMeeting: any = {
+          id: insertedData[0].id,
+          client_id: insertedData[0].client_id,
+          date: insertedData[0].meeting_date,
+          time: insertedData[0].meeting_time,
+          location: insertedData[0].meeting_location,
+          manager: insertedData[0].meeting_manager,
+          currency: insertedData[0].meeting_currency,
+          amount: insertedData[0].meeting_amount,
+          brief: insertedData[0].meeting_brief,
+          scheduler: insertedData[0].scheduler || currentUserFullName,
+          helper: insertedData[0].helper,
+          expert: insertedData[0].expert,
+          link: insertedData[0].teams_meeting_url || '',
+          lastEdited: {
+            timestamp: insertedData[0].last_edited_timestamp,
+            user: insertedData[0].last_edited_by,
+          },
+        };
+
+        // Determine the appropriate invitation type based on meeting location
+        const location = (meetingFormData.location || '').toLowerCase();
+        let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
+        
+        if (location.includes('jrslm') || location.includes('jerusalem')) {
+          invitationType = 'invitation_jlm';
+        } else if (location.includes('tlv') && location.includes('parking')) {
+          invitationType = 'invitation_tlv_parking';
+        } else if (location.includes('tlv') || location.includes('tel aviv')) {
+          invitationType = 'invitation_tlv';
+        }
+
+        console.log('🎯 [Clients.tsx] Auto-sending meeting invitation:', {
+          location: meetingFormData.location,
+          invitationType,
+          clientEmail: selectedClient.email,
+          meetingDate: newMeeting.date
+        });
+        
+        // Actually send the meeting invitation email
+        (async () => {
+          console.log('🚀 STARTING email sending process...');
+          try {
+            console.log('🔐 Getting Microsoft account...');
+            const account = instance.getAllAccounts()[0];
+            if (!account) {
+              console.error('❌ No Microsoft account found for email sending');
+              return;
+            }
+            console.log('✅ Microsoft account found:', account.username);
+
+            // Get access token
+            console.log('🔑 Acquiring access token...');
+            const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
+            console.log('✅ Access token acquired');
+            
+            // Fetch email template based on invitation type and language_id
+            const templateMapping: Record<string, {en: number, he: number}> = {
+              invitation: { en: 151, he: 152 }, // Regular meeting: EN=151, HE=152
+              invitation_jlm: { en: 157, he: 158 },
+              invitation_tlv: { en: 161, he: 162 },
+              invitation_tlv_parking: { en: 159, he: 160 },
+            };
+            
+            const templateIds = templateMapping[invitationType];
+            
+            // Use language_id from database (1=English, 2=Hebrew)
+            // Fallback to text language field if language_id is not available
+            const isHebrewById = selectedClient.language_id === 2;
+            const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
+                                   selectedClient.language?.toLowerCase() === 'hebrew';
+            const isHebrew = isHebrewById || (!selectedClient.language_id && isHebrewByText);
+            const templateId = isHebrew ? templateIds.he : templateIds.en;
+            
+            console.log('🌍 Language selection:', {
+              language_id: selectedClient.language_id,
+              language_text: selectedClient.language,
+              isHebrewById,
+              isHebrewByText,
+              isHebrew,
+              selectedTemplateId: templateId,
+              invitationType,
+              fullClient: selectedClient
+            });
+            
+            // Fetch the template (with RLS bypass if needed)
+            let templateData = null;
+            let templateError = null;
+            
+            try {
+              console.log('🔍 Fetching template with ID:', templateId);
+              const result = await supabase
+                .from('misc_emailtemplate')
+                .select('name, content')
+                .eq('id', templateId)
+                .maybeSingle(); // Use maybeSingle to avoid throwing on no results
+              
+              templateData = result.data;
+              templateError = result.error;
+              
+              console.log('📧 Template fetch result:', { 
+                templateId, 
+                hasData: !!templateData, 
+                hasError: !!templateError,
+                errorMessage: templateError?.message,
+                errorCode: templateError?.code,
+                dataKeys: templateData ? Object.keys(templateData) : [],
+                hasName: !!templateData?.name,
+                hasContent: !!templateData?.content,
+                nameLength: templateData?.name?.length || 0,
+                contentLength: templateData?.content?.length || 0
+              });
+            } catch (fetchError) {
+              console.error('❌ Template fetch exception:', fetchError);
+              templateError = fetchError as any;
+            }
+
+            // Format meeting date and time
+            const [year, month, day] = newMeeting.date.split('-');
+            const formattedDate = `${day}/${month}/${year}`;
+            const formattedTime = newMeeting.time ? newMeeting.time.substring(0, 5) : '';
+            
+            // Prepare email subject
+            const subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+            let body = '';
+            
+            if (!templateData || templateError) {
+              console.warn('⚠️ Using FALLBACK email (template not usable):', {
+                templateId,
+                hasTemplateData: !!templateData,
+                hasError: !!templateError,
+                errorMessage: templateError?.message
+              });
+              // Fallback: Create a simple meeting invitation
+              body = `
+                <html>
+                  <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                    <h2 style="color: #4218CC;">Meeting Invitation</h2>
+                    <p>Dear ${selectedClient.name || 'Valued Client'},</p>
+                    <p>You have a scheduled meeting with Decker, Pex, Levi Lawoffice.</p>
+                    <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                      <p><strong>Date:</strong> ${formattedDate}</p>
+                      <p><strong>Time:</strong> ${formattedTime}</p>
+                      <p><strong>Location:</strong> ${meetingFormData.location || 'TBD'}</p>
+                      ${newMeeting.link ? `<p><strong>Meeting Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>` : ''}
+                      ${selectedClient.category ? `<p><strong>Category:</strong> ${selectedClient.category}</p>` : ''}
+                      ${selectedClient.topic ? `<p><strong>Topic:</strong> ${selectedClient.topic}</p>` : ''}
+                    </div>
+                    <p>We look forward to meeting with you.</p>
+                    <p>Best regards,<br/>Decker, Pex, Levi Lawoffice</p>
+                  </body>
+                </html>
+              `;
+            } else {
+              console.log('✅ Using email template:', templateId, 'Name:', templateData.name);
+              console.log('📄 Raw template content (first 200 chars):', templateData.content?.substring(0, 200));
+              
+              // Step 1: Parse template content (handles JSON/delta format)
+              const parsedContent = parseTemplateContent(templateData.content);
+              console.log('🔄 Parsed template content (first 200 chars):', parsedContent.substring(0, 200));
+              
+              // Step 2: Format body with parameter replacement and line break conversion
+              body = await formatEmailBody(
+                parsedContent,
+                selectedClient.name || 'Valued Client',
+                {
+                  client: selectedClient,
+                  meetingDate: formattedDate,
+                  meetingTime: formattedTime,
+                  meetingLocation: meetingFormData.location || '',
+                  meetingLink: newMeeting.link || ''
+                }
+              );
+              
+              console.log('📝 Final email body prepared, length:', body.length);
+            }
+            
+            // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
+            const isMicrosoftEmail = (email: string): boolean => {
+              const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
+              return microsoftDomains.some(domain => email.toLowerCase().includes(`@${domain}`));
+            };
+            
+            const useOutlookCalendarInvite = isMicrosoftEmail(selectedClient.email);
+            const recipientName = selectedClient.name || 'Valued Client';
+            const category = selectedClient.category || '---';
+            const topic = selectedClient.topic || '---';
+            const locationName = meetingFormData.location || 'Office';
+            
+            // Build description HTML
+            let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
+            if (category && category !== '---') {
+              descriptionHtml += `<p><strong>Category:</strong> ${category}</p>`;
+            }
+            if (topic && topic !== '---') {
+              descriptionHtml += `<p><strong>Topic:</strong> ${topic}</p>`;
+            }
+            if (newMeeting.link) {
+              descriptionHtml += `<p><strong>Join Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>`;
+            }
+            
+            // Calendar subject (without date, with topic if available)
+            const calendarSubject = topic && topic !== '---' 
+              ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
+              : `Meeting with Decker, Pex, Levi Lawoffice`;
+            
+            // Prepare date/time for calendar
+            const startDateTime = new Date(`${newMeeting.date}T${formattedTime}:00`);
+            const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
+            
+            if (useOutlookCalendarInvite) {
+              // For Microsoft email clients: Use Microsoft Graph API to create calendar event
+              // This automatically sends a proper Outlook meeting invitation
+              try {
+                await createCalendarEventWithAttendee(tokenResponse.accessToken, {
+                  subject: calendarSubject,
+                  startDateTime: startDateTime.toISOString(),
+                  endDateTime: endDateTime.toISOString(),
+                  location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+                  description: descriptionHtml,
+                  attendeeEmail: selectedClient.email,
+                  attendeeName: recipientName,
+                  organizerEmail: account.username || 'noreply@lawoffice.org.il',
+                  organizerName: account?.name || 'Law Office',
+                  teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
+                  timeZone: 'Asia/Jerusalem'
+                });
+                
+                console.log('✅ Outlook calendar invitation sent successfully');
+              } catch (calendarError) {
+                console.error('❌ Failed to create Outlook calendar event:', calendarError);
+                // Fallback to regular email with ICS attachment
+                throw calendarError;
+              }
+            } else {
+              // For non-Microsoft email clients (Gmail, etc.): Send email with ICS attachment
+              // Generate ICS calendar file attachment
+              let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
+              try {
+                const icsContent = generateICSFromDateTime({
+                  subject: calendarSubject,
+                  date: newMeeting.date,
+                  time: formattedTime,
+                  durationMinutes: 60,
+                  location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+                  description: descriptionHtml.replace(/<[^>]+>/g, ''), // Strip HTML for ICS
+                  organizerEmail: account.username || 'noreply@lawoffice.org.il',
+                  organizerName: account?.name || 'Law Office',
+                  attendeeEmail: selectedClient.email,
+                  attendeeName: recipientName,
+                  teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
+                  timeZone: 'Asia/Jerusalem'
+                });
+                
+                const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+                
+                attachments = [{
+                  name: 'meeting-invite.ics',
+                  contentBytes: icsBase64,
+                  contentType: 'text/calendar; charset=utf-8; method=REQUEST'
+                }];
+                
+                console.log('📅 ICS calendar file generated');
+              } catch (icsError) {
+                console.error('❌ Failed to generate ICS file:', icsError);
+              }
+              
+              // Send email with ICS attachment
+              await sendEmail(tokenResponse.accessToken, {
+                to: selectedClient.email,
+                subject,
+                body,
+                skipSignature: true, // Don't include user signature for template emails
+                attachments
+              });
+              
+              console.log('✅ Email with calendar invite sent successfully');
+            }
+            
+            // Save email to database for tracking
+            const now = new Date();
+            try {
+              const isLegacyLead = selectedClient.lead_type === 'legacy' || 
+                                   (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
+              
+              const emailRecord: any = {
+                message_id: `meeting_invitation_${now.getTime()}_${Date.now()}`,
+                thread_id: null,
+                sender_name: account?.name || 'Law Office',
+                sender_email: account.username || 'noreply@lawoffice.org.il',
+                recipient_list: selectedClient.email,
+                subject,
+                body_html: body, // Full HTML body for display
+                body_preview: body.substring(0, 200), // Store first 200 chars as preview
+                sent_at: now.toISOString(),
+                direction: 'outgoing', // Must be 'outgoing' not 'outbound'
+                attachments: null,
+              };
+              
+              // Set either client_id OR legacy_id, not both
+              if (isLegacyLead) {
+                const numericId = parseInt(selectedClient.id.toString().replace(/[^0-9]/g, ''), 10);
+                emailRecord.legacy_id = isNaN(numericId) ? null : numericId; // FIXED: was legacy_lead_id
+                emailRecord.client_id = null;
+              } else {
+                emailRecord.client_id = selectedClient.id || null;
+                emailRecord.legacy_id = null; // FIXED: was legacy_lead_id
+              }
+              
+              const { data, error } = await supabase.from('emails').insert(emailRecord).select();
+              if (error) {
+                console.error('❌ Database error saving email:', error);
+                throw error;
+              }
+              console.log('📧 Email record saved to database:', {
+                isLegacy: isLegacyLead,
+                client_id: emailRecord.client_id,
+                legacy_id: emailRecord.legacy_id,
+                savedId: data?.[0]?.id
+              });
+            } catch (dbError) {
+              console.error('❌ Failed to save email to database:', dbError);
+              // Don't fail the whole operation if DB save fails
+            }
+            
+            toast.success('Meeting invitation sent!', { duration: 3000 });
+          } catch (emailError) {
+            console.error('❌ Error sending meeting invitation:', emailError);
+            // Don't show error to user - meeting was created successfully
+          }
+        })();
+      } else {
+        console.log('⚠️ [Clients.tsx] Meeting created but email not sent:', {
+          meetingType,
+          hasInsertedData: !!insertedData,
+          dataLength: insertedData?.length,
+          hasClientEmail: !!selectedClient?.email
+        });
+      }
+
       // Update UI
       setShowScheduleMeetingPanel(false);
       setIsSchedulingMeeting(false);
@@ -4883,7 +5192,7 @@ useEffect(() => {
         location: '',
         manager: '',
         helper: '',
-        brief: '',
+        brief: '', // Keep for type compatibility, but field removed from UI
         attendance_probability: 'Medium',
         complexity: 'Simple',
         car_number: '',
@@ -6540,7 +6849,7 @@ useEffect(() => {
       // For "Another meeting" stage, keep the stage unchanged
       const currentStageNameForCheck = selectedClient ? getStageName(selectedClient.stage) : '';
       if (!areStagesEquivalent(currentStageNameForCheck, 'another_meeting')) {
-        await updateLeadStage(21);
+      await updateLeadStage(21);
       }
 
       // 5. Show toast and close drawer
@@ -9984,11 +10293,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             
             {/* Balance and Stage badges in one line on mobile */}
             <div className="flex items-center gap-2 mb-3 w-full">
-              <div 
+            <div 
                 className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl shadow-lg px-3 py-2 flex-1 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-                onClick={() => setIsBalanceModalOpen(true)}
-                title="Click to edit balance"
-              >
+              onClick={() => setIsBalanceModalOpen(true)}
+              title="Click to edit balance"
+            >
               <div className="text-center">
                 <div className="text-white text-base font-bold whitespace-nowrap truncate">
                   {(() => {
@@ -10138,24 +10447,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                 </div>
               </div>
-              </div>
+            </div>
 
               {/* Stage Badge - Same line */}
               <div className="flex flex-col gap-1.5 flex-shrink-0">
-                {selectedClient?.stage !== null &&
-                  selectedClient?.stage !== undefined &&
-                  selectedClient?.stage !== '' && (
+            {selectedClient?.stage !== null &&
+              selectedClient?.stage !== undefined &&
+              selectedClient?.stage !== '' && (
                     <>
-                      {getStageBadge(selectedClient.stage, 'mobile')}
+                  {getStageBadge(selectedClient.stage, 'mobile')}
                       {/* Meeting Scheduled badge directly under stage */}
-                      {hasScheduledMeetings && nextMeetingDate && (
-                        <button
-                          onClick={() => setActiveTab('meeting')}
+                  {hasScheduledMeetings && nextMeetingDate && (
+                    <button
+                      onClick={() => setActiveTab('meeting')}
                           className="badge badge-sm px-3 py-1.5 shadow-md cursor-pointer animate-pulse font-semibold whitespace-nowrap"
-                          style={{
-                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                            color: 'white',
-                            borderColor: '#10b981',
+                      style={{
+                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                        color: 'white',
+                        borderColor: '#10b981',
                             fontSize: '0.7rem',
                             minHeight: '1.5rem',
                           }}
@@ -10164,8 +10473,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             const date = new Date(nextMeetingDate);
                             return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
                           })()}
-                        </button>
-                      )}
+                    </button>
+                  )}
                     </>
                   )}
               </div>
@@ -10256,11 +10565,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               
               {/* Language and Applicant badges */}
               <div className="flex items-center gap-2 flex-wrap">
-                {selectedClient?.language && (
-                  <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
-                    {selectedClient.language}
-                  </span>
-                )}
+              {selectedClient?.language && (
+                <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
+                  {selectedClient.language}
+                </span>
+              )}
                 {(() => {
                   const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                   const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
@@ -10356,7 +10665,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                   <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
                                 </label>
                                 {dropdownItems && (
-                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
+                                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-base-100 rounded-xl w-56 shadow-2xl border border-base-300" style={{ zIndex: 9999 }}>
                                     {dropdownItems}
                                   </ul>
                                 )}
@@ -12097,19 +12406,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                 </>
               )} */}
-
-              {/* Meeting Brief (Optional) */}
-              <div>
-                <label htmlFor="meeting-brief" className="block font-semibold mb-1">Meeting Brief (Optional)</label>
-                <textarea
-                  id="meeting-brief"
-                  name="meeting-brief"
-                  className="textarea textarea-bordered w-full min-h-[80px]"
-                  value={meetingFormData.brief}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, brief: e.target.value }))}
-                  placeholder="Brief description of the meeting topic..."
-                />
-              </div>
 
               {/* Meeting Attendance Probability */}
               <div>

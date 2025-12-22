@@ -1607,7 +1607,7 @@ const formatEmailBody = async (
     }
   };
 
-  const handleSendEmail = async (meeting: Meeting, emailAddress?: string | string[], contactName?: string) => {
+  const handleSendEmail = async (meeting: Meeting, emailAddress?: string | string[], contactName?: string, explicitEmailType?: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' | 'reminder' | 'cancellation' | 'rescheduled') => {
     setSendingEmailMeetingId(meeting.id);
     setShowNotifyModal(false);
     try {
@@ -1646,13 +1646,16 @@ const formatEmailBody = async (
       };
       const formattedDate = formatDate(meeting.date);
       
+      // Use explicit email type if provided, otherwise use state
+      const currentEmailType = explicitEmailType || emailType;
+      
       // Compose subject based on email type
       let subject: string;
-      if (emailType === 'cancellation') {
+      if (currentEmailType === 'cancellation') {
         subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Canceled`;
-      } else if (emailType === 'reminder') {
+      } else if (currentEmailType === 'reminder') {
         subject = `Meeting Reminder - ${formattedDate}`;
-      } else if (emailType === 'rescheduled') {
+      } else if (currentEmailType === 'rescheduled') {
         subject = `[${client.lead_number || client.id}] - ${client.name} - Meeting Rescheduled`;
       } else {
         // All invitation types (invitation, invitation_jlm, invitation_tlv, invitation_tlv_parking)
@@ -1705,8 +1708,26 @@ const formatEmailBody = async (
       const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);
       const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
       
-      // Get email template based on selected language
-      const selectedTemplate = selectedEmailLanguage === 'en' ? emailTemplates.en : emailTemplates.he;
+      // Determine language based on client's language_id for automatic template selection
+      // For rescheduled emails, automatically use language_id; for others, use manual selection
+      let languageToUse: 'en' | 'he';
+      if (currentEmailType === 'rescheduled') {
+        // Automatically determine language from client's language_id
+        const isHebrew = client.language_id === 2 || 
+                        (client.language_id === undefined && client.language?.toLowerCase().includes('hebrew'));
+        languageToUse = isHebrew ? 'he' : 'en';
+        console.log('🌐 Reschedule email - Auto language selection:', {
+          language_id: client.language_id,
+          language: client.language,
+          selectedLanguage: languageToUse
+        });
+      } else {
+        // Use manual language selection for other email types
+        languageToUse = selectedEmailLanguage;
+      }
+      
+      // Get email template based on determined language
+      const selectedTemplate = languageToUse === 'en' ? emailTemplates.en : emailTemplates.he;
       
       // Build HTML body for email - use template if available, otherwise fallback to default template
       let htmlBody: string;
@@ -1745,7 +1766,7 @@ const formatEmailBody = async (
       }
       
       // Only create calendar invites for invitations (all invitation types)
-      if (emailType === 'invitation' || emailType === 'invitation_jlm' || emailType === 'invitation_tlv' || emailType === 'invitation_tlv_parking') {
+      if (currentEmailType === 'invitation' || currentEmailType === 'invitation_jlm' || currentEmailType === 'invitation_tlv' || currentEmailType === 'invitation_tlv_parking') {
         if (useOutlookCalendarInvite) {
           // Use Microsoft Graph API to create a calendar event with attendees
           // This automatically sends a proper Outlook meeting invitation that appears as a calendar box, not an attachment
@@ -1828,7 +1849,7 @@ const formatEmailBody = async (
         cancellation: `Meeting cancellation notice sent for meeting on ${meeting.date}`,
         rescheduled: `Meeting rescheduled notice sent for meeting on ${meeting.date}`
       };
-      toast.success(emailTypeMessages[emailType]);
+      toast.success(emailTypeMessages[currentEmailType]);
       // --- Optimistic upsert to emails table ---
       // For Outlook calendar invites, the email is sent automatically by Exchange
       // For non-Outlook, we send the email with ICS attachment
@@ -2445,6 +2466,73 @@ const formatEmailBody = async (
         }
       }
 
+      // Automatically send the appropriate meeting invitation email
+      console.log('📧 Checking if we can send automatic invitation:', {
+        hasInsertedData: !!insertedData,
+        insertedDataLength: insertedData?.length,
+        hasClient: !!client,
+        clientEmail: client?.email,
+        clientName: client?.name,
+        meetingData: insertedData?.[0]
+      });
+      
+      if (insertedData && insertedData.length > 0 && client.email) {
+        const newMeeting: Meeting = {
+          id: insertedData[0].id,
+          client_id: insertedData[0].client_id,
+          date: insertedData[0].meeting_date,
+          time: insertedData[0].meeting_time,
+          location: insertedData[0].meeting_location,
+          manager: insertedData[0].meeting_manager,
+          currency: insertedData[0].meeting_currency,
+          amount: insertedData[0].meeting_amount,
+          brief: insertedData[0].meeting_brief,
+          scheduler: insertedData[0].scheduler || currentUserFullName,
+          helper: insertedData[0].helper,
+          expert: insertedData[0].expert,
+          link: insertedData[0].teams_meeting_url || '',
+          lastEdited: {
+            timestamp: insertedData[0].last_edited_timestamp,
+            user: insertedData[0].last_edited_by,
+          },
+        };
+
+        // Determine the appropriate invitation type based on meeting location
+        const location = (scheduleMeetingFormData.location || '').toLowerCase();
+        let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
+        
+        if (location.includes('jrslm') || location.includes('jerusalem')) {
+          invitationType = 'invitation_jlm';
+        } else if (location.includes('tlv') && location.includes('parking')) {
+          invitationType = 'invitation_tlv_parking';
+        } else if (location.includes('tlv') || location.includes('tel aviv')) {
+          invitationType = 'invitation_tlv';
+        }
+
+        console.log('🎯 Auto-sending meeting invitation:', {
+          location: scheduleMeetingFormData.location,
+          invitationType,
+          clientEmail: client.email,
+          meetingDate: newMeeting.date
+        });
+        
+        // Send the invitation email with calendar invite (ICS/Outlook)
+        // Pass invitationType directly as the 4th parameter
+        try {
+          await handleSendEmail(newMeeting, client.email, client.name, invitationType);
+          console.log('✅ Meeting invitation sent successfully');
+        } catch (emailError) {
+          console.error('❌ Error sending meeting invitation:', emailError);
+          toast.warning('Meeting scheduled, but failed to send invitation email.');
+        }
+      } else {
+        console.log('⚠️ Meeting created but email not sent:', {
+          hasInsertedData: !!insertedData,
+          dataLength: insertedData?.length,
+          hasClientEmail: !!client?.email
+        });
+      }
+
       // Update UI
       setShowScheduleDrawer(false);
       setIsSchedulingMeeting(false);
@@ -2462,8 +2550,6 @@ const formatEmailBody = async (
         car_number: '',
         calendar: 'active_client',
       });
-      
-      toast.success('Meeting scheduled successfully!');
       
       if (onClientUpdate) await onClientUpdate();
       await fetchMeetings();
@@ -3472,30 +3558,48 @@ const formatEmailBody = async (
                     </button>
                     {showNotifyDropdown === meeting.id && (
                       <div className="absolute right-0 mt-1 w-56 bg-white border border-gray-200 rounded-lg shadow-lg z-50">
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
-                          onClick={() => handleNotifyClick(meeting, 'invitation')}
-                        >
-                          Meeting Invitation
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-                          onClick={() => handleNotifyClick(meeting, 'invitation_jlm')}
-                        >
-                          Meeting Invitation JLM
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv')}
-                        >
-                          Meeting Invitation TLV
-                        </button>
-                        <button
-                          className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
-                          onClick={() => handleNotifyClick(meeting, 'invitation_tlv_parking')}
-                        >
-                          Meeting Invitation TLV + Parking
-                        </button>
+                        {/* Conditional Meeting Invitation based on location */}
+                        {(() => {
+                          const location = (meeting.location || '').toLowerCase();
+                          
+                          if (location.includes('jrslm') || location.includes('jerusalem')) {
+                            return (
+                              <button
+                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                                onClick={() => handleNotifyClick(meeting, 'invitation_jlm')}
+                              >
+                                Meeting Invitation JLM
+                              </button>
+                            );
+                          } else if (location.includes('tlv') && location.includes('parking')) {
+                            return (
+                              <button
+                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                                onClick={() => handleNotifyClick(meeting, 'invitation_tlv_parking')}
+                              >
+                                Meeting Invitation TLV + Parking
+                              </button>
+                            );
+                          } else if (location.includes('tlv') || location.includes('tel aviv')) {
+                            return (
+                              <button
+                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                                onClick={() => handleNotifyClick(meeting, 'invitation_tlv')}
+                              >
+                                Meeting Invitation TLV
+                              </button>
+                            );
+                          } else {
+                            return (
+                              <button
+                                className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100 first:rounded-t-lg"
+                                onClick={() => handleNotifyClick(meeting, 'invitation')}
+                              >
+                                Meeting Invitation
+                              </button>
+                            );
+                          }
+                        })()}
                         <button
                           className="w-full text-left px-4 py-2 text-sm text-gray-900 hover:bg-gray-100"
                           onClick={() => handleNotifyClick(meeting, 'reminder')}
