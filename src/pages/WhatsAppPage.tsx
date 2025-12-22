@@ -789,7 +789,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         if (newLeadIds.length > 0) {
           let query = supabase
             .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants');
+            .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants');
           
           // Apply role filter if "My Contacts" is enabled AND we have user info
           // If showMyContactsOnly is true but user info isn't loaded yet, skip filtering (will re-fetch when user info loads)
@@ -942,7 +942,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 if (newLeadIdsForContacts.size > 0) {
                   let contactsNewLeadsQuery = supabase
                     .from('leads')
-                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id, next_followup, probability, balance, potential_applicants')
+                    .select('id, lead_number, name, email, phone, mobile, topic, status, stage, closer, scheduler, handler, manager, helper, expert, case_handler_id, next_followup, probability, balance, potential_applicants')
                     .in('id', Array.from(newLeadIdsForContacts));
                   
                   // Apply role filter if "My Contacts" is enabled
@@ -1438,7 +1438,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           allMessagesForLead = leadMessages || [];
         }
 
-        // Filter messages based on contact_id or phone number (only for main leads, not contacts)
+        // Filter messages based on phone number (show ALL contacts with same phone)
+        // Not just by contact_id - this allows viewing all messages from the same phone number
         let filteredMessages = allMessagesForLead || [];
         
         if (!selectedClient.isContact && contactId) {
@@ -1447,6 +1448,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           
           if (selectedContact) {
             const contactPhone = selectedContact.phone || selectedContact.mobile;
+            const leadPhone = selectedClient.phone || selectedClient.mobile;
             let last4Digits = '';
             
             if (contactPhone) {
@@ -1455,26 +1457,67 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               last4Digits = phoneDigits.slice(-4);
             }
             
-            // Filter messages: 
-            // 1. First try exact contact_id match
-            // 2. If no contact_id match, fallback to phone number matching (last 4 digits)
-            filteredMessages = (allMessagesForLead || []).filter(msg => {
-              // Exact contact_id match
-              if (msg.contact_id === contactId) {
-                return true;
-              }
+            // Find ALL contact_ids that share the same phone number
+            const relatedContactIds = new Set<number>();
+            if (last4Digits.length >= 4) {
+              // Add the selected contact_id
+              relatedContactIds.add(contactId);
               
-              // Fallback: if message has no contact_id, match by phone number (last 4 digits)
-              if (!msg.contact_id && msg.phone_number && last4Digits.length >= 4) {
-                const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
-                const msgLast4 = msgPhoneDigits.slice(-4);
-                if (msgLast4 === last4Digits) {
+              // Find all other contacts with the same phone number
+              leadContacts.forEach(contact => {
+                const cPhone = contact.phone || contact.mobile;
+                if (cPhone) {
+                  const cPhoneDigits = cPhone.replace(/\D/g, '');
+                  const cLast4 = cPhoneDigits.slice(-4);
+                  if (cLast4 === last4Digits) {
+                    relatedContactIds.add(contact.id);
+                  }
+                }
+              });
+            }
+            
+            console.log(`🔍 Message filtering debug:`, {
+              selectedContactId: contactId,
+              relatedContactIds: Array.from(relatedContactIds),
+              last4Digits,
+              totalMessages: allMessagesForLead?.length || 0,
+              leadContactsCount: leadContacts.length
+            });
+            
+            // SIMPLE RULE: If there's only ONE contact, show ALL messages (no filtering)
+            // This handles cases where not all contacts are loaded yet
+            if (leadContacts.length === 1) {
+              console.log(`✅ Only one contact - showing all ${allMessagesForLead?.length || 0} messages`);
+              filteredMessages = allMessagesForLead || [];
+            } else {
+              // Filter messages: Include messages from ANY contact with the same phone number
+              filteredMessages = (allMessagesForLead || []).filter(msg => {
+                // Match by any related contact_id (all contacts with same phone)
+                if (msg.contact_id && relatedContactIds.has(msg.contact_id)) {
+                  console.log(`✅ Message ${msg.id} matched (contact_id=${msg.contact_id} shares phone)`);
                   return true;
                 }
-              }
-              
-              return false;
-            });
+                
+                // If message has no contact_id, match by phone number (last 4 digits)
+                if (!msg.contact_id && msg.phone_number && last4Digits.length >= 4) {
+                  const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
+                  const msgLast4 = msgPhoneDigits.slice(-4);
+                  if (msgLast4 === last4Digits) {
+                    console.log(`✅ Message ${msg.id} matched by phone number`);
+                    return true;
+                  }
+                }
+                
+                // If no contact_id and no phone_number, include it (likely belongs to this contact)
+                if (!msg.contact_id && !msg.phone_number) {
+                  console.log(`✅ Message ${msg.id} matched (no contact_id, no phone)`);
+                  return true;
+                }
+                
+                console.log(`❌ Message ${msg.id} filtered out (contact_id=${msg.contact_id})`);
+                return false;
+              });
+            }
           } else {
             // If contact not found, show all messages for the lead (fallback)
             filteredMessages = allMessagesForLead || [];
