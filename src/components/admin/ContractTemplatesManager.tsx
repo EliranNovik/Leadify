@@ -1886,10 +1886,10 @@ const ContractTemplatesManager: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-base-100 rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col" style={{ minHeight: 'calc(100vh - 200px)', maxHeight: 'calc(100vh - 200px)' }}>
+      <div className="bg-base-100 rounded-xl shadow-lg border border-gray-200 overflow-hidden flex flex-col">
         {/* Main Editor Area */}
-        <div className="flex flex-col flex-1 min-h-0">
-          <div className="flex items-center gap-4 p-4 border-b border-gray-200">
+        <div className="flex flex-col">
+          <div className="flex items-center gap-4 p-4 border-b border-gray-200 flex-wrap">
             <input
               className="input input-bordered flex-1 text-lg font-semibold"
               value={name}
@@ -1983,9 +1983,9 @@ const ContractTemplatesManager: React.FC = () => {
               </button>
             </div>
           </div>
-          {/* Toolbar */}
-          {!isPreview && <div className="px-4 pt-4"><Toolbar editor={editor} /></div>}
-          <div className="flex-1 border border-base-300 rounded-xl bg-white overflow-hidden flex flex-col" style={{ minHeight: '600px' }}>
+            {/* Toolbar */}
+            {!isPreview && <div className="px-4 pt-4"><Toolbar editor={editor} /></div>}
+            <div className="border border-base-300 rounded-xl bg-white overflow-hidden flex flex-col m-4" style={{ minHeight: '70vh', maxHeight: '75vh', overscrollBehavior: 'contain' }}>
           {!isPreview ? (
             <>
               <style>{`
@@ -2013,64 +2013,33 @@ const ContractTemplatesManager: React.FC = () => {
                   min-height: 0;
                 }
               `}</style>
-              <div className="h-full overflow-y-auto flex-1 tiptap-editor-container">
+                <div className="overflow-y-auto flex-1 tiptap-editor-container" style={{ maxHeight: '65vh', overscrollBehavior: 'contain' }}>
                 <EditorContent 
                   editor={editor} 
-                  className="prose max-w-none h-full text-black flex-1" 
+                  className="prose max-w-none text-black" 
                 />
               </div>
             </>
           ) : (
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-6 p-4 overflow-y-auto" style={{ maxHeight: '70vh', overscrollBehavior: 'contain' }}>
               {/* Preview Data Editor */}
               <div className="lg:col-span-1">
                 <div className="card bg-base-100 shadow-sm">
                   <div className="card-body p-4">
                     <h3 className="text-lg font-semibold mb-4">Preview Data</h3>
                     <div className="space-y-3">
-
-
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Currency</span>
-                        </label>
-                        <select
-                          className="select select-bordered select-sm w-full"
-                          value={previewData.currency}
-                          onChange={e => setPreviewData(prev => ({ ...prev, currency: e.target.value }))}
-                        >
-                          <option value="USD">USD</option>
-                          <option value="NIS">NIS</option>
-                        </select>
-                      </div>
-                      <div>
-                        <label className="label">
-                          <span className="label-text">Discount %</span>
-                        </label>
-                        <input
-                          type="number"
-                          className="input input-bordered input-sm w-full"
-                          value={previewData.discount_percentage}
-                          onChange={e => {
-                            const newDiscount = Number(e.target.value);
-                            setPreviewData(prev => ({ 
-                              ...prev, 
-                              discount_percentage: newDiscount
-                            }));
-                          }}
-                        />
-                      </div>
-                      
                       {/* Pricing Tiers - Separate tabs for USD and NIS */}
                       <div className="tabs tabs-boxed mb-4">
                         <button 
                           className={`tab flex-1 ${previewData.currency === 'USD' ? 'tab-active' : ''}`}
+                          style={previewData.currency === 'USD' ? { backgroundColor: '#3B18BC', color: 'white' } : {}}
                           onClick={() => setPreviewData(prev => ({ ...prev, currency: 'USD', pricing_tiers: usdPricingTiers }))}
                         >
                           USD/GBP/EUR
                         </button>
                         <button 
                           className={`tab flex-1 ${previewData.currency === 'NIS' ? 'tab-active' : ''}`}
+                          style={previewData.currency === 'NIS' ? { backgroundColor: '#3B18BC', color: 'white' } : {}}
                           onClick={() => setPreviewData(prev => ({ ...prev, currency: 'NIS', pricing_tiers: nisPricingTiers }))}
                         >
                           NIS
@@ -2135,7 +2104,7 @@ const ContractTemplatesManager: React.FC = () => {
               </div>
               {/* Contract Preview */}
               <div className="lg:col-span-2">
-                <div className="bg-base-200 rounded-xl p-6 border border-base-300" key={JSON.stringify(previewData.pricing_tiers)}>
+                <div className="bg-white rounded-xl p-6 border border-base-300" key={JSON.stringify(previewData.pricing_tiers)}>
                   {renderPreview()}
                 </div>
               </div>

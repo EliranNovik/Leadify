@@ -6713,63 +6713,70 @@ useEffect(() => {
           }
         }
         
-        // Get language_id from client
-        const isLegacyLeadForCancel = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-        let clientLanguageId: number | null = null;
+        // Determine language for template selection (same logic as schedule meeting)
+        // Template ID 153 = English cancellation, 154 = Hebrew cancellation
+        const isHebrewById = selectedClient.language_id === 2;
+        const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
+                               selectedClient.language?.toLowerCase() === 'hebrew';
+        const isHebrew = isHebrewById || (!selectedClient.language_id && isHebrewByText);
+        const templateId = isHebrew ? 154 : 153; // HE: 154, EN: 153
         
-        if (isLegacyLeadForCancel) {
-          if ((selectedClient as any).language_id) {
-            clientLanguageId = (selectedClient as any).language_id;
-          } else {
-            const legacyId = selectedClient.id.toString().replace('legacy_', '');
-            const { data: legacyData } = await supabase
-              .from('leads_lead')
-              .select('language_id')
-              .eq('id', legacyId)
-              .single();
-            clientLanguageId = legacyData?.language_id || null;
-          }
-        } else {
-          if ((selectedClient as any).language_id) {
-            clientLanguageId = (selectedClient as any).language_id;
-          } else {
-            const { data: leadData } = await supabase
-              .from('leads')
-              .select('language_id')
-              .eq('id', selectedClient.id)
-              .single();
-            clientLanguageId = leadData?.language_id || null;
-          }
-        }
+        console.log('🌍 Cancellation email language selection:', {
+          language_id: selectedClient.language_id,
+          language_text: selectedClient.language,
+          isHebrewById,
+          isHebrewByText,
+          isHebrew,
+          selectedTemplateId: templateId,
+          fullClient: selectedClient
+        });
         
-        // Fetch email template by name ('cancellation') and language_id
+        // Fetch email template by ID
         let templateContent: string | null = null;
+        
         try {
-          console.log('📧 Fetching cancellation email template:', { clientLanguageId, isLegacyLeadForCancel });
+          console.log('📧 Fetching cancellation email template:', { templateId, isHebrew });
           
-          if (!clientLanguageId) {
-            console.warn('⚠️ No language_id found for client, cannot fetch template');
+          const { data: template, error: templateError } = await supabase
+            .from('misc_emailtemplate')
+            .select('content')
+            .eq('id', templateId)
+            .single();
+          
+          if (templateError) {
+            console.error('❌ Error fetching cancellation email template:', {
+              error: templateError,
+              code: templateError.code,
+              message: templateError.message,
+              details: templateError.details,
+              hint: templateError.hint,
+              templateId,
+              isHebrew,
+              language_id: selectedClient.language_id,
+              language_text: selectedClient.language
+            });
+          } else if (template && template.content) {
+            const parsed = parseTemplateContent(template.content);
+            templateContent = parsed && parsed.trim() ? parsed : template.content;
+            console.log('✅ Cancellation email template fetched successfully', {
+              templateId,
+              isHebrew,
+              language_id: selectedClient.language_id,
+              language_text: selectedClient.language,
+              rawLength: template.content.length,
+              parsedLength: parsed?.length || 0,
+              finalLength: templateContent?.length || 0,
+              usingRaw: !parsed || !parsed.trim()
+            });
           } else {
-            const { data: template, error: templateError } = await supabase
-              .from('misc_emailtemplate')
-              .select('content')
-              .eq('name', 'cancellation')
-              .eq('language_id', clientLanguageId)
-              .single();
-            
-            if (templateError) {
-              console.error('❌ Error fetching cancellation email template:', templateError);
-            } else if (template && template.content) {
-              const parsed = parseTemplateContent(template.content);
-              templateContent = parsed && parsed.trim() ? parsed : template.content;
-              console.log('✅ Cancellation email template fetched successfully', {
-                languageId: clientLanguageId,
-                rawLength: template.content.length,
-                parsedLength: parsed?.length || 0,
-                finalLength: templateContent?.length || 0,
-                usingRaw: !parsed || !parsed.trim()
-              });
-            }
+            console.warn('⚠️ Template fetched but content is empty or null', {
+              templateId,
+              hasTemplate: !!template,
+              hasContent: !!(template?.content),
+              isHebrew,
+              language_id: selectedClient.language_id,
+              language_text: selectedClient.language
+            });
           }
         } catch (error) {
           console.error('❌ Exception fetching cancellation email template:', error);
@@ -6785,7 +6792,6 @@ useEffect(() => {
           console.log('✅ Using cancellation email template');
           emailBody = await formatEmailBody(templateContent, selectedClient.name, {
             client: selectedClient,
-            meeting: canceledMeeting,
             meetingDate: formattedDate,
             meetingTime: formattedTime,
             meetingLocation: locationName,
@@ -7376,7 +7382,6 @@ useEffect(() => {
             // Then format with RTL support
             emailBody = await formatEmailBody(templatedBody, selectedClient.name, {
               client: selectedClient,
-              meeting: canceledMeeting,
               meetingDate: formattedNewDate,
               meetingTime: formattedNewTime,
               meetingLocation: newLocationName,
