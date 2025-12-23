@@ -49,6 +49,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const navigate = useNavigate();
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
+  const [isLoadingFinancePlan, setIsLoadingFinancePlan] = useState<boolean>(true);
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
@@ -555,21 +556,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-  // Fetch current user's superuser status
+  // Fetch current user's superuser status and collection status
   useEffect(() => {
-    const fetchSuperuserStatus = async () => {
+    const fetchUserPermissions = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
         
         if (authError || !user) {
           setIsSuperuser(false);
+          setIsCollection(false);
           return;
         }
 
         // Try to find user by auth_id first
         let { data: userData, error } = await supabase
           .from('users')
-          .select('is_superuser')
+          .select('is_superuser, employee_id')
           .eq('auth_id', user.id)
           .maybeSingle();
         
@@ -577,7 +579,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (!userData && user.email) {
           const { data: userByEmail, error: emailError } = await supabase
             .from('users')
-            .select('is_superuser')
+            .select('is_superuser, employee_id')
             .eq('email', user.email)
             .maybeSingle();
           
@@ -591,24 +593,51 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   userData.is_superuser === 'true' || 
                                   userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
+
+          // Check if user has is_collection = true in tenants_employee table
+          if (userData.employee_id) {
+            const { data: employeeData, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('is_collection')
+              .eq('id', userData.employee_id)
+              .maybeSingle();
+            
+            if (!employeeError && employeeData) {
+              // Check if is_collection is true (handle boolean, string 't', or number)
+              const collectionStatus = employeeData.is_collection === true || 
+                                      employeeData.is_collection === 't' || 
+                                      employeeData.is_collection === 'true' ||
+                                      employeeData.is_collection === 1;
+              setIsCollection(collectionStatus);
+            } else {
+              setIsCollection(false);
+            }
+          } else {
+            setIsCollection(false);
+          }
         } else {
           setIsSuperuser(false);
+          setIsCollection(false);
         }
       } catch (error) {
-        console.error('Error fetching superuser status:', error);
+        console.error('Error fetching user permissions:', error);
         setIsSuperuser(false);
+        setIsCollection(false);
       }
     };
 
-    fetchSuperuserStatus();
+    fetchUserPermissions();
   }, []);
 
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
       const fetchPaymentPlans = async () => {
     if (!client?.id) {
+      setIsLoadingFinancePlan(false);
       return;
     }
+    
+    setIsLoadingFinancePlan(true);
     
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -687,27 +716,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           
           if (isLegacyLead) {
             // Transform legacy data to match the finance plan structure
-            // First, calculate proper totals with VAT for NIS currency
-            let total = 0;
-            let vat = 0;
-            
-            data.forEach(plan => {
-              const value = Number(plan.value || 0);
-              let valueVat = Number(plan.vat_value || 0);
-              
-              // For NIS (currency_id = 1), ensure VAT calculation is correct
-              if (plan.currency_id === 1 && (valueVat === 0 || !plan.vat_value)) {
-                valueVat = Math.round(value * 0.18 * 100) / 100;
-              }
-              
-              total += value + valueVat;
-              vat += valueVat;
-            });
-            
-            // Calculate the total amount for percentage calculation
-            const totalAmount = total;
-            
-            payments = data.map(plan => {
+            // First, process all payments to calculate totals and get currency info
+            const processedPayments = data.map(plan => {
               const value = Number(plan.value || 0);
               let valueVat = Number(plan.vat_value || 0);
               
@@ -720,7 +730,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 currencyId = plan.accounting_currencies.id;
               } else if (plan.currency_id) {
                 // If we have currency_id but no joined data, use a simple mapping
-                // Map known currency IDs to symbols
                 switch (plan.currency_id) {
                   case 1: currency = '₪'; break; // NIS
                   case 2: currency = '€'; break; // EUR
@@ -738,8 +747,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               
               const paymentTotal = value + valueVat;
               
-              // Calculate percentage based on this payment's total amount vs total of all payments
-              const duePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100) : 0;
+              return {
+                plan,
+                value,
+                valueVat,
+                currency,
+                currencyId,
+                paymentTotal
+              };
+            });
+            
+            // Calculate totals using the same VAT logic
+            let total = 0;
+            let vat = 0;
+            processedPayments.forEach(processed => {
+              total += processed.paymentTotal;
+              vat += processed.valueVat;
+            });
+            
+            // Calculate the total amount for percentage calculation
+            const totalAmount = total;
+            
+            payments = processedPayments.map(processed => {
+              const { plan, value, valueVat, currency, paymentTotal } = processed;
               
               // Map numeric order to text for display
               const getOrderText = (orderNumber: number): string => {
@@ -753,22 +783,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 }
               };
 
-              // Use stored percentage value if available, otherwise auto-calculate for existing payments
-              let calculatedDuePercent = '0';
-              if (plan.due_percent && plan.due_percent !== 'null' && plan.due_percent !== '') {
-                // Use stored percentage value
-                calculatedDuePercent = plan.due_percent;
-              } else {
-                // Auto-calculate percentage based on payment amount vs total
-                // This only happens for existing payments that don't have a stored percentage
-                const paymentTotal = value + valueVat;
-                calculatedDuePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() : '0';
-              }
-              
-              // Ensure the percentage has the % sign
-              if (!calculatedDuePercent.includes('%')) {
-                calculatedDuePercent = calculatedDuePercent + '%';
-              }
+              // Always auto-calculate percentage based on payment amount vs total
+              const calculatedDuePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() + '%' : '0%';
 
               return {
                 id: plan.id,
@@ -793,19 +809,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             });
           } else {
             // Transform regular data to match the finance plan structure
-            total = data.reduce((sum, plan) => sum + Number(plan.value) + Number(plan.value_vat), 0);
-            vat = data.reduce((sum, plan) => sum + Number(plan.value_vat), 0);
-            
-            payments = data.map(plan => {
+            // First, process all payments to calculate totals with consistent VAT logic
+            const processedPayments = data.map(plan => {
               const value = Number(plan.value);
-              let valueVat = 0;
+              let valueVat = Number(plan.value_vat || 0);
               const currency = plan.currency || '₪';
-              if (currency === '₪') {
+              
+              // For NIS currency, calculate VAT if not set
+              if (currency === '₪' && (!valueVat || valueVat === 0)) {
                 valueVat = Math.round(value * 0.18 * 100) / 100;
               }
+              
+              const paymentTotal = value + valueVat;
+              
+              return {
+                plan,
+                value,
+                valueVat,
+                currency,
+                paymentTotal
+              };
+            });
+            
+            // Calculate totals using the same VAT logic
+            total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
+            vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
+            
+            // Calculate total amount for percentage calculation
+            const totalAmount = total;
+            
+            payments = processedPayments.map(processed => {
+              const { plan, value, valueVat, currency, paymentTotal } = processed;
+              
+              // Always auto-calculate percentage based on payment amount vs total
+              const duePercentStr = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() + '%' : '0%';
+              
               return {
                 id: plan.id,
-                duePercent: String(plan.due_percent || plan.percent || 0),
+                duePercent: duePercentStr,
                 dueDate: plan.due_date,
                 value,
                 valueVat,
@@ -844,6 +885,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
       } catch (error) {
         console.error('Error fetching payment plans:', error);
+        setFinancePlan(null);
+        setPaidMap({});
+      } finally {
+        setIsLoadingFinancePlan(false);
       }
     };
 
@@ -1069,27 +1114,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         
         if (isLegacyLead) {
           // Transform legacy data with proper currency and VAT handling
-          // First, calculate proper totals with VAT for NIS currency
-          let total = 0;
-          let vat = 0;
-          
-          data.forEach(plan => {
-            const value = Number(plan.value || 0);
-            let valueVat = Number(plan.vat_value || 0);
-            
-            // For NIS (currency_id = 1), ensure VAT calculation is correct
-            if (plan.currency_id === 1 && (valueVat === 0 || !plan.vat_value)) {
-              valueVat = Math.round(value * 0.18 * 100) / 100;
-            }
-            
-            total += value + valueVat;
-            vat += valueVat;
-          });
-          
-          // Calculate the total amount for percentage calculation
-          const totalAmount = total;
-          
-          payments = data.map(plan => {
+          // First, process all payments to calculate totals and get currency info
+          const processedPayments = data.map(plan => {
             const value = Number(plan.value || 0);
             let valueVat = Number(plan.vat_value || 0);
             
@@ -1100,10 +1126,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             if (plan.accounting_currencies && plan.accounting_currencies.name) {
               currency = plan.accounting_currencies.name;
               currencyId = plan.accounting_currencies.id;
-                          } else if (plan.currency_id) {
-                // If we have currency_id but no joined data, use a simple mapping
-                // Map known currency IDs to symbols
-                switch (plan.currency_id) {
+            } else if (plan.currency_id) {
+              // If we have currency_id but no joined data, use a simple mapping
+              switch (plan.currency_id) {
                 case 1: currency = '₪'; break; // NIS
                 case 2: currency = '€'; break; // EUR
                 case 3: currency = '$'; break; // USD
@@ -1119,12 +1144,35 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             
             const paymentTotal = value + valueVat;
             
-            // Calculate percentage based on this payment's total amount vs total of all payments
-            const duePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100) : 0;
+            return {
+              plan,
+              value,
+              valueVat,
+              currency,
+              paymentTotal
+            };
+          });
+          
+          // Calculate totals using the same VAT logic
+          let total = 0;
+          let vat = 0;
+          processedPayments.forEach(processed => {
+            total += processed.paymentTotal;
+            vat += processed.valueVat;
+          });
+          
+          // Calculate the total amount for percentage calculation
+          const totalAmount = total;
+          
+          payments = processedPayments.map(processed => {
+            const { plan, value, valueVat, currency, paymentTotal } = processed;
+            
+            // Always auto-calculate percentage based on payment amount vs total
+            const calculatedDuePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() + '%' : '0%';
             
             return {
               id: plan.id,
-              duePercent: duePercent.toString(), // Calculate percentage based on payment amount
+              duePercent: calculatedDuePercent,
               dueDate: plan.date || plan.due_date,
               value,
               valueVat,
@@ -1141,19 +1189,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
         } else {
           // Transform regular data
-          total = data.reduce((sum, plan) => sum + Number(plan.value) + Number(plan.value_vat), 0);
-          vat = data.reduce((sum, plan) => sum + Number(plan.value_vat), 0);
-          
-          payments = data.map(plan => {
+          // First, process all payments to calculate totals with consistent VAT logic
+          const processedPayments = data.map(plan => {
             const value = Number(plan.value);
-            let valueVat = 0;
+            let valueVat = Number(plan.value_vat || 0);
             const currency = plan.currency || '₪';
-            if (currency === '₪') {
+            
+            // For NIS currency, calculate VAT if not set
+            if (currency === '₪' && (!valueVat || valueVat === 0)) {
               valueVat = Math.round(value * 0.18 * 100) / 100;
             }
+            
+            const paymentTotal = value + valueVat;
+            
+            return {
+              plan,
+              value,
+              valueVat,
+              currency,
+              paymentTotal
+            };
+          });
+          
+          // Calculate totals using the same VAT logic
+          total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
+          vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
+          
+          // Calculate total amount for percentage calculation
+          const totalAmount = total;
+          
+          payments = processedPayments.map(processed => {
+            const { plan, value, valueVat, currency, paymentTotal } = processed;
+            
+            // Always auto-calculate percentage based on payment amount vs total
+            const duePercentStr = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() + '%' : '0%';
+            
             return {
               id: plan.id,
-              duePercent: String(plan.due_percent || plan.percent || 0),
+              duePercent: duePercentStr,
               dueDate: plan.due_date,
               value,
               valueVat,
@@ -1978,6 +2051,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   
   // Add superuser state
   const [isSuperuser, setIsSuperuser] = useState(false);
+  // Add collection user state
+  const [isCollection, setIsCollection] = useState(false);
 
   // Shared initializer for new payment data
   const initNewPaymentData = (contactName: string) => {
@@ -2475,6 +2550,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return null;
     }
   };
+
+  if (isLoadingFinancePlan) {
+    return (
+      <div className="flex flex-col items-center justify-center h-64 text-center">
+        <span className="loading loading-spinner loading-lg text-primary"></span>
+        <div className="text-lg font-medium text-gray-600 mt-4">Loading finance plan...</div>
+      </div>
+    );
+  }
 
   if (!financePlan) {
     return (
@@ -3438,11 +3522,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               } else {
                                                 return (
                                                   <button 
-                                                    className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
                                                     title="Create Proforma" 
                                                     onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                    style={{ padding: 0 }}
                                                   >
-                                                    Create Proforma
+                                                    <PlusIcon className="w-5 h-5" />
                                                   </button>
                                                 );
                                               }
@@ -3457,11 +3542,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           ) : (
                                             <button 
-                                              className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                                              className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
                                               title="Create Proforma" 
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
+                                              style={{ padding: 0 }}
                                             >
-                                              Create Proforma
+                                              <PlusIcon className="w-5 h-5" />
                                             </button>
                                           )}
                                         </td>
@@ -3522,8 +3608,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     </button>
                                                   </div>
                                                 )}
-                                                {/* Dollar icon (small) - only for superusers */}
-                                                {!isPaid && isSuperuser && (
+                                                {/* Dollar icon (small) - only for superusers or collection users */}
+                                                {!isPaid && (isSuperuser || isCollection) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
                                                     title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
@@ -3533,8 +3619,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <CurrencyDollarIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {/* Edit icon (small) - only for superusers if paid, available for all if not paid */}
-                                                {(!isPaid || isSuperuser) && (
+                                                {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
+                                                {(!isPaid || isSuperuser || isCollection) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Edit"
@@ -3544,17 +3630,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <PencilIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {/* Delete icon (small) - only for superusers */}
-                                                {isSuperuser && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                                    title="Delete"
-                                                    onClick={() => handleDeletePayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <TrashIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
+                                                {/* Delete icon (small) - available for all users */}
+                                                <button
+                                                  className="btn btn-sm btn-circle bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                                  title="Delete"
+                                                  onClick={() => handleDeletePayment(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <TrashIcon className="w-5 h-5" />
+                                                </button>
                                               </>
                                             )
                                           ) : (
@@ -3896,7 +3980,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
                                           {/* Percent (center) */}
                                           <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                                            {p.duePercent}%
+                                            {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
                                           </span>
                                           {/* Actions (right) */}
                                           <div className="flex gap-2 items-center ml-4">
@@ -3912,7 +3996,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <TrashIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
-                                                {!p.isLegacy && (!isPaid || isSuperuser) && (
+                                                {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
                                                   <button
                                                     className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                                     title="Edit"
@@ -3994,11 +4078,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   } else {
                                                     return (
                                                       <button 
-                                                        className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                                                        className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
                                                         title="Create Proforma" 
                                                         onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                        style={{ padding: 0 }}
                                                       >
-                                                        Create Proforma
+                                                        <PlusIcon className="w-5 h-5" />
                                                       </button>
                                                     );
                                                   }
@@ -4013,11 +4098,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 </button>
                                               ) : (
                                                 <button 
-                                                  className="btn btn-sm btn-outline btn-primary text-xs font-medium" 
+                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
                                                   title="Create Proforma" 
                                                   onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
+                                                  style={{ padding: 0 }}
                                                 >
-                                                  Create Proforma
+                                                  <PlusIcon className="w-5 h-5" />
                                                 </button>
                                               )}
                                             </div>
@@ -4065,8 +4151,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               </button>
                                             </div>
                                           )}
-                                          {/* Dollar icon (small) - only for superusers */}
-                                          {!isPaid && isSuperuser && (
+                                          {/* Dollar icon (small) - only for superusers or collection users */}
+                                          {!isPaid && (isSuperuser || isCollection) && (
                                             <button
                                               className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
                                               title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
@@ -4076,8 +4162,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <CurrencyDollarIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Edit icon (small) - only for superusers if paid, available for all if not paid */}
-                                          {(!isPaid || isSuperuser) && (
+                                          {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
+                                          {(!isPaid || isSuperuser || isCollection) && (
                                             <button
                                               className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
                                               title="Edit"
@@ -4087,17 +4173,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               <PencilIcon className="w-5 h-5" />
                                             </button>
                                           )}
-                                          {/* Delete icon (small) - only for superusers */}
-                                          {isSuperuser && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                              title="Delete"
-                                              onClick={() => handleDeletePayment(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <TrashIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
+                                          {/* Delete icon (small) - available for all users */}
+                                          <button
+                                            className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                            title="Delete"
+                                            onClick={() => handleDeletePayment(p)}
+                                            style={{ padding: 0 }}
+                                          >
+                                            <TrashIcon className="w-5 h-5" />
+                                          </button>
                                         </div>
                                       </div>
                                     )}

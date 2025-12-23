@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import Meetings from './Meetings';
 import AISuggestions from './AISuggestions';
 import AISuggestionsModal from './AISuggestionsModal';
@@ -3945,31 +3945,134 @@ const Dashboard: React.FC = () => {
     });
   };
 
-  // Mock data for Score Board bar charts
-  const scoreboardBarDataToday = [
-    { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 0, due: 0 },
-    { category: 'Small cases', signed: 0, due: 0 },
-    { category: 'USA - Immigration', signed: 0, due: 0 },
-    { category: 'Immigration to Israel', signed: 2500, due: 0 },
-    { category: 'Austria and Germany', signed: 0, due: 0 },
-  ];
-  const scoreboardBarDataMonth = [
-    { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 54672, due: 100000 },
-    { category: 'Small cases', signed: 40500, due: 70000 },
-    { category: 'USA - Immigration', signed: 64500, due: 150000 },
-    { category: 'Immigration to Israel', signed: 194638, due: 250000 },
-    { category: 'Austria and Germany', signed: 994981, due: 1700000 },
-  ];
-  const scoreboardBarData30d = [
-    { category: 'General', signed: 0, due: 0 },
-    { category: 'Commercial & Civil', signed: 76652, due: 0 },
-    { category: 'Small cases', signed: 67443, due: 0 },
-    { category: 'USA - Immigration', signed: 130084, due: 0 },
-    { category: 'Immigration to Israel', signed: 389933, due: 0 },
-    { category: 'Austria and Germany', signed: 1730117, due: 0 },
-  ];
+  // Compute chart data from actual agreementData and invoicedData
+  // "signed" = signed agreements (from agreementData)
+  // "due" = invoiced (from invoicedData)
+  const scoreboardBarDataToday = useMemo(() => {
+    // Filter out "General" from departmentNames if it exists to avoid duplicates
+    const filteredDeptNames = departmentNames.filter(name => name !== 'General');
+    const categories = ['General', ...filteredDeptNames, 'Total'];
+    
+    // Create a mapping from department name to its index in departmentNames (which matches data structure order)
+    const deptNameToIndex = new Map<string, number>();
+    departmentNames.forEach((name, idx) => {
+      if (name !== 'General') {
+        deptNameToIndex.set(name, idx);
+      }
+    });
+    
+    return categories.map((category, index) => {
+      let signedAmount = 0;
+      let dueAmount = 0;
+      
+      if (index === 0) {
+        // General -> data index 0
+        signedAmount = agreementData['Today']?.[0]?.amount || 0;
+        dueAmount = invoicedData['Today']?.[0]?.amount || 0;
+      } else if (index === categories.length - 1) {
+        // Total -> data index = departmentNames.length + 1
+        signedAmount = agreementData['Today']?.[departmentNames.length + 1]?.amount || 0;
+        dueAmount = invoicedData['Today']?.[departmentNames.length + 1]?.amount || 0;
+      } else {
+        // Department -> find its index in departmentNames to get correct data index
+        const deptIndexInNames = deptNameToIndex.get(category);
+        if (deptIndexInNames !== undefined) {
+          // Data index = deptIndexInNames + 1 (because General is at index 0)
+          signedAmount = agreementData['Today']?.[deptIndexInNames + 1]?.amount || 0;
+          dueAmount = invoicedData['Today']?.[deptIndexInNames + 1]?.amount || 0;
+        }
+      }
+      
+      return {
+        category,
+        signed: Math.ceil(signedAmount),
+        due: Math.ceil(dueAmount),
+      };
+    });
+  }, [departmentNames, agreementData, invoicedData]);
+
+  const scoreboardBarData30d = useMemo(() => {
+    // Filter out "General" from departmentNames if it exists to avoid duplicates
+    const filteredDeptNames = departmentNames.filter(name => name !== 'General');
+    const categories = ['General', ...filteredDeptNames, 'Total'];
+    
+    // Create a mapping from department name to its index in departmentNames (which matches data structure order)
+    const deptNameToIndex = new Map<string, number>();
+    departmentNames.forEach((name, idx) => {
+      if (name !== 'General') {
+        deptNameToIndex.set(name, idx);
+      }
+    });
+    
+    return categories.map((category, index) => {
+      let signedAmount = 0;
+      let dueAmount = 0;
+      
+      if (index === 0) {
+        // General -> data index 0
+        signedAmount = agreementData['Last 30d']?.[0]?.amount || 0;
+        dueAmount = invoicedData['Last 30d']?.[0]?.amount || 0;
+      } else if (index === categories.length - 1) {
+        // Total -> data index = departmentNames.length + 1
+        signedAmount = agreementData['Last 30d']?.[departmentNames.length + 1]?.amount || 0;
+        dueAmount = invoicedData['Last 30d']?.[departmentNames.length + 1]?.amount || 0;
+      } else {
+        // Department -> find its index in departmentNames to get correct data index
+        const deptIndexInNames = deptNameToIndex.get(category);
+        if (deptIndexInNames !== undefined) {
+          // Data index = deptIndexInNames + 1 (because General is at index 0)
+          signedAmount = agreementData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
+          dueAmount = invoicedData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
+        }
+      }
+      
+      return {
+        category,
+        signed: Math.ceil(signedAmount),
+        due: Math.ceil(dueAmount),
+      };
+    });
+  }, [departmentNames, agreementData, invoicedData]);
+
+  const scoreboardBarDataMonth = useMemo(() => {
+    // Filter out "General" from departmentNames if it exists to avoid duplicates
+    const filteredDeptNames = departmentNames.filter(name => name !== 'General');
+    const categories = [...filteredDeptNames, 'Total'];
+    const selectedMonthName = new Date(selectedYear, months.indexOf(selectedMonth), 1).toLocaleDateString('en-US', { month: 'long' });
+    
+    // Create a mapping from department name to its index in departmentNames (which matches data structure order)
+    const deptNameToIndex = new Map<string, number>();
+    departmentNames.forEach((name, idx) => {
+      if (name !== 'General') {
+        deptNameToIndex.set(name, idx);
+      }
+    });
+    
+    return categories.map((category, index) => {
+      let signedAmount = 0;
+      let dueAmount = 0;
+      
+      if (index === categories.length - 1) {
+        // Total -> data index = departmentNames.length (no General column in month data)
+        signedAmount = agreementData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
+        dueAmount = invoicedData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
+      } else {
+        // Department -> find its index in departmentNames to get correct data index
+        const deptIndexInNames = deptNameToIndex.get(category);
+        if (deptIndexInNames !== undefined) {
+          // For month data: no General column, so data index = deptIndexInNames
+          signedAmount = agreementData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
+          dueAmount = invoicedData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
+        }
+      }
+      
+      return {
+        category,
+        signed: Math.ceil(signedAmount),
+        due: Math.ceil(dueAmount),
+      };
+    });
+  }, [departmentNames, agreementData, invoicedData, selectedMonth, selectedYear, months]);
 
   // Custom Tooltip for My Performance chart
   const PerformanceTooltip = ({ active, payload, label }: { active?: boolean; payload?: any[]; label?: string }) => {
