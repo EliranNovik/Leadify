@@ -213,6 +213,19 @@ export const recordLeadStageChange = async ({
   const { error } = await supabase.from('leads_leadstage').insert(payload);
 
   if (error) {
+    // Handle duplicate key error gracefully (code 23505)
+    // This can happen if the same stage change is recorded twice
+    if (error.code === '23505') {
+      console.warn('Duplicate stage change record detected, skipping insert:', {
+        error,
+        payload,
+        stage,
+        resolvedStageId,
+      });
+      // Don't throw - this is not a critical error
+      return;
+    }
+    
     console.error('Error recording lead stage change:', {
       error,
       payload,

@@ -286,6 +286,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   const [archivalResearch, setArchivalResearch] = useState<'none' | 'with'>('none');
   // Add state for VAT inclusion
   const [includeVAT, setIncludeVAT] = useState<boolean>(false);
+  
+  // State to track current stage (for legacy leads, fetch from DB)
+  const [currentStage, setCurrentStage] = useState<number | null>(null);
 
   // Add state for currencies from database
   const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
@@ -997,6 +1000,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // Map contacts to their lead-contact relationships
                 let mainContactFound = false;
                 
+                // First pass: find explicitly marked main contacts
+                leadContacts.forEach((leadContact: any) => {
+                  const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
+                  if (isMarkedAsMain) {
+                    mainContactFound = true;
+                  }
+                });
+                
+                // If no main contact found and there's only one contact, treat it as main
+                const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
+                
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
                   
@@ -1007,8 +1021,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     // Check if this is marked as main in the lead_leadcontact table
                     const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                     
-                    // Only mark as main if it's explicitly marked as main AND no main contact has been found yet
-                    const isMainContact = isMarkedAsMain && !mainContactFound;
+                    // Mark as main if:
+                    // 1. Explicitly marked as main AND no main contact has been found yet, OR
+                    // 2. It's the only contact and no main was found
+                    const isMainContact = (isMarkedAsMain && !mainContactFound) || (shouldTreatFirstAsMain && index === 0);
                     
                     if (isMainContact) {
                       mainContactFound = true;
@@ -1151,7 +1167,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // Map contacts to their lead-contact relationships
                 let mainContactFound = false;
                 
+                // First pass: find explicitly marked main contacts
                 leadContacts.forEach((leadContact: any) => {
+                  const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
+                  if (isMarkedAsMain) {
+                    mainContactFound = true;
+                  }
+                });
+                
+                // If no main contact found and there's only one contact, treat it as main
+                const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
+                
+                leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
                   
                   const contact = contacts.find((c: any) => c.id === leadContact.contact_id);
@@ -1161,8 +1188,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     // Check if this is marked as main in the lead_leadcontact table
                     const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                     
-                    // Only mark as main if it's explicitly marked as main AND no main contact has been found yet
-                    const isMainContact = isMarkedAsMain && !mainContactFound;
+                    // Mark as main if:
+                    // 1. Explicitly marked as main AND no main contact has been found yet, OR
+                    // 2. It's the only contact and no main was found
+                    const isMainContact = (isMarkedAsMain && !mainContactFound) || (shouldTreatFirstAsMain && index === 0);
                     
                     if (isMainContact) {
                       mainContactFound = true;
@@ -1440,6 +1469,53 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     
     fetchContacts();
   }, [client?.id]); // Only depend on client.id to prevent unnecessary re-fetches
+
+  // Fetch current stage for legacy leads to ensure we have the latest value
+  useEffect(() => {
+    const fetchCurrentStage = async () => {
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      
+      if (isLegacyLead && client?.id) {
+        try {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('stage')
+            .eq('id', legacyId)
+            .single();
+          
+          if (!error && data) {
+            const stageValue = data.stage;
+            if (stageValue !== null && stageValue !== undefined) {
+              const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+              if (!isNaN(parsed) && isFinite(parsed)) {
+                setCurrentStage(parsed);
+                console.log('🔍 Fetched stage for legacy lead:', parsed);
+                return;
+              }
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching stage for legacy lead:', error);
+        }
+      }
+      
+      // For new leads or if fetch fails, use client.stage
+      if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+        const stageValue = client.stage;
+        const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+        if (!isNaN(parsed) && isFinite(parsed)) {
+          setCurrentStage(parsed);
+        } else {
+          setCurrentStage(null);
+        }
+      } else {
+        setCurrentStage(null);
+      }
+    };
+    
+    fetchCurrentStage();
+  }, [client?.id, client?.stage, client?.lead_type]);
 
   // Fetch contract templates and currencies when component mounts
   useEffect(() => {
@@ -2581,16 +2657,10 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     console.log('handleCreateContract called with:', { contractForm, clientId: client?.id });
     
     // Check if stage is >= 40 (Waiting for mtng sum and on)
-    // Handle both numeric and string stages
-    let currentStage = 0;
-    if (typeof client.stage === 'number') {
-      currentStage = client.stage;
-    } else if (client.stage) {
-      const parsed = parseInt(String(client.stage), 10);
-      currentStage = isNaN(parsed) ? 0 : parsed;
-    }
+    // Use currentStage state which is fetched from DB for legacy leads
+    const stage = currentStage !== null ? currentStage : 0;
     
-    if (currentStage < 40) {
+    if (stage < 40) {
       toast.error('Contracts can only be created from stage 40 (Waiting for mtng sum) onwards.');
       return;
     }
@@ -3198,7 +3268,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       {/* Mobile */}
                       <div className="flex items-center justify-between py-3 border-b border-gray-100">
                         <label className="text-sm font-medium text-gray-500 uppercase tracking-wide">Mobile</label>
-                        <div className="flex-1 ml-4">
+                        <div className="flex-1 ml-4 flex justify-end">
                           {contact.isMain && isEditingMainContact ? (
                             <div className="flex gap-2">
                               <div className="relative w-40" ref={mainContactMobileCodeInputRef}>
@@ -3697,16 +3767,17 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           ) : (
                             (() => {
                               // Check if stage is >= 40 (Waiting for mtng sum and on)
-                              // Handle both numeric and string stages
-                              let currentStage = 0;
-                              if (typeof client.stage === 'number') {
-                                currentStage = client.stage;
-                              } else if (client.stage) {
-                                const parsed = parseInt(String(client.stage), 10);
-                                currentStage = isNaN(parsed) ? 0 : parsed;
-                              }
+                              // Use currentStage state which is fetched from DB for legacy leads
+                              const stage = currentStage !== null ? currentStage : 0;
+                              const canCreateContract = stage >= 40;
                               
-                              const canCreateContract = currentStage >= 40;
+                              console.log('🔍 Contract button check:', {
+                                currentStage,
+                                stage,
+                                canCreateContract,
+                                clientId: client.id,
+                                leadType: client?.lead_type
+                              });
                               
                               if (!canCreateContract) {
                                 return (

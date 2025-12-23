@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
+import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
 import { EnvelopeIcon } from '@heroicons/react/24/outline';
@@ -412,6 +412,7 @@ const CalendarPage: React.FC = () => {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const quillRef = useRef<ReactQuill>(null);
   const staffDropdownRef = useRef<HTMLDivElement | null>(null);
+  const actionMenuDropdownRef = useRef<HTMLDivElement | null>(null);
 
   // Assign Staff Modal State
   const [isAssignStaffModalOpen, setIsAssignStaffModalOpen] = useState(false);
@@ -471,6 +472,28 @@ const CalendarPage: React.FC = () => {
   const [selectedStaffMeeting, setSelectedStaffMeeting] = useState<any>(null);
   const [stageNamesLoaded, setStageNamesLoaded] = useState(false);
   
+  // Action menu dropdown state
+  const [showActionMenuDropdown, setShowActionMenuDropdown] = useState(false);
+  
+  // Unavailable staff section collapse state
+  const [isUnavailableStaffExpanded, setIsUnavailableStaffExpanded] = useState(false);
+  
+  // Handle clicking outside action menu dropdown
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        actionMenuDropdownRef.current &&
+        !actionMenuDropdownRef.current.contains(event.target as Node)
+      ) {
+        setShowActionMenuDropdown(false);
+      }
+    };
+
+    if (showActionMenuDropdown) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => document.removeEventListener('mousedown', handleClickOutside);
+    }
+  }, [showActionMenuDropdown]);
 
   // Helper function to get employee display name from ID
   const getEmployeeDisplayName = (employeeId: string | number | null | undefined) => {
@@ -479,6 +502,43 @@ const CalendarPage: React.FC = () => {
     // Convert both to string for comparison since employeeId might be bigint
     const employee = allEmployees.find((emp: any) => emp.id.toString() === employeeId.toString());
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
+  };
+
+  // Helper function to get role display name
+  const getRoleDisplayName = (roleCode: string | null | undefined): string => {
+    if (!roleCode) return 'N/A';
+    
+    const roleMap: { [key: string]: string } = {
+      'c': 'Closer',
+      's': 'Scheduler',
+      'h': 'Handler',
+      'n': 'No role',
+      'e': 'Expert',
+      'z': 'Manager',
+      'Z': 'Manager',
+      'p': 'Partner',
+      'm': 'Manager',
+      'dm': 'Department Manager',
+      'pm': 'Project Manager',
+      'se': 'Secretary',
+      'b': 'Book keeper',
+      'partners': 'Partners',
+      'dv': 'Developer',
+      'ma': 'Marketing',
+      'P': 'Partner',
+      'M': 'Manager',
+      'DM': 'Department Manager',
+      'PM': 'Project Manager',
+      'SE': 'Secretary',
+      'B': 'Book keeper',
+      'Partners': 'Partners',
+      'd': 'Diverse',
+      'f': 'Finance',
+      'col': 'Collection',
+      'lawyer': 'Helper Closer'
+    };
+    
+    return roleMap[roleCode] || roleCode || 'N/A';
   };
 
   const handleStaffSelect = (name: string) => {
@@ -906,6 +966,24 @@ const CalendarPage: React.FC = () => {
       
       console.log('🔍 Fetching legacy leads for date range:', fromDate, 'to', toDate);
       
+      // First, check the count to prevent loading too many results
+      const { count, error: countError } = await supabase
+        .from('leads_lead')
+        .select('*', { count: 'exact', head: true })
+        .gte('meeting_date', fromDate)
+        .lte('meeting_date', toDate)
+        .not('meeting_date', 'is', null)
+        .not('name', 'is', null);
+      
+      if (countError) {
+        console.error('Error counting legacy leads:', countError);
+        // Continue anyway - the actual query will handle errors
+      } else if (count && count > 1000) {
+        toast.error(`Too many results (${count}). Please change filter to show fewer than 1000 meetings.`);
+        setIsLegacyLoading(false);
+        return;
+      }
+      
       // Fetch legacy leads with minimal fields - use the most selective filters first
       // Try to use indexed columns (meeting_date should be indexed)
       const { data: legacyData, error: legacyError } = await supabase
@@ -915,7 +993,7 @@ const CalendarPage: React.FC = () => {
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
-        .limit(30) // Reduced limit to prevent timeouts
+        .limit(1000) // Increased limit but still capped at 1000
         .order('meeting_date', { ascending: true });
       
       console.log('🔍 Legacy query result:', { dataCount: legacyData?.length, error: legacyError });
@@ -1347,6 +1425,9 @@ const CalendarPage: React.FC = () => {
         // Fetch staff meetings for today
         await fetchStaffMeetings(today, today);
 
+        // Load legacy meetings for today automatically
+        await loadLegacyForDateRange(today, today);
+
         // Fetch all staff from tenants_employee table for the main calendar filter
         const { data: allStaffData, error: allStaffError } = await supabase
           .from('tenants_employee')
@@ -1486,13 +1567,14 @@ const CalendarPage: React.FC = () => {
     }
   }, [expandedMeetingId, meetings]);
 
-  // Load staff meetings when applied date range changes (but NOT legacy meetings - those are only loaded via Show button)
+  // Load staff meetings and legacy meetings when applied date range changes
   useEffect(() => {
     // Only fetch data when both applied dates are set and user has manually set them
     if (appliedFromDate && appliedToDate && appliedFromDate.trim() !== '' && appliedToDate.trim() !== '' && datesManuallySet) {
       // Always load staff meetings for the date range
       fetchStaffMeetings(appliedFromDate, appliedToDate);
-      // Legacy meetings are NOT loaded here - only when Show button is clicked
+      // Load legacy meetings automatically when date range changes
+      loadLegacyForDateRange(appliedFromDate, appliedToDate);
     }
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
@@ -1895,6 +1977,72 @@ const CalendarPage: React.FC = () => {
         }
       }
 
+      // Step 2.5: Fetch legacy leads that have meetings directly in leads_lead table (not in meetings table)
+      // Get IDs of legacy leads that are already in meetings table to exclude them
+      const existingLegacyLeadIds = new Set(uniqueLegacyLeadIds.map(id => String(id)));
+      
+      let directLegacyMeetings: any[] = [];
+      const { data: directLegacyMeetingsData, error: directLegacyError } = await supabase
+        .from('leads_lead')
+        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id')
+        .gte('meeting_date', sevenDaysAgo)
+        .lte('meeting_date', thirtyDaysFromNow)
+        .not('meeting_date', 'is', null)
+        .not('name', 'is', null)
+        .limit(500);
+
+      if (directLegacyError) {
+        console.error('Error fetching direct legacy meetings:', directLegacyError);
+        // Continue without direct legacy meetings if there's an error
+      } else {
+        // Filter out legacy leads that already have entries in meetings table
+        directLegacyMeetings = (directLegacyMeetingsData || []).filter((legacyLead: any) => {
+          return !existingLegacyLeadIds.has(String(legacyLead.id));
+        });
+      }
+
+      // Process direct legacy meetings into meeting format
+      const processedDirectLegacyMeetings = (directLegacyMeetings || []).map((legacyLead: any) => {
+        const meeting = {
+          id: `legacy_${legacyLead.id}`,
+          created_at: legacyLead.meeting_date || new Date().toISOString(),
+          meeting_date: legacyLead.meeting_date,
+          meeting_time: legacyLead.meeting_time || '09:00',
+          meeting_manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
+          helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+          meeting_location: getLegacyMeetingLocation(legacyLead.meeting_location_id) || 'Teams',
+          meeting_location_id: legacyLead.meeting_location_id,
+          teams_meeting_url: null,
+          meeting_brief: null,
+          status: null,
+          client_id: null,
+          legacy_lead_id: legacyLead.id,
+          lead: {
+            id: `legacy_${legacyLead.id}`,
+            lead_number: legacyLead.lead_number || legacyLead.id?.toString() || 'Unknown',
+            name: legacyLead.name || 'Legacy Lead',
+            email: legacyLead.email || '',
+            phone: legacyLead.phone || '',
+            mobile: legacyLead.mobile || '',
+            topic: legacyLead.topic || '',
+            stage: legacyLead.stage || 'Unknown',
+            manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
+            helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
+            balance: parseFloat(legacyLead.total || '0'),
+            balance_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                             legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                             legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+            expert: getEmployeeDisplayName(legacyLead.expert_id),
+            expert_examination: legacyLead.expert_examination || '',
+            probability: parseFloat(legacyLead.probability || '0'),
+            category_id: legacyLead.category_id || null,
+            category: getCategoryName(legacyLead.category_id) || legacyLead.category || 'Unassigned',
+            language: legacyLead.language_id || null,
+            lead_type: 'legacy' as const
+          }
+        };
+        return meeting;
+      });
 
       // Step 3: Process meetings and attach lead data from the separately fetched map
       const processedMeetings = (meetingsData || [])
@@ -1944,7 +2092,8 @@ const CalendarPage: React.FC = () => {
           };
         });
 
-      const allMeetings = processedMeetings;
+      // Combine regular meetings with direct legacy meetings
+      const allMeetings = [...processedMeetings, ...processedDirectLegacyMeetings];
 
       // Step 4: Fetch available staff from tenants_employee table
       const { data: staffData, error: staffError } = await supabase
@@ -2100,7 +2249,17 @@ const CalendarPage: React.FC = () => {
     try {
       const { data: employeesData, error } = await supabase
         .from('tenants_employee')
-        .select('id, display_name, unavailable_times, unavailable_ranges')
+        .select(`
+          id, 
+          display_name, 
+          unavailable_times, 
+          unavailable_ranges,
+          bonuses_role,
+          department_id,
+          photo_url,
+          photo,
+          tenant_departement!department_id(id, name)
+        `)
         .not('unavailable_times', 'is', null);
 
       if (error) throw error;
@@ -2109,6 +2268,9 @@ const CalendarPage: React.FC = () => {
       const unavailableMap: {[key: string]: any[]} = {};
 
       employeesData?.forEach(employee => {
+        const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
+        const role = getRoleDisplayName(employee.bonuses_role);
+        
         // Process unavailable times (existing functionality)
         if (employee.unavailable_times && Array.isArray(employee.unavailable_times)) {
           employee.unavailable_times.forEach((unavailableTime: any) => {
@@ -2120,17 +2282,19 @@ const CalendarPage: React.FC = () => {
               unavailableMap[date] = [];
             }
             
-            availabilityMap[date].push({
+            const timeEntry = {
               employeeId: employee.id,
               employeeName: employee.display_name,
+              role: role,
+              department: departmentName,
+              photo_url: employee.photo_url || null,
+              photo: employee.photo || null,
+              time: `${unavailableTime.startTime} - ${unavailableTime.endTime}`,
               ...unavailableTime
-            });
+            };
             
-            unavailableMap[date].push({
-              employeeId: employee.id,
-              employeeName: employee.display_name,
-              ...unavailableTime
-            });
+            availabilityMap[date].push(timeEntry);
+            unavailableMap[date].push(timeEntry);
           });
         }
 
@@ -2152,13 +2316,27 @@ const CalendarPage: React.FC = () => {
                 unavailableMap[dateString] = [];
               }
               
+              const startDateFormatted = new Date(range.startDate).toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: '2-digit'
+              });
+              const endDateFormatted = new Date(range.endDate).toLocaleDateString('en-GB', {
+                day: '2-digit',
+                month: '2-digit'
+              });
+              
               // Add range as all-day unavailable
               const rangeUnavailable = {
                 employeeId: employee.id,
                 employeeName: employee.display_name,
-                date: dateString,
+                role: role,
+                department: departmentName,
+                photo_url: employee.photo_url || null,
+                photo: employee.photo || null,
+                date: `${startDateFormatted} to ${endDateFormatted}`,
                 startTime: 'All Day',
                 endTime: 'All Day',
+                time: 'All Day',
                 reason: range.reason,
                 isRange: true,
                 rangeId: range.id
@@ -3157,7 +3335,11 @@ const CalendarPage: React.FC = () => {
                   {lead.name || meeting.name}
                 </span>
               ) : (
-                <Link to={`/clients/${lead.lead_number || meeting.lead_number}`} className="text-black hover:opacity-75 text-xs sm:text-sm">
+                <Link 
+                  to={`/clients/${lead.lead_number || meeting.lead_number}`} 
+                  className="hover:opacity-80 text-xs sm:text-sm"
+                  style={{ color: '#3b28c7' }}
+                >
                   {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
                 </Link>
               )}
@@ -3679,42 +3861,69 @@ const CalendarPage: React.FC = () => {
             <span className="text-base md:text-lg font-bold" style={{ color: '#3b28c7' }}>{filteredMeetings.length}</span>
           </div>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
+        
+        {/* Click Dropdown Menu - Top Right */}
+        <div 
+          className="relative"
+          ref={actionMenuDropdownRef}
+        >
           <button
-            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
+            className="btn btn-circle btn-lg bg-white border-2 hover:bg-gray-50 shadow-lg hover:shadow-xl transition-all duration-200"
             style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-            onClick={openAssignStaffModal}
-            title="Assign Staff"
-          >
-            <UserGroupIcon className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="hidden md:inline text-sm md:text-base font-semibold">Assign Staff</span>
-          </button>
-          <button
-            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
-            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-            onClick={() => {
-              setSelectedDateForMeeting(new Date());
-              setSelectedTimeForMeeting('09:00');
-              setIsTeamsMeetingModalOpen(true);
+            title="Actions"
+            onClick={(e) => {
+              e.stopPropagation();
+              setShowActionMenuDropdown(!showActionMenuDropdown);
             }}
-            title="Create Teams Meeting"
           >
-            <VideoCameraIcon className="w-4 h-4 md:w-5 md:h-5" />
-            <span className="hidden md:inline text-sm md:text-base font-semibold">Create Teams Meeting</span>
+            <EllipsisVerticalIcon className="w-6 h-6" />
           </button>
-          <button
-            className="btn btn-sm md:btn-md flex items-center gap-2 px-3 md:px-4 bg-white border-2 hover:bg-gray-50"
-            style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
-            onClick={() => setViewMode(viewMode === 'cards' ? 'list' : 'cards')}
-            title={viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
-          >
-            {viewMode === 'cards' ? (
-              <Bars3Icon className="w-4 h-4 md:w-5 md:h-5" />
-            ) : (
-              <Squares2X2Icon className="w-4 h-4 md:w-5 md:h-5" />
-            )}
-            <span className="hidden md:inline text-sm md:text-base font-semibold">{viewMode === 'cards' ? 'List View' : 'Card View'}</span>
-          </button>
+          
+          {/* Dropdown Menu */}
+          {showActionMenuDropdown && (
+            <div className="absolute right-0 top-full mt-2 w-56 bg-white border border-gray-200 rounded-xl shadow-2xl z-50 overflow-hidden">
+              <div className="py-2">
+                <button
+                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                  onClick={() => {
+                    openAssignStaffModal();
+                    setShowActionMenuDropdown(false);
+                  }}
+                >
+                  <UserGroupIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                  <span className="text-sm font-semibold text-gray-700">Assign Staff</span>
+                </button>
+                <button
+                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                  onClick={() => {
+                    setSelectedDateForMeeting(new Date());
+                    setSelectedTimeForMeeting('09:00');
+                    setIsTeamsMeetingModalOpen(true);
+                    setShowActionMenuDropdown(false);
+                  }}
+                >
+                  <VideoCameraIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                  <span className="text-sm font-semibold text-gray-700">Create Teams Meeting</span>
+                </button>
+                <button
+                  className="w-full px-4 py-3 text-left hover:bg-gray-50 transition-colors flex items-center gap-3"
+                  onClick={() => {
+                    setViewMode(viewMode === 'cards' ? 'list' : 'cards');
+                    setShowActionMenuDropdown(false);
+                  }}
+                >
+                  {viewMode === 'cards' ? (
+                    <Bars3Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                  ) : (
+                    <Squares2X2Icon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                  )}
+                  <span className="text-sm font-semibold text-gray-700">
+                    {viewMode === 'cards' ? 'Switch to List View' : 'Switch to Card View'}
+                  </span>
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
 
@@ -3887,72 +4096,187 @@ const CalendarPage: React.FC = () => {
               
               {/* Unavailable Employees for Selected Date */}
               {unavailableEmployees[modalSelectedDate] && unavailableEmployees[modalSelectedDate].length > 0 && (
-                <div className="mt-6 p-5 bg-gradient-to-r from-purple-50 to-purple-100 border-l-4 rounded-lg shadow-sm" style={{ borderLeftColor: '#3b28c7' }}>
-                  <div className="flex items-center justify-between mb-3">
-                    <div className="flex items-center gap-3">
-                      <div className="p-2 rounded-full" style={{ backgroundColor: 'rgba(59, 40, 199, 0.1)' }}>
-                        <ClockIcon className="w-5 h-5" style={{ color: '#3b28c7' }} />
+                <div className="mt-4 bg-white rounded-xl shadow-md border border-gray-200">
+                  <div 
+                    className="flex items-center justify-between px-4 py-2 border-b border-gray-200 cursor-pointer hover:bg-gray-50 transition-colors"
+                    onClick={() => setIsUnavailableStaffExpanded(!isUnavailableStaffExpanded)}
+                  >
+                    <div className="flex items-center gap-2">
+                      <div className="w-8 h-8 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
+                        <UserGroupIcon className="w-4 h-4 text-white" />
                       </div>
                       <div>
-                        <h3 className="font-semibold text-base" style={{ color: '#3b28c7' }}>Unavailable Staff</h3>
-                        <p className="text-sm" style={{ color: '#3b28c7' }}>{new Date(modalSelectedDate).toLocaleDateString('en-GB')}</p>
+                        <h3 className="text-sm font-bold text-gray-900">Unavailable Staff</h3>
+                        <p className="text-xs text-gray-500">
+                          {new Date(modalSelectedDate).toLocaleDateString('en-US', { 
+                            weekday: 'long', 
+                            year: 'numeric', 
+                            month: 'long', 
+                            day: 'numeric' 
+                          })}
+                        </p>
                       </div>
                     </div>
-                    {unavailableEmployees[modalSelectedDate].length > 3 && (
-                      <div className="relative more-unavailable-dropdown">
-                        <button
-                          onClick={() => setShowMoreUnavailableDropdown(!showMoreUnavailableDropdown)}
-                          className="btn btn-sm border hover:bg-opacity-20"
-                          style={{ 
-                            backgroundColor: 'rgba(59, 40, 199, 0.1)', 
-                            borderColor: '#3b28c7', 
-                            color: '#3b28c7' 
-                          }}
-                        >
-                          More ({unavailableEmployees[modalSelectedDate].length - 3})
-                          <ChevronDownIcon className="w-4 h-4 ml-1" />
-                        </button>
-                        {showMoreUnavailableDropdown && (
-                          <div className="absolute right-0 top-full mt-2 w-80 bg-white border border-gray-200 rounded-lg shadow-lg z-50 max-h-60 overflow-y-auto">
-                            <div className="p-3">
-                              <div className="text-sm font-semibold text-gray-700 mb-2">All Unavailable Staff</div>
-                              <div className="space-y-2">
-                                {unavailableEmployees[modalSelectedDate].map((unavailable, index) => (
-                                  <div key={index} className="bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                                    <div className="flex items-center justify-between">
-                                      <span className="text-red-800 text-sm font-medium">{unavailable.employeeName}</span>
-                                      <span className="text-red-600 text-xs">
-                                        {unavailable.isRange || unavailable.startTime === 'All Day' ? 'All Day' : `${unavailable.startTime} - ${unavailable.endTime}`}
-                                      </span>
-                                    </div>
-                                    {unavailable.reason && (
-                                      <div className="text-red-600 text-xs mt-1">({unavailable.reason})</div>
+                    <ChevronDownIcon 
+                      className={`w-5 h-5 text-gray-500 transition-transform ${isUnavailableStaffExpanded ? 'rotate-180' : ''}`}
+                    />
+                  </div>
+                  
+                  {isUnavailableStaffExpanded ? (
+                    // Expanded view - Full cards
+                    <div className="px-4 pb-3 pt-3">
+                      <div className="flex overflow-x-auto gap-3 pb-2 -mx-4 px-4 sm:grid sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-7 sm:overflow-x-visible sm:pb-0 sm:-mx-0 sm:px-0">
+                        {unavailableEmployees[modalSelectedDate].map((item, index) => {
+                          // Deduplicate by employeeId - keep only first occurrence
+                          const isFirstOccurrence = unavailableEmployees[modalSelectedDate].findIndex(
+                            (emp: any) => emp.employeeId === item.employeeId
+                          ) === index;
+                          
+                          if (!isFirstOccurrence) return null;
+                          
+                          const employeeInitials = item.employeeName
+                            .split(' ')
+                            .map((n: string) => n[0])
+                            .join('')
+                            .toUpperCase()
+                            .slice(0, 2);
+                          
+                          const timeDisplay = item.isRange || item.startTime === 'All Day' 
+                            ? 'All Day' 
+                            : `${item.startTime} - ${item.endTime}`;
+                          
+                          return (
+                            <div
+                              key={`${item.employeeId}-${index}`}
+                              className="relative overflow-hidden rounded-lg border border-gray-300 bg-white min-h-[140px] flex-shrink-0 w-[150px] sm:w-auto sm:max-w-[150px]"
+                              style={{
+                                boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
+                              }}
+                            >
+                              {/* Background Image with Overlay */}
+                              {item.photo && (
+                                <div 
+                                  className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                                  style={{ backgroundImage: `url(${item.photo})` }}
+                                >
+                                  <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
+                                </div>
+                              )}
+                              
+                              {/* Role Badge - Top Right Corner */}
+                              {item.role && (
+                                <div className="absolute top-1 right-1 z-20">
+                                  <span className="badge badge-xs px-1.5 py-0.5 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-[10px] font-semibold shadow-md">
+                                    {item.role}
+                                  </span>
+                                </div>
+                              )}
+                              
+                              {/* Content */}
+                              <div className={`relative z-10 p-2.5 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                {/* Top Row: Profile Image (Left), Time Range (Center), Role Badge (Right - already positioned) */}
+                                <div className="flex items-start justify-between mb-1.5">
+                                  {/* Left Side: Profile Image and Name */}
+                                  <div className="flex-shrink-0 flex flex-col items-center">
+                                    {/* Profile Image or Initials Circle */}
+                                    {item.photo_url ? (
+                                      <img
+                                        src={item.photo_url}
+                                        alt={item.employeeName}
+                                        className="w-12 h-12 rounded-full object-cover shadow-md mb-1"
+                                        onError={(e) => {
+                                          const target = e.target as HTMLImageElement;
+                                          const targetParent = target.parentElement;
+                                          if (targetParent) {
+                                            target.style.display = 'none';
+                                            const fallback = document.createElement('div');
+                                            fallback.className = `w-12 h-12 rounded-full flex items-center justify-center shadow-md mb-1 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-xs font-bold`;
+                                            fallback.textContent = employeeInitials;
+                                            targetParent.insertBefore(fallback, target);
+                                          }
+                                        }}
+                                      />
+                                    ) : (
+                                      <div className={`w-12 h-12 rounded-full flex items-center justify-center shadow-md mb-1 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-xs font-bold`}>
+                                        {employeeInitials}
+                                      </div>
                                     )}
+                                    {/* Employee Name - Always shown under the circle */}
+                                    <h4 className={`text-xs font-semibold text-center truncate max-w-[70px] ${item.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
+                                      {item.employeeName}
+                                    </h4>
                                   </div>
-                                ))}
+                                  
+                                  {/* Spacer for right side (role badge) */}
+                                  <div className="w-12 flex-shrink-0"></div>
+                                </div>
+                                
+                                {/* Center: Time Range */}
+                                <div className="flex-1 text-center px-1 mb-2">
+                                  <div className={`text-xs font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                    {timeDisplay}
+                                  </div>
+                                  {/* Date Range - only if it's a range */}
+                                  {item.date && item.date.includes('to') && (
+                                    <div className={`text-[10px] font-medium mt-0.5 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                      {item.date}
+                                    </div>
+                                  )}
+                                </div>
+                                
+                                {/* Department */}
+                                {item.department && (
+                                  <div className="text-center mb-2">
+                                    <div className={`text-xs font-medium ${item.photo ? 'text-white/90' : 'text-gray-600'}`}>
+                                      {item.department}
+                                    </div>
+                                  </div>
+                                )}
+                                
+                                {/* Reason */}
+                                <div className={`border-t pt-1.5 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                  {item.reason && (
+                                    <div className={`text-[10px] text-center px-1.5 py-0.5 rounded truncate ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                                      {item.reason}
+                                    </div>
+                                  )}
+                                </div>
                               </div>
                             </div>
-                          </div>
-                        )}
+                          );
+                        })}
                       </div>
-                    )}
-                  </div>
-                  <div className="flex flex-wrap gap-3">
-                    {unavailableEmployees[modalSelectedDate].slice(0, 3).map((unavailable, index) => (
-                      <div key={index} className="bg-white border rounded-full px-4 py-2 shadow-sm hover:shadow-md transition-shadow" style={{ borderColor: '#3b28c7' }}>
-                        <div className="flex items-center gap-2">
-                          <div className="w-2 h-2 rounded-full" style={{ backgroundColor: '#3b28c7' }}></div>
-                          <span className="text-sm font-semibold" style={{ color: '#3b28c7' }}>{unavailable.employeeName}</span>
-                        </div>
-                        <div className="text-xs mt-1 ml-4" style={{ color: '#3b28c7' }}>
-                          {unavailable.isRange || unavailable.startTime === 'All Day' ? 'All Day' : `${unavailable.startTime} - ${unavailable.endTime}`}
-                          {unavailable.reason && (
-                            <span className="ml-1">• {unavailable.reason}</span>
-                          )}
-                        </div>
+                    </div>
+                  ) : (
+                    // Collapsed view - Just name and time
+                    <div className="px-4 py-3">
+                      <div className="flex flex-wrap gap-2">
+                        {unavailableEmployees[modalSelectedDate].map((item, index) => {
+                          // Deduplicate by employeeId - keep only first occurrence
+                          const isFirstOccurrence = unavailableEmployees[modalSelectedDate].findIndex(
+                            (emp: any) => emp.employeeId === item.employeeId
+                          ) === index;
+                          
+                          if (!isFirstOccurrence) return null;
+                          
+                          const timeDisplay = item.isRange || item.startTime === 'All Day' 
+                            ? 'All Day' 
+                            : `${item.startTime} - ${item.endTime}`;
+                          
+                          return (
+                            <div
+                              key={`${item.employeeId}-${index}`}
+                              className="flex items-center gap-2 px-3 py-1.5 bg-gray-50 border border-gray-200 rounded-lg"
+                            >
+                              <span className="text-sm font-semibold text-gray-700">{item.employeeName}</span>
+                              <span className="text-xs text-gray-500">•</span>
+                              <span className="text-xs text-gray-600">{timeDisplay}</span>
+                            </div>
+                          );
+                        })}
                       </div>
-                    ))}
-                  </div>
+                    </div>
+                  )}
                 </div>
               )}
               
@@ -4047,7 +4371,7 @@ const CalendarPage: React.FC = () => {
                         </h3>
                         {/* Table View */}
                         <div className="overflow-x-auto overflow-y-visible">
-                          <table className="table table-zebra w-full overflow-visible">
+                          <table className="table w-full overflow-visible">
                             <thead>
                               <tr>
                                 <th className="text-left text-base font-semibold">Lead</th>
@@ -4086,7 +4410,10 @@ const CalendarPage: React.FC = () => {
                                     ) : (
                                       <Link 
                                         to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
-                                        className="text-blue-600 hover:text-blue-800 hover:underline font-medium"
+                                        className="hover:underline font-medium"
+                                        style={{ color: '#3b28c7' }}
+                                        onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}
+                                        onMouseLeave={(e) => e.currentTarget.style.opacity = '1'}
                                       >
                                         {meeting.lead?.lead_number || meeting.lead_number} - {meeting.lead?.name || 'N/A'}
                                       </Link>
@@ -4380,21 +4707,6 @@ const CalendarPage: React.FC = () => {
 
                 </div>
               )}
-            </div>
-
-            {/* Footer */}
-            <div className="bg-gray-50 px-6 py-4 border-t border-gray-200">
-              <div className="flex justify-between items-center">
-                <div className="text-sm text-gray-600">
-                  Total meetings: {getFilteredMeetings().length}
-                </div>
-                <button
-                  onClick={() => setIsAssignStaffModalOpen(false)}
-                  className="btn btn-primary"
-                >
-                  Done
-                </button>
-              </div>
             </div>
           </div>
         </div>,

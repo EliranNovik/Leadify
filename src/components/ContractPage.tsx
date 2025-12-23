@@ -1087,29 +1087,33 @@ const ContractPage: React.FC = () => {
         console.log('ContractPage: Setting contract data:', contractData);
         setContract(contractData);
 
-        // If we don't have leadNumber but have a contract, fetch the client from the contract's client_id
+        // If we don't have leadNumber but have a contract, fetch the client from the contract's client_id or legacy_id
         let clientLoaded = false;
-        if (!leadNumber && contractData.client_id) {
-          console.log('ContractPage: Fetching client from contract client_id:', contractData.client_id);
+        if (!leadNumber && (contractData.client_id || contractData.legacy_id)) {
           try {
-            // Try fetching from leads table first (new leads)
-            let { data: clientData, error: clientError } = await supabase
-              .from('leads')
-              .select('*')
-              .eq('id', contractData.client_id)
-              .single();
+            let clientData = null;
+            let clientError = null;
             
-            // If not found in leads table, try legacy leads_lead table
-            if (clientError || !clientData) {
-              console.log('ContractPage: Client not found in leads table, trying legacy table...');
-              const legacyId = contractData.client_id?.toString().replace('legacy_', '') || contractData.client_id;
+            // Check if this is a legacy lead (has legacy_id but no client_id)
+            if (contractData.legacy_id && !contractData.client_id) {
+              console.log('ContractPage: Fetching legacy client from contract legacy_id:', contractData.legacy_id);
               const { data: legacyClient, error: legacyError } = await supabase
                 .from('leads_lead')
-                .select('*')
-                .eq('id', legacyId)
+                .select(`
+                  *,
+                  accounting_currencies!leads_lead_currency_id_fkey (
+                    id,
+                    iso_code,
+                    name
+                  )
+                `)
+                .eq('id', contractData.legacy_id)
                 .single();
               
-              if (!legacyError && legacyClient) {
+              if (legacyError) {
+                console.error('ContractPage: Error fetching legacy client:', legacyError);
+                clientError = legacyError;
+              } else if (legacyClient) {
                 // Transform legacy client to match new client structure
                 clientData = {
                   ...legacyClient,
@@ -1127,10 +1131,32 @@ const ContractPage: React.FC = () => {
                   language: String(legacyClient.language_id || ''),
                   balance: String(legacyClient.total || ''),
                   lead_type: 'legacy',
+                  balance_currency: legacyClient.accounting_currencies?.name || (() => {
+                    // Fallback currency mapping based on currency_id
+                    switch (legacyClient.currency_id) {
+                      case 1: return '₪';
+                      case 2: return '€';
+                      case 3: return '$';
+                      case 4: return '£';
+                      default: return '₪';
+                    }
+                  })(),
                 };
-                clientError = null;
+              }
+            } else if (contractData.client_id) {
+              // For new leads, fetch from leads table
+              console.log('ContractPage: Fetching client from contract client_id:', contractData.client_id);
+              const { data: newClient, error: newError } = await supabase
+                .from('leads')
+                .select('*')
+                .eq('id', contractData.client_id)
+                .single();
+              
+              if (newError) {
+                console.error('ContractPage: Error fetching client:', newError);
+                clientError = newError;
               } else {
-                clientError = legacyError;
+                clientData = newClient;
               }
             }
             
@@ -4173,7 +4199,10 @@ const ContractPage: React.FC = () => {
   return (
     <div className="min-h-screen bg-white">
       {/* Header */}
-      <div ref={headerRef} className="bg-white shadow-sm border-b border-gray-200 print-hide">
+      <div 
+        ref={headerRef} 
+        className={`bg-white shadow-sm border-b border-gray-200 print-hide ${!editing ? 'sticky top-0 z-50' : ''}`}
+      >
         <div className="w-full px-2 sm:px-4 md:px-8 lg:px-16 xl:px-32 2xl:px-48">
           <div className="flex justify-between items-center py-2 sm:py-4">
             <div className="flex items-center space-x-1 sm:space-x-4 flex-1 min-w-0">
@@ -4183,7 +4212,26 @@ const ContractPage: React.FC = () => {
                     <span className="badge badge-success badge-sm sm:badge-md">Signed</span>
                   )}
                   {status === 'draft' && (
-                    <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
+                    <>
+                      <button
+                        onClick={() => {
+                          let targetUrl = '/clients';
+                          if (leadNumber) {
+                            targetUrl = `/clients/${leadNumber}`;
+                          } else if (client?.id) {
+                            const clientLeadNumber = client.lead_number || client.id.toString().replace('legacy_', '');
+                            targetUrl = `/clients/${clientLeadNumber}`;
+                          }
+                          // Use window.location.href to force full page navigation
+                          window.location.href = targetUrl;
+                        }}
+                        className="btn btn-ghost btn-xs sm:btn-sm p-1 sm:p-2"
+                        title="Back to client"
+                      >
+                        <ArrowLeftIcon className="w-4 h-4 sm:w-5 sm:h-5" />
+                      </button>
+                      <span className="badge badge-sm sm:badge-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none">Draft</span>
+                    </>
                   )}
                   <h1 className="text-sm sm:text-2xl font-bold text-gray-900 truncate">{template?.name || 'Contract'}</h1>
                   {/* Buttons next to title on desktop only */}
@@ -4210,10 +4258,22 @@ const ContractPage: React.FC = () => {
                         </button>
                         <button 
                           className="btn btn-ghost btn-xs sm:btn-sm" 
-                          onClick={() => {
+                          onClick={async () => {
                             setEditing(false);
-                            // Reload to discard changes
-                            window.location.reload();
+                            // Reload contract content to discard changes without full page reload
+                            if (contract?.id && editor) {
+                              const { data: contractData } = await supabase
+                                .from('contracts')
+                                .select('*, contract_templates(*)')
+                                .eq('id', contract.id)
+                                .single();
+                              if (contractData) {
+                                // Update contract state - this will trigger the useEffect to reprocess content
+                                setContract(contractData);
+                                // Force content reprocessing by incrementing renderKey
+                                setRenderKey(prev => prev + 1);
+                              }
+                            }
                           }}
                           title="Cancel editing"
                         >
@@ -4272,10 +4332,25 @@ const ContractPage: React.FC = () => {
                           </button>
                           <button 
                             className="btn btn-ghost btn-xs" 
-                            onClick={() => {
+                            onClick={async () => {
                               setEditing(false);
-                              // Reload to discard changes
-                              window.location.reload();
+                              // Reload contract content to discard changes without full page reload
+                              if (contract?.id && editor) {
+                                const { data: contractData } = await supabase
+                                  .from('contracts')
+                                  .select('*, contract_templates(*)')
+                                  .eq('id', contract.id)
+                                  .single();
+                                if (contractData) {
+                                  // Update contract and template state - this will trigger the useEffect to reprocess content
+                                  setContract(contractData);
+                                  if (contractData.contract_templates) {
+                                    setTemplate(contractData.contract_templates);
+                                  }
+                                  // Force content reprocessing by incrementing renderKey
+                                  setRenderKey(prev => prev + 1);
+                                }
+                              }
                             }}
                             title="Cancel editing"
                           >
@@ -4408,7 +4483,7 @@ const ContractPage: React.FC = () => {
 
           {/* Sidebar - Fixed to right edge of viewport */}
           <div 
-            className="fixed top-0 right-0 z-30 transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto"
+            className={`fixed top-0 right-0 z-[60] transition-all duration-300 ease-in-out hidden xl:block print-hide overflow-y-auto ${!editing ? 'bg-white' : ''}`}
             style={{
               top: `${headerHeight + 32}px`,
               height: `calc(100vh - ${headerHeight + 32}px)`,

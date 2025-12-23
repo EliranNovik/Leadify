@@ -260,6 +260,12 @@ const AISuggestions = forwardRef((props, ref) => {
     }
   };
 
+  // Helper function to remove seconds from time strings (HH:MM:SS -> HH:MM)
+  const formatTimeWithoutSeconds = (text: string): string => {
+    // Match time patterns like "16:30:00", "09:15:30", etc.
+    return text.replace(/(\d{1,2}:\d{2}):\d{2}/g, '$1');
+  };
+
   // Auto-refresh notifications every 5 minutes
   useEffect(() => {
     fetchNotifications();
@@ -345,9 +351,13 @@ const AISuggestions = forwardRef((props, ref) => {
           </div>
         </div>
         <div className="flex-1 flex flex-col overflow-hidden">
-          <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">{suggestion.message}</div>
+          <div className="font-bold text-lg text-gray-900 mb-1 leading-snug line-clamp-3">
+            {formatTimeWithoutSeconds(suggestion.message)}
+          </div>
           {suggestion.context && (
-            <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">{suggestion.context}</div>
+            <div className="text-sm text-gray-500 mb-2 line-clamp-3 flex-1">
+              {formatTimeWithoutSeconds(suggestion.context)}
+            </div>
           )}
         </div>
         <div className="flex justify-start mt-auto flex-shrink-0">
