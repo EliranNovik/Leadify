@@ -43,6 +43,20 @@ DECLARE
   v_contact_udate date;
   v_new_relationship_id bigint;
 BEGIN
+  -- Sync leads_contact sequence to prevent duplicate key errors
+  PERFORM setval(
+    'leads_contact_id_seq',
+    COALESCE((SELECT MAX(leads_contact.id) FROM leads_contact), 1),
+    true
+  );
+  
+  -- Sync lead_leadcontact sequence to prevent duplicate key errors
+  PERFORM setval(
+    'lead_leadcontact_id_seq',
+    COALESCE((SELECT MAX(lead_leadcontact.id) FROM lead_leadcontact), 1),
+    true
+  );
+  
   -- Validate source code if provided
   IF p_source_code IS NOT NULL THEN
     -- Get source information
@@ -144,8 +158,8 @@ BEGIN
     v_source_name,
     v_source_id,
     v_final_category_id,
-    0,
-    'new',
+    0::BIGINT, -- Stage 0 = Created
+    'active',
     now(),
     p_created_by,
     v_creator_full_name,

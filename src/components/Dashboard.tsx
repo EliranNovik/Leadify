@@ -3039,100 +3039,73 @@ const Dashboard: React.FC = () => {
         }
       }
       
-      // NOTE: We fetch all invoice data, but filter it properly:
-      // Today = actual today, Last 30d = actual last 30 days (like agreement signed table), Month = selected month
+      // Fetch invoiced data from finances_paymentplanrow table (payments sent to finance)
+      // Filter by due_date and exclude cancelled records
       const expandedStartDate = '2025-04-01'; // Start from April 2025 where data exists
-      // Fetch legacy invoice records from proformainvoice table (only legacy leads)
-      const { data: invoiceRecords, error: invoiceError } = await supabase
-        .from('proformainvoice')
-        .select('id, lead_id, sub_total, cdate, currency_id')
-        .gte('cdate', expandedStartDate)
-        .lte('cdate', todayStr);
-      
-      if (invoiceError) {
-        throw invoiceError;
-      }
-      // Fetch new leads invoiced data from payment_plans table (payment plans with proforma data)
-      const { data: newLeadsPaymentPlans, error: paymentPlansError } = await supabase
-        .from('payment_plans')
-        .select('id, lead_id, value, value_vat, currency, date, proforma, cdate, updated_at')
-        .not('proforma', 'is', null)
-        .not('proforma', 'eq', '')
-        .not('proforma', 'eq', '{}');
-      
-      if (paymentPlansError) {
-        // Don't throw - continue without new leads invoiced data
-      } else {
-        // Filter payment plans by date range and extract invoice date from proforma JSON
-        if (newLeadsPaymentPlans && newLeadsPaymentPlans.length > 0) {
-          const filteredNewLeadInvoices = newLeadsPaymentPlans
-            .map(plan => {
-              let invoiceDate: string | null = null;
-              
-              // Try to extract date from proforma JSON
-              try {
-                if (plan.proforma && typeof plan.proforma === 'string') {
-                  const proformaData = JSON.parse(plan.proforma);
-                  if (proformaData.createdAt) {
-                    invoiceDate = proformaData.createdAt.split('T')[0]; // Extract date part
-                  }
-                }
-              } catch (e) {
-                // Ignore parse errors
-              }
-              
-              // Fallback to payment plan date, cdate (creation date), or updated_at
-              if (!invoiceDate) {
-                invoiceDate = plan.date || plan.cdate || (plan.updated_at ? plan.updated_at.split('T')[0] : null);
-              }
-              
-              if (!invoiceDate) return null;
-              
-              const invoiceDateStr = invoiceDate.split('T')[0];
-              const invoiceDateTime = new Date(invoiceDateStr).getTime();
-              const expandedStartTime = new Date(expandedStartDate).getTime();
-              const todayTime = new Date(todayStr).getTime();
-              
-              // Only include if within date range
-              if (invoiceDateTime >= expandedStartTime && invoiceDateTime <= todayTime) {
-                return {
-                  id: `payment-plan-${plan.id}`,
-                  lead_id: plan.lead_id,
-                  sub_total: plan.value || 0,
-                  cdate: invoiceDateStr,
-                  currency_id: plan.currency === '₪' || plan.currency === 'NIS' || plan.currency === 'ILS' ? 1 : null, // Map currency to ID
-                  isNewLead: true,
-                };
-              }
-              return null;
-            })
-            .filter(record => record !== null);
-          // Combine legacy and new invoice records
-          invoiceRecords.push(...filteredNewLeadInvoices as any[]);
-        }
-      }
-      if (invoiceRecords && invoiceRecords.length > 0) {
-        const dates = invoiceRecords.map(r => r.cdate).sort();
-      }
-      
-      // Debug: Check if there are any invoice records at all (without date filter)
-      if (invoiceRecords?.length === 0) {
-        const { data: allInvoiceRecords, error: allInvoiceError } = await supabase
-          .from('proformainvoice')
-          .select('id, lead_id, sub_total, cdate, currency_id')
-          .order('cdate', { ascending: false })
-          .limit(10);
-        
-        if (allInvoiceError) {
-        } else {
-        }
-      }
       
       // Helper function to check if a string is a UUID (used for separating new vs legacy leads)
       const isUUID = (str: string): boolean => {
         const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
         return uuidRegex.test(str);
       };
+      
+      // Fetch payment plan rows from finances_paymentplanrow table
+      // Filter by due_date and exclude cancelled records
+      const { data: paymentPlanRows, error: paymentPlanRowsError } = await supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          client_id,
+          value,
+          vat_value,
+          currency_id,
+          due_date,
+          date,
+          cancel_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(id, name, iso_code)
+        `)
+        .is('cancel_date', null) // Exclude cancelled records
+        .gte('due_date', expandedStartDate)
+        .lte('due_date', todayStr);
+      
+      if (paymentPlanRowsError) {
+        throw paymentPlanRowsError;
+      }
+      
+      // Transform payment plan rows to invoice records format
+      // Handle both legacy leads (lead_id) and new leads (client_id or lead_id as UUID)
+      // Following CollectionFinancesReport pattern: use lead_id for both, detect UUID vs numeric
+      const invoiceRecords: any[] = (paymentPlanRows || []).map(row => {
+        // Exclude cancelled/deleted payment plan rows (cancel_date is not null)
+        if (row.cancel_date) return null;
+        
+        // Prefer lead_id if it exists (used for both legacy and new in CollectionFinancesReport)
+        // Fall back to client_id if lead_id is null
+        const leadId = row.lead_id ? String(row.lead_id) : (row.client_id ? String(row.client_id) : null);
+        
+        if (!leadId) return null;
+        
+        // Detect if it's a UUID (new lead) or numeric (legacy lead)
+        const isNewLead = isUUID(leadId);
+        
+        // Use due_date as the date field (as specified by user)
+        const recordDate = row.due_date || row.date;
+        if (!recordDate) return null;
+        
+        const recordDateStr = typeof recordDate === 'string' 
+          ? recordDate.split('T')[0] 
+          : new Date(recordDate).toISOString().split('T')[0];
+        
+        return {
+          id: `payment-plan-row-${row.id}`,
+          lead_id: leadId,
+          sub_total: parseFloat(row.value || 0),
+          cdate: recordDateStr, // Use due_date as the date
+          currency_id: row.currency_id,
+          isNewLead: isNewLead,
+        };
+      }).filter(record => record !== null);
       
       // Fetch leads data separately if we have invoice records
       let processedInvoiceRecords: any[] = [];
@@ -3317,92 +3290,62 @@ const Dashboard: React.FC = () => {
       
       // Fetch data for selected month (separate query)
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
-      // Fetch legacy invoice records for month
-      const { data: monthLegacyInvoiceRecords, error: monthInvoiceError } = await supabase
-        .from('proformainvoice')
-        .select('id, lead_id, sub_total, cdate, currency_id')
-        .gte('cdate', startOfMonthStr)
-        .lte('cdate', endOfMonthStr);
       
-      if (monthInvoiceError) {
-        throw monthInvoiceError;
-      }
-      // Fetch new leads invoiced data for month from payment_plans
-      const { data: monthNewLeadsPaymentPlans, error: monthPaymentPlansError } = await supabase
-        .from('payment_plans')
-        .select('id, lead_id, value, value_vat, currency, date, proforma, cdate, updated_at')
-        .not('proforma', 'is', null)
-        .not('proforma', 'eq', '')
-        .not('proforma', 'eq', '{}');
+      // Fetch payment plan rows for selected month from finances_paymentplanrow table
+      const { data: monthPaymentPlanRows, error: monthPaymentPlanRowsError } = await supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          client_id,
+          value,
+          vat_value,
+          currency_id,
+          due_date,
+          date,
+          cancel_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(id, name, iso_code)
+        `)
+        .is('cancel_date', null) // Exclude cancelled records
+        .gte('due_date', startOfMonthStr)
+        .lte('due_date', endOfMonthStr);
       
-      if (monthPaymentPlansError) {
-        // Don't throw - continue without new leads invoiced data
-      }
-      
-      // Convert payment plans to invoice records format for month
-      const monthNewLeadInvoiceRecords: any[] = [];
-      if (monthNewLeadsPaymentPlans && monthNewLeadsPaymentPlans.length > 0) {
-        monthNewLeadsPaymentPlans.forEach(plan => {
-          if (!plan.lead_id) return;
-          
-          let invoiceDate: string | null = null;
-          
-          // Try to extract date from proforma JSON's createdAt field
-          try {
-            if (plan.proforma && typeof plan.proforma === 'string') {
-              const proformaData = JSON.parse(plan.proforma);
-              if (proformaData.createdAt) {
-                invoiceDate = proformaData.createdAt.split('T')[0];
-              }
-            }
-          } catch (e) {
-            // Ignore parse errors
-          }
-          
-          // Fallback to payment plan date, cdate (creation date), or updated_at
-          if (!invoiceDate) {
-            invoiceDate = plan.date || plan.cdate || (plan.updated_at ? plan.updated_at.split('T')[0] : null);
-          }
-          
-          if (!invoiceDate) return;
-          
-          const invoiceDateStr = invoiceDate.split('T')[0];
-          const invoiceDateTime = new Date(invoiceDateStr).getTime();
-          const startOfMonthTime = new Date(startOfMonthStr).getTime();
-          const endOfMonthTime = new Date(endOfMonthStr).getTime();
-          
-          // Only include if within month date range
-          if (invoiceDateTime >= startOfMonthTime && invoiceDateTime <= endOfMonthTime) {
-            // Map currency to currency_id format
-            let currencyId: number | null = null;
-            const currency = plan.currency || '';
-            if (currency === '₪' || currency === 'NIS' || currency === 'ILS') {
-              currencyId = 1;
-            } else if (currency === '$' || currency === 'USD') {
-              currencyId = 2;
-            } else if (currency === '€' || currency === 'EUR') {
-              currencyId = 3;
-            } else if (currency === '£' || currency === 'GBP') {
-              currencyId = 4;
-            }
-            
-            monthNewLeadInvoiceRecords.push({
-              id: `month-payment-plan-${plan.id}`,
-              lead_id: plan.lead_id,
-              sub_total: plan.value || 0,
-              cdate: invoiceDateStr,
-              currency_id: currencyId,
-              isNewLead: true,
-            });
-          }
-        });
+      if (monthPaymentPlanRowsError) {
+        throw monthPaymentPlanRowsError;
       }
       
-      // Combine legacy and new month invoice records
-      const monthInvoiceRecords: any[] = [
-        ...(monthLegacyInvoiceRecords || []).map(record => ({ ...record, isNewLead: false })),
-        ...monthNewLeadInvoiceRecords,
-      ];
+      // Transform payment plan rows to invoice records format for month
+      // Following CollectionFinancesReport pattern: use lead_id for both, detect UUID vs numeric
+      const monthInvoiceRecords: any[] = (monthPaymentPlanRows || []).map(row => {
+        // Exclude cancelled/deleted payment plan rows (cancel_date is not null)
+        if (row.cancel_date) return null;
+        
+        // Prefer lead_id if it exists (used for both legacy and new in CollectionFinancesReport)
+        // Fall back to client_id if lead_id is null
+        const leadId = row.lead_id ? String(row.lead_id) : (row.client_id ? String(row.client_id) : null);
+        
+        if (!leadId) return null;
+        
+        // Detect if it's a UUID (new lead) or numeric (legacy lead)
+        const isNewLead = isUUID(leadId);
+        
+        // Use due_date as the date field (as specified by user)
+        const recordDate = row.due_date || row.date;
+        if (!recordDate) return null;
+        
+        const recordDateStr = typeof recordDate === 'string' 
+          ? recordDate.split('T')[0] 
+          : new Date(recordDate).toISOString().split('T')[0];
+        
+        return {
+          id: `month-payment-plan-row-${row.id}`,
+          lead_id: leadId,
+          sub_total: parseFloat(row.value || 0),
+          cdate: recordDateStr, // Use due_date as the date
+          currency_id: row.currency_id,
+          isNewLead: isNewLead,
+        };
+      }).filter(record => record !== null);
       // Fetch leads data separately for month if we have invoice records
       let processedMonthInvoiceRecords: any[] = [];
       if (monthInvoiceRecords && monthInvoiceRecords.length > 0) {
@@ -3648,9 +3591,9 @@ const Dashboard: React.FC = () => {
         const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
         newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
         
-        // Last 30d totals - use the General row [0] which already contains the total
-        const last30TotalCount = newInvoicedData["Last 30d"][0].count;
-        const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"][0].amount);
+        // Last 30d totals - sum of departments (excluding General and Total)
+        const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+        const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
         newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
         
         // Current month totals - calculate by summing the individual department values
@@ -4231,9 +4174,12 @@ const Dashboard: React.FC = () => {
                 <tr className="hover:bg-slate-50">
                   <td className="px-5 py-3 font-semibold text-slate-700">{columnType}</td>
                   {categories.map((category, index) => {
-                    const data = isToday ? dataSource["Today"][index + 1] : // Skip General row
-                                isLast30 ? dataSource["Last 30d"][index + 1] : // Skip General row
-                                dataSource[selectedMonth]?.[index]; // This month uses selected month data (no General row)
+                    // Find the correct department index in departmentNames to match the data structure
+                    const deptIndexInNames = departmentNames.indexOf(category);
+                    const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
+                    const data = isToday ? dataSource["Today"][dataIndex + 1] : // Skip General row
+                                isLast30 ? dataSource["Last 30d"][dataIndex + 1] : // Skip General row
+                                dataSource[selectedMonth]?.[dataIndex]; // This month uses selected month data (no General row)
                     const amount = data?.amount || 0;
                     const target = data?.expected || 0;
                     const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
@@ -4254,13 +4200,19 @@ const Dashboard: React.FC = () => {
                       <div className="flex items-center justify-center">
                         <div className="badge bg-slate-100 text-slate-700 font-semibold px-2 py-1 border border-slate-200">
                           {(() => {
+                            // Calculate the correct total index based on number of departments
+                            const totalIndexToday = departmentNames.length + 1; // General + departments + Total
+                            const totalIndexMonth = departmentNames.length; // departments + Total (no General)
+                            
                             if (isToday) {
-                              return dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.count || 0), 0);
+                              // Use pre-calculated total from data structure
+                              return dataSource["Today"]?.[totalIndexToday]?.count || 0;
                             } else if (isLast30) {
-                              return dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.count || 0), 0);
+                              // Use pre-calculated total from data structure
+                              return dataSource["Last 30d"]?.[totalIndexToday]?.count || 0;
                             } else {
-                              // Use the pre-calculated total from the data instead of recalculating
-                              return dataSource[selectedMonth]?.[5]?.count || 0;
+                              // Use pre-calculated total from data structure for month
+                              return dataSource[selectedMonth]?.[totalIndexMonth]?.count || 0;
                             }
                           })()}
                         </div>
@@ -4268,14 +4220,20 @@ const Dashboard: React.FC = () => {
                       <div className="border-t border-slate-200 my-1"></div>
                       <div className="font-semibold text-slate-700">
                         ₪{(() => {
+                          // Calculate the correct total index based on number of departments
+                          const totalIndexToday = departmentNames.length + 1; // General + departments + Total
+                          const totalIndexMonth = departmentNames.length; // departments + Total (no General)
+                          
                           if (isToday) {
-                            return Math.ceil(dataSource["Today"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0)).toLocaleString();
+                            // Use pre-calculated total from data structure
+                            return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
                           } else if (isLast30) {
-                            return Math.ceil(dataSource["Last 30d"].slice(1, -1).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.amount || 0), 0)).toLocaleString();
-                                                      } else {
-                              // Use the pre-calculated total from the data instead of recalculating
-                              return Math.ceil(dataSource[selectedMonth]?.[5]?.amount || 0).toLocaleString();
-                            }
+                            // Use pre-calculated total from data structure
+                            return Math.ceil(dataSource["Last 30d"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                          } else {
+                            // Use pre-calculated total from data structure for month
+                            return Math.ceil(dataSource[selectedMonth]?.[totalIndexMonth]?.amount || 0).toLocaleString();
+                          }
                         })()}
                       </div>
                     </div>
@@ -4286,7 +4244,10 @@ const Dashboard: React.FC = () => {
                   <tr className="bg-white border border-slate-200">
                     <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
                     {categories.map((category, index) => {
-                      const data = dataSource[selectedMonth]?.[index];
+                      // Find the correct department index in departmentNames to match the data structure
+                      const deptIndexInNames = departmentNames.indexOf(category);
+                      const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
+                      const data = dataSource[selectedMonth]?.[dataIndex];
                       const amount = data?.amount || 0;
                       const target = data?.expected || 0;
                       const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
@@ -4300,9 +4261,10 @@ const Dashboard: React.FC = () => {
                     {/* Total target column */}
                     <td className="px-5 py-3 text-center font-semibold text-slate-700">
                       {(() => {
-                        // For invoiced data, sum all 5 department targets (indices 0-4)
-                        // For agreement data, sum departments 1-5 (indices 0-4, excluding General)
-                        const totalTarget = dataSource[selectedMonth]?.slice(0, 5).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
+                        // Sum all department targets (excluding Total row)
+                        // For month data, departments are at indices 0 to departmentNames.length - 1
+                        const numDepartments = departmentNames.length;
+                        const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
                         return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
                       })()}
                     </td>

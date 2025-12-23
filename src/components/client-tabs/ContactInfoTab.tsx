@@ -1011,6 +1011,28 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // If no main contact found and there's only one contact, treat it as main
                 const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
                 
+                // If we need to mark the first contact as main, update the database
+                if (shouldTreatFirstAsMain && leadContacts.length > 0) {
+                  const firstLeadContact = leadContacts[0];
+                  console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
+                  
+                  // Update the database to mark this contact as main
+                  const { error: updateError } = await supabase
+                    .from('lead_leadcontact')
+                    .update({ main: 'true' })
+                    .eq('lead_id', legacyId)
+                    .eq('contact_id', firstLeadContact.contact_id);
+                  
+                  if (updateError) {
+                    console.error('❌ Error updating contact to main:', updateError);
+                  } else {
+                    console.log('✅ Successfully marked contact as main in database');
+                    // Update the leadContact object so the rest of the code sees it as main
+                    firstLeadContact.main = 'true';
+                    mainContactFound = true;
+                  }
+                }
+                
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
                   
@@ -1019,12 +1041,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     console.log('🔍 Contact details found:', contact);
                     
                     // Check if this is marked as main in the lead_leadcontact table
+                    // After database update, this will reflect the updated value
                     const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                     
                     // Mark as main if:
-                    // 1. Explicitly marked as main AND no main contact has been found yet, OR
-                    // 2. It's the only contact and no main was found
-                    const isMainContact = (isMarkedAsMain && !mainContactFound) || (shouldTreatFirstAsMain && index === 0);
+                    // 1. Explicitly marked as main (including after auto-update), OR
+                    // 2. It's the only contact and we're treating it as main
+                    const isMainContact = isMarkedAsMain || (shouldTreatFirstAsMain && index === 0);
                     
                     if (isMainContact) {
                       mainContactFound = true;
@@ -1178,6 +1201,28 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 // If no main contact found and there's only one contact, treat it as main
                 const shouldTreatFirstAsMain = !mainContactFound && leadContacts.length === 1;
                 
+                // If we need to mark the first contact as main, update the database
+                if (shouldTreatFirstAsMain && leadContacts.length > 0) {
+                  const firstLeadContact = leadContacts[0];
+                  console.log('🔍 Auto-marking single contact as main in database:', firstLeadContact.contact_id);
+                  
+                  // Update the database to mark this contact as main
+                  const { error: updateError } = await supabase
+                    .from('lead_leadcontact')
+                    .update({ main: 'true' })
+                    .eq('newlead_id', newLeadId)
+                    .eq('contact_id', firstLeadContact.contact_id);
+                  
+                  if (updateError) {
+                    console.error('❌ Error updating contact to main:', updateError);
+                  } else {
+                    console.log('✅ Successfully marked contact as main in database');
+                    // Update the leadContact object so the rest of the code sees it as main
+                    firstLeadContact.main = 'true';
+                    mainContactFound = true;
+                  }
+                }
+                
                 leadContacts.forEach((leadContact: any, index: number) => {
                   console.log('🔍 Processing lead contact:', leadContact);
                   
@@ -1186,12 +1231,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     console.log('🔍 Contact details found:', contact);
                     
                     // Check if this is marked as main in the lead_leadcontact table
+                    // After database update, this will reflect the updated value
                     const isMarkedAsMain = leadContact.main === 'true' || leadContact.main === true || leadContact.main === 't';
                     
                     // Mark as main if:
-                    // 1. Explicitly marked as main AND no main contact has been found yet, OR
-                    // 2. It's the only contact and no main was found
-                    const isMainContact = (isMarkedAsMain && !mainContactFound) || (shouldTreatFirstAsMain && index === 0);
+                    // 1. Explicitly marked as main (including after auto-update), OR
+                    // 2. It's the only contact and we're treating it as main
+                    const isMainContact = isMarkedAsMain || (shouldTreatFirstAsMain && index === 0);
                     
                     if (isMainContact) {
                       mainContactFound = true;
@@ -1475,42 +1521,93 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const fetchCurrentStage = async () => {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
       
+      console.log('🔍 fetchCurrentStage called:', {
+        isLegacyLead,
+        clientId: client?.id,
+        clientStage: client?.stage,
+        leadType: client?.lead_type
+      });
+      
       if (isLegacyLead && client?.id) {
         try {
           const legacyId = client.id.toString().replace('legacy_', '');
+          console.log('🔍 Fetching stage for legacy lead, legacyId:', legacyId);
+          
           const { data, error } = await supabase
             .from('leads_lead')
             .select('stage')
             .eq('id', legacyId)
             .single();
           
+          console.log('🔍 Stage fetch result:', { data, error });
+          
           if (!error && data) {
             const stageValue = data.stage;
+            console.log('🔍 Stage value from DB:', stageValue, 'type:', typeof stageValue);
+            
             if (stageValue !== null && stageValue !== undefined) {
               const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+              console.log('🔍 Parsed stage:', parsed, 'isNaN:', isNaN(parsed), 'isFinite:', isFinite(parsed));
+              
               if (!isNaN(parsed) && isFinite(parsed)) {
+                console.log('✅ Setting currentStage to:', parsed);
                 setCurrentStage(parsed);
-                console.log('🔍 Fetched stage for legacy lead:', parsed);
                 return;
+              } else {
+                console.warn('⚠️ Failed to parse stage value:', stageValue);
               }
+            } else {
+              console.warn('⚠️ Stage value is null or undefined');
+            }
+          } else {
+            console.error('❌ Error fetching stage:', error);
+          }
+          
+          // If fetch failed or returned invalid data, try fallback to client.stage
+          console.log('🔍 Trying fallback to client.stage:', client?.stage);
+          if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+            const stageValue = client.stage;
+            const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+            if (!isNaN(parsed) && isFinite(parsed)) {
+              console.log('✅ Using fallback client.stage:', parsed);
+              setCurrentStage(parsed);
+              return;
             }
           }
+          
+          // If all else fails, set to null
+          console.warn('⚠️ Could not determine stage, setting to null');
+          setCurrentStage(null);
         } catch (error) {
-          console.error('Error fetching stage for legacy lead:', error);
+          console.error('❌ Exception fetching stage for legacy lead:', error);
+          // Try fallback to client.stage
+          if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+            const stageValue = client.stage;
+            const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+            if (!isNaN(parsed) && isFinite(parsed)) {
+              console.log('✅ Using fallback client.stage after exception:', parsed);
+              setCurrentStage(parsed);
+            } else {
+              setCurrentStage(null);
+            }
+          } else {
+            setCurrentStage(null);
+          }
         }
-      }
-      
-      // For new leads or if fetch fails, use client.stage
-      if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
-        const stageValue = client.stage;
-        const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
-        if (!isNaN(parsed) && isFinite(parsed)) {
-          setCurrentStage(parsed);
+      } else {
+        // For new leads, use client.stage
+        console.log('🔍 New lead, using client.stage:', client?.stage);
+        if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+          const stageValue = client.stage;
+          const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+          if (!isNaN(parsed) && isFinite(parsed)) {
+            setCurrentStage(parsed);
+          } else {
+            setCurrentStage(null);
+          }
         } else {
           setCurrentStage(null);
         }
-      } else {
-        setCurrentStage(null);
       }
     };
     
@@ -2090,49 +2187,52 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           // console.log('Insert data (without ID):', insertData);
           // console.log('Contact timestamp ID to ignore:', contact.id);
           
-          // Try to insert without specifying the ID column
-          // The database should auto-generate it
+          // Always get the next highest available ID before inserting to avoid duplicate key errors
           let newContact: any = null;
           let contactError: any = null;
           
-          // Use RPC call instead of direct insert to avoid trigger issues
           try {
-            // First try with direct insert
-            const result = await supabase
+            // Get the max ID from the table to ensure we use the next available ID
+            const { data: maxIdData, error: maxIdError } = await supabase
               .from('leads_contact')
-              .insert([insertData])
               .select('id')
-              .single();
-            newContact = result.data;
-            contactError = result.error;
+              .order('id', { ascending: false })
+              .limit(1)
+              .maybeSingle();
             
-            console.log('Direct insert result:', { newContact, contactError });
-            
-            // If direct insert fails with duplicate key, try to get the next available ID
-            if (contactError && contactError.code === '23505') {
-              console.warn('Duplicate key error. Attempting to get next available ID...');
-              
-              // Get the max ID from the table
-              const { data: maxIdData } = await supabase
-                .from('leads_contact')
-                .select('id')
-                .order('id', { ascending: false })
-                .limit(1)
-                .single();
-              
+            if (maxIdError) {
+              console.error('Error fetching max ID:', maxIdError);
+              contactError = maxIdError;
+            } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
-              console.log('Next available ID:', nextId);
+              console.log('Next available contact ID:', nextId);
               
-              // Try insert with explicit ID
-              const resultWithId = await supabase
+              // Insert with explicit ID to avoid duplicate key errors
+              const result = await supabase
                 .from('leads_contact')
                 .insert([{ ...insertData, id: nextId }])
                 .select('id')
                 .single();
               
-              newContact = resultWithId.data;
-              contactError = resultWithId.error;
-              console.log('Insert with explicit ID result:', { newContact, contactError });
+              newContact = result.data;
+              contactError = result.error;
+              
+              console.log('Contact insert result:', { newContact, contactError });
+              
+              // If still duplicate key error, try incrementing the ID
+              if (contactError && contactError.code === '23505') {
+                console.warn('Duplicate key error even with calculated ID. Trying next ID...');
+                const retryId = nextId + 1;
+                const retryResult = await supabase
+                  .from('leads_contact')
+                  .insert([{ ...insertData, id: retryId }])
+                  .select('id')
+                  .single();
+                
+                newContact = retryResult.data;
+                contactError = retryResult.error;
+                console.log('Retry insert result:', { newContact, contactError });
+              }
             }
           } catch (err) {
             console.error('Insert failed:', err);
@@ -2154,32 +2254,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           let relationshipError: any = null;
           
           try {
-            // First try without specifying ID
-            const result = await supabase
+            // Always get the next highest available ID before inserting to avoid duplicate key errors
+            const { data: maxIdData, error: maxIdError } = await supabase
               .from('lead_leadcontact')
-              .insert([{
-                contact_id: newContact.id,
-                lead_id: legacyId,
-                main: 'false'
-              }]);
+              .select('id')
+              .order('id', { ascending: false })
+              .limit(1)
+              .maybeSingle();
             
-            relationshipError = result.error;
-            
-            // If duplicate key error, get next available ID and try again
-            if (relationshipError && relationshipError.code === '23505') {
-              console.warn('Duplicate key error for relationship. Getting next available ID...');
-              
-              const { data: maxIdData } = await supabase
-                .from('lead_leadcontact')
-                .select('id')
-                .order('id', { ascending: false })
-                .limit(1)
-                .single();
-              
+            if (maxIdError) {
+              console.error('Error fetching max relationship ID:', maxIdError);
+              relationshipError = maxIdError;
+            } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available relationship ID:', nextId);
               
-              const resultWithId = await supabase
+              // Insert with explicit ID to avoid duplicate key errors
+              const result = await supabase
                 .from('lead_leadcontact')
                 .insert([{
                   id: nextId,
@@ -2188,7 +2279,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   main: 'false'
                 }]);
               
-              relationshipError = resultWithId.error;
+              relationshipError = result.error;
+              
+              // If still duplicate key error, try incrementing the ID
+              if (relationshipError && relationshipError.code === '23505') {
+                console.warn('Duplicate key error even with calculated ID. Trying next ID...');
+                const retryId = nextId + 1;
+                const retryResult = await supabase
+                  .from('lead_leadcontact')
+                  .insert([{
+                    id: retryId,
+                    contact_id: newContact.id,
+                    lead_id: legacyId,
+                    main: 'false'
+                  }]);
+                
+                relationshipError = retryResult.error;
+                console.log('Retry relationship insert result:', { relationshipError });
+              }
             }
           } catch (err) {
             console.error('Relationship insert failed:', err);
@@ -2276,52 +2384,52 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             udate: new Date().toISOString().split('T')[0]
           };
           
-          // Ensure ID is not included in insert data
-          delete insertData.id;
-          
-          console.log('Insert data (without ID):', insertData);
-          
-          // Insert into leads_contact table - let database auto-generate ID
+          // Always get the next highest available ID before inserting to avoid duplicate key errors
           let newContact: any = null;
           let contactError: any = null;
           
           try {
-            const result = await supabase
+            // Get the max ID from the table to ensure we use the next available ID
+            const { data: maxIdData, error: maxIdError } = await supabase
               .from('leads_contact')
-              .insert([insertData])
               .select('id')
-              .single();
+              .order('id', { ascending: false })
+              .limit(1)
+              .maybeSingle();
             
-            newContact = result.data;
-            contactError = result.error;
-            
-            console.log('Contact insert result:', { newContact, contactError });
-            
-            // If duplicate key error, try to get next available ID
-            if (contactError && contactError.code === '23505') {
-              console.warn('Duplicate key error. Getting next available ID...');
-              
-              // Get the max ID from the table
-              const { data: maxIdData } = await supabase
-                .from('leads_contact')
-                .select('id')
-                .order('id', { ascending: false })
-                .limit(1)
-                .single();
-              
+            if (maxIdError) {
+              console.error('Error fetching max ID:', maxIdError);
+              contactError = maxIdError;
+            } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
-              console.log('Next available ID:', nextId);
+              console.log('Next available contact ID:', nextId);
               
-              // Try insert with explicit ID
-              const resultWithId = await supabase
+              // Insert with explicit ID to avoid duplicate key errors
+              const result = await supabase
                 .from('leads_contact')
                 .insert([{ ...insertData, id: nextId }])
                 .select('id')
                 .single();
               
-              newContact = resultWithId.data;
-              contactError = resultWithId.error;
-              console.log('Insert with explicit ID result:', { newContact, contactError });
+              newContact = result.data;
+              contactError = result.error;
+              
+              console.log('Contact insert result:', { newContact, contactError });
+              
+              // If still duplicate key error, try incrementing the ID
+              if (contactError && contactError.code === '23505') {
+                console.warn('Duplicate key error even with calculated ID. Trying next ID...');
+                const retryId = nextId + 1;
+                const retryResult = await supabase
+                  .from('leads_contact')
+                  .insert([{ ...insertData, id: retryId }])
+                  .select('id')
+                  .single();
+                
+                newContact = retryResult.data;
+                contactError = retryResult.error;
+                console.log('Retry insert result:', { newContact, contactError });
+              }
             }
           } catch (err) {
             console.error('Insert failed:', err);
@@ -2341,32 +2449,23 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           let relationshipError: any = null;
           
           try {
-            // First try without specifying ID
-            const result = await supabase
+            // Always get the next highest available ID before inserting to avoid duplicate key errors
+            const { data: maxIdData, error: maxIdError } = await supabase
               .from('lead_leadcontact')
-              .insert([{
-                contact_id: newContact.id,
-                newlead_id: newLeadId,
-                main: 'false'
-              }]);
+              .select('id')
+              .order('id', { ascending: false })
+              .limit(1)
+              .maybeSingle();
             
-            relationshipError = result.error;
-            
-            // If duplicate key error, get next available ID and try again
-            if (relationshipError && relationshipError.code === '23505') {
-              console.warn('Duplicate key error for relationship. Getting next available ID...');
-              
-              const { data: maxIdData } = await supabase
-                .from('lead_leadcontact')
-                .select('id')
-                .order('id', { ascending: false })
-                .limit(1)
-                .single();
-              
+            if (maxIdError) {
+              console.error('Error fetching max relationship ID:', maxIdError);
+              relationshipError = maxIdError;
+            } else {
               const nextId = maxIdData ? maxIdData.id + 1 : 1;
               console.log('Next available relationship ID:', nextId);
               
-              const resultWithId = await supabase
+              // Insert with explicit ID to avoid duplicate key errors
+              const result = await supabase
                 .from('lead_leadcontact')
                 .insert([{
                   id: nextId,
@@ -2375,8 +2474,24 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   main: 'false'
                 }]);
               
-              relationshipError = resultWithId.error;
-              console.log('Insert with explicit ID result:', { relationshipError });
+              relationshipError = result.error;
+              
+              // If still duplicate key error, try incrementing the ID
+              if (relationshipError && relationshipError.code === '23505') {
+                console.warn('Duplicate key error even with calculated ID. Trying next ID...');
+                const retryId = nextId + 1;
+                const retryResult = await supabase
+                  .from('lead_leadcontact')
+                  .insert([{
+                    id: retryId,
+                    contact_id: newContact.id,
+                    newlead_id: newLeadId,
+                    main: 'false'
+                  }]);
+                
+                relationshipError = retryResult.error;
+                console.log('Retry relationship insert result:', { relationshipError });
+              }
             }
           } catch (err) {
             console.error('Relationship insert failed:', err);
@@ -2450,17 +2565,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     
     try {
-      // First, fetch the contact details that will become the main contact
-      const { data: contactData, error: contactError } = await supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile, country_id')
-        .eq('id', contactId)
-        .single();
-      
-      if (contactError || !contactData) {
-        throw new Error('Failed to fetch contact details');
-      }
-      
       if (isLegacyLead) {
         const legacyId = client.id.toString().replace('legacy_', '');
         
@@ -2480,25 +2584,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .eq('contact_id', contactId);
         
         if (setError) throw setError;
-        
-        // Update leads_lead table with main contact details (including country_id)
-        const { error: updateLeadError } = await supabase
-          .from('leads_lead')
-          .update({
-            name: contactData.name || null,
-            email: contactData.email || null,
-            phone: contactData.phone || null,
-            mobile: contactData.mobile || null,
-            country_id: contactData.country_id || null
-          })
-          .eq('id', parseInt(legacyId));
-        
-        if (updateLeadError) {
-          console.error('Error updating leads_lead with main contact details:', updateLeadError);
-          // Don't throw - this is a secondary update, main contact setting already succeeded
-        } else {
-          console.log('✅ Updated leads_lead table with main contact details');
-        }
       } else {
         const newLeadId = client.id; // UUID for new leads
         
@@ -2518,25 +2603,6 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           .eq('contact_id', contactId);
         
         if (setError) throw setError;
-        
-        // Update leads table with main contact details (including country_id)
-        const { error: updateLeadError } = await supabase
-          .from('leads')
-          .update({
-            name: contactData.name || null,
-            email: contactData.email || null,
-            phone: contactData.phone || null,
-            mobile: contactData.mobile || null,
-            country_id: contactData.country_id || null
-          })
-          .eq('id', newLeadId);
-        
-        if (updateLeadError) {
-          console.error('Error updating leads table with main contact details:', updateLeadError);
-          // Don't throw - this is a secondary update, main contact setting already succeeded
-        } else {
-          console.log('✅ Updated leads table with main contact details');
-        }
       }
       
       // Update local state
@@ -3135,7 +3201,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-visible"
                 >
                   {/* Header */}
-                  <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 rounded-tr-2xl rounded-br-2xl shadow-sm">
+                  <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 rounded-tl-2xl rounded-tr-2xl rounded-br-2xl shadow-sm">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <h4 className="text-lg font-semibold text-white">
@@ -3768,15 +3834,33 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             (() => {
                               // Check if stage is >= 40 (Waiting for mtng sum and on)
                               // Use currentStage state which is fetched from DB for legacy leads
-                              const stage = currentStage !== null ? currentStage : 0;
-                              const canCreateContract = stage >= 40;
+                              // Fallback to client.stage if currentStage is null
+                              let stage = currentStage;
+                              
+                              // If currentStage is null, try to parse client.stage as fallback
+                              if (stage === null || stage === undefined) {
+                                if (client?.stage !== null && client?.stage !== undefined && client?.stage !== '') {
+                                  const stageValue = client.stage;
+                                  const parsed = typeof stageValue === 'number' ? stageValue : parseInt(String(stageValue), 10);
+                                  if (!isNaN(parsed) && isFinite(parsed)) {
+                                    stage = parsed;
+                                    console.log('🔍 Using client.stage as fallback:', stage);
+                                  }
+                                }
+                              }
+                              
+                              // Default to 0 if still null/undefined
+                              const finalStage = stage !== null && stage !== undefined ? stage : 0;
+                              const canCreateContract = finalStage >= 40;
                               
                               console.log('🔍 Contract button check:', {
                                 currentStage,
-                                stage,
+                                clientStage: client?.stage,
+                                finalStage,
                                 canCreateContract,
                                 clientId: client.id,
-                                leadType: client?.lead_type
+                                leadType: client?.lead_type,
+                                isLegacyLead: client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_')
                               });
                               
                               if (!canCreateContract) {

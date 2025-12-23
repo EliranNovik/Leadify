@@ -51,14 +51,38 @@ const executeTool = async (tool_call: any, onClientUpdate?: () => void) => {
       const account = instance?.getAllAccounts()[0];
       let currentUserEmail = account?.username || null;
       
-      const { data, error } = await supabase.rpc('create_new_lead_v3', {
-        p_lead_name: args.name,
-        p_lead_email: args.email || null,
-        p_lead_phone: args.phone || null,
-        p_lead_topic: args.topic,
-        p_lead_language: args.language || 'English',
-        p_created_by: currentUserEmail,
-      });
+      // Try to use the wrapper function that syncs sequences, fall back to v3 if it doesn't exist
+      let data, error;
+      try {
+        const result = await supabase.rpc('create_new_lead_v4', {
+          p_lead_name: args.name,
+          p_lead_email: args.email || null,
+          p_lead_phone: args.phone || null,
+          p_lead_topic: args.topic,
+          p_lead_language: args.language || 'English',
+          p_created_by: currentUserEmail,
+          p_balance_currency: 'NIS',
+          p_proposal_currency: 'NIS',
+        });
+        data = result.data;
+        error = result.error;
+        
+        // If the wrapper function doesn't exist, fall back to the original function
+        if (error && error.message?.includes('function') && error.message?.includes('does not exist')) {
+          const fallbackResult = await supabase.rpc('create_new_lead_v3', {
+            p_lead_name: args.name,
+            p_lead_email: args.email || null,
+            p_lead_phone: args.phone || null,
+            p_lead_topic: args.topic,
+            p_lead_language: args.language || 'English',
+            p_created_by: currentUserEmail,
+          });
+          data = fallbackResult.data;
+          error = fallbackResult.error;
+        }
+      } catch (rpcError) {
+        error = rpcError as any;
+      }
       
       if (error) throw error;
       // The RPC function returns an array, so we take the first element

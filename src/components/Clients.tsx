@@ -717,7 +717,7 @@ const Clients: React.FC<ClientsProps> = ({
                       // Get category name for new lead (category is already text in new leads table)
                       const categoryName = lead.category || null;
                       // Get stage name from stage ID
-                      const stageName = lead.stage ? getStageName(String(lead.stage)) : null;
+                      const stageName = (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null;
                       // Get country name from the contact
                       const countryName = (duplicateContact.misc_country as any)?.name || null;
                       
@@ -783,7 +783,7 @@ const Clients: React.FC<ClientsProps> = ({
                       // Get category name for legacy lead
                       const categoryName = lead.category_id ? getCategoryName(lead.category_id) : null;
                       // Get stage name from stage ID
-                      const stageName = lead.stage ? getStageName(String(lead.stage)) : null;
+                      const stageName = (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null;
                       
                       // Get country name from the contact
                       const countryName = (duplicateContact.misc_country as any)?.name || null;
@@ -9834,7 +9834,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <div className="flex items-center gap-2">
                   {/* Stage Badge */}
                   {(() => {
-                    const stageStr = selectedClient.stage ? String(selectedClient.stage) : '';
+                    const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
                     const stageName = getStageName(stageStr);
                     const stageColor = getStageColour(stageStr);
                     const textColor = getContrastingTextColor(stageColor);
@@ -10096,7 +10096,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
               {/* Stage Badge */}
               {(() => {
-                const stageStr = selectedClient.stage ? String(selectedClient.stage) : '';
+                const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
                 const stageName = getStageName(stageStr);
                 const stageColor = getStageColour(stageStr);
                 const textColor = getContrastingTextColor(stageColor);
@@ -10189,7 +10189,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               <div className="flex items-center gap-3 flex-shrink-0">
                 {/* Stage Badge */}
                 {(() => {
-                  const stageStr = selectedClient.stage ? String(selectedClient.stage) : '';
+                  const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
                   const stageName = getStageName(stageStr);
                   const stageColor = getStageColour(stageStr);
                   const textColor = getContrastingTextColor(stageColor);
@@ -13968,6 +13968,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         return <span className="badge badge-outline">No Stage</span>;
                       }
                       const stageStr = String(stage);
+                      const stageName = getStageName(stageStr);
                       const stageColour = getStageColour(stageStr);
                       const badgeTextColour = getContrastingTextColor(stageColour);
                       const backgroundColor = stageColour || '#3f28cd';
@@ -13985,9 +13986,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             textOverflow: 'ellipsis',
                             display: 'inline-block',
                           }}
-                          title={stageStr}
+                          title={stageName}
                         >
-                          {stageStr}
+                          {stageName}
                         </span>
                       );
                     };

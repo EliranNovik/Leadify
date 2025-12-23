@@ -485,21 +485,95 @@ const CreateNewLead: React.FC = () => {
         categoryName = categoryName.split(' (')[0];
       }
 
-      // Call the new database function to create the lead
-      const { data, error } = await supabase.rpc('create_new_lead_v3', {
-        p_lead_name: form.name,
-        p_lead_email: form.email,
-        p_lead_phone: fullPhoneNumber,
-        p_lead_topic: form.topic,
-        p_lead_language: form.language,
-        p_lead_source: form.source,
-        p_created_by: currentUserEmail,
-        p_balance_currency: form.balance_currency,
-        p_proposal_currency: form.proposal_currency,
-      });
+      // Call the wrapper database function that syncs sequences before creating the lead
+      // This function (create_new_lead_v4) automatically syncs sequences to prevent duplicate key errors
+      // If create_new_lead_v4 doesn't exist, fall back to create_new_lead_v3
+      let data, error;
+      try {
+        const result = await supabase.rpc('create_new_lead_v4', {
+          p_lead_name: form.name,
+          p_lead_email: form.email,
+          p_lead_phone: fullPhoneNumber,
+          p_lead_topic: form.topic,
+          p_lead_language: form.language,
+          p_lead_source: form.source,
+          p_created_by: currentUserEmail,
+          p_balance_currency: form.balance_currency,
+          p_proposal_currency: form.proposal_currency,
+        });
+        data = result.data;
+        error = result.error;
+        
+        // If the wrapper function doesn't exist, fall back to the original function
+        if (error && error.message?.includes('function') && error.message?.includes('does not exist')) {
+          console.warn('create_new_lead_v4 not found, falling back to create_new_lead_v3');
+          const fallbackResult = await supabase.rpc('create_new_lead_v3', {
+            p_lead_name: form.name,
+            p_lead_email: form.email,
+            p_lead_phone: fullPhoneNumber,
+            p_lead_topic: form.topic,
+            p_lead_language: form.language,
+            p_lead_source: form.source,
+            p_created_by: currentUserEmail,
+            p_balance_currency: form.balance_currency,
+            p_proposal_currency: form.proposal_currency,
+          });
+          data = fallbackResult.data;
+          error = fallbackResult.error;
+        }
+      } catch (rpcError) {
+        error = rpcError as any;
+      }
 
-      if (error) throw error;
-      const newLead = data?.[0] as NewLeadResult;
+      let newLead: NewLeadResult | null = null;
+
+      if (error) {
+        // Handle duplicate key errors - database sequences are out of sync
+        if (error.code === '23505') {
+          let errorMsg = '';
+          
+          if (error.message?.includes('lead_leadcontact_pkey')) {
+            console.error('CRITICAL: Database sequence is out of sync. The trigger cannot create relationships.');
+            console.error('This must be fixed in the database before leads can be created.');
+            
+            errorMsg = 
+              `❌ Cannot create lead: Database sequence error\n\n` +
+              `The database sequence for 'lead_leadcontact.id' is out of sync with the actual data.\n\n` +
+              `🔧 FIX REQUIRED:\n` +
+              `Run this SQL command in your database:\n\n` +
+              `SELECT setval('lead_leadcontact_id_seq', (SELECT MAX(id) FROM lead_leadcontact));\n\n` +
+              `After running this command, try creating the lead again.`;
+          } else if (error.message?.includes('leads_contact_pkey')) {
+            console.error('CRITICAL: Database sequence is out of sync. The trigger cannot create contacts.');
+            console.error('This must be fixed in the database before leads can be created.');
+            
+            errorMsg = 
+              `❌ Cannot create lead: Database sequence error\n\n` +
+              `The database sequence for 'leads_contact.id' is out of sync with the actual data.\n\n` +
+              `🔧 FIX REQUIRED:\n` +
+              `Run this SQL command in your database:\n\n` +
+              `SELECT setval('leads_contact_id_seq', (SELECT MAX(id) FROM leads_contact));\n\n` +
+              `After running this command, try creating the lead again.`;
+          } else {
+            // Generic duplicate key error
+            errorMsg = 
+              `❌ Cannot create lead: Database sequence error\n\n` +
+              `A database sequence is out of sync. Error: ${error.message}\n\n` +
+              `Please contact support to fix this issue.`;
+          }
+          
+          if (errorMsg) {
+            alert(errorMsg);
+            throw new Error(errorMsg);
+          }
+        }
+        
+        // If not a duplicate key error, throw the original error
+        throw error;
+      } else {
+        newLead = data?.[0] as NewLeadResult;
+      }
+      
       if (!newLead) throw new Error("Could not create lead.");
 
       // Update the lead with category, facts, special_notes, and country_id if provided
