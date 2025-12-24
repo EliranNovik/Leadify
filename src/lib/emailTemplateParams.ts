@@ -138,7 +138,7 @@ export async function replaceEmailTemplateParams(
     .replace(/\{name\}/gi, name)
     .replace(/\{client_name\}/gi, name)
     .replace(/\{lead_number\}/gi, context.leadNumber || '')
-    .replace(/\{topic\}/gi, context.topic || '')
+    // .replace(/\{topic\}/gi, context.topic || '') // Topic removed - not to be included in emails
     .replace(/\{lead_type\}/gi, context.leadType || '');
   
   // Check if any meeting parameters need to be replaced
@@ -234,7 +234,7 @@ export function replaceEmailTemplateParamsSync(
     .replace(/\{name\}/gi, name)
     .replace(/\{client_name\}/gi, name)
     .replace(/\{lead_number\}/gi, context.leadNumber || '')
-    .replace(/\{topic\}/gi, context.topic || '')
+    // .replace(/\{topic\}/gi, context.topic || '') // Topic removed - not to be included in emails
     .replace(/\{lead_type\}/gi, context.leadType || '')
     .replace(/\{date\}/gi, context.meetingDate || '')
     .replace(/\{time\}/gi, context.meetingTime || '')

@@ -1784,15 +1784,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         
         console.log('Contact updated successfully');
 
-        // Also update leads_lead table with main contact details (including country_id)
+        // Also update leads_lead table with main contact details (country_id doesn't exist in leads_lead table)
         const { error: updateLeadError } = await supabase
           .from('leads_lead')
           .update({
             name: editedMainContact.name,
             mobile: editedMainContact.mobile || null,
             phone: editedMainContact.phone || null,
-            email: editedMainContact.email || null,
-            country_id: editedMainContact.country_id || null
+            email: editedMainContact.email || null
+            // Note: country_id doesn't exist in leads_lead table, so we don't update it
           })
           .eq('id', parseInt(legacyId));
         

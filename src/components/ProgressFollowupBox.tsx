@@ -22,12 +22,23 @@ const ProgressFollowupBox: React.FC<ProgressFollowupBoxProps> = ({ selectedClien
         <div className="pb-2 border-b border-gray-200 last:border-b-0">
           <div className="flex items-center justify-between mb-2">
             <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Probability</p>
-            <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
+            <span className="text-sm font-semibold text-gray-900">
+              {(() => {
+                const prob = selectedClient?.probability;
+                const probNum = typeof prob === 'string' ? (prob === '' ? 0 : Number(prob) || 0) : (prob || 0);
+                return `${probNum}%`;
+              })()}
+            </span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
             <div 
               className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300" 
-              style={{ width: `${selectedClient?.probability || 0}%` }}
+              style={{ 
+                width: `${(() => {
+                  const prob = selectedClient?.probability;
+                  return typeof prob === 'string' ? (prob === '' ? 0 : Number(prob) || 0) : (prob || 0);
+                })()}%` 
+              }}
             ></div>
           </div>
         </div>

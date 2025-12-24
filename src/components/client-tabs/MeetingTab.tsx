@@ -406,7 +406,7 @@ const formatEmailBody = async (
       clientName: context.client?.name || recipientName,
       contactName: recipientName,
       leadNumber: context.client?.lead_number || null,
-      topic: context.client?.topic || null,
+      // topic: context.client?.topic || null, // Topic removed - not to be included in emails
       leadType: context.client?.lead_type || null,
       meetingDate: context.meetingDate || null,
       meetingTime: context.meetingTime || null,
@@ -1662,8 +1662,7 @@ const formatEmailBody = async (
         subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
       }
       const joinLink = getValidTeamsLink(meeting.link);
-      const category = client.category || '---';
-      const topic = client.topic || '---';
+      // Category and topic removed - not to be included in emails
       const locationName = getMeetingLocationName(meeting.location);
       
       // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
@@ -1684,14 +1683,8 @@ const formatEmailBody = async (
         ? (contacts.find(c => c.email === primaryRecipientEmail)?.name || client.name)
         : (contacts.find(c => c.email === emailAddress)?.name || client.name));
       
-      // Build description HTML
+      // Build description HTML (category and topic removed)
       let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
-      if (category && category !== '---') {
-        descriptionHtml += `<p><strong>Category:</strong> ${category}</p>`;
-      }
-      if (topic && topic !== '---') {
-        descriptionHtml += `<p><strong>Topic:</strong> ${topic}</p>`;
-      }
       if (joinLink) {
         descriptionHtml += `<p><strong>Join Teams Meeting:</strong> <a href="${joinLink}">${joinLink}</a></p>`;
       }
@@ -1699,10 +1692,8 @@ const formatEmailBody = async (
         descriptionHtml += `<p><strong>Brief:</strong><br>${meeting.brief.replace(/\n/g, '<br>')}</p>`;
       }
       
-      // Calendar subject (without date, with topic if available)
-      const calendarSubject = topic && topic !== '---' 
-        ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
-        : `Meeting with Decker, Pex, Levi Lawoffice`;
+      // Calendar subject (category and topic removed)
+      const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
       
       // Prepare date/time for calendar
       const startDateTime = new Date(`${meeting.date}T${formattedTime}:00`);

@@ -113,7 +113,6 @@ export const meetingInvitationEmailTemplate = ({
       <li><strong>Date:</strong> ${meetingDate}</li>
       ${meetingTime ? `<li><strong>Time:</strong> ${meetingTime}</li>` : ''}
       <li><strong>Location:</strong> ${location}</li>
-      <li><strong>Topic:</strong> ${topic}</li>
     </ul>
     ${isTeamsMeeting ? `
     <div style="margin: 24px 0;">

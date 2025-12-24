@@ -204,7 +204,7 @@ const formatEmailBody = async (
       clientName: context.client?.name || recipientName,
       contactName: recipientName,
       leadNumber: context.client?.lead_number || null,
-      topic: context.client?.topic || null,
+      // topic removed - not to be included in emails
       meetingDate: context.meetingDate || null,
       meetingTime: context.meetingTime || null,
       meetingLocation: context.meetingLocation || null,
@@ -1028,6 +1028,8 @@ const Clients: React.FC<ClientsProps> = ({
   // - 'meeting_scheduled' for the first meeting
   // - 'another_meeting' for follow-up meetings
   const [scheduleStageTarget, setScheduleStageTarget] = useState<'meeting_scheduled' | 'another_meeting'>('meeting_scheduled');
+  // Toggle for notifying client via email when scheduling a meeting
+  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(true);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [meetingFormData, setMeetingFormData] = useState({
     date: '',
@@ -1558,6 +1560,8 @@ const Clients: React.FC<ClientsProps> = ({
   });
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
+  // Toggle for notifying client via email when rescheduling a meeting
+  const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(true);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
   const [showRescheduleTimeDropdown, setShowRescheduleTimeDropdown] = useState(false);
   const rescheduleTimeDropdownRef = useRef<HTMLDivElement>(null);
@@ -2315,8 +2319,10 @@ useEffect(() => {
         .gte('meeting_date', today); // Only fetch upcoming meetings (today and future)
       
       if (isLegacyLead) {
-        const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        query = query.eq('legacy_lead_id', legacyId);
+        const legacyIdStr = selectedClient.id.toString().replace('legacy_', '');
+        // Convert to number for legacy_lead_id (it's a bigint in the database)
+        const numericLegacyId = /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
+        query = query.eq('legacy_lead_id', numericLegacyId);
       } else {
         query = query.eq('client_id', selectedClient.id);
       }
@@ -2506,7 +2512,7 @@ useEffect(() => {
             next_followup,
             probability,
             eligibile,
-              source_id,
+            source_id,
             category,
             category_id,
             language_id,
@@ -2541,6 +2547,17 @@ useEffect(() => {
         error = legacyError;
 
         if (data) {
+          // Fetch source name separately since the foreign key relationship doesn't exist
+          let sourceName = '';
+          if (data.source_id) {
+            const { data: sourceData } = await supabase
+              .from('misc_leadsource')
+              .select('name')
+              .eq('id', data.source_id)
+              .maybeSingle();
+            sourceName = sourceData?.name || '';
+          }
+          
           const legacyLanguageRecord = Array.isArray(data.misc_language)
             ? data.misc_language[0]
             : data.misc_language;
@@ -2555,13 +2572,13 @@ useEffect(() => {
             id: `legacy_${data.id}`,
             lead_number: formatLegacyLeadNumber(data), // Format lead number with /1 for master, /X for sub-leads
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
-            source: String(data.source_id || ''),
+            source: sourceName || String(data.source_id || ''), // Get source name from separate query
             created_at: data.cdate,
             updated_at: data.udate,
             notes: data.notes || '',
             special_notes: data.special_notes || '',
             next_followup: data.next_followup || '',
-            probability: String(data.probability || ''),
+            probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
             category: (() => {
               console.log('🔍 Processing new lead category - raw data:', { 
                 category_id: data.category_id, 
@@ -2925,7 +2942,7 @@ useEffect(() => {
                 notes: legacyLead.notes || '',
                 special_notes: legacyLead.special_notes || '',
                 next_followup: legacyLead.next_followup || '',
-                probability: String(legacyLead.probability || ''),
+                probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
                 category: getCategoryName(legacyLead.category_id, legacyLead.category),
                 language: legacyLanguageRecord?.name || String(legacyLead.language_id || ''),
                 balance: String(legacyLead.total || ''),
@@ -4006,6 +4023,7 @@ useEffect(() => {
       meeting_total: '',
     });
     setMeetingType('regular');
+    setNotifyClientOnSchedule(true); // Reset to default
   };
 
   // Function to test calendar access permissions
@@ -4837,8 +4855,8 @@ useEffect(() => {
         })();
       }
 
-      // Automatically send the appropriate meeting invitation email (only for regular meetings, not paid)
-      if (meetingType === 'regular' && insertedData && insertedData.length > 0 && selectedClient.email) {
+      // Automatically send the appropriate meeting invitation email (only for regular meetings, not paid, and if notify toggle is on)
+      if (notifyClientOnSchedule && meetingType === 'regular' && insertedData && insertedData.length > 0 && selectedClient.email) {
         const newMeeting: any = {
           id: insertedData[0].id,
           client_id: insertedData[0].client_id,
@@ -4906,21 +4924,53 @@ useEffect(() => {
             const templateIds = templateMapping[invitationType];
             
             // Use language_id from database (1=English, 2=Hebrew)
-            // Fallback to text language field if language_id is not available
-            const isHebrewById = selectedClient.language_id === 2;
-            const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
-                                   selectedClient.language?.toLowerCase() === 'hebrew';
-            const isHebrew = isHebrewById || (!selectedClient.language_id && isHebrewByText);
+            // For legacy leads, fetch language_id from database if not available
+            const isLegacyLeadForSchedule = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+            let clientLanguageIdForSchedule: number | null = selectedClient.language_id || null;
+            
+            if (isLegacyLeadForSchedule && !clientLanguageIdForSchedule) {
+              const legacyIdForSchedule = selectedClient.id.toString().replace('legacy_', '');
+              const { data: legacyData } = await supabase
+                .from('leads_lead')
+                .select('language_id')
+                .eq('id', legacyIdForSchedule)
+                .maybeSingle();
+              clientLanguageIdForSchedule = legacyData?.language_id || null;
+            } else if (!isLegacyLeadForSchedule && !clientLanguageIdForSchedule) {
+              const { data: leadData } = await supabase
+                .from('leads')
+                .select('language_id')
+                .eq('id', selectedClient.id)
+                .maybeSingle();
+              clientLanguageIdForSchedule = leadData?.language_id || null;
+            }
+            
+            // Get language name from language_id to determine if Hebrew or English
+            let isHebrew = false;
+            if (clientLanguageIdForSchedule) {
+              const { data: languageData } = await supabase
+                .from('misc_language')
+                .select('name')
+                .eq('id', clientLanguageIdForSchedule)
+                .maybeSingle();
+              
+              const languageName = languageData?.name?.toLowerCase() || '';
+              isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
+            } else {
+              // Fallback to text language field if language_id is not available
+              isHebrew = selectedClient.language?.toLowerCase() === 'he' || 
+                        selectedClient.language?.toLowerCase() === 'hebrew';
+            }
+            
             const templateId = isHebrew ? templateIds.he : templateIds.en;
             
             console.log('🌍 Language selection:', {
-              language_id: selectedClient.language_id,
+              language_id: clientLanguageIdForSchedule,
               language_text: selectedClient.language,
-              isHebrewById,
-              isHebrewByText,
               isHebrew,
               selectedTemplateId: templateId,
               invitationType,
+              isLegacyLead: isLegacyLeadForSchedule,
               fullClient: selectedClient
             });
             
@@ -4962,7 +5012,7 @@ useEffect(() => {
             const formattedTime = newMeeting.time ? newMeeting.time.substring(0, 5) : '';
             
             // Prepare email subject
-            const subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+            let subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
             let body = '';
             
             if (!templateData || templateError) {
@@ -5013,6 +5063,11 @@ useEffect(() => {
                 }
               );
               
+              // Use template name as subject if available
+              if (templateData.name) {
+                subject = templateData.name;
+              }
+              
               console.log('📝 Final email body prepared, length:', body.length);
             }
             
@@ -5024,26 +5079,16 @@ useEffect(() => {
             
             const useOutlookCalendarInvite = isMicrosoftEmail(selectedClient.email);
             const recipientName = selectedClient.name || 'Valued Client';
-            const category = selectedClient.category || '---';
-            const topic = selectedClient.topic || '---';
             const locationName = meetingFormData.location || 'Office';
             
-            // Build description HTML
+            // Build description HTML (category and topic removed)
             let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
-            if (category && category !== '---') {
-              descriptionHtml += `<p><strong>Category:</strong> ${category}</p>`;
-            }
-            if (topic && topic !== '---') {
-              descriptionHtml += `<p><strong>Topic:</strong> ${topic}</p>`;
-            }
             if (newMeeting.link) {
               descriptionHtml += `<p><strong>Join Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>`;
             }
             
-            // Calendar subject (without date, with topic if available)
-            const calendarSubject = topic && topic !== '---' 
-              ? `Meeting with Decker, Pex, Levi Lawoffice - ${topic}`
-              : `Meeting with Decker, Pex, Levi Lawoffice`;
+            // Calendar subject (category and topic removed)
+            const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
             
             // Prepare date/time for calendar
             const startDateTime = new Date(`${newMeeting.date}T${formattedTime}:00`);
@@ -5966,6 +6011,9 @@ useEffect(() => {
     
     // Fetch follow-up from follow_ups table for current user
     let followUpDate = '';
+    let sourceName = selectedClient?.source || '';
+    let languageName = selectedClient?.language || '';
+    
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data: userData } = await supabase
@@ -5979,6 +6027,8 @@ useEffect(() => {
         
         if (isLegacyLead) {
           const legacyId = selectedClient.id.toString().replace('legacy_', '');
+          
+          // Fetch follow-up
           const { data: followUpData } = await supabase
             .from('follow_ups')
             .select('date')
@@ -5989,6 +6039,35 @@ useEffect(() => {
           
           if (followUpData?.date) {
             followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
+          }
+          
+          // Fetch source name from source_id for legacy leads
+          if (selectedClient.source && !isNaN(Number(selectedClient.source))) {
+            const sourceId = Number(selectedClient.source);
+            const { data: sourceData } = await supabase
+              .from('misc_leadsource')
+              .select('name')
+              .eq('id', sourceId)
+              .maybeSingle();
+            
+            if (sourceData?.name) {
+              sourceName = sourceData.name;
+            }
+          }
+          
+          // Language is already fetched as name from the joined table, so use it directly
+          // But if it's an ID string, try to fetch the name
+          if (selectedClient.language && !isNaN(Number(selectedClient.language))) {
+            const languageId = Number(selectedClient.language);
+            const { data: languageData } = await supabase
+              .from('misc_language')
+              .select('name')
+              .eq('id', languageId)
+              .maybeSingle();
+            
+            if (languageData?.name) {
+              languageName = languageData.name;
+            }
           }
         } else {
           const { data: followUpData } = await supabase
@@ -6007,15 +6086,24 @@ useEffect(() => {
     }
     
     // Reset the edit form data with current client data
+    // Ensure probability is a number
+    const probabilityValue = (() => {
+      const prob = selectedClient?.probability;
+      if (typeof prob === 'string') {
+        return prob === '' ? 0 : (Number(prob) || 0);
+      }
+      return prob !== null && prob !== undefined ? Number(prob) : 0;
+    })();
+    
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
-      source: selectedClient?.source || '',
+      source: sourceName,
       name: selectedClient?.name || '',
-      language: selectedClient?.language || '',
+      language: languageName,
       category: selectedClient?.category || '',
       topic: selectedClient?.topic || '',
       special_notes: selectedClient?.special_notes || '',
-      probability: selectedClient?.probability || 0,
+      probability: probabilityValue,
       number_of_applicants_meeting: selectedClient?.number_of_applicants_meeting || '',
       potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
       balance: selectedClient?.balance || selectedClient?.total || '',
@@ -6315,14 +6403,72 @@ useEffect(() => {
           updateData.special_notes = editLeadData.special_notes;
           updateData.notes = editLeadData.special_notes; // Map special_notes to notes for legacy
         }
-        if (editLeadData.probability !== selectedClient.probability) {
-          // Handle empty string for numeric field
-          let probabilityValue = null;
-          if (editLeadData.probability !== '' && editLeadData.probability !== null && editLeadData.probability !== undefined) {
-            const parsed = Number(editLeadData.probability);
-            probabilityValue = isNaN(parsed) ? null : parsed;
+        // Compare probability values (handle both string and number formats)
+        const currentProbability = typeof selectedClient.probability === 'string' 
+          ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
+          : (selectedClient.probability || 0);
+        const newProbability = typeof editLeadData.probability === 'string'
+          ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
+          : (editLeadData.probability || 0);
+        
+        if (newProbability !== currentProbability) {
+          updateData.probability = newProbability;
+        }
+        // Handle source - convert source name to source_id
+        if (editLeadData.source !== selectedClient.source) {
+          if (editLeadData.source && editLeadData.source.trim() !== '') {
+            // Look up source_id from misc_leadsource table by name
+            const { data: sourceData } = await supabase
+              .from('misc_leadsource')
+              .select('id')
+              .eq('name', editLeadData.source)
+              .maybeSingle();
+            
+            if (sourceData?.id) {
+              updateData.source_id = sourceData.id;
+            } else {
+              // If source not found, try to parse as ID (in case user entered ID directly)
+              const sourceId = parseInt(editLeadData.source);
+              if (!isNaN(sourceId)) {
+                updateData.source_id = sourceId;
+              }
+            }
+          } else {
+            updateData.source_id = null;
           }
-          updateData.probability = probabilityValue;
+        }
+        // Handle language - convert language name to language_id
+        if (editLeadData.language !== selectedClient.language) {
+          if (editLeadData.language && editLeadData.language.trim() !== '') {
+            // Look up language_id from misc_language table by name
+            const { data: languageData } = await supabase
+              .from('misc_language')
+              .select('id')
+              .eq('name', editLeadData.language)
+              .maybeSingle();
+            
+            if (languageData?.id) {
+              updateData.language_id = languageData.id;
+            } else {
+              // If language not found, try to parse as ID (in case user entered ID directly)
+              const languageId = parseInt(editLeadData.language);
+              if (!isNaN(languageId)) {
+                updateData.language_id = languageId;
+              }
+            }
+          } else {
+            updateData.language_id = null;
+          }
+        }
+        // Handle number_of_applicants_meeting - map to no_of_applicants for legacy
+        if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
+          // Handle empty string for numeric field
+          let applicantsValue = null;
+          if (editLeadData.number_of_applicants_meeting !== '' && editLeadData.number_of_applicants_meeting !== null && editLeadData.number_of_applicants_meeting !== undefined) {
+            const parsed = Number(editLeadData.number_of_applicants_meeting);
+            applicantsValue = isNaN(parsed) ? null : parsed;
+          }
+          updateData.no_of_applicants = applicantsValue;
         }
         // Follow-up is now handled separately in follow_ups table - don't include in updateData
         if (editLeadData.balance !== selectedClient.balance) {
@@ -6418,14 +6564,16 @@ useEffect(() => {
         if (editLeadData.special_notes !== selectedClient.special_notes) {
           updateData.special_notes = editLeadData.special_notes;
         }
-        if (editLeadData.probability !== selectedClient.probability) {
-          // Handle empty string for numeric field
-          let probabilityValue = null;
-          if (editLeadData.probability !== '' && editLeadData.probability !== null && editLeadData.probability !== undefined) {
-            const parsed = Number(editLeadData.probability);
-            probabilityValue = isNaN(parsed) ? null : parsed;
-          }
-          updateData.probability = probabilityValue;
+        // Compare probability values (handle both string and number formats)
+        const currentProbabilityNew = typeof selectedClient.probability === 'string' 
+          ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
+          : (selectedClient.probability || 0);
+        const newProbabilityNew = typeof editLeadData.probability === 'string'
+          ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
+          : (editLeadData.probability || 0);
+        
+        if (newProbabilityNew !== currentProbabilityNew) {
+          updateData.probability = newProbabilityNew;
         }
         if (editLeadData.number_of_applicants_meeting !== selectedClient.number_of_applicants_meeting) {
           // Handle empty string for numeric field
@@ -6698,8 +6846,8 @@ useEffect(() => {
       
       if (fetchError) throw fetchError;
 
-      // 3. Send cancellation email to client
-      if (selectedClient.email && canceledMeeting) {
+      // 3. Send cancellation email to client (only if notify toggle is on)
+      if (notifyClientOnReschedule && selectedClient.email && canceledMeeting) {
         let accessToken;
         try {
           const response = await instance.acquireTokenSilent({ ...loginRequest, account });
@@ -6715,31 +6863,67 @@ useEffect(() => {
         
         // Determine language for template selection (same logic as schedule meeting)
         // Template ID 153 = English cancellation, 154 = Hebrew cancellation
-        const isHebrewById = selectedClient.language_id === 2;
-        const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
-                               selectedClient.language?.toLowerCase() === 'hebrew';
-        const isHebrew = isHebrewById || (!selectedClient.language_id && isHebrewByText);
-        const templateId = isHebrew ? 154 : 153; // HE: 154, EN: 153
+        // For legacy leads, fetch language_id from database if not available
+        const isLegacyLeadForCancel = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+        let clientLanguageId: number | null = selectedClient.language_id || null;
+        
+        if (isLegacyLeadForCancel && !clientLanguageId) {
+          const legacyIdForCancel = selectedClient.id.toString().replace('legacy_', '');
+          const { data: legacyData } = await supabase
+            .from('leads_lead')
+            .select('language_id')
+            .eq('id', legacyIdForCancel)
+            .maybeSingle();
+          clientLanguageId = legacyData?.language_id || null;
+        } else if (!isLegacyLeadForCancel && !clientLanguageId) {
+          const { data: leadData } = await supabase
+            .from('leads')
+            .select('language_id')
+            .eq('id', selectedClient.id)
+            .maybeSingle();
+          clientLanguageId = leadData?.language_id || null;
+        }
+        
+        // Get language name from language_id to determine if Hebrew or English
+        let templateId: number = 153; // Default to English
+        if (clientLanguageId) {
+          const { data: languageData } = await supabase
+            .from('misc_language')
+            .select('name')
+            .eq('id', clientLanguageId)
+            .maybeSingle();
+          
+          const languageName = languageData?.name?.toLowerCase() || '';
+          const isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
+          templateId = isHebrew ? 154 : 153; // HE: 154, EN: 153
+        } else {
+          // Fallback to text language field if language_id is not available
+          const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
+                                 selectedClient.language?.toLowerCase() === 'hebrew';
+          templateId = isHebrewByText ? 154 : 153;
+        }
+        
+        const isHebrew = templateId === 154;
         
         console.log('🌍 Cancellation email language selection:', {
-          language_id: selectedClient.language_id,
+          language_id: clientLanguageId,
           language_text: selectedClient.language,
-          isHebrewById,
-          isHebrewByText,
           isHebrew,
           selectedTemplateId: templateId,
+          isLegacyLead: isLegacyLeadForCancel,
           fullClient: selectedClient
         });
         
-        // Fetch email template by ID
+        // Fetch email template by ID (including name for subject)
         let templateContent: string | null = null;
+        let templateName: string | null = null;
         
         try {
           console.log('📧 Fetching cancellation email template:', { templateId, isHebrew });
           
           const { data: template, error: templateError } = await supabase
             .from('misc_emailtemplate')
-            .select('content')
+            .select('name, content')
             .eq('id', templateId)
             .single();
           
@@ -6758,8 +6942,10 @@ useEffect(() => {
           } else if (template && template.content) {
             const parsed = parseTemplateContent(template.content);
             templateContent = parsed && parsed.trim() ? parsed : template.content;
+            templateName = template.name || null;
             console.log('✅ Cancellation email template fetched successfully', {
               templateId,
+              templateName,
               isHebrew,
               language_id: selectedClient.language_id,
               language_text: selectedClient.language,
@@ -6788,6 +6974,7 @@ useEffect(() => {
         
         // Build email body using template or fallback
         let emailBody: string;
+        let emailSubject: string;
         if (templateContent && templateContent.trim()) {
           console.log('✅ Using cancellation email template');
           emailBody = await formatEmailBody(templateContent, selectedClient.name, {
@@ -6796,13 +6983,10 @@ useEffect(() => {
             meetingTime: formattedTime,
             meetingLocation: locationName,
           });
+          // Use template name as subject if available, otherwise fallback
+          emailSubject = templateName || `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
         } else {
           console.warn('⚠️ Using fallback hardcoded email template for cancellation');
-          const userName = account?.name || 'Staff';
-          let signature = (account && (account as any).signature) ? (account as any).signature : null;
-          if (!signature) {
-            signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
-          }
           emailBody = `
             <div style='font-family:sans-serif;font-size:16px;color:#222;'>
               <p>Dear ${selectedClient.name},</p>
@@ -6814,12 +6998,10 @@ useEffect(() => {
               </ul>
               <p>has been canceled.</p>
               <p>If you have any questions or would like to reschedule, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
             </div>
           `;
+          emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
         }
-        
-        const subject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
         
         // Use sendEmailViaBackend to save email to database with proper context
         if (userId) {
@@ -6828,7 +7010,7 @@ useEffect(() => {
           
           await sendEmailViaBackend({
             userId,
-            subject,
+            subject: emailSubject,
             bodyHtml: emailBody,
             to: [selectedClient.email],
             context: {
@@ -6841,14 +7023,15 @@ useEffect(() => {
               senderName: account?.name || 'Staff',
             },
           });
-        } else {
-          // Fallback to old method if userId not available
-          await sendEmail(accessToken, {
-            to: selectedClient.email,
-            subject,
-            body: emailBody,
-          });
-        }
+          } else {
+            // Fallback to old method if userId not available
+            await sendEmail(accessToken, {
+              to: selectedClient.email,
+              subject: emailSubject,
+              body: emailBody,
+              skipSignature: true, // Don't include user signature for template emails
+            });
+          }
       }
 
       // 4. Update stage to "Meeting rescheduling" (ID 21) - ONLY if not in "Another meeting" stage
@@ -6861,6 +7044,7 @@ useEffect(() => {
       // 5. Show toast and close drawer
       toast.success('Meeting canceled and client notified.');
       setShowRescheduleDrawer(false);
+      setNotifyClientOnReschedule(true); // Reset to default
       setMeetingToDelete(null);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
@@ -6880,7 +7064,9 @@ useEffect(() => {
     // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
     // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
     const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-    const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+    const legacyIdStr = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+    // Convert to number for legacy_lead_id (it's a bigint in the database)
+    const legacyId = legacyIdStr && /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
     
     // Query for the oldest upcoming meeting to cancel
     let query = supabase
@@ -6892,9 +7078,9 @@ useEffect(() => {
       .order('meeting_time', { ascending: true })
       .limit(1);
     
-    if (isLegacyLead) {
+    if (isLegacyLead && legacyId !== null) {
       query = query.eq('legacy_lead_id', legacyId);
-    } else {
+    } else if (!isLegacyLead) {
       query = query.eq('client_id', selectedClient.id);
     }
     
@@ -7066,11 +7252,13 @@ useEffect(() => {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
       
       // For both new and legacy leads, create meeting record in meetings table
-      const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+      const legacyIdStr = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
+      // Convert to number for legacy_lead_id (it's a bigint in the database)
+      const legacyId = legacyIdStr && /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
 
       const meetingData = {
         client_id: isLegacyLead ? null : selectedClient.id, // Use null for legacy leads
-        legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads
+        legacy_lead_id: isLegacyLead ? legacyId : null, // Use legacy_lead_id for legacy leads (must be numeric)
         meeting_date: rescheduleFormData.date,
         meeting_time: rescheduleFormData.time,
         meeting_location: rescheduleFormData.location,
@@ -7174,32 +7362,37 @@ useEffect(() => {
           });
         }
       } else {
-        const updatePayload: any = {};
+        // Only update new leads table if this is actually a new lead (not legacy)
+        if (!isLegacyLead) {
+          const updatePayload: any = {};
 
-        // Only update stage if needed
-        if (shouldUpdateStage) {
-          updatePayload.stage = rescheduledStageId;
-          updatePayload.stage_changed_by = stageActor.fullName;
-          updatePayload.stage_changed_at = stageTimestamp;
+          // Only update stage if needed
+          if (shouldUpdateStage) {
+            updatePayload.stage = rescheduledStageId;
+            updatePayload.stage_changed_by = stageActor.fullName;
+            updatePayload.stage_changed_at = stageTimestamp;
+          }
+
+          // Always update scheduler for new leads (same as in handleScheduleMeeting)
+          updatePayload.scheduler = currentUserFullName;
+
+          // Always update manager and helper for new leads (as employee IDs)
+          if (managerEmployeeId !== null) {
+            updatePayload.manager = managerEmployeeId;
+          }
+          if (helperEmployeeId !== null) {
+            updatePayload.helper = helperEmployeeId;
+          }
+
+          const { error } = await supabase
+            .from('leads')
+            .update(updatePayload)
+            .eq('id', selectedClient.id);
+
+          if (error) throw error;
+        } else {
+          console.warn('Attempted to update leads table for legacy lead in reschedule, skipping');
         }
-
-        // Always update scheduler for new leads (same as in handleScheduleMeeting)
-        updatePayload.scheduler = currentUserFullName;
-
-        // Always update manager and helper for new leads (as employee IDs)
-        if (managerEmployeeId !== null) {
-          updatePayload.manager = managerEmployeeId;
-        }
-        if (helperEmployeeId !== null) {
-          updatePayload.helper = helperEmployeeId;
-        }
-
-        const { error } = await supabase
-          .from('leads')
-          .update(updatePayload)
-          .eq('id', selectedClient.id);
-
-        if (error) throw error;
 
         // Record stage change only if stage was updated
         if (shouldUpdateStage) {
@@ -7212,8 +7405,8 @@ useEffect(() => {
         }
       }
 
-      // 3. Send notification email to client with calendar invitation
-      if (selectedClient.email) {
+      // 3. Send notification email to client with calendar invitation (only if notify toggle is on)
+      if (notifyClientOnReschedule && selectedClient.email) {
         let accessToken;
         try {
           const response = await instance.acquireTokenSilent({ ...loginRequest, account });
@@ -7227,110 +7420,156 @@ useEffect(() => {
           }
         }
         
-        // Compose the email template
+        // Compose the email template (no signature for template emails)
         const userName = account?.name || 'Staff';
-        let signature = (account && (account as any).signature) ? (account as any).signature : null;
-        if (!signature) {
-          signature = `<br><br>${userName},<br>Decker Pex Levi Law Offices`;
-        }
         
-        // Fetch the latest meeting for the client to get the correct teams_meeting_url
-        const { data: latestMeetings, error: fetchMeetingError } = await supabase
-          .from('meetings')
-          .select('*')
-          .eq('client_id', selectedClient.id)
-          .order('meeting_date', { ascending: false })
-          .order('meeting_time', { ascending: false })
-          .limit(1);
-        if (fetchMeetingError) throw fetchMeetingError;
-        const latestMeeting = latestMeetings && latestMeetings.length > 0 ? latestMeetings[0] : null;
-        const meetingLink = getValidTeamsLink(latestMeeting?.teams_meeting_url);
+        // Use the newly created meeting's Teams URL (from insertedData) instead of fetching latest
+        // This ensures we get the correct Teams link for the current meeting, not an old one
+        // Note: For Teams meetings, the URL will be updated after calendar event creation
+        let newMeetingTeamsUrl = insertedData && insertedData[0] ? insertedData[0].teams_meeting_url : null;
+        let meetingLink = getValidTeamsLink(newMeetingTeamsUrl);
+        
+        console.log('🔗 Initial Teams meeting URL for email:', {
+          insertedDataId: insertedData?.[0]?.id,
+          teamsUrl: newMeetingTeamsUrl,
+          meetingLink,
+          location: rescheduleFormData.location
+        });
+        
+        // joinButton will be built later after we have the final meetingLink
         const joinButton = meetingLink
           ? `<div style='margin:24px 0;'>
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
             </div>`
           : '';
         
-        // Determine client language to select correct template ID
-        // Template IDs: 155 for English, 156 for Hebrew
+        // Determine client language and fetch appropriate template
+        // For rescheduled meetings: use template 155/156
+        // For new meetings (no canceled meeting): use invitation templates based on location (same as schedule meeting)
         let templateContent: string | null = null;
+        let templateNameForReschedule: string | null = null;
         
-        if (canceledMeeting) {
-          try {
-            // Get language_id from client to determine language
-            let clientLanguageId: number | null = null;
-            
-            if (isLegacyLead) {
-              if ((selectedClient as any).language_id) {
-                clientLanguageId = (selectedClient as any).language_id;
-              } else {
-                const legacyIdForReschedule = selectedClient.id.toString().replace('legacy_', '');
-                const { data: legacyData } = await supabase
-                  .from('leads_lead')
-                  .select('language_id')
-                  .eq('id', legacyIdForReschedule)
-                  .single();
-                clientLanguageId = legacyData?.language_id || null;
-              }
+        try {
+          // Get language_id from client to determine language
+          let clientLanguageId: number | null = null;
+          
+          if (isLegacyLead) {
+            if ((selectedClient as any).language_id) {
+              clientLanguageId = (selectedClient as any).language_id;
             } else {
-              if ((selectedClient as any).language_id) {
-                clientLanguageId = (selectedClient as any).language_id;
-              } else {
+              const legacyIdForReschedule = selectedClient.id.toString().replace('legacy_', '');
+              const { data: legacyData } = await supabase
+                .from('leads_lead')
+                .select('language_id')
+                .eq('id', legacyIdForReschedule)
+                .single();
+              clientLanguageId = legacyData?.language_id || null;
+            }
+          } else {
+            // For new leads, fetch language_id from leads table
+            if ((selectedClient as any).language_id) {
+              clientLanguageId = (selectedClient as any).language_id;
+            } else {
+              // Only query leads table if this is actually a new lead (not legacy)
+              if (!isLegacyLead) {
                 const { data: leadData } = await supabase
                   .from('leads')
                   .select('language_id')
                   .eq('id', selectedClient.id)
                   .single();
                 clientLanguageId = leadData?.language_id || null;
+              } else {
+                console.warn('Attempted to query leads table for legacy lead language_id, skipping');
               }
             }
-            
-            // Get language name from language_id to determine if Hebrew or English
-            let templateId: number = 155; // Default to English
-            if (clientLanguageId) {
-              const { data: languageData } = await supabase
-                .from('misc_language')
-                .select('name')
-                .eq('id', clientLanguageId)
-                .single();
-              
-              const languageName = languageData?.name?.toLowerCase() || '';
-              const isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
-              templateId = isHebrew ? 156 : 155; // HE: 156, EN: 155
-              
-              console.log('📧 Fetching rescheduled email template:', { 
-                clientLanguageId, 
-                languageName, 
-                isHebrew, 
-                templateId 
-              });
-            } else {
-              console.warn('⚠️ No language_id found for client, defaulting to English template (155)');
-            }
-            
-            // Fetch email template by ID
-            const { data: template, error: templateError } = await supabase
-              .from('misc_emailtemplate')
-              .select('content')
-              .eq('id', templateId)
+          }
+          
+          // Get language name from language_id to determine if Hebrew or English
+          let isHebrew = false;
+          if (clientLanguageId) {
+            const { data: languageData } = await supabase
+              .from('misc_language')
+              .select('name')
+              .eq('id', clientLanguageId)
               .single();
             
-            if (templateError) {
-              console.error('❌ Error fetching rescheduled email template:', templateError);
-            } else if (template && template.content) {
-              const parsed = parseTemplateContent(template.content);
-              templateContent = parsed && parsed.trim() ? parsed : template.content;
-              console.log('✅ Rescheduled email template fetched successfully', {
-                templateId,
-                rawLength: template.content.length,
-                parsedLength: parsed?.length || 0,
-                finalLength: templateContent?.length || 0,
-                usingRaw: !parsed || !parsed.trim()
-              });
-            }
-          } catch (error) {
-            console.error('❌ Exception fetching rescheduled email template:', error);
+            const languageName = languageData?.name?.toLowerCase() || '';
+            isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
           }
+          
+          // Determine template ID based on whether there's a canceled meeting or not
+          let templateId: number;
+          if (canceledMeeting) {
+            // Rescheduled meeting: use rescheduled templates (155/156)
+            templateId = isHebrew ? 156 : 155; // HE: 156, EN: 155
+            console.log('📧 Fetching rescheduled email template:', { 
+              clientLanguageId, 
+              isHebrew, 
+              templateId 
+            });
+          } else {
+            // New meeting (no canceled meeting): use invitation templates based on location (same as schedule meeting)
+            // Use the exact same logic as schedule meeting to determine invitation type
+            const location = (rescheduleFormData.location || '').toLowerCase();
+            let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
+            
+            if (location.includes('jrslm') || location.includes('jerusalem')) {
+              invitationType = 'invitation_jlm';
+            } else if (location.includes('tlv') && location.includes('parking')) {
+              invitationType = 'invitation_tlv_parking';
+            } else if (location.includes('tlv') || location.includes('tel aviv')) {
+              invitationType = 'invitation_tlv';
+            }
+            
+            console.log('🎯 Reschedule meeting - determining invitation type:', {
+              location: rescheduleFormData.location,
+              locationLower: location,
+              invitationType
+            });
+            
+            const templateMapping: Record<string, {en: number, he: number}> = {
+              invitation: { en: 151, he: 152 },
+              invitation_jlm: { en: 157, he: 158 },
+              invitation_tlv: { en: 161, he: 162 },
+              invitation_tlv_parking: { en: 159, he: 160 },
+            };
+            
+            const templateIds = templateMapping[invitationType];
+            templateId = isHebrew ? templateIds.he : templateIds.en;
+            
+            console.log('📧 Fetching invitation email template for new meeting:', { 
+              location,
+              invitationType,
+              clientLanguageId, 
+              isHebrew, 
+              templateId 
+            });
+          }
+          
+          // Fetch email template by ID (including name for subject)
+          const { data: template, error: templateError } = await supabase
+            .from('misc_emailtemplate')
+            .select('name, content')
+            .eq('id', templateId)
+            .single();
+          
+          if (templateError) {
+            console.error('❌ Error fetching email template:', templateError);
+          } else if (template && template.content) {
+            const parsed = parseTemplateContent(template.content);
+            templateContent = parsed && parsed.trim() ? parsed : template.content;
+            templateNameForReschedule = template.name || null;
+            console.log('✅ Email template fetched successfully', {
+              templateId,
+              templateName: template.name,
+              rawLength: template.content.length,
+              parsedLength: parsed?.length || 0,
+              finalLength: templateContent?.length || 0,
+              usingRaw: !parsed || !parsed.trim()
+            });
+          }
+        } catch (error) {
+          console.error('❌ Exception fetching email template:', error);
         }
         
         // Format dates and times
@@ -7345,9 +7584,97 @@ useEffect(() => {
         const newLocationName = rescheduleFormData.location;
         const oldLocationName = canceledMeeting?.meeting_location || 'Teams';
         
+        // Convert date and time to ISO format for calendar invitation
+        // Always send calendar invite for all meeting types (regular, paid, etc.)
+        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
+        const startDateTime = new Date(year, month - 1, day, hours, minutes);
+        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
+        
+        // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
+        const isMicrosoftEmail = (email: string): boolean => {
+          if (!email) return false;
+          const emailLower = email.toLowerCase().trim();
+          const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
+          const isMicrosoft = microsoftDomains.some(domain => {
+            // Check for exact domain match (after @) or subdomain
+            const domainPattern = new RegExp(`@([a-z0-9-]+\\.)?${domain.replace('.', '\\.')}$`, 'i');
+            return domainPattern.test(emailLower);
+          });
+          console.log('🔍 Microsoft email check:', {
+            email,
+            emailLower,
+            isMicrosoft,
+            domains: microsoftDomains
+          });
+          return isMicrosoft;
+        };
+        
+        const useOutlookCalendarInvite = isMicrosoftEmail(selectedClient.email);
+        console.log('📧 Calendar invite method:', {
+          email: selectedClient.email,
+          useOutlookCalendarInvite,
+          willUseMicrosoftGraph: useOutlookCalendarInvite
+        });
+        // Category removed from meeting subject
+        const meetingSubject = canceledMeeting 
+          ? `[#${selectedClient.lead_number}] ${selectedClient.name} - Meeting Rescheduled`
+          : `[#${selectedClient.lead_number}] ${selectedClient.name} - Meeting`;
+        
+        // For Teams meetings, create calendar event FIRST to get the Teams URL
+        // Then build email body with the correct Teams link
+        if (rescheduleFormData.location === 'Teams' && useOutlookCalendarInvite) {
+          try {
+            // Create a temporary email body for the calendar event description
+            const tempEmailBody = `Meeting with ${selectedClient.name}`;
+            
+            const calendarEventResult = await createCalendarEventWithAttendee(accessToken, {
+              subject: meetingSubject,
+              startDateTime: startDateTime.toISOString(),
+              endDateTime: endDateTime.toISOString(),
+              location: 'Microsoft Teams Meeting',
+              description: tempEmailBody,
+              attendeeEmail: selectedClient.email,
+              attendeeName: selectedClient.name,
+              organizerEmail: account.username || 'noreply@lawoffice.org.il',
+              organizerName: userName,
+              teamsJoinUrl: undefined, // Will be generated by Microsoft Graph
+              timeZone: 'Asia/Jerusalem'
+            });
+            
+            // Update the meeting record with the Teams URL
+            if (calendarEventResult?.joinUrl && insertedData && insertedData[0]?.id) {
+              await supabase
+                .from('meetings')
+                .update({ teams_meeting_url: calendarEventResult.joinUrl })
+                .eq('id', insertedData[0].id);
+              
+              // Update the meetingLink variable with the new Teams URL
+              meetingLink = getValidTeamsLink(calendarEventResult.joinUrl);
+              newMeetingTeamsUrl = calendarEventResult.joinUrl;
+              console.log('✅ Got Teams meeting URL from calendar event:', {
+                joinUrl: calendarEventResult.joinUrl,
+                meetingLink,
+                location: rescheduleFormData.location
+              });
+            }
+          } catch (teamsError) {
+            console.error('❌ Failed to create Teams calendar event:', teamsError);
+            // Continue with email sending even if Teams calendar creation fails
+          }
+        }
+        
         // Build email body based on whether we canceled a meeting or not
+        // Now we have the correct Teams URL if it's a Teams meeting
         let emailBody = '';
         let emailSubject = '';
+        
+        // Build joinButton with updated meetingLink
+        const finalJoinButton = meetingLink
+          ? `<div style='margin:24px 0;'>
+              <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
+            </div>`
+          : '';
         
         if (canceledMeeting) {
           // Meeting was canceled and rescheduled - use template if available
@@ -7387,6 +7714,8 @@ useEffect(() => {
               meetingLocation: newLocationName,
               meetingLink: meetingLink || undefined,
             });
+            // Use template name as subject if available
+            emailSubject = templateNameForReschedule || `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
           } else {
             console.warn('⚠️ Using fallback hardcoded email template for rescheduled');
             // Fallback to hardcoded email
@@ -7405,134 +7734,377 @@ useEffect(() => {
                   <li><strong>Time:</strong> ${formattedNewTime}</li>
                   <li><strong>Location:</strong> ${newLocationName}</li>
                 </ul>
-                ${joinButton}
+                ${finalJoinButton}
                 <p>Please check the calendar invitation attached for the exact meeting time.</p>
                 <p>If you have any questions or need to reschedule again, please let us know.</p>
-                <div style='margin-top:32px;'>${signature}</div>
               </div>
             `;
           }
-          emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
+          // Use template name as subject if available
+          emailSubject = templateNameForReschedule || `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Rescheduled`;
         } else {
-          // Just scheduling a new meeting (no meeting to cancel) - use regular invitation template or fallback
-          emailBody = `
-            <div style='font-family:sans-serif;font-size:16px;color:#222;'>
-              <p>Dear ${selectedClient.name},</p>
-              <p>We have scheduled a new meeting for you. Please find the details below:</p>
-              <ul style='margin:16px 0 24px 0;padding-left:20px;'>
-                <li><strong>Date:</strong> ${formattedNewDate}</li>
-                <li><strong>Time:</strong> ${formattedNewTime}</li>
-                <li><strong>Location:</strong> ${newLocationName}</li>
-              </ul>
-              ${joinButton}
-              <p>Please check the calendar invitation attached for the exact meeting time.</p>
-              <p>If you have any questions or need to reschedule, please let us know.</p>
-              <div style='margin-top:32px;'>${signature}</div>
-            </div>
-          `;
-          emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - New Meeting Scheduled`;
+          // Just scheduling a new meeting (no meeting to cancel) - use invitation template (same as schedule meeting)
+          if (templateContent && templateContent.trim()) {
+            console.log('✅ Using invitation email template for new meeting');
+            // Format body with parameter replacement (same as schedule meeting)
+            emailBody = await formatEmailBody(
+              templateContent,
+              selectedClient.name || 'Valued Client',
+              {
+                client: selectedClient,
+                meetingDate: formattedNewDate,
+                meetingTime: formattedNewTime,
+                meetingLocation: newLocationName,
+                meetingLink: meetingLink || ''
+              }
+            );
+            // Use template name as subject if available
+            emailSubject = templateNameForReschedule || `[${selectedClient.lead_number}] - ${selectedClient.name} - New Meeting Scheduled`;
+          } else {
+            console.warn('⚠️ Using fallback hardcoded email template for new meeting');
+            // Fallback to hardcoded email
+            emailBody = `
+              <div style='font-family:sans-serif;font-size:16px;color:#222;'>
+                <p>Dear ${selectedClient.name},</p>
+                <p>We have scheduled a new meeting for you. Please find the details below:</p>
+                <ul style='margin:16px 0 24px 0;padding-left:20px;'>
+                  <li><strong>Date:</strong> ${formattedNewDate}</li>
+                  <li><strong>Time:</strong> ${formattedNewTime}</li>
+                  <li><strong>Location:</strong> ${newLocationName}</li>
+                </ul>
+                ${finalJoinButton}
+                <p>Please check the calendar invitation attached for the exact meeting time.</p>
+                <p>If you have any questions or need to reschedule, please let us know.</p>
+              </div>
+            `;
+            emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - New Meeting Scheduled`;
+          }
         }
         
-        // Convert date and time to ISO format for calendar invitation
-        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
-        const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-        const startDateTime = new Date(year, month - 1, day, hours, minutes);
-        const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
-        
-        const categoryName = selectedClient.category || 'No Category';
-        const meetingSubject = canceledMeeting 
-          ? `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting Rescheduled`
-          : `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
-        
-        // Create calendar invitation with attendee
-        try {
-          const calendarEventResult = await createCalendarEventWithAttendee(accessToken, {
-            subject: meetingSubject,
-            startDateTime: startDateTime.toISOString(),
-            endDateTime: endDateTime.toISOString(),
-            location: rescheduleFormData.location === 'Teams' ? 'Microsoft Teams Meeting' : rescheduleFormData.location,
-            description: emailBody,
-            attendeeEmail: selectedClient.email,
-            attendeeName: selectedClient.name,
-            organizerEmail: account.username || 'noreply@lawoffice.org.il',
-            organizerName: userName,
-            teamsJoinUrl: meetingLink || undefined,
-            timeZone: 'Asia/Jerusalem'
-          });
-          
-          // Update the meeting record with the Teams URL if we got one from the calendar event
-          if (calendarEventResult?.joinUrl && rescheduleFormData.location === 'Teams' && insertedData && insertedData[0]?.id) {
-            await supabase
-              .from('meetings')
-              .update({ teams_meeting_url: calendarEventResult.joinUrl })
-              .eq('id', insertedData[0].id);
-          }
-          
-          // Calendar invitation automatically sends email, but we also send a confirmation email
-          // Use sendEmailViaBackend to save email to database with proper context
-          if (userId) {
-            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-            const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
-            
-            await sendEmailViaBackend({
-              userId,
-              subject: emailSubject,
-              bodyHtml: emailBody,
-              to: [selectedClient.email],
-              context: {
-                clientId: !isLegacyLead ? selectedClient.id : null,
-                legacyLeadId: isLegacyLead ? legacyId : null,
-                leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
-                leadNumber: selectedClient.lead_number || null,
-                contactEmail: selectedClient.email || null,
-                contactName: selectedClient.name || null,
-                senderName: account?.name || 'Staff',
-              },
-            });
-          } else {
-            // Fallback to old method if userId not available
-            await sendEmail(accessToken, {
-              to: selectedClient.email,
-              subject: emailSubject,
-              body: emailBody,
-            });
-          }
-        } catch (calendarError) {
-          console.error('Failed to create calendar invitation:', calendarError);
-          // Fallback to just sending email if calendar creation fails
-          if (userId) {
-            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-            const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
-            
-            await sendEmailViaBackend({
-              userId,
-              subject: emailSubject,
-              bodyHtml: emailBody,
-              to: [selectedClient.email],
-              context: {
-                clientId: !isLegacyLead ? selectedClient.id : null,
-                legacyLeadId: isLegacyLead ? legacyId : null,
-                leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
-                leadNumber: selectedClient.lead_number || null,
-                contactEmail: selectedClient.email || null,
-                contactName: selectedClient.name || null,
-                senderName: account?.name || 'Staff',
-              },
-            });
-          } else {
-            // Fallback to old method if userId not available
-            await sendEmail(accessToken, {
-              to: selectedClient.email,
-              subject: emailSubject,
-              body: emailBody,
-            });
+        // STEP 1: Send reschedule notification email (if there was a canceled meeting)
+        // This email does NOT include calendar invite - just notification
+        if (canceledMeeting && emailBody && emailSubject) {
+          console.log('📧 Sending reschedule notification email (without calendar invite)');
+          try {
+            if (userId) {
+              const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+              const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
+              
+              await sendEmailViaBackend({
+                userId,
+                subject: emailSubject,
+                bodyHtml: emailBody,
+                to: [selectedClient.email],
+                context: {
+                  clientId: !isLegacyLead ? selectedClient.id : null,
+                  legacyLeadId: isLegacyLead ? legacyId : null,
+                  leadType: selectedClient.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+                  leadNumber: selectedClient.lead_number || null,
+                  contactEmail: selectedClient.email || null,
+                  contactName: selectedClient.name || null,
+                  senderName: account?.name || 'Staff',
+                },
+              });
+            } else {
+              await sendEmail(accessToken, {
+                to: selectedClient.email,
+                subject: emailSubject,
+                body: emailBody,
+                skipSignature: true,
+              });
+            }
+            console.log('✅ Reschedule notification email sent successfully');
+          } catch (rescheduleEmailError) {
+            console.error('❌ Failed to send reschedule notification email:', rescheduleEmailError);
+            // Continue to send invitation email even if reschedule email fails
           }
         }
+        
+        // STEP 2: Send meeting invitation email with calendar invite (same as schedule meeting)
+        // This uses location-based templates and includes calendar invite
+        if (insertedData && insertedData.length > 0 && selectedClient.email) {
+          console.log('📧 Sending meeting invitation email with calendar invite');
+          
+          // Import the invitation email sending logic from handleScheduleMeeting
+          // This will be done in a separate async block to avoid blocking
+          (async () => {
+            try {
+              const newMeeting: any = {
+                id: insertedData[0].id,
+                client_id: insertedData[0].client_id,
+                date: insertedData[0].meeting_date,
+                time: insertedData[0].meeting_time,
+                location: insertedData[0].meeting_location,
+                manager: insertedData[0].meeting_manager,
+                currency: insertedData[0].meeting_currency,
+                amount: insertedData[0].meeting_amount,
+                brief: insertedData[0].meeting_brief,
+                scheduler: insertedData[0].scheduler || currentUserFullName,
+                helper: insertedData[0].helper,
+                expert: insertedData[0].expert,
+                link: insertedData[0].teams_meeting_url || meetingLink || '',
+                lastEdited: {
+                  timestamp: insertedData[0].last_edited_timestamp,
+                  user: insertedData[0].last_edited_by,
+                },
+              };
+
+              // Determine the appropriate invitation type based on meeting location
+              const location = (rescheduleFormData.location || '').toLowerCase();
+              let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
+              
+              if (location.includes('jrslm') || location.includes('jerusalem')) {
+                invitationType = 'invitation_jlm';
+              } else if (location.includes('tlv') && location.includes('parking')) {
+                invitationType = 'invitation_tlv_parking';
+              } else if (location.includes('tlv') || location.includes('tel aviv')) {
+                invitationType = 'invitation_tlv';
+              }
+
+              console.log('🎯 Sending meeting invitation email:', {
+                location: rescheduleFormData.location,
+                invitationType,
+                clientEmail: selectedClient.email,
+                meetingDate: newMeeting.date
+              });
+              
+              // Fetch email template based on invitation type and language_id
+              const templateMapping: Record<string, {en: number, he: number}> = {
+                invitation: { en: 151, he: 152 },
+                invitation_jlm: { en: 157, he: 158 },
+                invitation_tlv: { en: 161, he: 162 },
+                invitation_tlv_parking: { en: 159, he: 160 },
+              };
+              
+              const templateIds = templateMapping[invitationType];
+              
+              // Get language_id from client
+              let clientLanguageIdForInvite: number | null = selectedClient.language_id || null;
+              
+              if (isLegacyLead && !clientLanguageIdForInvite) {
+                const legacyIdForInvite = selectedClient.id.toString().replace('legacy_', '');
+                const { data: legacyData } = await supabase
+                  .from('leads_lead')
+                  .select('language_id')
+                  .eq('id', legacyIdForInvite)
+                  .maybeSingle();
+                clientLanguageIdForInvite = legacyData?.language_id || null;
+              } else if (!isLegacyLead && !clientLanguageIdForInvite) {
+                const { data: leadData } = await supabase
+                  .from('leads')
+                  .select('language_id')
+                  .eq('id', selectedClient.id)
+                  .maybeSingle();
+                clientLanguageIdForInvite = leadData?.language_id || null;
+              }
+              
+              // Determine if Hebrew
+              let isHebrew = false;
+              if (clientLanguageIdForInvite) {
+                const { data: languageData } = await supabase
+                  .from('misc_language')
+                  .select('name')
+                  .eq('id', clientLanguageIdForInvite)
+                  .maybeSingle();
+                
+                const languageName = languageData?.name?.toLowerCase() || '';
+                isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
+              } else {
+                isHebrew = selectedClient.language?.toLowerCase() === 'he' || 
+                          selectedClient.language?.toLowerCase() === 'hebrew';
+              }
+              
+              const templateId = isHebrew ? templateIds.he : templateIds.en;
+              
+              // Fetch the template
+              const { data: templateData, error: templateError } = await supabase
+                .from('misc_emailtemplate')
+                .select('name, content')
+                .eq('id', templateId)
+                .maybeSingle();
+
+              // Format meeting date and time
+              const [year, month, day] = newMeeting.date.split('-');
+              const formattedDate = `${day}/${month}/${year}`;
+              const formattedTime = newMeeting.time ? newMeeting.time.substring(0, 5) : '';
+              
+              // Prepare email subject and body
+              let subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
+              let body = '';
+              
+              if (!templateData || templateError) {
+                // Fallback email
+                body = `
+                  <html>
+                    <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #333;">
+                      <h2 style="color: #4218CC;">Meeting Invitation</h2>
+                      <p>Dear ${selectedClient.name || 'Valued Client'},</p>
+                      <p>You have a scheduled meeting with Decker, Pex, Levi Lawoffice.</p>
+                      <div style="background-color: #f5f5f5; padding: 15px; border-radius: 5px; margin: 20px 0;">
+                        <p><strong>Date:</strong> ${formattedDate}</p>
+                        <p><strong>Time:</strong> ${formattedTime}</p>
+                        <p><strong>Location:</strong> ${rescheduleFormData.location || 'TBD'}</p>
+                        ${newMeeting.link ? `<p><strong>Meeting Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>` : ''}
+                      </div>
+                      <p>We look forward to meeting with you.</p>
+                      <p>Best regards,<br/>Decker, Pex, Levi Lawoffice</p>
+                    </body>
+                  </html>
+                `;
+              } else {
+                // Use template
+                const parsedContent = parseTemplateContent(templateData.content);
+                body = await formatEmailBody(
+                  parsedContent,
+                  selectedClient.name || 'Valued Client',
+                  {
+                    client: selectedClient,
+                    meetingDate: formattedDate,
+                    meetingTime: formattedTime,
+                    meetingLocation: rescheduleFormData.location || '',
+                    meetingLink: newMeeting.link || ''
+                  }
+                );
+                
+                if (templateData.name) {
+                  subject = templateData.name;
+                }
+              }
+              
+              // Check if recipient email is a Microsoft domain
+              const isMicrosoftEmailForInvite = (email: string): boolean => {
+                const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
+                return microsoftDomains.some(domain => email.toLowerCase().includes(`@${domain}`));
+              };
+              
+              const useOutlookCalendarInviteForInvite = isMicrosoftEmailForInvite(selectedClient.email);
+              const recipientName = selectedClient.name || 'Valued Client';
+              const locationName = rescheduleFormData.location || 'Office';
+              
+              // Build description HTML for calendar
+              let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
+              if (newMeeting.link) {
+                descriptionHtml += `<p><strong>Join Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>`;
+              }
+              
+              const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
+              
+              // Prepare date/time for calendar
+              const startDateTimeForInvite = new Date(`${newMeeting.date}T${formattedTime}:00`);
+              const endDateTimeForInvite = new Date(startDateTimeForInvite.getTime() + 60 * 60 * 1000); // 1 hour duration
+              
+              if (useOutlookCalendarInviteForInvite) {
+                // For Microsoft email clients: Use Microsoft Graph API to create calendar event
+                try {
+                  await createCalendarEventWithAttendee(accessToken, {
+                    subject: calendarSubject,
+                    startDateTime: startDateTimeForInvite.toISOString(),
+                    endDateTime: endDateTimeForInvite.toISOString(),
+                    location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+                    description: descriptionHtml,
+                    attendeeEmail: selectedClient.email,
+                    attendeeName: recipientName,
+                    organizerEmail: account.username || 'noreply@lawoffice.org.il',
+                    organizerName: account?.name || 'Law Office',
+                    teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
+                    timeZone: 'Asia/Jerusalem'
+                  });
+                  
+                  console.log('✅ Outlook calendar invitation sent successfully');
+                } catch (calendarError) {
+                  console.error('❌ Failed to create Outlook calendar event:', calendarError);
+                  // Fallback to regular email with ICS attachment
+                  throw calendarError;
+                }
+              } else {
+                // For non-Microsoft email clients: Send email with ICS attachment
+                let attachments: Array<{ name: string; contentBytes: string; contentType?: string }> | undefined;
+                try {
+                  const icsContent = generateICSFromDateTime({
+                    subject: calendarSubject,
+                    date: newMeeting.date,
+                    time: formattedTime,
+                    durationMinutes: 60,
+                    location: locationName === 'Teams' ? 'Microsoft Teams Meeting' : locationName,
+                    description: descriptionHtml.replace(/<[^>]+>/g, ''),
+                    organizerEmail: account.username || 'noreply@lawoffice.org.il',
+                    organizerName: account?.name || 'Law Office',
+                    attendeeEmail: selectedClient.email,
+                    attendeeName: recipientName,
+                    teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
+                    timeZone: 'Asia/Jerusalem'
+                  });
+                  
+                  const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
+                  
+                  attachments = [{
+                    name: 'meeting-invite.ics',
+                    contentBytes: icsBase64,
+                    contentType: 'text/calendar; charset=utf-8; method=REQUEST'
+                  }];
+                  
+                  console.log('📅 ICS calendar file generated');
+                } catch (icsError) {
+                  console.error('❌ Failed to generate ICS file:', icsError);
+                }
+                
+                // Send email with ICS attachment
+                await sendEmail(accessToken, {
+                  to: selectedClient.email,
+                  subject,
+                  body,
+                  skipSignature: true,
+                  attachments
+                });
+                
+                console.log('✅ Email with calendar invite sent successfully');
+              }
+              
+              // Save email to database for tracking
+              try {
+                const emailRecord: any = {
+                  message_id: `meeting_invitation_${Date.now()}_${Math.random()}`,
+                  thread_id: null,
+                  sender_name: account?.name || 'Law Office',
+                  sender_email: account.username || 'noreply@lawoffice.org.il',
+                  recipient_list: selectedClient.email,
+                  subject,
+                  body_html: body,
+                  body_preview: body.substring(0, 200),
+                  sent_at: new Date().toISOString(),
+                  direction: 'outgoing',
+                  attachments: null,
+                };
+                
+                if (isLegacyLead) {
+                  const numericId = parseInt(selectedClient.id.toString().replace(/[^0-9]/g, ''), 10);
+                  emailRecord.legacy_id = isNaN(numericId) ? null : numericId;
+                  emailRecord.client_id = null;
+                } else {
+                  emailRecord.client_id = selectedClient.id || null;
+                  emailRecord.legacy_id = null;
+                }
+                
+                await supabase.from('emails').insert(emailRecord);
+                console.log('📧 Invitation email record saved to database');
+              } catch (dbError) {
+                console.error('❌ Failed to save invitation email to database:', dbError);
+              }
+              
+              console.log('✅ Meeting invitation email sent successfully');
+            } catch (inviteEmailError) {
+              console.error('❌ Error sending meeting invitation email:', inviteEmailError);
+              // Don't fail the whole operation if invitation email fails
+            }
+          })();
+        }
+        
       }
 
       // 5. Show toast and close drawer
       toast.success('Meeting rescheduled and client notified.');
       setShowRescheduleDrawer(false);
+      setNotifyClientOnReschedule(true); // Reset to default
       setMeetingToDelete(null);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
@@ -12071,6 +12643,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
+              {/* Notify Client Toggle */}
+              <div className="mb-6 flex items-center justify-between">
+                <label className="block font-semibold text-base">Notify Client</label>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={notifyClientOnSchedule}
+                  onChange={(e) => setNotifyClientOnSchedule(e.target.checked)}
+                />
+              </div>
+
               {/* Tabs: Regular vs Paid meeting */}
               {/* <div className="mb-4">
                 <div className="inline-flex rounded-lg bg-base-200 p-1">
@@ -14136,9 +14719,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             className="fixed inset-0 bg-black/30"
             onClick={() => {
               setShowRescheduleDrawer(false);
+      setNotifyClientOnReschedule(true); // Reset to default
               setMeetingToDelete(null);
               setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
               setRescheduleOption('cancel');
+              setNotifyClientOnReschedule(true); // Reset to default
             }}
           />
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
@@ -14149,9 +14734,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setShowRescheduleDrawer(false);
+      setNotifyClientOnReschedule(true); // Reset to default
                   setMeetingToDelete(null);
                   setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                   setRescheduleOption('cancel');
+                  setNotifyClientOnReschedule(true); // Reset to default
                 }}
               >
                 <XMarkIcon className="w-6 h-6" />
@@ -14160,6 +14747,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
 
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
+              {/* Notify Client Toggle */}
+              <div className="mb-6 flex items-center justify-between">
+                <label className="block font-semibold text-base">Notify Client</label>
+                <input
+                  type="checkbox"
+                  className="toggle toggle-primary"
+                  checked={notifyClientOnReschedule}
+                  onChange={(e) => setNotifyClientOnReschedule(e.target.checked)}
+                />
+              </div>
+
               <div className="flex flex-col gap-4">
                 {/* Select Meeting - Optional for stage 21 */}
                 {(() => {
@@ -14425,6 +15023,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   className="btn btn-ghost"
                   onClick={() => {
                     setShowRescheduleDrawer(false);
+      setNotifyClientOnReschedule(true); // Reset to default
                     setMeetingToDelete(null);
                     setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                     setRescheduleOption('cancel');

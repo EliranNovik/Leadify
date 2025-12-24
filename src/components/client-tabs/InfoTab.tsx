@@ -54,10 +54,11 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Get field values with proper mapping for legacy leads
   const getProbability = () => {
     const prob = getFieldValue(client, 'probability');
-    if (isLegacy && typeof prob === 'string') {
-      return parseInt(prob) || 50;
+    // Handle both string and number formats
+    if (typeof prob === 'string') {
+      return prob === '' ? 50 : (parseInt(prob) || 50);
     }
-    return prob || 50;
+    return prob !== null && prob !== undefined ? Number(prob) : 50;
   };
 
   const getSpecialNotes = () => {
@@ -97,16 +98,24 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (typeof parsedFacts === 'object' && parsedFacts !== null) {
         const nonNullFacts = Object.entries(parsedFacts)
           .filter(([key, value]) => value !== null && value !== undefined && value !== '')
-          .map(([key, value]) => ({ key, value }));
+          .map(([key, value]) => {
+            // Convert "n/" to line break in values
+            const processedValue = typeof value === 'string' ? value.replace(/n\//g, '\n') : value;
+            return { key, value: processedValue };
+          });
         
         return nonNullFacts;
       }
       
       // If it's not an object, treat as plain text
-      return [{ key: 'facts', value: facts }];
+      // Convert "n/" to line break
+      const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
+      return [{ key: 'facts', value: processedFacts }];
     } catch (error) {
       // If JSON parsing fails, treat as plain text
-      return [{ key: 'facts', value: facts }];
+      // Convert "n/" to line break
+      const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
+      return [{ key: 'facts', value: processedFacts }];
     }
   };
 
@@ -308,6 +317,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       loadTags();
     }
   }, [client?.id]);
+
+  // Update probability when client changes
+  useEffect(() => {
+    const newProbability = getProbability();
+    setProbability(newProbability);
+  }, [client?.probability, client?.id]);
 
   // Update eligible status when client changes
   // Only update if we're not currently toggling (to prevent race condition)
@@ -708,7 +723,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Follow-up status logic
   const today = new Date();
-  const nextFollowupDate = getNextFollowup() ? new Date(getNextFollowup()) : null;
+  const nextFollowupValue = getNextFollowup();
+  const nextFollowupDate = nextFollowupValue ? new Date(nextFollowupValue) : null;
   let followupStatus = '';
   let followupCountdown = '';
   if (nextFollowupDate) {
@@ -1081,7 +1097,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   isEditing={isEditingFacts}
                   onEdit={() => {
                     setIsEditingFacts(true);
-                    setEditedFacts(factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n'));
+                    // Join facts with line breaks, preserving any existing line breaks from "n/" conversion
+                    // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
+                    const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
+                    setEditedFacts(factsOfCase.map(fact => {
+                      // If all facts have the same key 'facts', don't add the prefix
+                      // If there are multiple different keys, add the prefix
+                      if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
+                        return `${fact.key}: ${fact.value}`;
+                      } else {
+                        return fact.value;
+                      }
+                    }).join('\n'));
                   }}
                   onSave={async () => {
                     try {
@@ -1101,12 +1128,29 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       
                       if (error) throw error;
                       
-                      setFactsOfCase(formatNoteText(editedFacts).split('\n').filter(fact => fact.trim() !== '').map(line => {
-                        const [key, ...valueParts] = line.split(':');
-                        return {
-                          key: key.trim(),
-                          value: valueParts.join(':').trim()
-                        };
+                      // Process edited facts: convert "n/" to line breaks, then parse
+                      // Only parse as key-value pairs if the line contains a colon and has content after it
+                      const processedFacts = formatNoteText(editedFacts).replace(/n\//g, '\n');
+                      setFactsOfCase(processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
+                        const trimmedLine = line.trim();
+                        // Only split by colon if there's actual content after the colon
+                        // Check if there's a colon and text after it (not just a colon at the end)
+                        const colonIndex = trimmedLine.indexOf(':');
+                        if (colonIndex > 0 && colonIndex < trimmedLine.length - 1) {
+                          // Has colon with content after it - treat as key-value pair
+                          const key = trimmedLine.substring(0, colonIndex).trim();
+                          const value = trimmedLine.substring(colonIndex + 1).trim();
+                          return {
+                            key: key || 'facts',
+                            value: value
+                          };
+                        } else {
+                          // No colon or colon at end - treat entire line as value
+                          return {
+                            key: 'facts',
+                            value: trimmedLine
+                          };
+                        }
                       }));
                       setIsEditingFacts(false);
                       
@@ -1138,8 +1182,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {factsOfCase.length > 0 ? (
-                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n'))}`}>
-                        {factsOfCase.map(fact => `${fact.key}: ${fact.value}`).join('\n')}
+                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
+                        {factsOfCase.map((fact, index) => {
+                          // Convert "n/" to line break in display
+                          const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : fact.value;
+                          // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
+                          const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
+                          if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
+                            return `${fact.key}: ${displayValue}`;
+                          } else {
+                            return displayValue;
+                          }
+                        }).join('\n')}
                       </p>
                     ) : (
                       <span className="text-gray-500">No case facts added</span>
