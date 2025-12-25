@@ -34,7 +34,8 @@ import {
   BriefcaseIcon,
   BuildingOfficeIcon,
   ClockIcon,
-  TrashIcon
+  TrashIcon,
+  ArrowRightIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
@@ -192,6 +193,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isEmployeeUnavailable, setIsEmployeeUnavailable] = useState(false);
   const [unavailabilityReason, setUnavailabilityReason] = useState<string | null>(null);
   const [unavailabilityTimePeriod, setUnavailabilityTimePeriod] = useState<string | null>(null);
+  
+  // Forward message state
+  const [showForwardModal, setShowForwardModal] = useState(false);
+  const [messageToForward, setMessageToForward] = useState<Message | null>(null);
+  const [forwardSearchQuery, setForwardSearchQuery] = useState('');
   
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
@@ -427,6 +433,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     if (!message.attachment_url) return false;
     if (message.message_type === 'image') return true;
     if (message.attachment_type && message.attachment_type.startsWith('image/')) return true;
+    return false;
+  };
+
+  const isVideoMessage = (message: Message): boolean => {
+    if (!message.attachment_url) return false;
+    if (message.attachment_type && message.attachment_type.startsWith('video/')) return true;
     return false;
   };
 
@@ -1309,7 +1321,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   // Media gallery functions
   const getConversationMedia = (): Message[] => {
     if (!selectedConversation) return [];
-    return messages.filter((message) => isImageMessage(message));
+    return messages.filter((message) => isImageMessage(message) || isVideoMessage(message));
   };
 
   const openMediaModal = (message: Message) => {
@@ -2477,21 +2489,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setIsUploadingFile(true);
       setUploadProgress(0);
       
-      // Validate file size (max 16MB)
-      if (file.size > 16 * 1024 * 1024) {
-        toast.error('File size must be less than 16MB');
-        return null;
-      }
-      
-      // Validate file type
+      // Validate file type first
       const allowedTypes = [
         'image/jpeg', 'image/png', 'image/gif', 'image/webp',
         'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-        'text/plain', 'application/zip', 'application/x-rar-compressed'
+        'text/plain', 'application/zip', 'application/x-rar-compressed',
+        'video/mp4', 'video/webm', 'video/ogg', 'video/quicktime', 'video/x-msvideo', 'video/x-matroska'
       ];
       
       if (!allowedTypes.includes(file.type)) {
-        toast.error('File type not supported. Please upload images, documents, or text files.');
+        toast.error('File type not supported. Please upload images, videos, documents, or text files.');
+        return null;
+      }
+      
+      // Validate file size - videos have higher limit (200MB), other files 15MB
+      // NOTE: Supabase Free tier has a 50MB limit. Pro tier allows up to 5GB per file.
+      // If you get upload errors, reduce the video limit to match your Supabase plan.
+      const isVideo = file.type.startsWith('video/');
+      const maxSize = isVideo ? 200 * 1024 * 1024 : 15 * 1024 * 1024; // 200MB for videos, 15MB for others
+      const maxSizeMB = isVideo ? 200 : 15;
+      
+      if (file.size > maxSize) {
+        toast.error(`File size must be less than ${maxSizeMB}MB`);
         return null;
       }
       
@@ -2502,10 +2521,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Upload to Supabase storage
       const { data, error } = await supabase.storage
         .from('RMQ-MESSAGES')
-        .upload(fileName, file);
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type
+        });
       
       if (error) {
-        toast.error('Failed to upload file');
+        console.error('Error uploading file:', error);
+        
+        // Provide more specific error messages
+        if (error.message?.includes('Bucket not found') || error.message?.includes('does not exist')) {
+          toast.error('Storage bucket not found. Please check bucket configuration.');
+        } else if (error.message?.includes('new row violates row-level security') || error.message?.includes('permission')) {
+          toast.error('Permission denied. Please check bucket policies.');
+        } else if (error.message?.includes('NetworkError') || error.message?.includes('Failed to fetch')) {
+          toast.error('Network error. Please check your connection and try again.');
+        } else if (error.message?.includes('File size') || error.message?.includes('too large')) {
+          toast.error(`File is too large. ${isVideo ? 'Videos must be less than 100MB.' : 'Files must be less than 15MB.'}`);
+        } else {
+          toast.error(`Failed to upload file: ${error.message || 'Unknown error'}`);
+        }
         return null;
       }
       
@@ -2518,8 +2554,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       toast.success('File uploaded successfully');
       return publicUrl;
       
-    } catch (error) {
-      toast.error('Failed to upload file');
+    } catch (error: any) {
+      console.error('Unexpected error uploading file:', error);
+      toast.error(`Failed to upload file: ${error?.message || 'Unknown error'}`);
       return null;
     } finally {
       setIsUploadingFile(false);
@@ -2651,6 +2688,128 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Reset file input
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  // Forward message to another conversation
+  const forwardMessage = async (targetConversationId: number) => {
+    if (!messageToForward || !currentUser) return;
+    
+    setIsSending(true);
+    try {
+      // Prepare message content - include original sender info if forwarding
+      const originalSender = messageToForward.sender?.tenants_employee?.display_name || 
+                           messageToForward.sender?.full_name || 
+                           'Unknown';
+      const forwardContent = messageToForward.content 
+        ? `Forwarded from ${originalSender}: ${messageToForward.content}`
+        : `Forwarded from ${originalSender}`;
+      
+      // Determine message type
+      let messageType: 'text' | 'file' | 'image' | 'system' = 'text';
+      if (messageToForward.message_type === 'image' || (messageToForward.attachment_type && messageToForward.attachment_type.startsWith('image/'))) {
+        messageType = 'image';
+      } else if (messageToForward.message_type === 'file' || (messageToForward.attachment_url && messageToForward.message_type !== 'voice')) {
+        messageType = 'file';
+      } else if (messageToForward.message_type === 'text') {
+        messageType = 'text';
+      } else if (messageToForward.message_type === 'voice') {
+        messageType = 'text'; // Voice messages can't be forwarded as voice, convert to text
+      }
+      
+      // Send via WebSocket for real-time delivery
+      if (websocketService.isSocketConnected()) {
+        // Only send attachment if it's not a voice message
+        if (messageToForward.message_type === 'voice') {
+          websocketService.sendMessage(targetConversationId, forwardContent, 'text');
+        } else {
+          websocketService.sendMessage(
+            targetConversationId,
+            forwardContent,
+            messageType,
+            messageToForward.attachment_url || undefined,
+            messageToForward.attachment_type || undefined,
+            messageToForward.attachment_size || undefined
+          );
+        }
+      }
+      
+      // Save to database
+      const { data: messageData, error } = await supabase
+        .from('messages')
+        .insert({
+          conversation_id: targetConversationId,
+          sender_id: currentUser.id,
+          content: forwardContent,
+          message_type: messageType,
+          attachment_url: messageToForward.attachment_url || null,
+          attachment_name: messageToForward.attachment_name || null,
+          attachment_type: messageToForward.attachment_type || null,
+          attachment_size: messageToForward.attachment_size || null
+        })
+        .select(`
+          id,
+          conversation_id,
+          sender_id,
+          content,
+          message_type,
+          sent_at,
+          attachment_url,
+          attachment_name,
+          attachment_type,
+          attachment_size,
+          sender:users!sender_id(
+            id,
+            full_name,
+            email,
+            employee_id,
+            is_active,
+            tenants_employee!users_employee_id_fkey(
+              display_name,
+              bonuses_role,
+              photo_url
+            )
+          )
+        `)
+        .single();
+      
+      if (error) throw error;
+      
+      // If WebSocket is not connected, trigger push notifications
+      if (!websocketService.isSocketConnected()) {
+        try {
+          await fetch(`${BACKEND_URL}/api/push/rmq/send`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+              conversationId: targetConversationId,
+              senderId: currentUser.id,
+              content: forwardContent,
+              messageType: messageType,
+              attachmentName: messageToForward.attachment_name,
+            }),
+          });
+        } catch (pushError) {
+          // Don't throw - this is a background operation
+        }
+      }
+      
+      // Update the target conversation's last_message_at if we're viewing it
+      if (selectedConversation?.id === targetConversationId) {
+        // Refresh messages for the target conversation
+        await fetchMessages(targetConversationId);
+      }
+      
+      toast.success('Message forwarded successfully');
+      setShowForwardModal(false);
+      setMessageToForward(null);
+    } catch (error: any) {
+      console.error('Error forwarding message:', error);
+      toast.error(`Failed to forward message: ${error?.message || 'Unknown error'}`);
+    } finally {
+      setIsSending(false);
     }
   };
 
@@ -3802,7 +3961,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setSelectedConversation(conversation);
         fetchMessages(conversation.id);
         setShowMobileConversations(false);
-        setActiveTab('chats');
+        // Set the correct tab based on conversation type
+        if (conversation.type === 'group' || conversation.type === 'announcement') {
+          setActiveTab('groups');
+        } else {
+          setActiveTab('chats');
+        }
       }
     }
   }, [isOpen, initialConversationId, conversations, fetchMessages]);
@@ -5097,7 +5261,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               style={{
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f9fafb'),
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -5153,7 +5317,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       >
                       {/* Date Separator - Removed inline separators */}
                       
-                      {/* Image and emoji messages - render outside bubble */}
+                      {/* Image, video and emoji messages - render outside bubble */}
                       {isImageMessage(message) ? (
                         <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
                           <div 
@@ -5172,6 +5336,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           </div>
                           {/* Timestamp and read receipts at bottom of image */}
+                          <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                            <span className="text-xs text-base-content/70" style={{ 
+                              textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                            }}>
+                              {formatMessageTime(message.sent_at)}
+                            </span>
+                            {isOwn && renderReadReceipts(message)}
+                          </div>
+                        </div>
+                      ) : isVideoMessage(message) ? (
+                        <div className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}>
+                          <div 
+                            className="relative cursor-pointer group"
+                            onClick={() => openMediaModal(message)}
+                          >
+                            <video
+                              src={message.attachment_url}
+                              className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                              controls
+                              preload="metadata"
+                            />
+                            <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                              </svg>
+                            </div>
+                          </div>
+                          {/* Timestamp and read receipts at bottom of video */}
                           <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                             <span className="text-xs text-base-content/70" style={{ 
                               textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
@@ -5428,6 +5620,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               ))}
                             </div>
                           )}
+                          
+                          {/* Forward button - appears on message hover */}
+                          <div className={`absolute ${isOwn ? 'top-2 right-2' : 'top-2 left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMessageToForward(message);
+                                setShowForwardModal(true);
+                              }}
+                              className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                              title="Forward message"
+                            >
+                              <ArrowRightIcon className="w-4 h-4 text-gray-700" />
+                            </button>
+                          </div>
                           
                           {/* Reactions */}
                           {message.reactions && message.reactions.length > 0 && (
@@ -6113,7 +6320,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 paddingTop: selectedConversation?.type === 'group' && selectedConversation.participants && selectedConversation.participants.length > 0 ? '180px' : '120px',
                 WebkitOverflowScrolling: 'touch',
                 backgroundImage: chatBackgroundImageUrl ? `url(${chatBackgroundImageUrl})` : 'none',
-                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#f9fafb'),
+                backgroundColor: chatBackgroundImageUrl ? 'transparent' : (document.documentElement.classList.contains('dark') ? 'transparent' : '#ffffff'),
                 backgroundSize: chatBackgroundImageUrl ? 'cover' : 'auto',
                 backgroundPosition: chatBackgroundImageUrl ? 'center' : 'auto',
                 backgroundRepeat: chatBackgroundImageUrl ? 'no-repeat' : 'repeat',
@@ -6160,7 +6367,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     >
                     {/* Date Separator - Removed inline separators */}
                     
-                    {/* Image and emoji messages - render outside bubble - Mobile */}
+                    {/* Image, video and emoji messages - render outside bubble - Mobile */}
                     {isImageMessage(message) ? (
                       <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
                         <div 
@@ -6179,6 +6386,34 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           </div>
                         </div>
                         {/* Timestamp and read receipts at bottom of image - Mobile */}
+                        <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
+                          <span className="text-xs text-gray-500" style={{ 
+                            textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
+                          }}>
+                            {formatMessageTime(message.sent_at)}
+                          </span>
+                          {isOwn && renderReadReceipts(message)}
+                        </div>
+                      </div>
+                    ) : isVideoMessage(message) ? (
+                      <div className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}>
+                        <div 
+                          className="relative cursor-pointer group"
+                          onClick={() => openMediaModal(message)}
+                        >
+                          <video
+                            src={message.attachment_url}
+                            className="max-w-full max-h-80 md:max-h-[600px] rounded-lg object-cover transition-transform group-hover:scale-105"
+                            controls
+                            preload="metadata"
+                          />
+                          <div className="absolute inset-0 bg-black/20 rounded-lg opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center pointer-events-none">
+                            <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0zM10 7v3m0 0v3m0-3h3m-3 0H7" />
+                            </svg>
+                          </div>
+                        </div>
+                        {/* Timestamp and read receipts at bottom of video - Mobile */}
                         <div className={`flex items-center gap-1 mt-1 ${isOwn ? 'justify-end' : 'justify-start'}`}>
                           <span className="text-xs text-gray-500" style={{ 
                             textShadow: chatBackgroundImageUrl ? '0 1px 2px rgba(255, 255, 255, 0.8)' : 'none'
@@ -6242,7 +6477,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               {senderName}
                             </span>
                           )}
-                          <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
+                          <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
                             <div
                               data-message-id={message.id}
                               onClick={() => {
@@ -6432,6 +6667,21 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               ))}
                             </div>
                           )}
+                          
+                          {/* Forward button - Mobile - appears on message hover */}
+                          <div className={`absolute ${isOwn ? 'top-2 right-2' : 'top-2 left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                            <button
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setMessageToForward(message);
+                                setShowForwardModal(true);
+                              }}
+                              className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                              title="Forward message"
+                            >
+                              <ArrowRightIcon className="w-4 h-4 text-gray-700" />
+                            </button>
+                          </div>
                           
                           {/* Reactions - Mobile */}
                           {message.reactions && message.reactions.length > 0 && (
@@ -6868,6 +7118,121 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         </div>
       )}
 
+      {/* Forward Message Modal */}
+      {showForwardModal && messageToForward && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50">
+          <div className="bg-white rounded-2xl shadow-2xl w-full max-w-md mx-4 max-h-[90vh] flex flex-col">
+            {/* Modal Header */}
+            <div className="p-6 border-b border-gray-200">
+              <div className="flex items-center justify-between">
+                <h3 className="text-xl font-bold text-gray-900">Forward Message</h3>
+                <button
+                  onClick={() => {
+                    setShowForwardModal(false);
+                    setMessageToForward(null);
+                    setForwardSearchQuery('');
+                  }}
+                  className="btn btn-ghost btn-sm btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5" />
+                </button>
+              </div>
+              {messageToForward.content && (
+                <p className="text-sm text-gray-600 mt-2 line-clamp-2">
+                  {messageToForward.content}
+                </p>
+              )}
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-y-auto p-6">
+              {/* Search */}
+              <div className="mb-4">
+                <div className="relative">
+                  <MagnifyingGlassIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  <input
+                    type="text"
+                    placeholder="Search conversations..."
+                    className="input input-bordered w-full pl-10"
+                    value={forwardSearchQuery}
+                    onChange={(e) => setForwardSearchQuery(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              {/* Conversations List */}
+              <div className="space-y-2">
+                {conversations
+                  .filter(conv => {
+                    // Exclude current conversation
+                    if (conv.id === selectedConversation?.id) return false;
+                    
+                    // Filter by search query
+                    if (forwardSearchQuery.trim()) {
+                      const query = forwardSearchQuery.toLowerCase();
+                      const title = getConversationTitle(conv).toLowerCase();
+                      const preview = conv.last_message_preview?.toLowerCase() || '';
+                      return title.includes(query) || preview.includes(query);
+                    }
+                    return true;
+                  })
+                  .map((conversation) => (
+                    <button
+                      key={conversation.id}
+                      onClick={() => forwardMessage(conversation.id)}
+                      disabled={isSending}
+                      className="w-full flex items-center gap-3 p-3 rounded-lg hover:bg-gray-50 transition-colors border border-gray-200 text-left disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {getConversationAvatar(conversation, 'large')}
+                      <div className="flex-1 min-w-0">
+                        <div className="font-semibold text-gray-900 truncate">
+                          {getConversationTitle(conversation)}
+                        </div>
+                        <div className="text-sm text-gray-500 truncate">
+                          {conversation.type === 'group' ? 'Group' : 'Direct chat'}
+                        </div>
+                      </div>
+                      <ArrowRightIcon className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                    </button>
+                  ))}
+                
+                {conversations.filter(conv => {
+                  if (conv.id === selectedConversation?.id) return false;
+                  if (forwardSearchQuery.trim()) {
+                    const query = forwardSearchQuery.toLowerCase();
+                    const title = getConversationTitle(conv).toLowerCase();
+                    const preview = conv.last_message_preview?.toLowerCase() || '';
+                    return title.includes(query) || preview.includes(query);
+                  }
+                  return true;
+                }).length === 0 && (
+                  <div className="text-center py-8 text-gray-500">
+                    <p className="text-sm">No conversations found</p>
+                    {forwardSearchQuery.trim() && (
+                      <p className="text-xs mt-1">Try a different search term</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Modal Footer */}
+            <div className="p-6 border-t border-gray-200">
+              <button
+                onClick={() => {
+                  setShowForwardModal(false);
+                  setMessageToForward(null);
+                  setForwardSearchQuery('');
+                }}
+                className="btn btn-outline w-full"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Add Members Modal */}
       {showAddMemberModal && selectedConversation && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50">
@@ -7106,7 +7471,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         ref={fileInputRef}
         type="file"
         className="hidden"
-        accept="image/*,.pdf,.doc,.docx,.txt,.zip,.rar"
+        accept="image/*,video/*,.pdf,.doc,.docx,.txt,.zip,.rar"
         onChange={handleFileInputChange}
       />
 
@@ -7160,11 +7525,20 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
           {/* Main Media Display */}
           <div className="flex-1 flex items-center justify-center relative">
-            {conversationMedia[selectedMediaIndex]?.message_type === 'image' ? (
+            {conversationMedia[selectedMediaIndex]?.message_type === 'image' || 
+             (conversationMedia[selectedMediaIndex]?.attachment_type && 
+              conversationMedia[selectedMediaIndex]?.attachment_type.startsWith('image/')) ? (
               <img
                 src={conversationMedia[selectedMediaIndex]?.attachment_url}
                 alt={conversationMedia[selectedMediaIndex]?.attachment_name}
                 className="max-w-full max-h-full object-contain"
+              />
+            ) : conversationMedia[selectedMediaIndex]?.attachment_type?.startsWith('video/') ? (
+              <video
+                src={conversationMedia[selectedMediaIndex]?.attachment_url}
+                controls
+                className="max-w-full max-h-full"
+                autoPlay
               />
             ) : (
               <div className="text-center text-white">

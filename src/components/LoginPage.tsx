@@ -236,116 +236,119 @@ const LoginPage: React.FC = () => {
             
             {/* Login box */}
             <div className="w-full max-w-md flex flex-col items-center justify-center min-h-[500px] pt-0 pb-12 px-6 md:pt-2 md:px-0">
-            <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
-              <div className="w-full mt-0 md:mt-2">
-                  <label className="block font-semibold mb-1 text-white text-left">Email</label>
-                <div className="relative">
-                  <input
-                    type="email"
-                      className="input input-bordered w-full pl-10 bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                    placeholder="you@email.com"
-                    value={email}
-                    onChange={e => setEmail(e.target.value)}
-                    onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
-                    required
-                    autoFocus
-                  />
-                    <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+            {/* Glassy blurred white box container */}
+            <div className="w-full bg-white/20 backdrop-blur-lg rounded-2xl border border-white/30 shadow-2xl p-6 md:p-8">
+              <form className="w-full flex flex-col items-center gap-6" onSubmit={handleSignIn}>
+                <div className="w-full mt-0 md:mt-2">
+                    <label className="block font-semibold mb-1 text-white text-left">Email</label>
+                  <div className="relative">
+                    <input
+                      type="email"
+                        className="input input-bordered w-full pl-10 bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
+                      placeholder="you@email.com"
+                      value={email}
+                      onChange={e => setEmail(e.target.value)}
+                      onClick={() => window.scrollTo({ top: 0, behavior: 'smooth' })}
+                      required
+                      autoFocus
+                    />
+                      <AtSymbolIcon className="w-5 h-5 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
+                  </div>
                 </div>
-              </div>
-              <div className="w-full">
-                  <label className="block font-semibold mb-1 text-white text-left">Password</label>
-                <input
-                  type="password"
-                    className="input input-bordered w-full bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
-                  placeholder="Password"
-                  value={password}
-                  onChange={e => setPassword(e.target.value)}
-                  required
-                />
-              </div>
-              <button
-                type="submit"
-                  className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
-                disabled={loading}
-              >
-                {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
-                Sign in
-              </button>
-              <div className="relative group w-full">
+                <div className="w-full">
+                    <label className="block font-semibold mb-1 text-white text-left">Password</label>
+                  <input
+                    type="password"
+                      className="input input-bordered w-full bg-white/95 backdrop-blur-sm text-gray-900 placeholder-gray-400 border-white/30 focus:border-white/50 focus:bg-white"
+                    placeholder="Password"
+                    value={password}
+                    onChange={e => setPassword(e.target.value)}
+                    required
+                  />
+                </div>
                 <button
-                  type="button"
+                  type="submit"
                     className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
-                    onClick={handleMagicLink}
-                    disabled={magicLinkLoading || !email}
+                  disabled={loading}
                 >
-                  {magicLinkLoading ? (
-                    <>
-                      <span className="loading loading-spinner loading-sm mr-2"></span>
-                      Sending Magic Link...
-                    </>
-                  ) : (
-                    'Trouble signing in? Get a Magic Link'
-                  )}
+                  {loading ? <span className="loading loading-spinner loading-sm" /> : <LockClosedIcon className="w-5 h-5" />}
+                  Sign in
                 </button>
-                
-                {/* Desktop hover tooltip */}
-                <div className="hidden md:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-6 py-5 bg-gray-900 text-white text-sm rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-50 max-w-md">
-                  <div className="text-left">
-                    <div className="font-bold mb-3 text-lg flex items-center gap-2">
-                      <span className="text-2xl">🔗</span>
-                      Magic Link Authentication
-                    </div>
-                    
-                    <div className="space-y-3">
-                      <div>
-                        <div className="font-semibold text-gray-100 mb-2">What is a Magic Link?</div>
-                        <p className="text-xs text-gray-300 leading-relaxed">
-                          A secure, passwordless way to sign in. Instead of remembering passwords, 
-                          you'll receive a time-limited link via email that automatically logs you in with one click.
-                        </p>
+                <div className="relative group w-full">
+                  <button
+                    type="button"
+                      className="btn btn-outline border-white/50 text-white hover:bg-white/20 hover:border-white/70 w-full text-lg font-semibold shadow-lg hover:scale-105 transition-transform disabled:opacity-50 disabled:cursor-not-allowed"
+                      onClick={handleMagicLink}
+                      disabled={magicLinkLoading || !email}
+                  >
+                    {magicLinkLoading ? (
+                      <>
+                        <span className="loading loading-spinner loading-sm mr-2"></span>
+                        Sending Magic Link...
+                      </>
+                    ) : (
+                      'Trouble signing in? Get a Magic Link'
+                    )}
+                  </button>
+                  
+                  {/* Desktop hover tooltip */}
+                  <div className="hidden md:block absolute bottom-full left-1/2 transform -translate-x-1/2 mb-2 px-6 py-5 bg-gray-900 text-white text-sm rounded-xl shadow-2xl opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-50 max-w-md">
+                    <div className="text-left">
+                      <div className="font-bold mb-3 text-lg flex items-center gap-2">
+                        <span className="text-2xl">🔗</span>
+                        Magic Link Authentication
                       </div>
                       
-                      <div>
-                        <div className="font-semibold text-gray-100 mb-2">How it works:</div>
-                        <div className="space-y-2">
-                          <div className="flex items-start gap-3">
-                            <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
-                            <div>
-                              <div className="text-xs font-medium">Enter your email address above</div>
-                              <div className="text-xs text-gray-400">Use the same email associated with your account</div>
+                      <div className="space-y-3">
+                        <div>
+                          <div className="font-semibold text-gray-100 mb-2">What is a Magic Link?</div>
+                          <p className="text-xs text-gray-300 leading-relaxed">
+                            A secure, passwordless way to sign in. Instead of remembering passwords, 
+                            you'll receive a time-limited link via email that automatically logs you in with one click.
+                          </p>
+                        </div>
+                        
+                        <div>
+                          <div className="font-semibold text-gray-100 mb-2">How it works:</div>
+                          <div className="space-y-2">
+                            <div className="flex items-start gap-3">
+                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">1</span>
+                              <div>
+                                <div className="text-xs font-medium">Enter your email address above</div>
+                                <div className="text-xs text-gray-400">Use the same email associated with your account</div>
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-start gap-3">
-                            <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
-                            <div>
-                              <div className="text-xs font-medium">Click "Get a Magic Link" button</div>
-                              <div className="text-xs text-gray-400">We'll send a secure link instantly</div>
+                            <div className="flex items-start gap-3">
+                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">2</span>
+                              <div>
+                                <div className="text-xs font-medium">Click "Get a Magic Link" button</div>
+                                <div className="text-xs text-gray-400">We'll send a secure link instantly</div>
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-start gap-3">
-                            <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
-                            <div>
-                              <div className="text-xs font-medium">Check your email inbox</div>
-                              <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
+                            <div className="flex items-start gap-3">
+                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">3</span>
+                              <div>
+                                <div className="text-xs font-medium">Check your email inbox</div>
+                                <div className="text-xs text-gray-400">Look for email from RMQ 2.0 (check spam folder)</div>
+                              </div>
                             </div>
-                          </div>
-                          <div className="flex items-start gap-3">
-                            <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
-                            <div>
-                              <div className="text-xs font-medium">Click the secure link in the email</div>
-                              <div className="text-xs text-gray-400">You'll be automatically logged in and redirected</div>
+                            <div className="flex items-start gap-3">
+                              <span className="w-6 h-6 bg-purple-500 rounded-full flex items-center justify-center text-xs font-bold flex-shrink-0 mt-0.5">4</span>
+                              <div>
+                                <div className="text-xs font-medium">Click the secure link in the email</div>
+                                <div className="text-xs text-gray-400">You'll be automatically logged in and redirected</div>
+                              </div>
                             </div>
                           </div>
                         </div>
                       </div>
                     </div>
+                    {/* Arrow pointing down */}
+                    <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
                   </div>
-                  {/* Arrow pointing down */}
-                  <div className="absolute top-full left-1/2 transform -translate-x-1/2 w-0 h-0 border-l-4 border-r-4 border-t-4 border-transparent border-t-gray-900"></div>
                 </div>
-              </div>
-            </form>
+              </form>
+            </div>
             
             {/* Success and Error Messages */}
             {success && (
