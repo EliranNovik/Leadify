@@ -35,7 +35,9 @@ import {
   BuildingOfficeIcon,
   ClockIcon,
   TrashIcon,
-  ArrowRightIcon
+  ArrowRightIcon,
+  LockClosedIcon,
+  LockOpenIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
@@ -73,6 +75,7 @@ interface Conversation {
   description?: string;
   notes?: string;
   icon_url?: string;
+  is_locked?: boolean;
   participants: ConversationParticipant[];
   unread_count?: number;
 }
@@ -1524,6 +1527,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return `Group Chat (${participantCount} members)`;
   };
 
+  // Helper function to check if conversation is locked
+  const isGroupLocked = (conversation: Conversation | null): boolean => {
+    if (!conversation) return false;
+    return conversation.type === 'group' && conversation.is_locked === true;
+  };
+
   const getConversationAvatar = (conversation: Conversation, size: 'small' | 'large' | 'xlarge' = 'small'): JSX.Element => {
     if (conversation.type === 'direct' && conversation.participants && conversation.participants.length === 2) {
       const otherParticipant = conversation.participants.find(p => p.user_id !== currentUser?.id);
@@ -1595,6 +1604,11 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     const handleGroupIconClick = (e: React.MouseEvent) => {
       e.stopPropagation();
       if (conversation && conversation.type === 'group') {
+        // Check if group is locked and user is not superuser
+        if (isGroupLocked(conversation) && !isSuperUser) {
+          toast.error('This group is locked. Only superusers can edit locked groups.');
+          return;
+        }
         // Set the conversation as selected first if not already
         if (conversation.id !== selectedConversation?.id) {
           setSelectedConversation(conversation);
@@ -1642,11 +1656,16 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       );
     };
 
+    // Check if group is locked and user is not superuser - disable click
+    const isLocked = isGroupLocked(conversation);
+    const canEdit = !isLocked || isSuperUser;
+
     return (
       <button
         onClick={handleGroupIconClick}
-        className="cursor-pointer hover:opacity-80 transition-opacity"
-        title="Edit group info"
+        className={`${canEdit ? 'cursor-pointer hover:opacity-80' : 'cursor-not-allowed opacity-50'} transition-opacity`}
+        title={canEdit ? "Edit group info" : "This group is locked. Only superusers can edit locked groups."}
+        disabled={!canEdit}
       >
         {renderGroupIcon()}
       </button>
@@ -1869,6 +1888,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           description,
           notes,
           icon_url,
+          is_locked,
           conversation_participants(
             id,
             user_id,
@@ -1921,6 +1941,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             is_active,
             description,
             notes,
+            is_locked,
             conversation_participants(
               id,
               user_id,
@@ -2093,6 +2114,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           description,
           notes,
           icon_url,
+          is_locked,
           conversation_participants(
             id,
             user_id,
@@ -2146,6 +2168,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             is_active,
             description,
             notes,
+            is_locked,
             conversation_participants(
               id,
               user_id,
@@ -3159,6 +3182,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       return;
     }
 
+    // Additional check for locked groups - only superusers can delete them
+    if (isGroupLocked(selectedConversation) && !isSuperUser) {
+      toast.error('This group is locked. Only superusers can delete locked groups.');
+      return;
+    }
+
     try {
       // Delete conversation (cascade will handle participants and messages)
       const { error } = await supabase
@@ -3299,6 +3328,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const addMembersToGroup = async (conversationId: number, userIds: string[]) => {
     if (!currentUser || userIds.length === 0) return;
 
+    // Check if group is locked and user is not superuser
+    const conversation = conversations.find(c => c.id === conversationId);
+    if (isGroupLocked(conversation || null) && !isSuperUser) {
+      toast.error('This group is locked. Only superusers can add members to locked groups.');
+      return;
+    }
+
     try {
       const participantsToAdd = userIds.map(userId => ({
         conversation_id: conversationId,
@@ -3335,9 +3371,64 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
+  // Toggle group lock status (superuser only)
+  const toggleGroupLock = async (conversationId: number) => {
+    if (!currentUser || !isSuperUser) {
+      toast.error('Only superusers can lock/unlock groups');
+      return;
+    }
+
+    let newLockStatus: boolean | undefined;
+    try {
+      const conversation = conversations.find(c => c.id === conversationId);
+      if (!conversation || conversation.type !== 'group') {
+        toast.error('Can only lock/unlock group chats');
+        return;
+      }
+
+      // Handle null/undefined as false (unlocked)
+      newLockStatus = !(conversation.is_locked === true);
+
+      const { error } = await supabase
+        .from('conversations')
+        .update({ 
+          is_locked: newLockStatus,
+          updated_at: new Date().toISOString()
+        })
+        .eq('id', conversationId);
+
+      if (error) throw error;
+
+      // Update local state
+      const updatedConversations = await getUpdatedConversations();
+      setConversations(updatedConversations);
+      
+      // Update selected conversation if it's the one being locked/unlocked
+      if (selectedConversation?.id === conversationId) {
+        const updatedConversation = updatedConversations.find(c => c.id === conversationId);
+        if (updatedConversation) {
+          setSelectedConversation(updatedConversation);
+        }
+      }
+
+      toast.success(newLockStatus ? 'Group locked successfully' : 'Group unlocked successfully');
+    } catch (error: any) {
+      console.error('Error toggling group lock:', error);
+      const action = newLockStatus !== undefined ? (newLockStatus ? 'lock' : 'unlock') : 'update';
+      toast.error(`Failed to ${action} group: ${error?.message || 'Unknown error'}`);
+    }
+  };
+
   // Remove member from group conversation
   const removeMemberFromGroup = async (conversationId: number, userId: string) => {
     if (!currentUser) return;
+
+    // Check if group is locked and user is not superuser
+    const conversation = conversations.find(c => c.id === conversationId);
+    if (isGroupLocked(conversation || null) && !isSuperUser) {
+      toast.error('This group is locked. Only superusers can remove members from locked groups.');
+      return;
+    }
 
     try {
       const { error } = await supabase
@@ -5165,20 +5256,44 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   {/* Add/Remove Member Buttons for Group Chats */}
                   {selectedConversation.type === 'group' && (
                     <>
-                      <button
-                        onClick={() => setShowAddMemberModal(true)}
-                        className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
-                        title="Add Members"
-                      >
-                        <PlusIcon className="w-5 h-5" />
-                      </button>
-                      <button
-                        onClick={() => setShowRemoveMemberModal(true)}
-                        className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
-                        title="Remove Members"
-                      >
-                        <UserIcon className="w-5 h-5" />
-                      </button>
+                      {/* Lock/Unlock button - only visible to superusers */}
+                      {isSuperUser && (
+                        <button
+                          onClick={() => toggleGroupLock(selectedConversation.id)}
+                          className={`btn btn-ghost btn-sm btn-circle ${
+                            isGroupLocked(selectedConversation)
+                              ? 'text-yellow-600 hover:bg-yellow-500/20'
+                              : 'text-base-content/70 hover:bg-base-200'
+                          }`}
+                          title={isGroupLocked(selectedConversation) ? "Unlock Group" : "Lock Group"}
+                        >
+                          {isGroupLocked(selectedConversation) ? (
+                            <LockClosedIcon className="w-5 h-5" />
+                          ) : (
+                            <LockOpenIcon className="w-5 h-5" />
+                          )}
+                        </button>
+                      )}
+                      {/* Only show Add/Remove buttons if group is not locked, or if superuser for locked groups */}
+                      {(!isGroupLocked(selectedConversation) || isSuperUser) && (
+                        <>
+                          <button
+                            onClick={() => setShowAddMemberModal(true)}
+                            className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
+                            title="Add Members"
+                          >
+                            <PlusIcon className="w-5 h-5" />
+                          </button>
+                          <button
+                            onClick={() => setShowRemoveMemberModal(true)}
+                            className="btn btn-ghost btn-sm btn-circle text-base-content/70 hover:bg-base-200"
+                            title="Remove Members"
+                          >
+                            <UserIcon className="w-5 h-5" />
+                          </button>
+                        </>
+                      )}
+                      {/* Delete button only for superusers */}
                       {isSuperUser && (
                         <button
                           onClick={() => setShowDeleteGroupModal(true)}
@@ -6262,25 +6377,53 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </button>
                           )}
                         </div>
-                        {/* Add/Remove Member Buttons */}
-                        <div className="flex items-center justify-center gap-3">
-                          <button
-                            onClick={() => setShowAddMemberModal(true)}
-                            className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
-                            title="Add Members"
-                          >
-                            <PlusIcon className="w-5 h-5 mr-2" />
-                            Add Member
-                          </button>
-                          <button
-                            onClick={() => setShowRemoveMemberModal(true)}
-                            className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
-                            title="Remove Members"
-                          >
-                            <UserIcon className="w-5 h-5 mr-2" />
-                            Remove Member
-                          </button>
-                        </div>
+                        {/* Lock/Unlock button - only visible to superusers (Mobile) */}
+                        {selectedConversation.type === 'group' && isSuperUser && (
+                          <div className="flex items-center justify-center mb-3">
+                            <button
+                              onClick={() => toggleGroupLock(selectedConversation.id)}
+                              className={`btn btn-ghost btn-sm ${
+                                isGroupLocked(selectedConversation)
+                                  ? 'text-yellow-600 hover:bg-yellow-500/20'
+                                  : 'text-gray-700 hover:bg-gray-100'
+                              }`}
+                              title={isGroupLocked(selectedConversation) ? "Unlock Group" : "Lock Group"}
+                            >
+                              {isGroupLocked(selectedConversation) ? (
+                                <>
+                                  <LockClosedIcon className="w-5 h-5 mr-2" />
+                                  Unlock Group
+                                </>
+                              ) : (
+                                <>
+                                  <LockOpenIcon className="w-5 h-5 mr-2" />
+                                  Lock Group
+                                </>
+                              )}
+                            </button>
+                          </div>
+                        )}
+                        {/* Add/Remove Member Buttons - Only show if group is not locked, or if superuser for locked groups */}
+                        {selectedConversation.type === 'group' && (!isGroupLocked(selectedConversation) || isSuperUser) && (
+                          <div className="flex items-center justify-center gap-3">
+                            <button
+                              onClick={() => setShowAddMemberModal(true)}
+                              className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                              title="Add Members"
+                            >
+                              <PlusIcon className="w-5 h-5 mr-2" />
+                              Add Member
+                            </button>
+                            <button
+                              onClick={() => setShowRemoveMemberModal(true)}
+                              className="btn btn-ghost btn-sm text-gray-700 hover:bg-gray-100"
+                              title="Remove Members"
+                            >
+                              <UserIcon className="w-5 h-5 mr-2" />
+                              Remove Member
+                            </button>
+                          </div>
+                        )}
                       </div>
                     </div>
                   )}
