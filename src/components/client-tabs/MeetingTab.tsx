@@ -3498,29 +3498,29 @@ const formatEmailBody = async (
           </div>
         )}
         {/* Header */}
-        <div className="px-4 py-3 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
+        <div className="px-2 sm:px-4 py-2 sm:py-3 border-b" style={{ backgroundColor: headerColor, color: 'white' }}>
           <div className="flex items-center justify-between">
-            <div className="flex items-center gap-3">
-              <div className="flex items-center justify-center w-10 h-10 rounded-lg shadow-sm" style={{ backgroundColor: headerColor }}>
-                <CalendarIcon className="w-5 h-5 text-white" />
+            <div className="flex items-center gap-2 sm:gap-3">
+              <div className="flex items-center justify-center w-8 h-8 sm:w-10 sm:h-10 rounded-lg shadow-sm" style={{ backgroundColor: headerColor }}>
+                <CalendarIcon className="w-4 h-4 sm:w-5 sm:h-5 text-white" />
               </div>
               <div>
-                <p className="font-bold text-lg text-white">{formattedDate}</p>
-                <div className="flex items-center gap-2 text-white">
-                  <ClockIcon className="w-4 h-4" />
-                  <span className="text-sm font-medium">{meeting.time ? meeting.time.substring(0, 5) : ''}</span>
+                <p className="font-bold text-sm sm:text-lg text-white">{formattedDate}</p>
+                <div className="flex items-center gap-1 sm:gap-2 text-white">
+                  <ClockIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                  <span className="text-xs sm:text-sm font-medium">{meeting.time ? meeting.time.substring(0, 5) : ''}</span>
                 </div>
               </div>
             </div>
             {/* Action Buttons */}
-            <div className="flex gap-2">
+            <div className="flex gap-1 sm:gap-2">
               {/* Edit Button */}
               <button
-                className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                 onClick={() => handleEditMeeting(meeting)}
                 title="Edit Meeting"
               >
-                <PencilIcon className="w-4 h-4" />
+                <PencilIcon className="w-3 h-3 sm:w-4 sm:h-4" />
               </button>
               {!past && (
                 <>
@@ -3532,7 +3532,7 @@ const formatEmailBody = async (
                     }
                   }}>
                     <button
-                      className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
+                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                       onClick={() => {
                         if (sendingEmailMeetingId !== meeting.id) {
                           setShowNotifyDropdown(showNotifyDropdown === meeting.id ? null : meeting.id);
@@ -3542,11 +3542,11 @@ const formatEmailBody = async (
                       title="Notify Client via Email"
                     >
                       {sendingEmailMeetingId === meeting.id ? (
-                        <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                        <span className="loading loading-spinner loading-xs" style={{ color: '#ffffff' }}></span>
                       ) : (
                         <>
-                          <EnvelopeIcon className="w-4 h-4" />
-                          <ChevronDownIcon className="w-3 h-3 ml-1" />
+                          <EnvelopeIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                          <ChevronDownIcon className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
                         </>
                       )}
                     </button>
@@ -3623,7 +3623,7 @@ const formatEmailBody = async (
                     }
                   }}>
                     <button
-                      className="btn btn-sm text-gray-900 hover:bg-gray-100 border border-gray-300 bg-white"
+                      className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                       onClick={(e) => {
                         e.stopPropagation();
                         if (sendingWhatsAppMeetingId !== meeting.id) {
@@ -3634,11 +3634,11 @@ const formatEmailBody = async (
                       title="Send WhatsApp Reminder"
                     >
                       {sendingWhatsAppMeetingId === meeting.id ? (
-                        <span className="loading loading-spinner loading-xs" style={{ color: '#111827' }}></span>
+                        <span className="loading loading-spinner loading-xs" style={{ color: '#ffffff' }}></span>
                       ) : (
                         <>
-                          <FaWhatsapp className="w-4 h-4 text-green-600" />
-                          <ChevronDownIcon className="w-3 h-3 ml-1" />
+                          <FaWhatsapp className="w-3 h-3 sm:w-4 sm:h-4 text-green-300" />
+                          <ChevronDownIcon className="w-2.5 h-2.5 sm:w-3 sm:h-3 ml-0.5 sm:ml-1" />
                         </>
                       )}
                     </button>
@@ -3673,14 +3673,14 @@ const formatEmailBody = async (
               )}
               {!past && getMeetingLocationName(meeting.location) === 'Teams' && !meeting.link && (
                 <button
-                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                   onClick={() => handleCreateTeamsMeeting(meeting)}
                   disabled={creatingTeamsMeetingId === meeting.id}
                 >
                   {creatingTeamsMeetingId === meeting.id ? (
                     <span className="loading loading-spinner loading-xs"></span>
                   ) : (
-                    <VideoCameraIcon className="w-4 h-4 sm:hidden" />
+                    <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
                   )}
                   <span className="hidden sm:inline">Teams</span>
                 </button>
@@ -3690,10 +3690,10 @@ const formatEmailBody = async (
                   href={getValidTeamsLink(meeting.link)}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                   title="Join Teams Meeting"
                 >
-                  <LinkIcon className="w-4 h-4" />
+                  <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </a>
               )}
               {/* Legacy meeting URL link */}
@@ -3702,16 +3702,16 @@ const formatEmailBody = async (
                   href={meeting.link}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                  className="btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                 >
-                  <LinkIcon className="w-4 h-4 sm:hidden" />
+                  <LinkIcon className="w-3 h-3 sm:w-4 sm:h-4 sm:hidden" />
                   <span className="hidden sm:inline">Link</span>
                 </a>
               )}
               {/* Cancel only for upcoming and not canceled */}
               {!isPastMeeting(meeting) && meeting.status !== 'canceled' && (
                 <button
-                  className="btn btn-sm bg-white text-gray-900 hover:bg-gray-100 border border-gray-300"
+                  className="hidden sm:flex btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
                   title="Cancel Meeting"
                   onClick={async (e) => {
                     e.stopPropagation();
@@ -3731,7 +3731,7 @@ const formatEmailBody = async (
                     }
                   }}
                 >
-                  <XMarkIcon className="w-4 h-4" />
+                  <XMarkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
                 </button>
               )}
             </div>
@@ -3739,8 +3739,8 @@ const formatEmailBody = async (
         </div>
 
         {/* Content */}
-        <div className="p-4">
-          <div className="space-y-3">
+        <div className="p-3 sm:p-4">
+          <div className="space-y-3 sm:space-y-3">
 
 
 
@@ -3888,51 +3888,51 @@ const formatEmailBody = async (
               </div>
             ) : (
               /* View Mode */
-              <div className="grid grid-cols-3 gap-3">
-                <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
-                <div className="flex items-center gap-2">
-                    <MapPinIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 sm:gap-3">
+                <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Location</label>
+                <div className="flex items-center gap-2 sm:gap-2">
+                    <MapPinIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-sm sm:text-base text-gray-900">{getMeetingLocationName(meeting.location)}</span>
                 </div>
               </div>
-              <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
-                <div className="flex items-center gap-2">
-                    <UserIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
+              <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Manager</label>
+                <div className="flex items-center gap-2 sm:gap-2">
+                    <UserIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.manager)}</span>
                 </div>
               </div>
-              <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
-                <div className="flex items-center gap-2">
-                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
+              <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Scheduler</label>
+                <div className="flex items-center gap-2 sm:gap-2">
+                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.scheduler)}</span>
                 </div>
               </div>
-              <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
-                <div className="flex items-center gap-2">
-                    <UserCircleIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
+              <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Helper</label>
+                <div className="flex items-center gap-2 sm:gap-2">
+                    <UserCircleIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.helper)}</span>
                 </div>
               </div>
-              <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
-                <div className="flex items-center gap-2">
-                    <AcademicCapIcon className="w-4 h-4" style={{ color: '#391BCB' }} />
-                  <span className="text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
+              <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Expert</label>
+                <div className="flex items-center gap-2 sm:gap-2">
+                    <AcademicCapIcon className="w-4 h-4 sm:w-4 sm:h-4" style={{ color: '#391BCB' }} />
+                  <span className="text-sm sm:text-base text-gray-900">{getEmployeeDisplayName(meeting.expert)}</span>
                 </div>
               </div>
-              <div className="space-y-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
-                <div className="flex items-center gap-1">
+              <div className="space-y-2 sm:space-y-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Amount</label>
+                <div className="flex items-center gap-2">
                   {meeting.amount && meeting.amount > 0 ? (
-                      <span className="text-base font-semibold" style={{ color: '#391BCB' }}>
+                      <span className="text-sm sm:text-base font-semibold" style={{ color: '#391BCB' }}>
                       {getCurrencySymbol(meeting.currency)} {typeof meeting.amount === 'number' ? meeting.amount.toLocaleString() : meeting.amount}
                     </span>
                   ) : (
-                    <span className="text-base text-gray-400 italic">Not specified</span>
+                    <span className="text-sm sm:text-base text-gray-400 italic">Not specified</span>
                   )}
                 </div>
               </div>
@@ -3941,37 +3941,37 @@ const formatEmailBody = async (
 
             {/* Brief Section */}
             {editingMeetingId !== meeting.id && (
-            <div className="border-t border-purple-100 pt-3">
-              <div className="flex justify-between items-center mb-2">
-                  <label className="text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Brief</label>
+            <div className="border-t border-purple-100 pt-3 sm:pt-3">
+              <div className="flex justify-between items-center mb-2 sm:mb-2">
+                  <label className="text-sm sm:text-sm font-medium uppercase tracking-wide" style={{ color: '#391BCB' }}>Brief</label>
                 {editingBriefId === meeting.id ? (
                   <div className="flex items-center gap-1">
                     <button className="btn btn-ghost btn-xs hover:bg-green-50" onClick={() => handleSaveBrief(meeting.id)}>
-                      <CheckIcon className="w-4 h-4 text-green-600" />
+                      <CheckIcon className="w-4 h-4 sm:w-4 sm:h-4 text-green-600" />
                     </button>
                     <button className="btn btn-ghost btn-xs hover:bg-red-50" onClick={handleCancelEdit}>
-                      <XMarkIcon className="w-4 h-4 text-red-600" />
+                      <XMarkIcon className="w-4 h-4 sm:w-4 sm:h-4 text-red-600" />
                     </button>
                   </div>
                 ) : (
                   <button className="btn btn-ghost btn-xs hover:bg-purple-50" onClick={handleEditBrief}>
-                    <PencilSquareIcon className="w-4 h-4 text-purple-500 hover:text-purple-600" />
+                    <PencilSquareIcon className="w-4 h-4 sm:w-4 sm:h-4 text-purple-500 hover:text-purple-600" />
                   </button>
                 )}
               </div>
               {editingBriefId === meeting.id ? (
                 <textarea
-                  className="textarea textarea-bordered w-full h-20 text-base"
+                  className="textarea textarea-bordered w-full h-20 sm:h-20 text-sm sm:text-base"
                   value={editedBrief}
                   onChange={(e) => setEditedBrief(e.target.value)}
                   placeholder="Add a meeting brief..."
                 />
               ) : (
-                <div className="bg-gray-50 rounded-lg p-3 min-h-[60px]">
+                <div className="bg-gray-50 rounded-lg p-3 sm:p-3 min-h-[60px] sm:min-h-[60px]">
                   {meeting.brief ? (
-                    <p className="text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
+                    <p className="text-sm sm:text-base text-gray-900 whitespace-pre-wrap">{meeting.brief}</p>
                   ) : (
-                    <span className="text-base text-gray-400 italic">No brief provided</span>
+                    <span className="text-sm sm:text-base text-gray-400 italic">No brief provided</span>
                   )}
                 </div>
               )}
@@ -3993,7 +3993,7 @@ const formatEmailBody = async (
 
             {/* Last Edited */}
             {meeting.lastEdited && (
-              <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-2">
+              <div className="text-sm sm:text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-2 sm:pt-2">
                 <span>Last edited by {meeting.lastEdited.user}</span>
                 <span>{new Date(meeting.lastEdited.timestamp).toLocaleDateString()}</span>
               </div>
@@ -4128,7 +4128,7 @@ const formatEmailBody = async (
   };
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
+    <div className="px-1 sm:px-4 md:px-6 py-2 sm:py-4 md:py-6 space-y-4 sm:space-y-6">
       {/* Header */}
       <div className="flex items-center justify-between mb-8">
         <div className="flex items-center gap-3">
@@ -4265,10 +4265,10 @@ const formatEmailBody = async (
       </div> */}
 
       {/* Two-column grid: Upcoming (left) and Past (right) */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-6">
         {/* Upcoming Meetings (Left) */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-white">
+          <div className="px-3 sm:px-6 py-4 bg-white">
             <div className="flex items-center justify-between">
               <h4 className="text-lg font-semibold text-gray-900">Upcoming Meetings</h4>
               {upcomingMeetings.length > 0 && (
@@ -4291,7 +4291,7 @@ const formatEmailBody = async (
             </div>
             <div className="border-b border-gray-200 mt-3"></div>
           </div>
-          <div className="p-6">
+          <div className="p-3 sm:p-6">
             <div className="space-y-4">
               {upcomingMeetings.length > 0 ? (
                 upcomingMeetings.map(renderMeetingCard)
@@ -4308,11 +4308,11 @@ const formatEmailBody = async (
 
         {/* Past Meetings (Right) */}
         <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
-          <div className="px-6 py-4 bg-white">
+          <div className="px-3 sm:px-6 py-4 bg-white">
             <h4 className="text-lg font-semibold text-gray-900">Past Meetings</h4>
             <div className="border-b border-gray-200 mt-3"></div>
           </div>
-          <div className="p-6">
+          <div className="p-3 sm:p-6">
             <div className="space-y-4">
               {pastMeetings.length > 0 ? (
                 pastMeetings.map(renderMeetingCard)

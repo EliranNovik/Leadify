@@ -3954,7 +3954,11 @@ useEffect(() => {
     const renderTimelineOverlay = (overlayAnchor: StageDropdownAnchor) => (
       <div
         className={`absolute ${
-          overlayAnchor === 'badge' ? 'right-0' : 'right-0'
+          overlayAnchor === 'mobile' 
+            ? 'left-1/2 transform -translate-x-1/2' 
+            : overlayAnchor === 'badge' 
+            ? 'right-0' 
+            : 'right-0'
         } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[60] overflow-hidden`}
       >
         <div
@@ -7599,9 +7603,9 @@ useEffect(() => {
         
         // Convert date and time to ISO format for calendar invitation
         // Always send calendar invite for all meeting types (regular, paid, etc.)
-        const [year, month, day] = rescheduleFormData.date.split('-').map(Number);
+        const [yearVal, monthVal, dayVal] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
-        const startDateTime = new Date(year, month - 1, day, hours, minutes);
+        const startDateTime = new Date(yearVal, monthVal - 1, dayVal, hours, minutes);
         const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
         
         // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
@@ -10679,7 +10683,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       {showStickyHeader && selectedClient && (
         <div className="fixed top-16 left-0 md:left-[100px] right-0 z-[45] bg-base-100 shadow-lg border-b border-base-300 transition-all duration-300 ease-in-out">
           <div className="max-w-7xl mx-auto px-4 py-3">
-            {/* Mobile View - Only lead number, client name, and stage badge */}
+            {/* Mobile View - Only lead number and client name */}
             <div className="md:hidden flex items-center justify-between gap-2">
               <div className="flex items-center gap-2 min-w-0 flex-1">
                 <span className="text-base font-bold text-base-content whitespace-nowrap">
@@ -10689,27 +10693,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {selectedClient.name || 'Unnamed Lead'}
                 </span>
               </div>
-              {/* Stage Badge */}
-              {(() => {
-                const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
-                const stageName = getStageName(stageStr);
-                const stageColor = getStageColour(stageStr);
-                const textColor = getContrastingTextColor(stageColor);
-                const backgroundColor = stageColor || '#3b28c7';
-                
-                return (
-                  <span 
-                    className="badge text-xs px-3 py-1.5 font-bold shadow-sm whitespace-nowrap flex-shrink-0"
-                    style={{
-                      backgroundColor: backgroundColor,
-                      color: textColor,
-                      borderColor: backgroundColor,
-                    }}
-                  >
-                    {stageName}
-                  </span>
-                );
-              })()}
             </div>
 
             {/* Desktop View - Full layout with tab navigation */}
@@ -10855,6 +10838,49 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           
           {/* Amount badge + stage badge + applicants - Moved to top for mobile */}
           <div className="w-full flex flex-col items-center mb-4">
+            {/* Mobile Badges - Meeting, Lead is Cold, Duplicate Contact - Above balance badge */}
+            <div className="md:hidden w-full flex flex-col gap-2 mb-3 px-2">
+              {/* Meeting Scheduled Badge */}
+              {hasScheduledMeetings && nextMeetingDate && (
+                <button
+                  onClick={() => setActiveTab('meeting')}
+                  className="w-full rounded-xl bg-gradient-to-r from-green-500 to-emerald-500 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20 hover:from-green-600 hover:to-emerald-600 transition-all cursor-pointer animate-pulse"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                  </svg>
+                  Meeting Scheduled: {(() => {
+                    const date = new Date(nextMeetingDate);
+                    return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+                  })()}
+                </button>
+              )}
+              
+              {/* Lead is Cold Badge */}
+              {isLeadCold && (
+                <div className="w-full rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20">
+                  <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                  </svg>
+                  Lead is cold: {coldLeadText}
+                </div>
+              )}
+              
+              {/* Duplicate Contact Badge */}
+              {duplicateContacts.length > 0 && (
+                <button
+                  onClick={() => setIsDuplicateModalOpen(true)}
+                  className="w-full rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                >
+                  <DocumentDuplicateIcon className="w-4 h-4" />
+                  {duplicateContacts.length === 1 
+                    ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
+                    : `${duplicateContacts.length} Duplicate Contacts`
+                  }
+                </button>
+              )}
+            </div>
+            
             {/* Next Payment Due Indicator */}
             {nextDuePayment && (
               <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
@@ -11049,13 +11075,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
             </div>
 
-              {/* Stage Badge - Same line */}
-              <div className="flex flex-col gap-1.5 flex-shrink-0">
+              {/* Stage Badge - Same line - Hidden on mobile, shown on desktop */}
+              <div className="hidden md:flex flex-col gap-1.5 flex-shrink-0">
             {selectedClient?.stage !== null &&
               selectedClient?.stage !== undefined &&
               selectedClient?.stage !== '' && (
                     <>
-                  {getStageBadge(selectedClient.stage, 'mobile')}
+                  {getStageBadge(selectedClient.stage, 'badge')}
                       {/* Meeting Scheduled badge directly under stage */}
                   {hasScheduledMeetings && nextMeetingDate && (
                     <button
@@ -11132,7 +11158,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
 
           {/* Client Header - Lead number with language badge below, name aligned with lead number */}
           <div className="flex items-center gap-3 mb-3 px-1">
-            <div className="w-10 h-10 rounded-full flex items-center justify-center flex-shrink-0" style={{ backgroundColor: '#391BC8' }}>
+            <div className="hidden md:flex w-10 h-10 rounded-full items-center justify-center flex-shrink-0" style={{ backgroundColor: '#391BC8' }}>
               <UserIcon className="w-5 h-5 text-white" />
             </div>
             <div className="flex flex-col gap-1 flex-1 min-w-0">
@@ -11170,6 +11196,14 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {selectedClient.language}
                 </span>
               )}
+              {/* Stage Badge - Mobile only, next to language badge */}
+              {selectedClient?.stage !== null &&
+                selectedClient?.stage !== undefined &&
+                selectedClient?.stage !== '' && (
+                  <div className="md:hidden">
+                    {getStageBadge(selectedClient.stage, 'mobile')}
+                  </div>
+                )}
                 {(() => {
                   const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                   const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
@@ -12563,7 +12597,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         </div>
 
         {/* Tabs Navigation - Mobile */}
-        <div className="md:hidden px-4 py-2">
+        <div className="md:hidden px-4 py-2 mb-6 mt-2">
               
               <div
                 ref={mobileTabsRef}
@@ -12588,13 +12622,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     }}
                   />
                 )}
-                <div className="flex gap-1.5 pb-1 min-w-max">
+                <div className="flex gap-2 pb-1 min-w-max">
                   {tabs.map((tab) => {
                     const isActive = activeTab === tab.id;
                     return (
                       <button
                         key={tab.id}
-                        className={`relative flex flex-col items-center justify-center p-2 rounded-lg transition-all duration-300 min-w-[65px] ${
+                        className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${
                           isActive
                             ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
                             : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
@@ -12602,9 +12636,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         onClick={() => setActiveTab(tab.id)}
                       >
                         <div className="relative">
-                          <tab.icon className={`w-4 h-4 mb-0.5 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                          <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
                           {tab.id === 'interactions' && tab.badge && (
-                            <div className={`absolute -top-1.5 -right-1.5 w-4 h-4 rounded-full text-[10px] font-bold flex items-center justify-center ${
+                            <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
                               isActive 
                                 ? 'bg-white/20 text-white' 
                                 : 'bg-purple-100 text-purple-700'
@@ -12613,7 +12647,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             </div>
                           )}
                         </div>
-                        <span className={`text-[10px] font-semibold truncate max-w-[60px] ${
+                        <span className={`text-xs font-semibold truncate max-w-[80px] ${
                           isActive ? 'text-white' : 'text-gray-600'
                         }`}>
                           {tab.label}
