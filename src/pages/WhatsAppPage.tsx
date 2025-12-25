@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
@@ -100,6 +100,7 @@ interface WhatsAppMessage {
   voice_note?: boolean; // True if this is a voice note (not regular audio)
   contact_id?: number; // Contact ID for messages associated with a specific contact
   legacy_id?: number; // Legacy lead ID for legacy leads
+  phone_number?: string | null; // Phone number for matching messages to contacts
 }
 
 interface WhatsAppPageProps {
@@ -523,28 +524,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   const handleContactListScroll = (e: React.UIEvent<HTMLDivElement>) => {
     if (!isMobile) return;
     const currentTop = e.currentTarget.scrollTop;
-    const diff = currentTop - lastScrollTopRef.current;
-
-    // Always show at very top
-    if (currentTop <= 0) {
-      setIsSearchHiddenMobile(false);
-      setIsContactsHeaderGlass(false);
-      lastScrollTopRef.current = currentTop;
-      return;
-    }
-
-    // Small threshold to avoid jitter
-    if (Math.abs(diff) > 4) {
-      if (diff > 0) {
-        // Scrolling down -> hide
-        setIsSearchHiddenMobile(true);
-      } else {
-        // Scrolling up -> show
-        setIsSearchHiddenMobile(false);
-      }
-      setIsContactsHeaderGlass(currentTop > 0);
-      lastScrollTopRef.current = currentTop;
-    }
+    
+    // Only handle glass effect for header, search bar stays fixed
+    setIsContactsHeaderGlass(currentTop > 0);
+    lastScrollTopRef.current = currentTop;
   };
 
   // Chat messages scroll: toggle glass headers/footers on mobile
@@ -1058,12 +1041,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       leadNumber = `Contact ${contact.id}`;
                     }
                     
+                    // CRITICAL: Always use contact's name from leads_contact table, NEVER use lead's name
+                    // The contact.name comes directly from the database query at line 934
+                    const contactName = contact.name || '';
+                    
+                    // Debug: Log to verify we're using contact name, not lead name
+                    if (contactName) {
+                      console.log(`✅ Contact client created: ID=${contact.id}, Name="${contactName}" (from leads_contact), NOT from lead "${associatedLead?.name || 'N/A'}"`);
+                    }
+                    
                     return {
                       id: `contact_${contact.id}`,
                       lead_id: newLeadId || (finalLegacyLeadId ? String(finalLegacyLeadId) : null),
                       contact_id: contact.id,
                       lead_number: leadNumber,
-                      name: contact.name || '',
+                      name: contactName, // Always use contact's name from leads_contact table
                       email: contact.email || '',
                       phone: contact.phone || '',
                       mobile: contact.mobile || '',
@@ -1096,8 +1088,19 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         let allClients = [...newLeadsData, ...legacyLeadsData, ...contactClientsData];
         
         // Filter out contacts that share the same lead_number and phone as a lead client
-        // This prevents showing duplicate entries with the same messages
+        // BUT: Keep contacts that have messages with contact_id - they should be shown separately
+        // This prevents showing duplicate entries with the same messages, but allows contacts with their own messages
         const filteredContactClients = contactClientsData.filter(contact => {
+          // Check if this contact has messages with contact_id in whatsapp_messages
+          const contactHasMessages = (whatsappMessages || []).some((msg: any) => 
+            msg.contact_id === contact.contact_id
+          );
+          
+          // If contact has messages with contact_id, always show it (don't filter out)
+          if (contactHasMessages) {
+            return true;
+          }
+          
           // Normalize contact phone numbers
           const contactPhone = (contact.phone || contact.mobile || '').trim();
           const contactPhoneNormalized = contactPhone.replace(/\D/g, '');
@@ -1161,12 +1164,21 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       // Ensure no duplicates - use array with single contact
       setLeadContacts([propSelectedContact.contact]);
       // Create a Client object from the contact
+      // CRITICAL: Always use contact's name from propSelectedContact.contact.name (from leads_contact table)
+      const contactName = propSelectedContact.contact.name || '';
+      console.log(`✅ Creating client from propSelectedContact: Contact ID=${propSelectedContact.contact.id}, Name="${contactName}" (from leads_contact)`);
+      
       const clientObj: Client = {
-        id: String(propSelectedContact.leadId),
+        id: `contact_${propSelectedContact.contact.id}`, // Use contact_ prefix for contacts
+        lead_id: String(propSelectedContact.leadId), // Store the lead_id
+        contact_id: propSelectedContact.contact.id, // Store the contact_id
         lead_number: String(propSelectedContact.leadId),
-        name: propSelectedContact.contact.name,
+        name: contactName, // Always use contact's name from leads_contact table
         phone: propSelectedContact.contact.phone || propSelectedContact.contact.mobile || '',
+        mobile: propSelectedContact.contact.mobile || propSelectedContact.contact.phone || '',
+        email: propSelectedContact.contact.email || '',
         lead_type: propSelectedContact.leadType,
+        isContact: true, // Mark as contact
       };
       setSelectedClient(clientObj);
     }
@@ -1377,8 +1389,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           
           const processedMessages = transformedMessages.map(processTemplateMessage);
           
+          // Ensure messages are sorted by sent_at in ascending order (oldest first, newest last)
+          const sortedProcessedMessages = [...processedMessages].sort((a, b) => 
+            new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
+          );
+          
           if (!isPolling) {
-            setMessages(processedMessages);
+            setMessages(sortedProcessedMessages);
           } else {
             setMessages(prevMessages => {
               const hasChanges = processedMessages.length !== prevMessages.length ||
@@ -1401,31 +1418,371 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         }
         
         // For new leads, use whatsapp_messages table
-        // If this is a contact (not a main lead), fetch messages by contact_id
+        // If this is a contact (not a main lead), fetch messages by contact_id ONLY
         let allMessagesForLead: any[] = [];
         
         if (selectedClient.isContact && selectedClient.contact_id) {
-          // This is a contact - fetch messages by contact_id
-          const { data: contactMessages, error: contactError } = await supabase
-            .from('whatsapp_messages')
-            .select('*')
-            .eq('contact_id', selectedClient.contact_id)
-            .order('sent_at', { ascending: true });
+          // This is a contact - fetch messages by contact_id AND by phone number
+          // Messages might be saved with phone_number but contact_id might be null or incorrect
+          // So we need to match by both contact_id and phone/mobile number
+          // CRITICAL: Use contact's phone/mobile, NOT the lead's phone/mobile
+          // The contact client should already have the contact's phone/mobile from when it was created
+          const contactPhone = selectedClient.phone || selectedClient.mobile || '';
+          const contactMobile = selectedClient.mobile || selectedClient.phone || '';
           
-          if (contactError) {
-            console.error('Error fetching contact messages:', contactError);
-            toast.error('Failed to load messages');
+          console.log('📞 Fetching messages for contact:', {
+            contactId: selectedClient.contact_id,
+            contactName: selectedClient.name,
+            contactPhone: contactPhone,
+            contactMobile: contactMobile,
+            isContact: selectedClient.isContact,
+            leadId: selectedClient.lead_id
+          });
+          
+          if (!contactPhone && !contactMobile) {
+            console.error('❌ Contact has no phone number!', selectedClient);
+            toast.error(`Contact ${selectedClient.name} has no phone number. Cannot load WhatsApp conversation.`);
+            setMessages([]);
             setLoadingMessages(false);
             return;
           }
           
-          allMessagesForLead = contactMessages || [];
+          // Normalize phone numbers for matching (remove spaces, dashes, etc.)
+          const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+          const normalizedContactPhone = normalizePhone(contactPhone);
+          const normalizedContactMobile = normalizePhone(contactMobile);
+          
+          // Create phone variations for matching (similar to backend logic)
+          // CRITICAL: Generate ALL possible variations to match messages saved in different formats
+          const phoneVariations: string[] = [];
+          
+          // Helper to generate all variations for a phone number
+          const generatePhoneVariations = (phone: string, normalized: string) => {
+            const variations: string[] = [];
+            if (!phone || !normalized) return variations;
+            
+            // Original format
+            variations.push(phone);
+            variations.push(normalized);
+            
+            // With/without country code (972 for Israel)
+            if (normalized.startsWith('972')) {
+              variations.push(normalized.replace(/^972/, ''));
+              variations.push(`0${normalized.replace(/^972/, '')}`); // Add leading 0
+            } else {
+              variations.push(`972${normalized}`);
+              variations.push(`+972${normalized}`);
+              // If it starts with 0, also try without 0
+              if (normalized.startsWith('0')) {
+                variations.push(normalized.replace(/^0/, ''));
+                variations.push(`972${normalized.replace(/^0/, '')}`);
+              }
+            }
+            
+            // With/without plus
+            variations.push(`+${normalized}`);
+            variations.push(normalized.replace(/^\+/, ''));
+            
+            // Last 4, 8, 9, 10 digits (for partial matching in database queries)
+            if (normalized.length >= 4) {
+              variations.push(normalized.slice(-4));
+            }
+            if (normalized.length >= 8) {
+              variations.push(normalized.slice(-8));
+            }
+            if (normalized.length >= 9) {
+              variations.push(normalized.slice(-9));
+            }
+            if (normalized.length >= 10) {
+              variations.push(normalized.slice(-10));
+            }
+            
+            return variations;
+          };
+          
+          // Generate variations for phone
+          if (contactPhone) {
+            phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
+          }
+          
+          // Generate variations for mobile (if different from phone)
+          if (contactMobile && contactMobile !== contactPhone) {
+            phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
+          }
+          
+          // Remove duplicates and empty strings
+          const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
+          
+          console.log(`📞 Generated ${uniquePhoneVariations.length} phone variations for contact ${selectedClient.contact_id}:`, {
+            originalPhone: contactPhone,
+            originalMobile: contactMobile,
+            normalizedPhone: normalizedContactPhone,
+            normalizedMobile: normalizedContactMobile,
+            variations: uniquePhoneVariations.slice(0, 10) // Show first 10 for debugging
+          });
+          
+          // Fetch messages by contact_id OR by phone_number matching
+          // Also filter by lead_id to ensure we only get messages for this specific lead's contact
+          // Use OR condition to get messages that match either criteria
+          let contactMessagesQuery = supabase
+            .from('whatsapp_messages')
+            .select('*');
+          
+          // First, filter by lead_id to ensure we only get messages for this lead
+          // For contacts, we MUST use lead_id (not client.id which is contact_${id})
+          // For main leads, we can use client.id
+          const leadIdForQuery = selectedClient.isContact 
+            ? selectedClient.lead_id  // For contacts, only use lead_id
+            : (selectedClient.lead_id || selectedClient.id); // For main leads, use lead_id or id
+          
+          if (leadIdForQuery) {
+            // Handle legacy leads (they have legacy_id in messages, not lead_id)
+            const isLegacy = selectedClient.lead_type === 'legacy' || 
+                           (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
+                           (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
+            
+            if (isLegacy) {
+              const legacyId = typeof leadIdForQuery === 'string' 
+                ? Number(leadIdForQuery.replace('legacy_', '')) 
+                : Number(leadIdForQuery);
+              if (!isNaN(legacyId)) {
+                contactMessagesQuery = contactMessagesQuery.eq('legacy_id', legacyId);
+              }
+            } else {
+              // For new leads, filter by lead_id
+              contactMessagesQuery = contactMessagesQuery.eq('lead_id', leadIdForQuery);
+            }
+          }
+          
+          // Build OR conditions: contact_id match OR phone_number match
+          const orConditions: string[] = [];
+          
+          // Add contact_id condition
+          if (selectedClient.contact_id) {
+            orConditions.push(`contact_id.eq.${selectedClient.contact_id}`);
+          }
+          
+          // Add phone_number conditions for each variation
+          // CRITICAL: For inbound messages, the phone_number in the message is the sender's phone (the contact's phone)
+          // So we need to match by phone_number to get inbound messages from this contact
+          // NOTE: Supabase OR queries have limitations, so we'll fetch all messages for the lead
+          // and filter client-side for better phone number matching
+          if (uniquePhoneVariations.length > 0) {
+            // For Supabase queries, we can only use a limited number of OR conditions
+            // So we'll add the most common variations and do additional filtering client-side
+            const primaryVariations = uniquePhoneVariations.slice(0, 10); // Limit to first 10 for query
+            primaryVariations.forEach(phone => {
+              orConditions.push(`phone_number.eq.${phone}`);
+            });
+          }
+          
+          // If we have conditions, apply them with OR
+          if (orConditions.length > 0) {
+            contactMessagesQuery = contactMessagesQuery.or(orConditions.join(','));
+          } else {
+            // If no conditions, we still need to fetch messages by lead_id only
+            // This will fetch all messages for the lead, and we'll filter client-side
+          }
+          
+          console.log(`🔍 Contact messages query:`, {
+            leadId: leadIdForQuery,
+            contactId: selectedClient.contact_id,
+            phoneVariations: uniquePhoneVariations.length,
+            orConditions: orConditions.length
+          });
+          
+          // CRITICAL: For better phone number matching, fetch ALL messages for the lead first
+          // Then filter client-side using all phone variations
+          // This ensures we don't miss messages due to phone number format differences
+          let contactMessages: any[] = [];
+          
+          // First, try the OR query with contact_id and phone variations
+          const { data: orQueryMessages, error: orQueryError } = await contactMessagesQuery
+            .order('sent_at', { ascending: true });
+          
+          if (orQueryError) {
+            console.warn('⚠️ OR query error (may be due to too many conditions), fetching all messages for lead:', orQueryError);
+          } else {
+            contactMessages = orQueryMessages || [];
+          }
+          
+          // Also fetch ALL messages for this lead (without phone/contact filters) to catch any we might have missed
+          // This is important for inbound messages that might have different phone formats
+          let allLeadMessagesQuery = supabase
+            .from('whatsapp_messages')
+            .select('*');
+          
+          if (leadIdForQuery) {
+            const isLegacy = selectedClient.lead_type === 'legacy' || 
+                           (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_')) ||
+                           (typeof leadIdForQuery === 'string' && leadIdForQuery.startsWith('legacy_'));
+            
+            if (isLegacy) {
+              const legacyId = typeof leadIdForQuery === 'string' 
+                ? Number(leadIdForQuery.replace('legacy_', '')) 
+                : Number(leadIdForQuery);
+              if (!isNaN(legacyId)) {
+                allLeadMessagesQuery = allLeadMessagesQuery.eq('legacy_id', legacyId);
+              }
+            } else {
+              allLeadMessagesQuery = allLeadMessagesQuery.eq('lead_id', leadIdForQuery);
+            }
+          }
+          
+          const { data: allLeadMessages, error: allLeadError } = await allLeadMessagesQuery
+            .order('sent_at', { ascending: true });
+          
+          if (allLeadError) {
+            console.error('Error fetching all lead messages:', allLeadError);
+          } else {
+            // Merge messages, avoiding duplicates
+            const existingIds = new Set(contactMessages.map((m: any) => m.id));
+            const additionalMessages = (allLeadMessages || []).filter((m: any) => !existingIds.has(m.id));
+            contactMessages = [...contactMessages, ...additionalMessages];
+            console.log(`📥 Fetched ${contactMessages.length} total messages (${orQueryMessages?.length || 0} from OR query, ${additionalMessages.length} additional from lead query)`);
+          }
+          
+          // Additional filtering: ensure messages match the contact's phone number AND lead_id
+          // This handles cases where phone_number format might differ slightly
+          // CRITICAL: Also verify lead_id matches to prevent messages from wrong leads
+          // For contacts, MUST use lead_id (not client.id which is contact_${id})
+          const isLegacy = selectedClient.lead_type === 'legacy' || 
+                          (selectedClient.lead_id && selectedClient.lead_id.toString().startsWith('legacy_'));
+          const expectedLeadId = selectedClient.isContact 
+            ? selectedClient.lead_id  // For contacts, only use lead_id
+            : (selectedClient.lead_id || selectedClient.id); // For main leads, use lead_id or id
+          const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
+            ? Number(expectedLeadId.replace('legacy_', '')) 
+            : Number(expectedLeadId)) : null;
+          
+          allMessagesForLead = (contactMessages || []).filter((msg: any) => {
+            // CRITICAL: First check lead_id/legacy_id match
+            if (isLegacy) {
+              // For legacy leads, check legacy_id
+              if (expectedLegacyId !== null && msg.legacy_id !== expectedLegacyId) {
+                return false;
+              }
+            } else {
+              // For new leads, check lead_id
+              if (expectedLeadId && msg.lead_id !== expectedLeadId) {
+                return false;
+              }
+            }
+            
+            // CRITICAL FIX: Prioritize phone number matching over contact_id
+            // If phone number matches, include the message even if contact_id doesn't match
+            // This handles cases where messages were incorrectly assigned to the wrong contact_id
+            let phoneMatches = false;
+            if (msg.phone_number) {
+              const normalizedMsgPhone = normalizePhone(msg.phone_number);
+              
+              // Try multiple matching strategies:
+              // 1. Exact match
+              // 2. Last 8 digits match (handles country code differences)
+              // 3. Last 4 digits match (handles more format variations)
+              const matchesPhone = normalizedContactPhone && normalizedMsgPhone && 
+                (normalizedMsgPhone === normalizedContactPhone || 
+                 (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 && 
+                  normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8))) ||
+                 (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 && 
+                  normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-4))) ||
+                 (normalizedContactPhone.length >= 8 && normalizedMsgPhone.length >= 8 && 
+                  normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8))) ||
+                 (normalizedContactPhone.length >= 4 && normalizedMsgPhone.length >= 4 && 
+                  normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-4))));
+              
+              const matchesMobile = normalizedContactMobile && normalizedMsgPhone && 
+                (normalizedMsgPhone === normalizedContactMobile || 
+                 (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 && 
+                  normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8))) ||
+                 (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 && 
+                  normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-4))) ||
+                 (normalizedContactMobile.length >= 8 && normalizedMsgPhone.length >= 8 && 
+                  normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8))) ||
+                 (normalizedContactMobile.length >= 4 && normalizedMsgPhone.length >= 4 && 
+                  normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-4))));
+              
+              phoneMatches = !!(matchesPhone || matchesMobile);
+              
+              if (phoneMatches) {
+                console.log(`✅ Phone match found: msg="${normalizedMsgPhone}", contact="${normalizedContactPhone || normalizedContactMobile}"`);
+              }
+            }
+            
+            // If phone number matches, include the message (even if contact_id doesn't match)
+            if (phoneMatches) {
+              return true;
+            }
+            
+            // If phone number doesn't match, check if contact_id matches
+            // This handles messages that might not have a phone_number but have the correct contact_id
+            if (msg.contact_id && msg.contact_id === selectedClient.contact_id) {
+              console.log(`✅ Message ${msg.id} matched by contact_id (phone didn't match)`);
+              return true;
+            }
+            
+            // If neither phone nor contact_id matches, exclude the message
+            console.log(`❌ Message ${msg.id} filtered out for contact ${selectedClient.contact_id}:`, {
+              msgContactId: msg.contact_id,
+              msgPhoneNumber: msg.phone_number,
+              contactPhone: contactPhone,
+              contactMobile: contactMobile,
+              phoneMatches: phoneMatches
+            });
+            return false;
+          });
+          
+          console.log(`📱 Fetched ${allMessagesForLead.length} messages for contact ${selectedClient.contact_id} (phone: ${contactPhone || contactMobile}, lead_id: ${expectedLeadId}, isLegacy: ${isLegacy})`);
+          
+          // Debug: Log message details to verify matching
+          if (!isPolling && allMessagesForLead.length > 0) {
+            console.log('📋 Sample messages for contact:', allMessagesForLead.slice(0, 3).map((m: any) => ({
+              id: m.id,
+              contact_id: m.contact_id,
+              lead_id: m.lead_id,
+              legacy_id: m.legacy_id,
+              phone_number: m.phone_number,
+              direction: m.direction,
+              sender_name: m.sender_name,
+              message: m.message?.substring(0, 50)
+            })));
+            
+            // Count inbound vs outbound messages
+            const inboundCount = allMessagesForLead.filter((m: any) => m.direction === 'in').length;
+            const outboundCount = allMessagesForLead.filter((m: any) => m.direction === 'out').length;
+            console.log(`📊 Message direction breakdown: ${inboundCount} inbound, ${outboundCount} outbound`);
+          }
+          
+          // Also log ALL messages fetched from database (before filtering)
+          if (!isPolling && contactMessages && contactMessages.length > 0) {
+            const allInbound = contactMessages.filter((m: any) => m.direction === 'in').length;
+            const allOutbound = contactMessages.filter((m: any) => m.direction === 'out').length;
+            console.log(`📊 All messages from DB (before filtering): ${contactMessages.length} total (${allInbound} inbound, ${allOutbound} outbound)`);
+            
+            // Log inbound messages that might have been filtered out
+            const filteredOutInbound = contactMessages.filter((m: any) => {
+              if (m.direction !== 'in') return false;
+              return !allMessagesForLead.some((filtered: any) => filtered.id === m.id);
+            });
+            if (filteredOutInbound.length > 0) {
+              console.warn(`⚠️ ${filteredOutInbound.length} inbound messages were filtered out:`, filteredOutInbound.map((m: any) => ({
+                id: m.id,
+                contact_id: m.contact_id,
+                phone_number: m.phone_number,
+                lead_id: m.lead_id
+              })));
+            }
+          }
         } else {
-          // This is a main lead - fetch by lead_id first, then filter by contact_id or phone number
+          // This is a main lead - fetch by lead_id
+          // For main leads, we need to fetch ALL messages (both with and without contact_id)
+          // because when a contact is selected, we need to filter by phone number matching
+          // The filtering will happen later based on whether a contact is selected
           const { data: leadMessages, error: leadError } = await supabase
             .from('whatsapp_messages')
             .select('*')
             .eq('lead_id', selectedClient.id)
+            // Don't filter by contact_id here - we'll filter later based on contact selection
             .order('sent_at', { ascending: true });
           
           if (leadError) {
@@ -1438,10 +1795,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
           allMessagesForLead = leadMessages || [];
         }
 
-        // Filter messages based on phone number (show ALL contacts with same phone)
-        // Not just by contact_id - this allows viewing all messages from the same phone number
+        // Filter messages based on phone number (only for main leads with selected contact)
+        // For contact clients, we already have the correct messages (filtered by contact_id)
         let filteredMessages = allMessagesForLead || [];
         
+        // Only apply phone-based filtering for main leads (not contact clients)
         if (!selectedClient.isContact && contactId) {
           // Get the selected contact details
           const selectedContact = propSelectedContact?.contact || leadContacts.find(c => c.id === contactId);
@@ -1481,7 +1839,14 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
               relatedContactIds: Array.from(relatedContactIds),
               last4Digits,
               totalMessages: allMessagesForLead?.length || 0,
-              leadContactsCount: leadContacts.length
+              leadContactsCount: leadContacts.length,
+              contactPhone: contactPhone,
+              messages: (allMessagesForLead || []).map((m: any) => ({
+                id: m.id,
+                contact_id: m.contact_id,
+                phone_number: m.phone_number,
+                direction: m.direction
+              }))
             });
             
             // SIMPLE RULE: If there's only ONE contact, show ALL messages (no filtering)
@@ -1498,23 +1863,67 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   return true;
                 }
                 
-                // If message has no contact_id, match by phone number (last 4 digits)
-                if (!msg.contact_id && msg.phone_number && last4Digits.length >= 4) {
+                // If message has contact_id but it's not in relatedContactIds, check if phone matches
+                // This handles cases where contact_id might be wrong but phone number is correct
+                // Use more flexible phone matching (last 4, last 8, or full match)
+                if (msg.contact_id && !relatedContactIds.has(msg.contact_id) && msg.phone_number && contactPhone) {
                   const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
-                  const msgLast4 = msgPhoneDigits.slice(-4);
-                  if (msgLast4 === last4Digits) {
-                    console.log(`✅ Message ${msg.id} matched by phone number`);
+                  const contactPhoneDigits = contactPhone.replace(/\D/g, '');
+                  
+                  // Try multiple matching strategies
+                  const matches = 
+                    msgPhoneDigits === contactPhoneDigits ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
+                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
+                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
+                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
+                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
+                  
+                  if (matches) {
+                    console.log(`✅ Message ${msg.id} matched by phone number (contact_id=${msg.contact_id} doesn't match but phone does)`);
                     return true;
                   }
                 }
                 
-                // If no contact_id and no phone_number, include it (likely belongs to this contact)
-                if (!msg.contact_id && !msg.phone_number) {
-                  console.log(`✅ Message ${msg.id} matched (no contact_id, no phone)`);
-                  return true;
+                // If message has no contact_id, match by phone number (last 4, last 8, or full match)
+                if (!msg.contact_id && msg.phone_number && contactPhone) {
+                  const msgPhoneDigits = msg.phone_number.replace(/\D/g, '');
+                  const contactPhoneDigits = contactPhone.replace(/\D/g, '');
+                  
+                  // Try multiple matching strategies
+                  const matches = 
+                    msgPhoneDigits === contactPhoneDigits ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
+                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
+                     msgPhoneDigits.endsWith(contactPhoneDigits.slice(-4))) ||
+                    (contactPhoneDigits.length >= 8 && msgPhoneDigits.length >= 8 && 
+                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-8))) ||
+                    (contactPhoneDigits.length >= 4 && msgPhoneDigits.length >= 4 && 
+                     contactPhoneDigits.endsWith(msgPhoneDigits.slice(-4)));
+                  
+                  if (matches) {
+                    console.log(`✅ Message ${msg.id} matched by phone number (contact_id=null)`);
+                    return true;
+                  }
                 }
                 
-                console.log(`❌ Message ${msg.id} filtered out (contact_id=${msg.contact_id})`);
+                // If no contact_id and no phone_number, check if contact also has no phone
+                // If contact has phone but message doesn't, exclude it
+                if (!msg.contact_id && !msg.phone_number) {
+                  if (!contactPhone) {
+                    console.log(`✅ Message ${msg.id} matched (no contact_id, no phone_number, contact has no phone)`);
+                    return true;
+                  } else {
+                    console.log(`❌ Message ${msg.id} filtered out (no contact_id, no phone_number, but contact has phone)`);
+                    return false;
+                  }
+                }
+                
+                console.log(`❌ Message ${msg.id} filtered out (contact_id=${msg.contact_id}, phone_number=${msg.phone_number || 'null'}, last4Digits=${last4Digits})`);
                 return false;
               });
             }
@@ -1522,8 +1931,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             // If contact not found, show all messages for the lead (fallback)
             filteredMessages = allMessagesForLead || [];
           }
+        } else {
+          // If no contact is selected for a main lead, show only messages without contact_id
+          // (messages that belong directly to the main lead, not to any contact)
+          filteredMessages = (allMessagesForLead || []).filter(msg => !msg.contact_id);
         }
-        // For contacts, we already have the filtered messages (fetched by contact_id)
+        
+        // For contact clients, we already have the filtered messages in allMessagesForLead
+        // Make sure filteredMessages is set correctly for contacts
+        if (selectedClient.isContact) {
+          filteredMessages = allMessagesForLead || [];
+          console.log(`✅ Contact client: Using ${filteredMessages.length} messages from allMessagesForLead`);
+        }
         
         const data = filteredMessages;
 
@@ -1542,13 +1961,33 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             );
           }
         }
-        const processedMessages = (data || []).map(processTemplateMessage);
+        // Process messages: if viewing a contact, update sender_name to use contact's name
+        const processedMessages = (data || []).map((msg: any) => {
+          const processed = processTemplateMessage(msg);
+          
+          // If we're viewing a contact and the message is from the client (direction 'in'),
+          // update sender_name to use the contact's name instead of the lead's name
+          if (selectedClient.isContact && selectedClient.contact_id && processed.direction === 'in') {
+            // Use the contact's name from selectedClient
+            if (selectedClient.name && selectedClient.name !== processed.sender_name) {
+              console.log(`🔄 Updating sender_name for contact message: "${processed.sender_name}" -> "${selectedClient.name}"`);
+              processed.sender_name = selectedClient.name;
+            }
+          }
+          
+          return processed;
+        });
         
         // Always update messages immediately on initial load
         // For polling, only update if there are actual changes
+        // Ensure messages are sorted by sent_at in ascending order (oldest first, newest last)
+        const sortedMessages = [...processedMessages].sort((a, b) => 
+          new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime()
+        );
+        
         if (!isPolling) {
           // Immediate update for initial load
-          setMessages(processedMessages);
+          setMessages(sortedMessages);
           setLoadingMessages(false); // Hide loading state
           initialLoadCompleteRef.current = true; // Mark initial load as complete
         } else {
@@ -1561,13 +2000,15 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             // Quick length check first
             if (processedMessages.length !== prevMessages.length) {
               // Merge template_id from previous messages if missing in new messages
-              return processedMessages.map(newMsg => {
+              const merged = processedMessages.map(newMsg => {
                 const prevMsg = prevMessages.find(p => p.id === newMsg.id || p.whatsapp_message_id === newMsg.whatsapp_message_id);
                 if (prevMsg && prevMsg.template_id && !newMsg.template_id) {
                   return { ...newMsg, template_id: prevMsg.template_id };
                 }
                 return newMsg;
               });
+              // Sort by sent_at in ascending order (oldest first, newest last)
+              return merged.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
             
             // Deep comparison only if lengths match
@@ -1581,7 +2022,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             
             if (hasChanges) {
               // Merge template_id from previous messages if missing in new messages
-              return processedMessages.map(newMsg => {
+              const merged = processedMessages.map(newMsg => {
                 const prevMsg = prevMessages.find(p => p.id === newMsg.id || p.whatsapp_message_id === newMsg.whatsapp_message_id);
                 if (prevMsg && prevMsg.template_id && !newMsg.template_id) {
                   // Re-process with the preserved template_id
@@ -1589,6 +2030,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 }
                 return newMsg;
               });
+              // Sort by sent_at in ascending order (oldest first, newest last)
+              return merged.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
             
             return prevMessages;
@@ -1662,7 +2105,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         clearInterval((window as any).__whatsappPollInterval);
       }
     };
-  }, [selectedClient, selectedContactId, leadContacts, propSelectedContact]);
+    // Only re-fetch when these specific values change, not when leadContacts array reference changes
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedClient?.id, selectedClient?.isContact, selectedClient?.contact_id, selectedContactId, propSelectedContact?.contact?.id]);
 
   // Load user names for edited/deleted messages
   useEffect(() => {
@@ -2108,12 +2553,20 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       }
       
       // Create a contact client
+      // CRITICAL: Always use contact's name from selectedContact (from leads_contact table)
+      // NEVER use result.name (which might be the lead's name) as a fallback
+      const contactName = selectedContact.name || result.contactName || '';
+      if (!contactName) {
+        console.warn(`⚠️ Contact ${selectedContact.id} has no name! Using fallback.`);
+      }
+      console.log(`✅ Creating contact client: Contact ID=${selectedContact.id}, Name="${contactName}" (from leads_contact), NOT from lead "${result.name || 'N/A'}"`);
+      
       const contactClient: Client = {
         id: `contact_${selectedContact.id}`,
         lead_id: leadId, // Store the associated lead_id
         contact_id: selectedContact.id, // Store the contact_id
         lead_number: leadData?.lead_number || result.lead_number || `Contact ${selectedContact.id}`,
-        name: selectedContact.name || result.contactName || result.name || '',
+        name: contactName, // Always use contact's name, never lead's name
         email: selectedContact.email || result.email || '',
         phone: selectedContact.phone || result.phone || '',
         mobile: selectedContact.mobile || result.mobile || '',
@@ -2218,41 +2671,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   };
 
   // Filter clients based on search term (only filters through fetched clients)
-  const filteredClients = clients.filter(client =>
-    client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    client.lead_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    (client.email && client.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
-    (client.phone && client.phone.includes(searchTerm)) ||
-    (client.mobile && client.mobile.includes(searchTerm))
-  ).sort((a, b) => {
-    // Get last message for each client
-    let lastMessageA: any = null;
-    let lastMessageB: any = null;
-    
-    if (a.isContact && a.contact_id) {
-      lastMessageA = allMessages.filter(m => m.contact_id === a.contact_id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
-    } else {
-      lastMessageA = allMessages.filter(m => m.lead_id === a.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
-    }
-    
-    if (b.isContact && b.contact_id) {
-      lastMessageB = allMessages.filter(m => m.contact_id === b.contact_id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
-    } else {
-      lastMessageB = allMessages.filter(m => m.lead_id === b.id).sort((x, y) => new Date(y.sent_at).getTime() - new Date(x.sent_at).getTime())[0];
-    }
-    
-    // If both have messages, sort by latest message time (descending)
-    if (lastMessageA && lastMessageB) {
-      return new Date(lastMessageB.sent_at).getTime() - new Date(lastMessageA.sent_at).getTime();
-    }
-    
-    // If only one has messages, prioritize it
-    if (lastMessageA && !lastMessageB) return -1;
-    if (lastMessageB && !lastMessageA) return 1;
-    
-    // If neither has messages, maintain original order
-    return 0;
-  });
+  // This will be computed after getLastMessageForClient is defined (see below)
 
   // Send new message via WhatsApp API
   const handleSendMessage = async (e: React.FormEvent) => {
@@ -2276,21 +2695,31 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
     setSending(true);
     
-    // Get phone number from selected contact or client
+    // Get phone number and contact ID
+    // CRITICAL: If selectedClient is a contact (isContact=true), use its contact_id and phone directly
+    // Otherwise, check selectedContactId from leadContacts dropdown
     let phoneNumber: string | null = null;
     let contactId: number | null = null;
     
-    if (selectedContactId && leadContacts.length > 0) {
+    if (selectedClient.isContact && selectedClient.contact_id) {
+      // This is a contact client - use its contact_id and phone directly
+      contactId = selectedClient.contact_id;
+      phoneNumber = selectedClient.phone || selectedClient.mobile || null;
+      console.log(`📞 Using contact client: contact_id=${contactId}, phone=${phoneNumber}, name=${selectedClient.name}`);
+    } else if (selectedContactId && leadContacts.length > 0) {
+      // This is a main lead with a selected contact from dropdown
       const selectedContact = leadContacts.find(c => c.id === selectedContactId);
       if (selectedContact) {
         phoneNumber = selectedContact.phone || selectedContact.mobile || null;
         contactId = selectedContact.id;
+        console.log(`📞 Using selected contact from dropdown: contact_id=${contactId}, phone=${phoneNumber}, name=${selectedContact.name}`);
       }
     }
     
-    // Fallback to client's phone number
+    // Fallback to client's phone number (for main leads without selected contact)
     if (!phoneNumber) {
       phoneNumber = selectedClient.phone || selectedClient.mobile || null;
+      console.log(`📞 Using main lead phone: phone=${phoneNumber}, name=${selectedClient.name}`);
     }
     
     if (!phoneNumber) {
@@ -2313,10 +2742,10 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         leadId: leadIdForMessage,
         phoneNumber: phoneNumber,
         sender_name: senderName,
-        contactId: selectedClient.isContact && selectedClient.contact_id 
-          ? selectedClient.contact_id 
-          : (contactId || null)
+        contactId: contactId // Use the contactId we determined above (from contact client or selected contact)
       };
+      
+      console.log(`📤 Message payload: leadId=${leadIdForMessage}, contactId=${contactId}, phoneNumber=${phoneNumber}, isContact=${selectedClient.isContact}`);
 
       // Check if we should send as template message
       if (selectedTemplate) {
@@ -2507,7 +2936,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         message: newMsg.message?.substring(0, 50)
       });
 
-      setMessages(prev => [...prev, newMsg]);
+      // Add message to the end and ensure messages are sorted by sent_at
+      setMessages(prev => {
+        const updated = [...prev, newMsg];
+        // Sort by sent_at in ascending order (oldest first, newest last)
+        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+      });
       setShouldAutoScroll(true); // Trigger auto-scroll when new message is sent
       setNewMessage('');
       setSelectedTemplate(null); // Clear template selection after sending
@@ -2578,7 +3012,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 whatsapp_message_id: regularResult.messageId
               };
 
-              setMessages(prev => [...prev, newMsg]);
+              // Add message to the end and ensure messages are sorted by sent_at
+              setMessages(prev => {
+                const updated = [...prev, newMsg];
+                // Sort by sent_at in ascending order (oldest first, newest last)
+                return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+              });
               setShouldAutoScroll(true);
               setNewMessage('');
               setSelectedTemplate(null); // Clear template selection
@@ -2630,12 +3069,13 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
 
       if (error) {
         console.error('Error fetching all messages:', error);
-        return;
+        return [];
       }
 
       return data || [];
     } catch (error) {
       console.error('Error fetching all messages:', error);
+      return [];
     }
   };
 
@@ -2661,11 +3101,239 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
   // Get last message for client preview from all messages
   const getLastMessageForClient = (client: Client) => {
     if (client.isContact && client.contact_id) {
-      // For contacts, find by contact_id
-      return allMessages.find(msg => msg.contact_id === client.contact_id);
+      // For contacts, find by contact_id OR phone number (using same logic as fetchMessages)
+      // For contacts, MUST use lead_id (not client.id which is contact_${id})
+      const isLegacy = client.lead_type === 'legacy' || 
+                      (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
+      const expectedLeadId = client.isContact 
+        ? client.lead_id  // For contacts, only use lead_id
+        : (client.lead_id || client.id); // For main leads, use lead_id or id
+      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
+        ? Number(expectedLeadId.replace('legacy_', '')) 
+        : Number(expectedLeadId)) : null;
+      
+      // Get contact phone numbers for matching
+      const contactPhone = client.phone || client.mobile || '';
+      const contactMobile = client.mobile || client.phone || '';
+      const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+      const normalizedContactPhone = normalizePhone(contactPhone);
+      const normalizedContactMobile = normalizePhone(contactMobile);
+      
+      // Generate phone variations (same as in fetchMessages)
+      const generatePhoneVariations = (phone: string, normalized: string) => {
+        const variations: string[] = [];
+        if (!phone || !normalized) return variations;
+        variations.push(phone);
+        variations.push(normalized);
+        if (normalized.startsWith('972')) {
+          variations.push(normalized.replace(/^972/, ''));
+          variations.push(`0${normalized.replace(/^972/, '')}`);
+        } else {
+          variations.push(`972${normalized}`);
+          variations.push(`+972${normalized}`);
+          if (normalized.startsWith('0')) {
+            variations.push(normalized.replace(/^0/, ''));
+            variations.push(`972${normalized.replace(/^0/, '')}`);
+          }
+        }
+        variations.push(`+${normalized}`);
+        variations.push(normalized.replace(/^\+/, ''));
+        if (normalized.length >= 4) variations.push(normalized.slice(-4));
+        if (normalized.length >= 8) variations.push(normalized.slice(-8));
+        if (normalized.length >= 9) variations.push(normalized.slice(-9));
+        if (normalized.length >= 10) variations.push(normalized.slice(-10));
+        return variations;
+      };
+      
+      const phoneVariations: string[] = [];
+      if (contactPhone) {
+        phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
+      }
+      if (contactMobile && contactMobile !== contactPhone) {
+        phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
+      }
+      const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
+      
+      return allMessages.find(msg => {
+        // First verify lead_id/legacy_id matches
+        if (isLegacy) {
+          if (expectedLegacyId !== null && msg.legacy_id !== expectedLegacyId) {
+            return false;
+          }
+        } else {
+          if (expectedLeadId && msg.lead_id !== expectedLeadId) {
+            return false;
+          }
+        }
+        
+        // Match by contact_id (highest priority)
+        if (msg.contact_id === client.contact_id) {
+          return true;
+        }
+        
+        // Match by phone number (using all variations)
+        if (msg.phone_number) {
+          const normalizedMsgPhone = normalizePhone(msg.phone_number);
+          for (const variation of uniquePhoneVariations) {
+            const normalizedVariation = normalizePhone(variation);
+            if (normalizedVariation && normalizedMsgPhone) {
+              if (normalizedMsgPhone === normalizedVariation ||
+                  (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
+                    normalizedVariation.endsWith(normalizedMsgPhone.slice(-8)))) ||
+                  (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
+                    normalizedVariation.endsWith(normalizedMsgPhone.slice(-4))))) {
+                return true;
+              }
+            }
+          }
+        }
+        
+        return false;
+      });
     } else {
-      // For main leads, find by lead_id
-      return allMessages.find(msg => msg.lead_id === client.id);
+      // For main leads, find by lead_id but EXCLUDE messages with contact_id
+      // CRITICAL: Messages with contact_id belong to contacts, not the main lead
+      // Also handle legacy leads (they use legacy_id, not lead_id)
+      const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      
+      if (isLegacy) {
+        const legacyId = typeof client.id === 'string' 
+          ? Number(client.id.replace('legacy_', '')) 
+          : Number(client.id);
+        if (!isNaN(legacyId)) {
+          // Get all contacts for this lead to check phone number matches
+          const contactsForThisLead = clients.filter(c => 
+            c.isContact && 
+            c.lead_id && 
+            String(c.lead_id) === String(legacyId)
+          );
+          
+          const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+          
+          const found = allMessages.find(msg => {
+            // STRICT: Must not have contact_id (null, undefined, or falsy)
+            if (msg.contact_id !== null && msg.contact_id !== undefined) {
+              return false;
+            }
+            
+            // CRITICAL: If message has a phone_number, check if it matches any contact's phone
+            // If it matches, exclude it from main lead (it belongs to a contact)
+            if (msg.phone_number && contactsForThisLead.length > 0) {
+              const msgPhoneNormalized = normalizePhone(msg.phone_number);
+              for (const contact of contactsForThisLead) {
+                const contactPhone = contact.phone || contact.mobile || '';
+                const contactMobile = contact.mobile || contact.phone || '';
+                const contactPhoneNormalized = normalizePhone(contactPhone);
+                const contactMobileNormalized = normalizePhone(contactMobile);
+                
+                // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
+                if (contactPhoneNormalized && msgPhoneNormalized) {
+                  if (msgPhoneNormalized === contactPhoneNormalized ||
+                      (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                        contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                      (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                        contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                    console.log(`❌ Excluding message ${msg.id} from main lead (legacy): phone matches contact ${contact.contact_id} (${contact.name})`);
+                    return false;
+                  }
+                }
+                
+                // Check mobile too
+                if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
+                  if (msgPhoneNormalized === contactMobileNormalized ||
+                      (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                        contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                      (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                        contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                    console.log(`❌ Excluding message ${msg.id} from main lead (legacy): phone matches contact ${contact.contact_id} (${contact.name}) mobile`);
+                    return false;
+                  }
+                }
+              }
+            }
+            
+            // Match by legacy_id
+            return msg.legacy_id === legacyId;
+          });
+          if (found) {
+            console.log(`✅ Main lead (legacy) last message found: client=${client.id}, legacyId=${legacyId}, msgId=${found.id}, contact_id=${found.contact_id}`);
+          }
+          return found;
+        }
+      } else {
+        // For new leads, match by lead_id (can be UUID string)
+        // CRITICAL: Must exclude messages with contact_id OR messages whose phone matches a contact's phone
+        // Get all contacts for this lead to check phone number matches
+        const contactsForThisLead = clients.filter(c => 
+          c.isContact && 
+          c.lead_id && 
+          (String(c.lead_id) === String(client.id) || c.lead_id === client.id)
+        );
+        
+        const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+        
+        const found = allMessages.find(msg => {
+          // STRICT: Must not have contact_id (null, undefined, or falsy)
+          if (msg.contact_id !== null && msg.contact_id !== undefined) {
+            return false;
+          }
+          
+          // CRITICAL: If message has a phone_number, check if it matches any contact's phone
+          // If it matches, exclude it from main lead (it belongs to a contact)
+          if (msg.phone_number && contactsForThisLead.length > 0) {
+            const msgPhoneNormalized = normalizePhone(msg.phone_number);
+            for (const contact of contactsForThisLead) {
+              const contactPhone = contact.phone || contact.mobile || '';
+              const contactMobile = contact.mobile || contact.phone || '';
+              const contactPhoneNormalized = normalizePhone(contactPhone);
+              const contactMobileNormalized = normalizePhone(contactMobile);
+              
+              // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
+              if (contactPhoneNormalized && msgPhoneNormalized) {
+                if (msgPhoneNormalized === contactPhoneNormalized ||
+                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                      contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                      contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                  console.log(`❌ Excluding message ${msg.id} from main lead: phone matches contact ${contact.contact_id} (${contact.name})`);
+                  return false;
+                }
+              }
+              
+              // Check mobile too
+              if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
+                if (msgPhoneNormalized === contactMobileNormalized ||
+                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                      contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                      contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                  console.log(`❌ Excluding message ${msg.id} from main lead: phone matches contact ${contact.contact_id} (${contact.name}) mobile`);
+                  return false;
+                }
+              }
+            }
+          }
+          
+          // Match by lead_id (handle both string and number comparison)
+          return String(msg.lead_id) === String(client.id) || msg.lead_id === client.id;
+        });
+        if (found) {
+          console.log(`✅ Main lead (new) last message found: client=${client.id}, msgLeadId=${found.lead_id}, msgId=${found.id}, contact_id=${found.contact_id}`);
+        }
+        return found;
+      }
+      
+      return undefined; // No match found
     }
   };
 
@@ -2674,11 +3342,228 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     let clientMessages: any[] = [];
     
     if (client.isContact && client.contact_id) {
-      // For contacts, filter by contact_id
-      clientMessages = allMessages.filter(msg => msg.contact_id === client.contact_id);
+      // For contacts, filter by contact_id OR phone number (using same logic as fetchMessages)
+      const isLegacy = client.lead_type === 'legacy' || 
+                      (client.lead_id && client.lead_id.toString().startsWith('legacy_'));
+      const expectedLeadId = client.isContact 
+        ? client.lead_id  // For contacts, only use lead_id
+        : (client.lead_id || client.id); // For main leads, use lead_id or id
+      const expectedLegacyId = isLegacy && expectedLeadId ? (typeof expectedLeadId === 'string' 
+        ? Number(expectedLeadId.replace('legacy_', '')) 
+        : Number(expectedLeadId)) : null;
+      
+      // Get contact phone numbers for matching
+      const contactPhone = client.phone || client.mobile || '';
+      const contactMobile = client.mobile || client.phone || '';
+      const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+      const normalizedContactPhone = normalizePhone(contactPhone);
+      const normalizedContactMobile = normalizePhone(contactMobile);
+      
+      // Generate phone variations (same as in fetchMessages)
+      const generatePhoneVariations = (phone: string, normalized: string) => {
+        const variations: string[] = [];
+        if (!phone || !normalized) return variations;
+        variations.push(phone);
+        variations.push(normalized);
+        if (normalized.startsWith('972')) {
+          variations.push(normalized.replace(/^972/, ''));
+          variations.push(`0${normalized.replace(/^972/, '')}`);
+        } else {
+          variations.push(`972${normalized}`);
+          variations.push(`+972${normalized}`);
+          if (normalized.startsWith('0')) {
+            variations.push(normalized.replace(/^0/, ''));
+            variations.push(`972${normalized.replace(/^0/, '')}`);
+          }
+        }
+        variations.push(`+${normalized}`);
+        variations.push(normalized.replace(/^\+/, ''));
+        if (normalized.length >= 4) variations.push(normalized.slice(-4));
+        if (normalized.length >= 8) variations.push(normalized.slice(-8));
+        if (normalized.length >= 9) variations.push(normalized.slice(-9));
+        if (normalized.length >= 10) variations.push(normalized.slice(-10));
+        return variations;
+      };
+      
+      const phoneVariations: string[] = [];
+      if (contactPhone) {
+        phoneVariations.push(...generatePhoneVariations(contactPhone, normalizedContactPhone));
+      }
+      if (contactMobile && contactMobile !== contactPhone) {
+        phoneVariations.push(...generatePhoneVariations(contactMobile, normalizedContactMobile));
+      }
+      const uniquePhoneVariations = Array.from(new Set(phoneVariations.filter(Boolean)));
+      
+      clientMessages = allMessages.filter(msg => {
+        // First verify lead_id/legacy_id matches
+        if (isLegacy) {
+          if (expectedLegacyId !== null && msg.legacy_id !== expectedLegacyId) {
+            return false;
+          }
+        } else {
+          if (expectedLeadId && msg.lead_id !== expectedLeadId) {
+            return false;
+          }
+        }
+        
+        // Match by contact_id (highest priority)
+        if (msg.contact_id === client.contact_id) {
+          return true;
+        }
+        
+        // Match by phone number (using all variations)
+        if (msg.phone_number) {
+          const normalizedMsgPhone = normalizePhone(msg.phone_number);
+          for (const variation of uniquePhoneVariations) {
+            const normalizedVariation = normalizePhone(variation);
+            if (normalizedVariation && normalizedMsgPhone) {
+              if (normalizedMsgPhone === normalizedVariation ||
+                  (normalizedVariation.length >= 8 && normalizedMsgPhone.length >= 8 &&
+                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-8)) ||
+                    normalizedVariation.endsWith(normalizedMsgPhone.slice(-8)))) ||
+                  (normalizedVariation.length >= 4 && normalizedMsgPhone.length >= 4 &&
+                   (normalizedMsgPhone.endsWith(normalizedVariation.slice(-4)) ||
+                    normalizedVariation.endsWith(normalizedMsgPhone.slice(-4))))) {
+                return true;
+              }
+            }
+          }
+        }
+        
+        return false;
+      });
     } else {
-      // For main leads, filter by lead_id
-      clientMessages = allMessages.filter(msg => msg.lead_id === client.id);
+      // For main leads, filter by lead_id but EXCLUDE messages with contact_id
+      // CRITICAL: Messages with contact_id belong to contacts, not the main lead
+      // Also handle legacy leads (they use legacy_id, not lead_id)
+      const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+      
+      if (isLegacy) {
+        const legacyId = typeof client.id === 'string' 
+          ? Number(client.id.replace('legacy_', '')) 
+          : Number(client.id);
+        if (!isNaN(legacyId)) {
+          // Get all contacts for this lead to check phone number matches
+          const contactsForThisLead = clients.filter(c => 
+            c.isContact && 
+            c.lead_id && 
+            String(c.lead_id) === String(legacyId)
+          );
+          
+          const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+          
+          clientMessages = allMessages.filter(msg => {
+            // STRICT: Must not have contact_id (null, undefined, or falsy)
+            if (msg.contact_id !== null && msg.contact_id !== undefined) {
+              return false;
+            }
+            
+            // CRITICAL: If message has a phone_number, check if it matches any contact's phone
+            // If it matches, exclude it from main lead (it belongs to a contact)
+            if (msg.phone_number && contactsForThisLead.length > 0) {
+              const msgPhoneNormalized = normalizePhone(msg.phone_number);
+              for (const contact of contactsForThisLead) {
+                const contactPhone = contact.phone || contact.mobile || '';
+                const contactMobile = contact.mobile || contact.phone || '';
+                const contactPhoneNormalized = normalizePhone(contactPhone);
+                const contactMobileNormalized = normalizePhone(contactMobile);
+                
+                // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
+                if (contactPhoneNormalized && msgPhoneNormalized) {
+                  if (msgPhoneNormalized === contactPhoneNormalized ||
+                      (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                        contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                      (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                       (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                        contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                    return false;
+                  }
+                }
+                
+                // Check mobile too
+                if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
+                  if (msgPhoneNormalized === contactMobileNormalized ||
+                      (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                        contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                      (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                       (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                        contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                    return false;
+                  }
+                }
+              }
+            }
+            
+            // Match by legacy_id
+            return msg.legacy_id === legacyId;
+          });
+          console.log(`📊 Main lead (legacy) unread count: client=${client.id}, legacyId=${legacyId}, filteredMessages=${clientMessages.length}, totalMessages=${allMessages.length}, contactsForLead=${contactsForThisLead.length}`);
+        } else {
+          clientMessages = [];
+        }
+      } else {
+        // For new leads, match by lead_id (can be UUID string)
+        // CRITICAL: Must exclude messages with contact_id OR messages whose phone matches a contact's phone
+        // Get all contacts for this lead to check phone number matches
+        const contactsForThisLead = clients.filter(c => 
+          c.isContact && 
+          c.lead_id && 
+          (String(c.lead_id) === String(client.id) || c.lead_id === client.id)
+        );
+        
+        const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+        
+        clientMessages = allMessages.filter(msg => {
+          // STRICT: Must not have contact_id (null, undefined, or falsy)
+          if (msg.contact_id !== null && msg.contact_id !== undefined) {
+            return false;
+          }
+          
+          // CRITICAL: If message has a phone_number, check if it matches any contact's phone
+          // If it matches, exclude it from main lead (it belongs to a contact)
+          if (msg.phone_number && contactsForThisLead.length > 0) {
+            const msgPhoneNormalized = normalizePhone(msg.phone_number);
+            for (const contact of contactsForThisLead) {
+              const contactPhone = contact.phone || contact.mobile || '';
+              const contactMobile = contact.mobile || contact.phone || '';
+              const contactPhoneNormalized = normalizePhone(contactPhone);
+              const contactMobileNormalized = normalizePhone(contactMobile);
+              
+              // Check if message phone matches contact phone (exact, last 8, or last 4 digits)
+              if (contactPhoneNormalized && msgPhoneNormalized) {
+                if (msgPhoneNormalized === contactPhoneNormalized ||
+                    (contactPhoneNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-8)) ||
+                      contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                    (contactPhoneNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                     (msgPhoneNormalized.endsWith(contactPhoneNormalized.slice(-4)) ||
+                      contactPhoneNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                  return false;
+                }
+              }
+              
+              // Check mobile too
+              if (contactMobileNormalized && msgPhoneNormalized && contactMobileNormalized !== contactPhoneNormalized) {
+                if (msgPhoneNormalized === contactMobileNormalized ||
+                    (contactMobileNormalized.length >= 8 && msgPhoneNormalized.length >= 8 &&
+                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-8)) ||
+                      contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-8)))) ||
+                    (contactMobileNormalized.length >= 4 && msgPhoneNormalized.length >= 4 &&
+                     (msgPhoneNormalized.endsWith(contactMobileNormalized.slice(-4)) ||
+                      contactMobileNormalized.endsWith(msgPhoneNormalized.slice(-4))))) {
+                  return false;
+                }
+              }
+            }
+          }
+          
+          // Match by lead_id (handle both string and number comparison)
+          return String(msg.lead_id) === String(client.id) || msg.lead_id === client.id;
+        });
+        console.log(`📊 Main lead (new) unread count: client=${client.id}, filteredMessages=${clientMessages.length}, totalMessages=${allMessages.length}, messagesWithContactId=${allMessages.filter(m => m.contact_id).length}, contactsForLead=${contactsForThisLead.length}`);
+      }
     }
     
     // Use the same simple logic as WhatsApp Leads Page
@@ -2697,6 +3582,41 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
     const isRead = (msg as any).is_read;
     return !isRead || isRead === false;
   }).length;
+
+  // Filter clients: exclude those without any messages, then apply search filter
+  // This is computed here (after getLastMessageForClient is defined) using useMemo
+  const filteredClients = useMemo(() => {
+    // Filter clients: exclude those without any messages
+    const clientsWithMessages = clients.filter(client => {
+      const lastMessage = getLastMessageForClient(client);
+      return lastMessage !== undefined && lastMessage !== null;
+    });
+    
+    // Apply search filter
+    return clientsWithMessages.filter(client =>
+      client.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      client.lead_number.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      (client.email && client.email.toLowerCase().includes(searchTerm.toLowerCase())) ||
+      (client.phone && client.phone.includes(searchTerm)) ||
+      (client.mobile && client.mobile.includes(searchTerm))
+    ).sort((a, b) => {
+      // Get last message for each client
+      const lastMessageA = getLastMessageForClient(a);
+      const lastMessageB = getLastMessageForClient(b);
+      
+      // If both have messages, sort by latest message time (descending)
+      if (lastMessageA && lastMessageB) {
+        return new Date(lastMessageB.sent_at).getTime() - new Date(lastMessageA.sent_at).getTime();
+      }
+      
+      // If only one has messages, prioritize it
+      if (lastMessageA && !lastMessageB) return -1;
+      if (lastMessageB && !lastMessageA) return 1;
+      
+      // If neither has messages, maintain original order
+      return 0;
+    });
+  }, [clients, searchTerm, allMessages]);
 
   // Handle file selection
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -3043,7 +3963,12 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
       };
 
       console.log('📤 Adding message to local state:', newMsg);
-      setMessages(prev => [...prev, newMsg]);
+      // Add message to the end and ensure messages are sorted by sent_at
+      setMessages(prev => {
+        const updated = [...prev, newMsg];
+        // Sort by sent_at in ascending order (oldest first, newest last)
+        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+      });
       setShouldAutoScroll(true); // Trigger auto-scroll when media message is sent
       setNewMessage('');
       if (!fileOverride) {
@@ -3219,7 +4144,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
             )}
           </div>
           <div className="flex items-center gap-2 flex-shrink-0">
-            {selectedClient && (
+            {selectedClient && !isMobile && (
               <button
                 onClick={() => {
                   // Get the correct lead identifier based on lead type
@@ -3291,12 +4216,9 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         <div className="flex-1 flex min-h-0 overflow-hidden">
           {/* Left Panel - Client List */}
           <div className={`${isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col min-h-0 ${isMobile && showChat ? 'hidden' : ''}`}>
-            {/* Filter Toggle and Search Bar */}
+            {/* Filter Toggle and Search Bar - Fixed on mobile */}
             <div className={`${isMobile
-                ? 'sticky top-0 z-10 bg-white transition-all duration-300 ' +
-                  (isSearchHiddenMobile
-                    ? 'h-0 p-0 -translate-y-full overflow-hidden border-b-0'
-                    : 'p-3 translate-y-0 border-b border-gray-200')
+                ? 'sticky top-0 z-10 bg-white border-b border-gray-200 p-3'
                 : 'p-3 border-b border-gray-200'
               }`}>
               {/* Toggle Tabs - Only show for superusers */}
@@ -3369,11 +4291,66 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                     // Check if client has any messages
                     let clientMessages: any[] = [];
                     if (client.isContact && client.contact_id) {
-                      // For contacts, filter by contact_id
-                      clientMessages = allMessages.filter(m => m.contact_id === client.contact_id);
+                      // For contacts, filter by phone number match OR contact_id match
+                      // Prioritize phone number matching to handle incorrectly assigned contact_ids
+                      const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+                      const expectedLeadId = client.isContact 
+                        ? client.lead_id  // For contacts, only use lead_id
+                        : (client.lead_id || client.id); // For main leads, use lead_id or id
+                      const expectedLegacyId = isLegacy ? (typeof expectedLeadId === 'string' 
+                        ? Number(expectedLeadId.replace('legacy_', '')) 
+                        : Number(expectedLeadId)) : null;
+                      
+                      // Normalize contact's phone numbers for matching
+                      const normalizePhone = (phone: string) => phone ? phone.replace(/\D/g, '') : '';
+                      const contactPhone = client.phone || client.mobile || '';
+                      const contactMobile = client.mobile || client.phone || '';
+                      const normalizedContactPhone = normalizePhone(contactPhone);
+                      const normalizedContactMobile = normalizePhone(contactMobile);
+                      
+                      clientMessages = allMessages.filter(m => {
+                        // First verify lead_id/legacy_id matches
+                        if (isLegacy) {
+                          if (expectedLegacyId !== null && m.legacy_id !== expectedLegacyId) {
+                            return false;
+                          }
+                        } else {
+                          if (expectedLeadId && m.lead_id !== expectedLeadId) {
+                            return false;
+                          }
+                        }
+                        
+                        // Check if phone number matches (prioritize this)
+                        const msgPhoneNumber = (m as any).phone_number;
+                        if (msgPhoneNumber && (normalizedContactPhone || normalizedContactMobile)) {
+                          const normalizedMsgPhone = normalizePhone(msgPhoneNumber);
+                          const matchesPhone = normalizedContactPhone && normalizedMsgPhone && 
+                            (normalizedMsgPhone === normalizedContactPhone || 
+                             normalizedMsgPhone.endsWith(normalizedContactPhone.slice(-8)) ||
+                             normalizedContactPhone.endsWith(normalizedMsgPhone.slice(-8)));
+                          const matchesMobile = normalizedContactMobile && normalizedMsgPhone && 
+                            (normalizedMsgPhone === normalizedContactMobile || 
+                             normalizedMsgPhone.endsWith(normalizedContactMobile.slice(-8)) ||
+                             normalizedContactMobile.endsWith(normalizedMsgPhone.slice(-8)));
+                          
+                          if (matchesPhone || matchesMobile) {
+                            return true; // Phone matches, include even if contact_id doesn't match
+                          }
+                        }
+                        
+                        // Fallback: check if contact_id matches
+                        if (m.contact_id === client.contact_id) {
+                          return true;
+                        }
+                        
+                        return false;
+                      });
                     } else {
-                      // For main leads, filter by lead_id
-                      clientMessages = allMessages.filter(m => m.lead_id === client.id);
+                      // For main leads, filter by lead_id but exclude messages with contact_id
+                      // (those messages belong to contacts, not the main lead)
+                      clientMessages = allMessages.filter(m => 
+                        m.lead_id === client.id && !m.contact_id
+                      );
                     }
                     const hasNoMessages = clientMessages.length === 0;
                     
@@ -3501,7 +4478,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                               </div>
                             </div>
                             <p className="text-sm md:text-sm text-gray-500 truncate">
-                              {client.isContact ? `Contact • ${client.lead_number}` : client.lead_number}
+                              {client.lead_number}
                             </p>
                             {lastMessage && (
                               <div className="flex items-center gap-1 mt-1">
@@ -3548,94 +4525,121 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 {/* Mobile Chat Header - Only visible on mobile when in chat */}
                 {isMobile && (
                   <div className={`flex-none flex flex-col border-b border-gray-200 ${isChatHeaderGlass ? 'bg-white/70 backdrop-blur-md supports-[backdrop-filter]:bg-white/50' : 'bg-white'}`} style={{ zIndex: 40 }}>
-                    <div className="flex items-center px-4 py-3">
-                      <button
-                        onClick={() => setShowChat(false)}
-                        className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-3"
-                      >
-                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
-                        </svg>
-                      </button>
-                    <div className="flex items-center gap-2 flex-1 min-w-0 mr-2" style={{ maxWidth: 'calc(100% - 200px)' }}>
-                      <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
-                        <span className="font-semibold text-sm">
-                          {selectedClient.name.charAt(0).toUpperCase()}
-                        </span>
-                        {(isLocked || messages.length === 0) && (
-                          <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-1">
-                            <LockClosedIcon className="w-3 h-3 text-white" />
+                    <div className="flex items-center px-2 py-3 relative">
+                      {/* Left Side - Back Button, Avatar, and Name */}
+                      <div className="flex items-center gap-2 flex-shrink-0 z-10">
+                        {/* Back Button */}
+                        <button
+                          onClick={() => setShowChat(false)}
+                          className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
+                          style={{ width: '40px', height: '40px', minWidth: '40px' }}
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                          </svg>
+                        </button>
+                        
+                        {/* Client Avatar */}
+                        <div className="w-8 h-8 rounded-full flex items-center justify-center relative flex-shrink-0 border bg-green-100 border-green-200 text-green-700 shadow-[0_4px_12px_rgba(16,185,129,0.2)]">
+                          <span className="font-semibold text-xs">
+                            {selectedClient.name.charAt(0).toUpperCase()}
+                          </span>
+                          {(isLocked || messages.length === 0) && (
+                            <div className="absolute -bottom-1 -right-1 bg-red-500 rounded-full p-0.5">
+                              <LockClosedIcon className="w-2.5 h-2.5 text-white" />
+                            </div>
+                          )}
+                        </div>
+                        
+                        {/* Client Name */}
+                        <div className="min-w-0">
+                          <h3 className="font-semibold text-gray-900 text-sm truncate">
+                            {selectedClient.name}
+                          </h3>
+                        </div>
+                      </div>
+                      
+                      {/* View Client Button - Center (Mobile Only) */}
+                      {selectedClient && (
+                        <button
+                          onClick={() => {
+                            const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
+                            let leadIdentifier: string | null = null;
+                            
+                            if (isLegacyLead) {
+                              const clientId = selectedClient.id.toString().replace('legacy_', '');
+                              if (clientId && clientId !== 'null' && clientId !== 'undefined') {
+                                if (clientId.includes('/')) {
+                                  leadIdentifier = clientId;
+                                } else if (/^\d+$/.test(clientId)) {
+                                  leadIdentifier = clientId;
+                                }
+                              }
+                              if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
+                                leadIdentifier = selectedClient.lead_number;
+                              }
+                            } else {
+                              leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
+                            }
+                            
+                            if (!leadIdentifier) {
+                              console.error('Cannot navigate: No valid lead identifier found', selectedClient);
+                              return;
+                            }
+                            
+                            const encodedIdentifier = encodeURIComponent(leadIdentifier);
+                            
+                            if (onClose) {
+                              onClose();
+                            }
+                            
+                            setTimeout(() => {
+                              navigate(`/clients/${encodedIdentifier}`, { replace: true });
+                            }, 100);
+                          }}
+                          className="btn btn-primary btn-sm gap-1 flex-shrink-0 absolute left-1/2 transform -translate-x-1/2 z-10"
+                          title="View Client Page"
+                          style={{ whiteSpace: 'nowrap' }}
+                        >
+                          <UserIcon className="w-4 h-4" />
+                          <span className="hidden sm:inline text-xs">View</span>
+                        </button>
+                      )}
+                      
+                      {/* Right Side - Time Left Badge and Close Button */}
+                      <div className="flex items-center gap-1 ml-auto flex-shrink-0 z-10">
+                        {/* Time Left Badge */}
+                        {timeLeft && (
+                          <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
+                            isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
+                          }`} style={{ flexShrink: 0, whiteSpace: 'nowrap' }}>
+                            {isLocked ? (
+                                <LockClosedIcon className="w-3 h-3" />
+                            ) : (
+                              <>
+                                <ClockIcon className="w-3 h-3" />
+                                <span className="text-xs">{timeLeft}</span>
+                              </>
+                            )}
                           </div>
                         )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <h3 className="font-semibold text-gray-900 text-sm truncate">
-                          {selectedClient.name}
-                        </h3>
-                        <p className="text-xs text-gray-500 truncate">
-                          {selectedClient.lead_number}
-                        </p>
-                      </div>
-                    </div>
-                    {timeLeft && (
-                      <div className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium ${
-                        isLocked ? 'bg-red-100 text-red-700' : 'bg-yellow-100 text-yellow-700'
-                      }`} style={{ flexShrink: 0, whiteSpace: 'nowrap', marginRight: '8px' }}>
-                        {isLocked ? (
-                            <LockClosedIcon className="w-4 h-4" />
-                        ) : (
-                          <>
-                            <ClockIcon className="w-4 h-4" />
-                            <span>{timeLeft}</span>
-                          </>
-                        )}
-                      </div>
-                    )}
-                    {/* View Client Button - Mobile */}
-                    {selectedClient && (
-                      <button
-                        onClick={() => {
-                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-                          let leadIdentifier: string | null = null;
-                          
-                          if (isLegacyLead) {
-                            const clientId = selectedClient.id.toString().replace('legacy_', '');
-                            if (clientId && clientId !== 'null' && clientId !== 'undefined') {
-                              if (clientId.includes('/')) {
-                                leadIdentifier = clientId;
-                              } else if (/^\d+$/.test(clientId)) {
-                                leadIdentifier = clientId;
-                              }
+                        
+                        {/* Close Button - Right */}
+                        <button
+                          onClick={() => {
+                            if (onClose) {
+                              onClose();
+                            } else {
+                              window.history.back();
                             }
-                            if (!leadIdentifier && selectedClient.lead_number && /^\d+$/.test(selectedClient.lead_number)) {
-                              leadIdentifier = selectedClient.lead_number;
-                            }
-                          } else {
-                            leadIdentifier = selectedClient.lead_number || selectedClient.manual_id || null;
-                          }
-                          
-                          if (!leadIdentifier) {
-                            console.error('Cannot navigate: No valid lead identifier found', selectedClient);
-                            return;
-                          }
-                          
-                          const encodedIdentifier = encodeURIComponent(leadIdentifier);
-                          
-                          if (onClose) {
-                            onClose();
-                          }
-                          
-                          setTimeout(() => {
-                            navigate(`/clients/${encodedIdentifier}`, { replace: true });
-                          }, 100);
-                        }}
-                        className="btn btn-primary btn-sm gap-1 flex-shrink-0 mr-2"
-                        title="View Client Page"
-                      >
-                        <UserIcon className="w-4 h-4" />
-                        <span className="hidden sm:inline text-xs">View</span>
-                      </button>
-                    )}
+                          }}
+                          className="btn btn-ghost btn-circle btn-sm flex-shrink-0"
+                          style={{ width: '40px', height: '40px', minWidth: '40px' }}
+                          title="Close"
+                        >
+                          <XMarkIcon className="w-5 h-5" />
+                        </button>
+                      </div>
                     </div>
                   </div>
                 )}

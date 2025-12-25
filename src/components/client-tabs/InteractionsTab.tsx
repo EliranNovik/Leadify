@@ -1026,6 +1026,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [activeInteraction, setActiveInteraction] = useState<Interaction | null>(null);
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [showEmailDetail, setShowEmailDetail] = useState(false);
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [showContactSelectorForEmail, setShowContactSelectorForEmail] = useState(false);
   const [selectedContactForWhatsApp, setSelectedContactForWhatsApp] = useState<{
@@ -1093,6 +1095,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setIsMailboxLoading(false);
     }
   }, [userId]);
+
+  // Mobile detection
+  useEffect(() => {
+    const checkMobile = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    checkMobile();
+    window.addEventListener('resize', checkMobile);
+    return () => window.removeEventListener('resize', checkMobile);
+  }, []);
+
+  // Reset email detail view when modal closes
+  useEffect(() => {
+    if (!isEmailModalOpen) {
+      setShowEmailDetail(false);
+      setSelectedEmailForView(null);
+    }
+  }, [isEmailModalOpen]);
 
   const mailboxStatusRequestedRef = useRef(false);
   const isMountedRef = useRef(true);
@@ -3308,7 +3328,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           // Note: We used to filter out calls here to avoid duplicates with call_logs table,
           // but this was also filtering out manual call interactions saved to leads_leadinteractions.
           // Now we keep all legacy interactions and rely on deduplication logic elsewhere.
-          Array.isArray(legacyResult) ? legacyResult : []
+          (Array.isArray(legacyResult) ? legacyResult : [])
         ];
 
         // 1. Manual interactions - fast client-side processing
@@ -4148,6 +4168,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     if (!userId) return;
 
     const requiresHydration = messages.filter(message => {
+      // Skip optimistic IDs (temporary IDs that don't exist in the backend)
+      if (message.id && message.id.startsWith('optimistic_')) {
+        console.log(`📧 Skipping optimistic email ID: ${message.id}`);
+        return false;
+      }
+      
       // ALWAYS hydrate if body_html is missing or empty (this is the main issue)
       const hasBodyHtml = message.body_html && message.body_html.trim() !== '';
       if (!hasBodyHtml) {
@@ -6163,6 +6189,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             {/* Header */}
             <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between p-4 md:p-6 border-b border-gray-200">
               <div className="flex items-center gap-2 md:gap-4 min-w-0 flex-1">
+                {/* Back Button - Mobile Only (when in email detail view) */}
+                {isMobile && showEmailDetail && (
+                  <button
+                    onClick={() => {
+                      setShowEmailDetail(false);
+                      setSelectedEmailForView(null);
+                    }}
+                    className="btn btn-ghost btn-circle btn-sm flex-shrink-0 mr-2"
+                  >
+                    <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 19l-7-7 7-7" />
+                    </svg>
+                  </button>
+                )}
                 <h2 className="text-lg md:text-2xl font-bold text-gray-900">Interactions</h2>
                 <div className="flex items-center gap-2 min-w-0">
                   <div className="w-2 h-2 bg-green-500 rounded-full flex-shrink-0"></div>
@@ -6172,54 +6212,60 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>
               </div>
               <div className="flex flex-col items-end gap-2">
-                <div className="flex items-center gap-2 text-xs text-gray-500">
-                  <span
-                    className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-semibold ${
-                      mailboxStatus.connected
-                        ? 'bg-green-100 text-green-700'
-                        : 'bg-gray-100 text-gray-500'
-                    }`}
-                  >
-                    <span className="w-2 h-2 rounded-full bg-current"></span>
-                    {mailboxStatus.connected ? 'Mailbox connected' : 'Mailbox disconnected'}
-                  </span>
-                  {formattedLastSync && (
-                    <span>Last sync: {formattedLastSync}</span>
-                  )}
-                  {mailboxError && (
-                    <span className="text-error">{mailboxError}</span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  <button
-                    type="button"
-                    className="btn btn-sm btn-outline"
-                    onClick={runMailboxSync}
-                    disabled={isMailboxLoading || emailsLoading || !mailboxStatus.connected || !userId}
-                  >
-                    {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
-                  </button>
-                  {!mailboxStatus.connected && (
-                    <button
-                      type="button"
-                      className="btn btn-sm btn-primary"
-                      onClick={handleMailboxConnect}
-                      disabled={isMailboxLoading || !userId}
-                    >
-                      Connect mailbox
-                    </button>
-                  )}
-                  <button
-                    onClick={() => {
-                      setIsEmailModalOpen(false);
-                      setSelectedEmailForView(null);
-                      setEmailSearchQuery('');
-                    }}
-                    className="btn btn-ghost btn-circle"
-                  >
-                    <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
-                  </button>
-                </div>
+                {/* Mailbox Status and Sync - Hidden on Mobile */}
+                {!isMobile && (
+                  <>
+                    <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <span
+                        className={`inline-flex items-center gap-1 px-3 py-1 rounded-full font-semibold ${
+                          mailboxStatus.connected
+                            ? 'bg-green-100 text-green-700'
+                            : 'bg-gray-100 text-gray-500'
+                        }`}
+                      >
+                        <span className="w-2 h-2 rounded-full bg-current"></span>
+                        {mailboxStatus.connected ? 'Mailbox connected' : 'Mailbox disconnected'}
+                      </span>
+                      {formattedLastSync && (
+                        <span>Last sync: {formattedLastSync}</span>
+                      )}
+                      {mailboxError && (
+                        <span className="text-error">{mailboxError}</span>
+                      )}
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        className="btn btn-sm btn-outline"
+                        onClick={runMailboxSync}
+                        disabled={isMailboxLoading || emailsLoading || !mailboxStatus.connected || !userId}
+                      >
+                        {isMailboxLoading ? 'Syncing...' : 'Sync emails'}
+                      </button>
+                      {!mailboxStatus.connected && (
+                        <button
+                          type="button"
+                          className="btn btn-sm btn-primary"
+                          onClick={handleMailboxConnect}
+                          disabled={isMailboxLoading || !userId}
+                        >
+                          Connect mailbox
+                        </button>
+                      )}
+                    </div>
+                  </>
+                )}
+                <button
+                  onClick={() => {
+                    setIsEmailModalOpen(false);
+                    setSelectedEmailForView(null);
+                    setEmailSearchQuery('');
+                    setShowEmailDetail(false);
+                  }}
+                  className="btn btn-ghost btn-circle"
+                >
+                  <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
+                </button>
               </div>
             </div>
 
@@ -6274,8 +6320,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
             {/* Email List and Viewer - Split View */}
             <div className="flex-1 flex overflow-hidden">
-              {/* Left Sidebar - Email List */}
-              <div className="w-80 border-r border-gray-200 flex flex-col overflow-hidden">
+              {/* Left Sidebar - Email List (Hidden on Mobile when in detail view) */}
+              <div className={`${isMobile && showEmailDetail ? 'hidden' : isMobile ? 'w-full' : 'w-80'} border-r border-gray-200 flex flex-col overflow-hidden`}>
                 <div className="flex-1 overflow-y-auto p-2">
                   {emailsLoading ? (
                     <div className="flex items-center justify-center h-full">
@@ -6401,6 +6447,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             setSelectedEmailForView(message);
                             // Hydrate this email if needed
                             hydrateEmailBodies([message]);
+                            // On mobile, show detail view
+                            if (isMobile) {
+                              setShowEmailDetail(true);
+                            }
                           }}
                           className={`w-full text-left p-3 rounded-lg border transition-all ${
                             isSelected
@@ -6449,8 +6499,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 </div>
               </div>
 
-              {/* Right Side - Selected Email Viewer */}
-              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+              {/* Right Side - Selected Email Viewer (Hidden on Mobile when in list view) */}
+              <div className={`${isMobile && !showEmailDetail ? 'hidden' : 'flex-1'} flex flex-col overflow-hidden bg-white`}>
                 {selectedEmailForView ? (
                   <div className="flex-1 overflow-y-auto p-6">
                     <div className="max-w-4xl mx-auto">
