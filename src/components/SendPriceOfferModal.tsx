@@ -1002,6 +1002,7 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       }
 
       await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+      // Stage evaluation is handled automatically by database triggers
 
       toast.success('Offer email sent!');
       await onOfferSent();

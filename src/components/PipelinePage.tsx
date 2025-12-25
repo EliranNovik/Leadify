@@ -158,7 +158,13 @@ const getExpertDisplayName = (lead: LeadForPipeline, allEmployees: any[]): strin
     return expertName !== lead.expert_id.toString() ? expertName : '--';
   }
   
-  // For new leads, check expert field (might be name or ID)
+  // For new leads, prioritize expert_id (numeric field) over expert (text field)
+  if (lead.expert_id) {
+    const expertName = getEmployeeDisplayName(lead.expert_id, allEmployees);
+    return expertName !== lead.expert_id.toString() ? expertName : '--';
+  }
+  
+  // Fallback to expert field (might be name or ID)
   if (lead.expert) {
     // If it's already a name (not a number), return it
     if (isNaN(Number(lead.expert))) {
@@ -960,8 +966,8 @@ const PipelinePage: React.FC = () => {
           
           // Define allowed stage IDs based on pipeline mode
           const allowedStageIds = pipelineMode === 'closer' 
-            ? ['20', '21', '30', '40', '50', '55', '60', '70']
-            : ['10', '15', '20', '21', '30', '40']; // Scheduler: exclude stage 50 and above
+            ? ['20', '21', '30', '40', '50', '55', '60'] // Closer: exclude stage 70 (payment request sent)
+            : ['10', '15', '20', '21', '30', '40']; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
           
           console.log('🔍 Pipeline Debug - Fetching leads', {
             pipelineMode,
@@ -991,6 +997,7 @@ const PipelinePage: React.FC = () => {
                   name,
                   created_at,
                   expert,
+                  expert_id,
                   manager,
                   scheduler,
                   closer,
@@ -1100,6 +1107,7 @@ const PipelinePage: React.FC = () => {
                   name,
                   created_at,
                   expert,
+                  expert_id,
                   manager,
                   scheduler,
                   closer,
@@ -1244,6 +1252,7 @@ const PipelinePage: React.FC = () => {
                 name,
                 created_at,
                 expert,
+                expert_id,
                 manager,
                 scheduler,
                 closer,
@@ -1357,8 +1366,8 @@ const PipelinePage: React.FC = () => {
           // Fetch legacy leads - optimized for performance
           // Define allowed stage IDs based on pipeline mode
           const allowedLegacyStageIds = pipelineMode === 'closer'
-            ? [20, 21, 30, 40, 50, 55, 60, 70]
-            : [10, 15, 20, 21, 30, 40, 50];
+            ? [20, 21, 30, 40, 50, 55, 60] // Closer: exclude stage 70 (payment request sent)
+            : [10, 15, 20, 21, 30, 40]; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
           
           let legacyLeadsQuery = supabase
             .from('leads_lead')
@@ -1369,6 +1378,7 @@ const PipelinePage: React.FC = () => {
               stage,
               closer_id,
               meeting_scheduler_id,
+              expert_id,
               total,
               currency_id,
               probability,
@@ -1894,7 +1904,7 @@ const PipelinePage: React.FC = () => {
               lead_number: lead.id?.toString() || '',
               name: lead.name || '',
               created_at: lead.cdate || new Date().toISOString(),
-              expert: lead.closer_id, // Use closer_id as expert for legacy leads
+              expert: lead.expert_id || null, // Use expert_id for legacy leads (not closer_id)
               topic: null, // Legacy leads don't have topic field
               category: getCategoryName(lead.category_id), // Use proper category handling
               handler_notes: (lead as any).handler_notes || [],
@@ -1927,7 +1937,7 @@ const PipelinePage: React.FC = () => {
               category_id: lead.category_id, // Preserve the original category_id
               total: lead.total,
               meeting_total_currency_id: null,
-              expert_id: lead.closer_id,
+              expert_id: lead.expert_id || null, // Use expert_id from database (not closer_id)
               closer_id: lead.closer_id, // Preserve closer_id for closer pipeline filtering
               language_id: lead.language_id || null,
               language: null, // Legacy leads use language_id
@@ -3290,6 +3300,7 @@ const PipelinePage: React.FC = () => {
         .eq('id', selectedLead.id);
 
       if (updateError) throw updateError;
+      // Stage evaluation is handled automatically by database triggers
       
       // Update local state
       setSelectedLead({ ...selectedLead, manual_interactions: updatedInteractions });
@@ -6917,6 +6928,8 @@ const PipelinePage: React.FC = () => {
                     toast.error('Failed to save WhatsApp message: ' + insertError.message);
                     return;
                   }
+                  // Stage evaluation is handled automatically by database triggers
+                  
                   // Fetch latest WhatsApp messages for this lead
                   const { data: whatsappData, error: fetchError } = await supabase
                     .from('whatsapp_messages')

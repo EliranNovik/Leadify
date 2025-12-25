@@ -2528,6 +2528,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
         setIsInputFocused(false);
         textareaRef.current?.blur();
       }
+      // Stage evaluation is handled automatically by database triggers
+      
       toast.success('Message sent via WhatsApp!');
     } catch (error) {
       console.error('Error sending message:', error);

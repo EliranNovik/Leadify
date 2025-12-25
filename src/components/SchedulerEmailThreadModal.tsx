@@ -1968,7 +1968,27 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
                                 >
                                   {message.subject}
                                 </div>
-                                <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.date)}</div>
+                                <div className="text-xs text-gray-500 mt-1 space-y-0.5" dir="ltr" style={{ textAlign: 'left' }}>
+                                  <div>
+                                    <span className="font-medium">From:</span> <span className="text-gray-700">{message.from || message.sender_email || 'Unknown'}</span>
+                                  </div>
+                                  {message.to && (() => {
+                                    const recipients = message.to.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
+                                    return (
+                                      <div>
+                                        <span className="font-medium">To:</span> <span className="text-gray-700">
+                                          {recipients.map((recipient: string, idx: number) => (
+                                            <span key={idx}>
+                                              {recipient}
+                                              {idx < recipients.length - 1 && ', '}
+                                            </span>
+                                          ))}
+                                        </span>
+                                      </div>
+                                    );
+                                  })()}
+                                  <div className="text-gray-400">{formatTime(message.date)}</div>
+                                </div>
                               </div>
                               
                               {message.body_html ? (

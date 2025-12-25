@@ -268,6 +268,7 @@ interface Interaction {
   sender_email?: string | null; // Sender email for email interactions
   recipient_list?: string | null; // Recipient list for email interactions
   phone_number?: string | null; // Phone number for WhatsApp interactions
+  recipient_name?: string | null; // Recipient name for "To:" display in timeline
 }
 
 interface EmailTemplate {
@@ -285,7 +286,7 @@ interface EmailTemplate {
 const contactMethods = [
   { value: 'email', label: 'E-mail' },
   { value: 'whatsapp', label: 'WhatsApp' },
-  { value: 'call_log', label: 'Call' },
+  { value: 'call', label: 'Call' },
   { value: 'sms', label: 'SMS' },
   { value: 'office', label: 'In Office' },
 ];
@@ -297,6 +298,90 @@ const extractHtmlBody = (html: string) => {
 };
 
 // Helper function to format email HTML with line breaks and RTL support
+// Process email HTML to convert cid: references to data URLs from inline attachments
+const processEmailHtmlWithInlineImages = (html: string, attachments: any[] = []): string => {
+  if (!html || !attachments || attachments.length === 0) return html;
+  
+  // Find all inline attachments - check multiple field name variations
+  const inlineAttachments = attachments.filter((att: any) => {
+    if (!att) return false;
+    
+    // Check if it's an inline attachment (has contentId/content_id OR isInline flag)
+    const hasContentId = !!(att.contentId || att.content_id || att.contentID);
+    const isInline = att.isInline === true;
+    
+    // Check for contentBytes in various field name formats
+    const hasContentBytes = !!(att.contentBytes || att.content_bytes || att.contentBytesBase64);
+    
+    return (hasContentId || isInline) && hasContentBytes;
+  });
+  
+  if (inlineAttachments.length === 0) return html;
+  
+  // Create a map of Content-ID to data URL
+  const cidToDataUrl = new Map<string, string>();
+  
+  inlineAttachments.forEach((att: any) => {
+    try {
+      const contentId = att.contentId || att.content_id || att.contentID;
+      const contentBytes = att.contentBytes || att.content_bytes || att.contentBytesBase64;
+      
+      if (!contentId || !contentBytes) return;
+      
+      // Convert base64 contentBytes to data URL
+      // Handle both raw base64 and data: URLs
+      let base64Data = contentBytes;
+      if (contentBytes.startsWith('data:')) {
+        // Already a data URL, use it directly
+        base64Data = contentBytes;
+      } else {
+        // Assume it's base64, construct data URL
+        const contentType = att.contentType || att.content_type || att.mimeType || 'image/png';
+        base64Data = `data:${contentType};base64,${contentBytes}`;
+      }
+      
+      // Store both with and without angle brackets (some emails use <cid:...>, others use cid:...)
+      const cidValue = contentId.replace(/^<|>$/g, '').trim(); // Remove angle brackets if present
+      cidToDataUrl.set(`cid:${cidValue}`, base64Data);
+      cidToDataUrl.set(`<cid:${cidValue}>`, base64Data);
+      cidToDataUrl.set(`cid:<${cidValue}>`, base64Data);
+      cidToDataUrl.set(cidValue, base64Data); // Also match without cid: prefix
+    } catch (error) {
+      console.error('Error processing inline attachment:', error, att);
+    }
+  });
+  
+  if (cidToDataUrl.size === 0) return html;
+  
+  // Replace all cid: references in img src attributes
+  let processedHtml = html;
+  
+  // Match img tags with cid: references in src attribute (various formats)
+  processedHtml = processedHtml.replace(/<img([^>]*?)src\s*=\s*["'](cid:[^"']+)["']([^>]*?)>/gi, (match, before, cidRef, after) => {
+    const cidValue = cidRef.replace(/^cid:/i, '').replace(/^<|>$/g, '').trim();
+    const dataUrl = cidToDataUrl.get(`cid:${cidValue}`) || 
+                    cidToDataUrl.get(`<cid:${cidValue}>`) || 
+                    cidToDataUrl.get(`cid:<${cidValue}>`) ||
+                    cidToDataUrl.get(cidValue);
+    
+    if (dataUrl) {
+      // Preserve other attributes and replace src
+      return `<img${before}src="${dataUrl}"${after}>`;
+    }
+    return match; // Keep original if no match found
+  });
+  
+  // Also handle cid: references that might be in other formats or contexts
+  cidToDataUrl.forEach((dataUrl, cidKey) => {
+    // Replace standalone cid: references in src attributes
+    const escapedCid = cidKey.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const regex = new RegExp(`(src=["'])${escapedCid}(["'])`, 'gi');
+    processedHtml = processedHtml.replace(regex, `$1${dataUrl}$2`);
+  });
+  
+  return processedHtml;
+};
+
 const formatEmailHtmlForDisplay = (html: string | null | undefined): string => {
   if (!html) return '';
   
@@ -604,6 +689,163 @@ const emailTemplates = [
   },
 ];
 
+// Component to handle truncated content with expand/collapse
+const TruncatedContent: React.FC<{ 
+  content: string; 
+  maxCharacters: number;
+  direction?: 'rtl' | 'ltr' | 'auto';
+  subject?: string;
+}> = ({ content, maxCharacters, direction, subject }) => {
+  // Helper function to truncate HTML content by character count (text only)
+  const truncateHtmlByChars = (html: string, maxChars: number): { truncated: string; isTruncated: boolean } => {
+    if (!html) return { truncated: '', isTruncated: false };
+    
+    // Remove HTML tags to count actual text characters
+    const textContent = html.replace(/<[^>]*>/g, '');
+    if (textContent.length <= maxChars) {
+      return { truncated: html, isTruncated: false };
+    }
+    
+    // Find the truncation point in the text
+    let charCount = 0;
+    let truncatedHtml = '';
+    let inTag = false;
+    let tagBuffer = '';
+    
+    for (let i = 0; i < html.length; i++) {
+      const char = html[i];
+      
+      if (char === '<') {
+        inTag = true;
+        tagBuffer = char;
+      } else if (char === '>') {
+        inTag = false;
+        tagBuffer += char;
+        truncatedHtml += tagBuffer;
+        tagBuffer = '';
+      } else if (inTag) {
+        tagBuffer += char;
+      } else {
+        // Regular text character
+        if (charCount < maxChars) {
+          truncatedHtml += char;
+          charCount++;
+        } else {
+          break;
+        }
+      }
+    }
+    
+    // Close any open tags and add ellipsis
+    truncatedHtml += '...';
+    return { truncated: truncatedHtml, isTruncated: true };
+  };
+  
+  const { truncated: truncatedContent, isTruncated } = truncateHtmlByChars(content, maxCharacters);
+  const [isExpanded, setIsExpanded] = useState(false);
+  
+  return (
+    <div 
+      className="text-sm sm:text-base text-gray-700 break-words mb-4"
+      dir="auto"
+      style={{ 
+        lineHeight: '1.6'
+      }}
+    >
+      {subject && (
+        <div 
+          className="font-bold text-base sm:text-lg mb-2 text-gray-900"
+          dir="auto"
+        >
+          {subject}
+        </div>
+      )}
+      <div 
+        className="max-w-none whitespace-pre-wrap overflow-visible"
+        style={{ lineHeight: '1.6', maxHeight: 'none' }}
+        dir={direction || 'auto'}
+        dangerouslySetInnerHTML={{ 
+          __html: isExpanded ? content : truncatedContent
+        }} 
+      />
+      {isTruncated && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            setIsExpanded(!isExpanded);
+          }}
+          className="mt-2 text-sm text-blue-600 hover:text-blue-800 font-medium"
+        >
+          {isExpanded ? 'Show less' : 'Show more'}
+        </button>
+      )}
+    </div>
+  );
+};
+
+// Component to handle email content with error handling for broken HTML elements
+const EmailContentWithErrorHandling: React.FC<{ html: string; emailId: string }> = ({ html, emailId }) => {
+  const contentRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!contentRef.current) return;
+
+    // Find all images in the email content
+    const images = contentRef.current.querySelectorAll('img');
+    
+    const handleImageError = (img: HTMLImageElement) => {
+      // Remove the broken image tag
+      console.log('Removing broken image:', img.src);
+      img.remove();
+    };
+
+    // Attach error handlers to all images
+    images.forEach((img) => {
+      // Only attach if not already handled
+      if (!img.hasAttribute('data-error-handled')) {
+        img.setAttribute('data-error-handled', 'true');
+        img.addEventListener('error', () => handleImageError(img), { once: true });
+      }
+    });
+
+    // Also handle broken iframes, videos, and other embedded content
+    const iframes = contentRef.current.querySelectorAll('iframe, video, embed, object');
+    iframes.forEach((element) => {
+      if (!element.hasAttribute('data-error-handled')) {
+        element.setAttribute('data-error-handled', 'true');
+        element.addEventListener('error', () => {
+          console.log('Removing broken embedded content:', element.tagName);
+          element.remove();
+        }, { once: true });
+      }
+    });
+
+    // Cleanup function
+    return () => {
+      images.forEach((img) => {
+        const handler = () => handleImageError(img);
+        img.removeEventListener('error', handler);
+      });
+    };
+  }, [html, emailId]); // Re-run when email content changes
+
+  return (
+    <div
+      ref={contentRef}
+      dangerouslySetInnerHTML={{ __html: html }}
+      className="prose prose-lg max-w-none text-gray-800 break-words email-content"
+      style={{ 
+        wordBreak: 'break-word', 
+        overflowWrap: 'anywhere',
+        whiteSpace: 'normal',
+        lineHeight: '1.8',
+        fontSize: '15px'
+      }}
+      dir="auto"
+    />
+  );
+};
+
 // Helper to get current user's full name from Supabase
 // Join users.employee_id with tenants_employee.id to get display_name
 async function fetchCurrentUserFullName() {
@@ -780,6 +1022,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const [composeAttachments, setComposeAttachments] = useState<{ name: string; contentType: string; contentBytes: string }[]>([]);
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const [activeEmailId, setActiveEmailId] = useState<string | null>(null);
+  const [selectedEmailForView, setSelectedEmailForView] = useState<any | null>(null);
   const [activeInteraction, setActiveInteraction] = useState<Interaction | null>(null);
   const [detailsDrawerOpen, setDetailsDrawerOpen] = useState(false);
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -1432,10 +1675,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const INITIAL_VISIBLE_INTERACTIONS = 20;
   const [visibleInteractionsCount, setVisibleInteractionsCount] = useState(INITIAL_VISIBLE_INTERACTIONS);
 
-  const sortedInteractions = useMemo(
-    () => [...interactions].sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime()),
-    [interactions]
-  );
+  const sortedInteractions = useMemo(() => {
+    // Final safety filter: Remove any email interactions with no meaningful body content
+    const filtered = interactions.filter((interaction: any) => {
+      if (interaction.kind === 'email') {
+        const content = interaction.content || '';
+        const subject = interaction.subject || '';
+        
+        // Remove HTML tags to check actual text content
+        const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        
+        // Check if body_html or body_preview exists
+        const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
+                              (interaction.body_preview && interaction.body_preview.trim() !== '');
+        
+        // Filter out if no meaningful content
+        if (!hasBodyContent || 
+            !textContent || 
+            textContent.length < 20 || 
+            textContent.toLowerCase() === subject.toLowerCase()) {
+          console.log('🚫 Final filter: Removing email interaction with no meaningful body:', {
+            id: interaction.id,
+            subject: subject.substring(0, 50),
+            contentLength: textContent.length
+          });
+          return false;
+        }
+      }
+      return true;
+    });
+    
+    return filtered.sort((a, b) => new Date(b.raw_date).getTime() - new Date(a.raw_date).getTime());
+  }, [interactions]);
 
   useEffect(() => {
     const nextCount = client.id
@@ -1513,18 +1784,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const originalContent =
           typeof row.content === 'string' ? row.content : row.content != null ? String(row.content) : '';
 
-        const strippedBase = stripSignatureAndQuotedTextPreserveHtml(originalContent);
-        const sanitizedBase = sanitizeEmailHtml(strippedBase);
+        // Don't strip signatures/quoted text - show full content
+        // The user requested to remove content truncation
+        const sanitizedBase = sanitizeEmailHtml(originalContent);
 
         let sanitizedWithoutSubject = sanitizedBase;
         if (row.subject) {
           try {
+            // Only remove subject if it appears at the very beginning of the content
             const subjectPattern = new RegExp(`^${escapeRegExp(row.subject)}\\s*:?\\s*[\\-–—]*`, 'i');
             const withoutSubjectSource = originalContent.replace(subjectPattern, '').trim();
-            const strippedWithoutSubject = stripSignatureAndQuotedTextPreserveHtml(withoutSubjectSource);
-            const sanitizedCandidate = sanitizeEmailHtml(strippedWithoutSubject);
-            if (sanitizedCandidate) {
-              sanitizedWithoutSubject = sanitizedCandidate;
+            if (withoutSubjectSource && withoutSubjectSource !== originalContent) {
+              const sanitizedCandidate = sanitizeEmailHtml(withoutSubjectSource);
+              if (sanitizedCandidate) {
+                sanitizedWithoutSubject = sanitizedCandidate;
+              }
             }
           } catch (error) {
             console.warn('Failed to strip subject prefix from email content', error);
@@ -1669,15 +1943,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         await new Promise(resolve => setTimeout(resolve, 50));
       }
       
+      // Find the email in the emails list and set it as selected
+      // We'll set it after emails are loaded
+      setActiveEmailId(row.id.toString());
+      
       // Now open the modal
       setIsEmailModalOpen(true);
-      setActiveEmailId(row.id.toString());
+      
+      // Find and select the email after a short delay to ensure emails are loaded
       setTimeout(() => {
-        const el = document.querySelector(`[data-email-id="${row.id}"]`);
-        if (el) {
-          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-          el.classList.add('ring-2', 'ring-primary');
-          setTimeout(() => el.classList.remove('ring-2', 'ring-primary'), 1200);
+        const emailToSelect = emails.find((e: any) => e.id === row.id);
+        if (emailToSelect) {
+          setSelectedEmailForView(emailToSelect);
+          hydrateEmailBodies([emailToSelect]);
         }
       }, 300);
     } else if (row.kind === 'whatsapp' && !row.editable) {
@@ -2059,6 +2337,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setWhatsAppMessages(data);
       }
       
+      // Stage evaluation is handled automatically by database triggers
+      
       // Optionally, update interactions timeline
       if (onClientUpdate) await onClientUpdate();
       
@@ -2282,6 +2562,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       setWhatsAppMessages(data);
     }
     
+    // Stage evaluation is handled automatically by database triggers
+    
     // Optionally, update interactions timeline
     if (onClientUpdate) await onClientUpdate();
   };
@@ -2309,6 +2591,39 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         let cachedInteractions = cacheForLead.interactions || [];
         const cachedWhatsAppCount = cachedInteractions.filter((i: any) => i.kind === 'whatsapp').length;
         console.log(`📊 Cached interactions: ${cachedInteractions.length} total, ${cachedWhatsAppCount} WhatsApp messages`);
+        
+        // CRITICAL: Filter out email interactions with no meaningful body content from cache
+        cachedInteractions = cachedInteractions.filter((interaction: any) => {
+          if (interaction.kind === 'email') {
+            const content = interaction.content || '';
+            const subject = interaction.subject || '';
+            
+            // Remove HTML tags to check actual text content
+            const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            
+            // Filter out if:
+            // 1. Content is empty or just whitespace
+            // 2. Content is the same as subject (case-insensitive)
+            // 3. Content is too short (less than 20 characters)
+            // 4. No body_html or body_preview exists
+            const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
+                                  (interaction.body_preview && interaction.body_preview.trim() !== '');
+            
+            if (!hasBodyContent || 
+                !textContent || 
+                textContent.length < 20 || 
+                textContent.toLowerCase() === subject.toLowerCase()) {
+              console.log('🚫 Filtering out cached email interaction with no meaningful body:', {
+                id: interaction.id,
+                subject: subject.substring(0, 50),
+                contentLength: textContent.length,
+                hasBodyContent
+              });
+              return false;
+            }
+          }
+          return true;
+        });
         
         // Process cached WhatsApp messages with templates if templates are available
         if (whatsAppTemplates.length > 0 && cachedWhatsAppCount > 0) {
@@ -2445,9 +2760,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           })() : Promise.resolve({ data: [], error: null }),
 
           // Call logs query - only fetch essential fields
-          client?.id ? (async () => {
+          // Note: call_logs.lead_id is BIGINT and only stores legacy lead IDs
+          // For new leads, skip this query as call_logs doesn't support UUID lead_ids
+          client?.id && isLegacyLead ? (async () => {
             try {
-              let query = supabase
+              const query = supabase
                 .from('call_logs')
                 .select(`
                   id,
@@ -2464,14 +2781,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     photo_url
                   )
                 `)
+                .eq('lead_id', legacyId)
                 .limit(FETCH_BATCH_SIZE);
-              
-              if (isLegacyLead) {
-                query = query.eq('lead_id', legacyId);
-              } else {
-                // Skip client_id query if column doesn't exist
-                query = query.eq('lead_id', client.id);
-              }
               
               const { data, error } = await query.order('cdate', { ascending: false });
               return { data, error };
@@ -2492,6 +2803,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
           client?.id
             ? (async () => {
+                // Collect all email addresses for this client (including contacts)
+                // This ensures emails are shown in all leads where any of these email addresses match
+                const clientEmails = collectClientEmails(client);
+                // Also add emails from contacts if available
+                const allEmails = [...clientEmails];
+                if (leadContacts && leadContacts.length > 0) {
+                  leadContacts.forEach((contact) => {
+                    if (contact.email) {
+                      const normalized = normalizeEmailForFilter(contact.email);
+                      if (normalized && !allEmails.includes(normalized)) {
+                        allEmails.push(normalized);
+                      }
+                    }
+                  });
+                }
+                
+                // Build query that matches by lead ID OR email addresses
+                // This ensures emails are shown in all leads where the email address matches
+                const emailFilters = buildEmailFilterClauses({
+                  clientId: !isLegacyLead ? String(client.id) : null,
+                  legacyId: isLegacyLead ? legacyId : null,
+                  emails: allEmails,
+                });
+
                 let emailQuery = supabase
                   .from('emails')
                   .select(
@@ -2500,7 +2835,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   .limit(EMAIL_MODAL_LIMIT)
                   .order('sent_at', { ascending: false });
 
-                if (isLegacyLead && legacyId !== null) {
+                if (emailFilters.length > 0) {
+                  emailQuery = emailQuery.or(emailFilters.join(','));
+                } else if (isLegacyLead && legacyId !== null) {
                   emailQuery = emailQuery.eq('legacy_id', legacyId);
                 } else {
                   emailQuery = emailQuery.eq('client_id', client.id);
@@ -2896,9 +3233,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             }
             
             // Determine recipient name for "To:" field:
-            // - For outbound calls: destination (client we called)
-            // - For inbound calls: source (client who called us)
-            const recipientPhone = direction === 'out' ? callLog.destination : callLog.source;
+            // - For outbound calls: destination (client we called) - this is the recipient
+            // - For inbound calls: destination (employee who received the call) - this is the recipient
+            const recipientPhone = direction === 'out' ? callLog.destination : callLog.destination;
             let recipientName: string | null = null;
             
             if (recipientPhone) {
@@ -2967,8 +3304,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             };
           }) || [],
 
-          // Process legacy interactions (filter out calls)
-          Array.isArray(legacyResult) ? legacyResult.filter((interaction: any) => interaction.kind !== 'call') : []
+          // Process legacy interactions
+          // Note: We used to filter out calls here to avoid duplicates with call_logs table,
+          // but this was also filtering out manual call interactions saved to leads_leadinteractions.
+          // Now we keep all legacy interactions and rely on deduplication logic elsewhere.
+          Array.isArray(legacyResult) ? legacyResult : []
         ];
 
         // 1. Manual interactions - fast client-side processing
@@ -2996,33 +3336,202 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // 2. Email interactions - prioritise freshly fetched emails, fallback to client prop
         const clientEmails = emailsResult.data || [];
         
+        // Build employee email-to-name mapping for email sender matching
+        const employeeEmailMap = await buildEmployeeEmailToNameMap();
+        
         const sortedEmails = [...clientEmails].sort((a: any, b: any) => {
           const aDate = new Date(a.sent_at || 0).getTime();
           const bDate = new Date(b.sent_at || 0).getTime();
           return bDate - aDate;
         });
         
-        const emailInteractions = sortedEmails.map((e: any) => {
-          const emailDate = new Date(e.sent_at);
+        // Helper function to check if email has meaningful body content
+        const hasMeaningfulBody = (email: any): boolean => {
+          const subject = email.subject?.trim() || '';
           
-          // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
-          const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
-          const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
-          const body = bodyHtml || bodyPreview || e.subject || '';
+          // Check body_html
+          if (email.body_html && email.body_html.trim() !== '') {
+            // Remove HTML tags and normalize whitespace
+            const textContent = email.body_html
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            
+            // Check if there's actual text content that's different from subject
+            if (textContent && 
+                textContent.toLowerCase() !== subject.toLowerCase() && 
+                textContent.length > 20) { // At least 20 characters of actual content
+              return true;
+            }
+          }
           
-          // Determine if email is from team/user based on sender email domain
-          // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+          // Check body_preview
+          if (email.body_preview && email.body_preview.trim() !== '') {
+            // Remove HTML tags and normalize whitespace
+            const textContent = email.body_preview
+              .replace(/<[^>]*>/g, ' ')
+              .replace(/\s+/g, ' ')
+              .trim();
+            
+            // Check if preview is meaningful:
+            // - Not just subject
+            // - Not just whitespace
+            // - Has meaningful length (at least 20 characters)
+            // - Not just common email prefixes like "RE:", "FW:", etc.
+            if (textContent && 
+                textContent.toLowerCase() !== subject.toLowerCase() &&
+                !textContent.match(/^(re|fw|fwd):\s*$/i) && // Not just "RE:" or "FW:"
+                textContent.length > 20) { // At least 20 characters of actual content
+              return true;
+            }
+          }
+          
+          return false;
+        };
+
+        // Separate emails into those with meaningful body and those without
+        const emailsWithBody: any[] = [];
+        const emailsWithoutBody: any[] = [];
+        
+        sortedEmails.forEach((e: any) => {
+          if (hasMeaningfulBody(e)) {
+            emailsWithBody.push(e);
+          } else {
+            emailsWithoutBody.push(e);
+          }
+        });
+
+        // Try to fetch bodies for emails that don't have meaningful content
+        // This will happen asynchronously, so we'll filter them out for now
+        // but they might appear after hydration
+        if (emailsWithoutBody.length > 0 && userId) {
+          // Fetch bodies for emails without content (limit to avoid too many requests)
+          const emailsToHydrate = emailsWithoutBody.slice(0, 10).map((e: any) => ({
+            id: e.message_id,
+            subject: e.subject || '',
+            bodyPreview: e.body_preview || '',
+            body_html: e.body_html || null,
+            body_preview: e.body_preview || null,
+          }));
+          
+          // Hydrate in background (don't wait for it)
+          setTimeout(() => {
+            hydrateEmailBodies(emailsToHydrate).then(() => {
+              // After hydration, refetch interactions to include newly hydrated emails
+              fetchInteractions({ bypassCache: true });
+            }).catch(err => {
+              console.error('Error hydrating email bodies in interactions list:', err);
+            });
+          }, 100);
+        }
+
+        // Only show emails with meaningful body content
+        const emailInteractions = emailsWithBody
+          .map((e: any) => {
+            const emailDate = new Date(e.sent_at);
+            
+            // Use formatEmailHtmlForDisplay to preserve line breaks and apply RTL
+            const bodyHtml = e.body_html ? formatEmailHtmlForDisplay(e.body_html) : null;
+            const bodyPreview = e.body_preview ? formatEmailHtmlForDisplay(e.body_preview) : '';
+            
+            // Only use body content, never fall back to subject (we've already filtered out emails without body)
+            // If body is empty after formatting, use empty string (shouldn't happen due to filtering)
+            let body = '';
+            if (bodyHtml && bodyHtml.trim() !== '') {
+              // Remove HTML tags to check actual text content
+              const textContent = bodyHtml.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
+                body = bodyHtml;
+              }
+            }
+            
+            if (!body && bodyPreview && bodyPreview.trim() !== '') {
+              // Remove HTML tags to check actual text content
+              const textContent = bodyPreview.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              if (textContent && textContent.length > 20 && textContent.toLowerCase() !== e.subject?.trim().toLowerCase()) {
+                body = bodyPreview;
+              }
+            }
+            
+            // If somehow body is still empty after all checks, skip this email
+            if (!body || body.trim() === '') {
+              return null; // This will be filtered out
+            }
+          
+          // CRITICAL: Determine direction based on sender email
+          // Simple rule: If sender is from office → employee to client (outgoing)
+          //              If sender is NOT from office → client to employee (incoming)
+          // This ensures we NEVER have client-to-client emails
           const senderEmail = e.sender_email || '';
           const isFromOffice = isOfficeEmail(senderEmail);
-          // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
-          const isOutgoing = isFromOffice ? true : (e.direction === 'outgoing');
+          
+          // Override direction field based on sender
+          // If sender is from office domain, it's always outgoing (employee to client)
+          // If sender is NOT from office, it's always incoming (client to employee)
+          let correctedDirection: 'outgoing' | 'incoming';
+          if (isFromOffice) {
+            correctedDirection = 'outgoing'; // Employee to client
+          } else {
+            correctedDirection = 'incoming'; // Client to employee
+          }
+          
+          // Get sender display name - use employee display_name for office emails
+          let senderDisplayName = null;
+          if (isFromOffice) {
+            // For team/user emails: use employee display_name from cache if available
+            senderDisplayName = employeeEmailMap.get(senderEmail.toLowerCase()) || e.sender_name || null;
+          }
+          
+          // Convert correctedDirection to timeline format ('outgoing'/'incoming' -> 'out'/'in')
+          const isOutgoing = correctedDirection === 'outgoing';
+          
+          // Get employee name for timeline display - EXACT SAME LOGIC AS EMAIL MODAL DISPLAY (lines 5611-5624)
+          let employeeName: string;
+          let employeeRecipientName: string | null = null; // For incoming emails, store who received it
+          
+          if (isOutgoing) {
+            // For team/user emails: use employee display_name from cache if available, otherwise fallback
+            employeeName = senderDisplayName 
+              || userFullName 
+              || senderEmail 
+              || 'Team';
+          } else {
+            // For client emails - use contact name or client name
+            // Find contact by contact_id if available
+            let contactName = null;
+            if (e.contact_id && leadContacts && leadContacts.length > 0) {
+              const contact = leadContacts.find((c: any) => c.id === Number(e.contact_id));
+              if (contact) {
+                contactName = contact.name;
+              }
+            }
+            employeeName = contactName || client.name || senderEmail || 'Client';
+            
+            // For incoming emails (client to employee), find the employee recipient
+            const recipientList = e.recipient_list?.toLowerCase() || '';
+            const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim().toLowerCase()).filter((r: string) => r);
+            
+            // Find employee email in recipient list
+            for (const recipientEmail of recipients) {
+              if (isOfficeEmail(recipientEmail)) {
+                // Get employee name from employeeEmailMap
+                employeeRecipientName = employeeEmailMap.get(recipientEmail) || recipientEmail;
+                break;
+              }
+            }
+            
+            // Fallback if no employee found
+            if (!employeeRecipientName) {
+              employeeRecipientName = userFullName || 'Team';
+            }
+          }
           
           return {
             id: e.message_id,
             date: emailDate.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
             time: emailDate.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
             raw_date: e.sent_at,
-            employee: isOutgoing ? (userFullName || 'You') : client.name,
+            employee: employeeName,
             direction: isOutgoing ? 'out' : 'in',
             kind: 'email',
             length: '',
@@ -3036,11 +3545,36 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             contact_id: e.contact_id || null,
             sender_email: senderEmail || null,
             recipient_list: e.recipient_list || null,
+            employee_recipient_name: employeeRecipientName, // Store employee recipient for incoming emails
+          };
+          })
+          .filter((interaction: any) => interaction !== null); // Filter out null entries
+      
+        // Process legacy interactions to set recipient_name correctly (similar to manual interactions)
+        const processedLegacyInteractions = (legacyInteractions || []).map((i: any) => {
+          // If recipient_name is already set (from transformLegacyInteraction), use it
+          if (i.recipient_name) {
+            return i;
+          }
+          
+          // Calculate recipient_name based on direction (same logic as manual interactions)
+          let recipientName = '';
+          if (i.direction === 'out') {
+            // Outgoing: we contacted client, so recipient is client
+            recipientName = client.name;
+          } else {
+            // Incoming: client contacted us, so recipient is employee
+            recipientName = i.employee || userFullName || 'Team';
+          }
+          
+          return {
+            ...i,
+            recipient_name: recipientName, // Store recipient for display
           };
         });
-      
+        
         // Combine all interactions
-        const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...legacyInteractions];
+        const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...processedLegacyInteractions];
         
         // Filter out interactions with invalid dates and log for debugging
         const validInteractions = combined.filter((interaction: any) => {
@@ -3053,12 +3587,141 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             console.warn('⚠️ Interaction has invalid raw_date:', { id: interaction.id, kind: interaction.kind, raw_date: interaction.raw_date });
             return false;
           }
+          
+          // CRITICAL: Filter out email interactions that have no meaningful body content
+          // This is a safety check in case emails slipped through the earlier filtering
+          if (interaction.kind === 'email') {
+            const content = interaction.content || '';
+            const subject = interaction.subject || '';
+            
+            // Remove HTML tags to check actual text content
+            const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            
+            // Filter out if:
+            // 1. Content is empty or just whitespace
+            // 2. Content is the same as subject (case-insensitive)
+            // 3. Content is too short (less than 20 characters)
+            if (!textContent || 
+                textContent.length < 20 || 
+                textContent.toLowerCase() === subject.toLowerCase()) {
+              console.log('🚫 Filtering out email interaction with no meaningful body:', {
+                id: interaction.id,
+                subject: subject.substring(0, 50),
+                contentLength: textContent.length
+              });
+              return false;
+            }
+          }
+          
           return true;
         });
         
-        const uniqueInteractions = validInteractions.filter((interaction: any, index: number, self: any[]) => 
+        // Deduplicate interactions - remove exact duplicates by id
+        const uniqueById = validInteractions.filter((interaction: any, index: number, self: any[]) => 
           index === self.findIndex((i: any) => i.id === interaction.id)
         );
+        
+        // For emails, deduplicate by message_id - keep the one with most content
+        // Also filter out emails that only have a subject (no actual content)
+        const emailMap = new Map<string, any>();
+        const nonEmailInteractions: any[] = [];
+        
+        uniqueById.forEach((interaction: any) => {
+          if (interaction.kind === 'email' && interaction.id) {
+            // STRICT filtering: Skip emails that only have a subject (no content)
+            // Check if content exists and is different from subject
+            // Also check if body_html or body_preview exist (more reliable than checking formatted content)
+            const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
+                                  (interaction.body_preview && interaction.body_preview.trim() !== '');
+            
+            // Remove HTML tags to check actual text content
+            const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+            const subjectText = (interaction.subject || '').trim();
+            
+            // Must have body content AND meaningful text content that's different from subject
+            const hasContent = hasBodyContent && 
+                              contentText && 
+                              contentText.length >= 20 && // At least 20 characters
+                              contentText.toLowerCase() !== subjectText.toLowerCase();
+            
+            if (!hasContent) {
+              // Skip this email - it only has a subject
+              return;
+            }
+            
+            const messageId = interaction.id;
+            const existing = emailMap.get(messageId);
+            
+            if (!existing) {
+              emailMap.set(messageId, interaction);
+            } else {
+              // Compare content - keep the one with more content (not just subject)
+              // Use same strict checking as above
+              const existingContentText = (existing.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const existingSubjectText = (existing.subject || '').trim();
+              const existingHasContent = existingContentText && 
+                                        existingContentText.length >= 20 &&
+                                        existingContentText.toLowerCase() !== existingSubjectText.toLowerCase();
+              
+              const currentContentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const currentSubjectText = (interaction.subject || '').trim();
+              const currentHasContent = currentContentText && 
+                                       currentContentText.length >= 20 &&
+                                       currentContentText.toLowerCase() !== currentSubjectText.toLowerCase();
+              
+              if (currentHasContent && !existingHasContent) {
+                // Current has content, existing doesn't - replace
+                emailMap.set(messageId, interaction);
+              } else if (!currentHasContent && existingHasContent) {
+                // Existing has content, current doesn't - keep existing
+                // Do nothing
+              } else if (currentHasContent && existingHasContent) {
+                // Both have content, keep the one with more content
+                if (currentContentText.length > existingContentText.length) {
+                  emailMap.set(messageId, interaction);
+                }
+              }
+              // If neither has content, don't add either (shouldn't happen due to earlier filtering)
+            }
+          } else {
+            nonEmailInteractions.push(interaction);
+          }
+        });
+        
+        // Additional deduplication: remove interactions with the same timestamp
+        // Group by timestamp and keep only one per timestamp
+        const timestampMap = new Map<string, any>();
+        const allInteractions = [...Array.from(emailMap.values()), ...nonEmailInteractions];
+        
+        allInteractions.forEach((interaction: any) => {
+          const timestampKey = `${interaction.raw_date}_${interaction.kind}`;
+          const existing = timestampMap.get(timestampKey);
+          
+          if (!existing) {
+            timestampMap.set(timestampKey, interaction);
+          } else {
+            // If we have duplicates with same timestamp, prefer the one with more content
+            const existingHasContent = existing.content && 
+                                      existing.content !== existing.subject && 
+                                      existing.content.trim() !== '';
+            const currentHasContent = interaction.content && 
+                                     interaction.content !== interaction.subject && 
+                                     interaction.content.trim() !== '';
+            
+            if (currentHasContent && !existingHasContent) {
+              // Current has content, existing doesn't - replace
+              timestampMap.set(timestampKey, interaction);
+            } else if (!currentHasContent && existingHasContent) {
+              // Existing has content, current doesn't - keep existing
+              // Do nothing
+            } else {
+              // Both have same level of content, keep the first one
+              // Do nothing
+            }
+          }
+        });
+        
+        const uniqueInteractions = Array.from(timestampMap.values());
         
         const sorted = uniqueInteractions.sort((a, b) => {
           const dateA = new Date(a.raw_date).getTime();
@@ -3139,6 +3802,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     },
     [
       client,
+      leadContacts, // Include contacts so we can match emails by contact email addresses
       interactionsCache,
       currentUserFullName,
       onInteractionCountUpdate,
@@ -3160,37 +3824,15 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       console.log('🔄 Client changed, fetching fresh interactions (bypassing cache)...', {
         previous: lastClientIdRef.current,
         current: currentClientId,
-        isFetching: isFetchingRef.current,
-        refAvailable: !!fetchInteractionsRef.current
+        isFetching: isFetchingRef.current
       });
       lastClientIdRef.current = currentClientId;
       isFetchingRef.current = true;
       
-      // Use the ref to get the latest fetchInteractions function
-      // The ref is set in a separate useEffect, so it should be available
-      // If ref is not set yet, wait a bit and try again, or use fetchInteractions directly
-      const fetchFn = fetchInteractionsRef.current;
-      if (fetchFn) {
-        console.log('✅ Calling fetchInteractions via ref');
-        fetchFn({ bypassCache: true }).finally(() => {
-          isFetchingRef.current = false;
-        });
-      } else {
-        // Ref not set yet, wait a tick and try again
-        console.warn('⚠️ fetchInteractionsRef.current is null, scheduling retry...');
-        setTimeout(() => {
-          const retryFn = fetchInteractionsRef.current;
-          if (retryFn) {
-            console.log('✅ Retry: Calling fetchInteractions via ref');
-            retryFn({ bypassCache: true }).finally(() => {
-              isFetchingRef.current = false;
-            });
-          } else {
-            console.error('❌ fetchInteractionsRef.current is still null after retry!');
-            isFetchingRef.current = false;
-          }
-        }, 0);
-      }
+      // Call fetchInteractions directly - it's a stable useCallback
+      fetchInteractions({ bypassCache: true }).finally(() => {
+        isFetchingRef.current = false;
+      });
     } else if (!currentClientId) {
       // Clear if no client
       if (lastClientIdRef.current !== null) {
@@ -3201,7 +3843,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setInteractionsLoading(false);
       }
     }
-  }, [client?.id]); // Only depend on client.id - use ref for fetchInteractions to prevent loops
+  }, [client?.id, fetchInteractions]); // Include fetchInteractions in dependencies since it's a stable useCallback
 
   // Fetch contacts when client changes
   useEffect(() => {
@@ -3370,9 +4012,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Trigger a re-fetch to re-process with the populated map
         // Use a small delay to avoid race conditions
         const timeoutId = setTimeout(() => {
-          if (fetchInteractionsRef.current) {
-            fetchInteractionsRef.current({ bypassCache: true });
-          }
+          fetchInteractions({ bypassCache: true });
         }, 100);
         return () => clearTimeout(timeoutId);
       }
@@ -3466,9 +4106,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         setTimeout(() => {
           if (interactions.length > 0) {
             console.log('🔄 Templates loaded, reprocessing interactions to apply template content...');
-            if (fetchInteractionsRef.current) {
-              fetchInteractionsRef.current({ bypassCache: true });
-            }
+            fetchInteractions({ bypassCache: true });
           }
         }, 200);
       } catch (error) {
@@ -3480,11 +4118,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     loadTemplates();
   }, []);
 
-  const fetchInteractionsRef = useRef<typeof fetchInteractions | null>(null);
-  useEffect(() => {
-    fetchInteractionsRef.current = fetchInteractions;
-    console.log('✅ fetchInteractionsRef updated');
-  }, [fetchInteractions]);
+  // Removed fetchInteractionsRef - calling fetchInteractions directly now
 
   // Reprocess interactions when templates become available
   useEffect(() => {
@@ -3501,9 +4135,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         console.log('🔄 Templates are available, reprocessing WhatsApp interactions to apply template content...');
         // Use a delay to avoid infinite loops and ensure everything is ready
         const timeoutId = setTimeout(() => {
-          if (fetchInteractionsRef.current) {
-            fetchInteractionsRef.current({ bypassCache: true });
-          }
+          fetchInteractions({ bypassCache: true });
         }, 300);
         return () => clearTimeout(timeoutId);
       }
@@ -3511,15 +4143,44 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   }, [whatsAppTemplates.length]); // Only depend on templates length, not interactions to avoid loops
 
 
-  const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview: string }[]) => {
+  const hydrateEmailBodies = useCallback(async (messages: { id: string; subject: string; bodyPreview?: string; body_html?: string | null; body_preview?: string | null }[]) => {
     if (!messages || messages.length === 0) return;
     if (!userId) return;
 
     const requiresHydration = messages.filter(message => {
-      const preview = (message.bodyPreview || '').trim();
+      // ALWAYS hydrate if body_html is missing or empty (this is the main issue)
+      const hasBodyHtml = message.body_html && message.body_html.trim() !== '';
+      if (!hasBodyHtml) {
+        console.log(`📧 Email ${message.id} missing body_html, will hydrate`);
+        return true;
+      }
+      
+      // Also check if body_preview/bodyPreview seems truncated (even if body_html exists, it might be incomplete)
+      const preview = (message.bodyPreview || message.body_preview || '').trim();
       if (!preview) return true;
-      const normalisedPreview = preview.replace(/<br\s*\/?>/gi, '').replace(/&nbsp;/g, ' ').trim();
-      return normalisedPreview.length < 8 || normalisedPreview === message.subject;
+      
+      // Remove HTML tags and normalize whitespace to check actual content length
+      const normalisedPreview = preview
+        .replace(/<[^>]*>/g, '') // Remove HTML tags
+        .replace(/<br\s*\/?>/gi, ' ')
+        .replace(/&nbsp;/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      
+      // Hydrate if:
+      // 1. Preview is very short (< 100 chars suggests truncation - increased threshold)
+      // 2. Preview equals the subject (likely truncated)
+      // 3. Preview ends with "..." or similar truncation indicators
+      const isTruncated = normalisedPreview.length < 100 || 
+                          normalisedPreview === message.subject ||
+                          normalisedPreview.endsWith('...') ||
+                          normalisedPreview.endsWith('…');
+      
+      if (isTruncated) {
+        console.log(`📧 Email ${message.id} seems truncated, will hydrate`);
+      }
+      
+      return isTruncated;
     });
 
     if (requiresHydration.length === 0) return;
@@ -3547,9 +4208,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               preview: previewHtml,
             };
 
+            // Update both body_html and body_preview in database
             await supabase
               .from('emails')
-              .update({ body_html: rawContent, body_preview: rawContent })
+              .update({ 
+                body_html: rawContent, 
+                body_preview: rawContent 
+              })
               .eq('message_id', message.id);
           } catch (err) {
             console.error('Unexpected error hydrating email body', err);
@@ -3564,10 +4229,25 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             if (!update) return email;
             return {
               ...email,
-              bodyPreview: update.preview,
+              body_html: update.html, // Update body_html with full content
+              bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
+              body_preview: update.preview, // Also update body_preview
             };
           })
         );
+        
+        // Also update selectedEmailForView if it's one of the hydrated emails
+        setSelectedEmailForView((prev: any) => {
+          if (!prev) return prev;
+          const update = updates[prev.id];
+          if (!update) return prev;
+          return {
+            ...prev,
+            body_html: update.html, // Update body_html with full content
+            bodyPreview: update.preview, // Keep bodyPreview for backward compatibility
+            body_preview: update.preview, // Also update body_preview
+          };
+        });
       }
     } catch (error) {
       console.error('Failed to hydrate email bodies from backend', error);
@@ -3582,6 +4262,30 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
       const legacyId = isLegacyLead ? parseInt(client.id.replace('legacy_', '')) : null;
 
+      // Collect all email addresses for this client (including contacts)
+      // This ensures emails are shown in all leads where any of these email addresses match
+      const clientEmails = collectClientEmails(client);
+      // Also add emails from contacts if available
+      const allEmails = [...clientEmails];
+      if (leadContacts && leadContacts.length > 0) {
+        leadContacts.forEach((contact) => {
+          if (contact.email) {
+            const normalized = normalizeEmailForFilter(contact.email);
+            if (normalized && !allEmails.includes(normalized)) {
+              allEmails.push(normalized);
+            }
+          }
+        });
+      }
+      
+      // Build query that matches by lead ID OR email addresses
+      // This ensures emails are shown in all leads where the email address matches
+      const emailFilters = buildEmailFilterClauses({
+        clientId: !isLegacyLead ? String(client.id) : null,
+        legacyId: isLegacyLead ? legacyId : null,
+        emails: allEmails,
+      });
+
       let emailQuery = supabase
         .from('emails')
         .select(
@@ -3589,7 +4293,9 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         )
         .order('sent_at', { ascending: true });
 
-      if (isLegacyLead && legacyId !== null) {
+      if (emailFilters.length > 0) {
+        emailQuery = emailQuery.or(emailFilters.join(','));
+      } else if (isLegacyLead && legacyId !== null) {
         emailQuery = emailQuery.eq('legacy_id', legacyId);
       } else {
         emailQuery = emailQuery.eq('client_id', client.id);
@@ -3693,23 +4399,63 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
           
           // Prefer body_html over body_preview for better formatting (body_html has <br> tags)
+          // Store both so we can use body_html when available
           const finalBody = sanitizedHtml || sanitizedPreview || '';
           
           return {
-          id: e.message_id,
-          subject: e.subject,
-          from: senderEmail,
-          to: e.recipient_list,
-          date: e.sent_at,
-            bodyPreview: finalBody,
-          direction: correctedDirection,
-          attachments: e.attachments,
-          contact_id: e.contact_id,
-          sender_display_name: senderDisplayName,
+            id: e.message_id,
+            subject: e.subject,
+            from: senderEmail,
+            to: e.recipient_list,
+            date: e.sent_at,
+            body_html: sanitizedHtml || null, // Store body_html separately
+            bodyPreview: finalBody, // Keep for backward compatibility
+            body_preview: sanitizedPreview || null, // Also store body_preview
+            direction: correctedDirection,
+            attachments: e.attachments,
+            contact_id: e.contact_id,
+            sender_display_name: senderDisplayName,
           };
         });
         
         setEmails(formattedEmailsForModal);
+        
+        // Check which emails need hydration (missing body_html)
+        const emailsNeedingHydration = formattedEmailsForModal.filter((e: any) => 
+          !e.body_html || e.body_html.trim() === ''
+        );
+        
+        // Auto-select first email if none is selected
+        if (formattedEmailsForModal.length > 0 && !selectedEmailForView) {
+          const firstEmail = formattedEmailsForModal[0];
+          setSelectedEmailForView(firstEmail);
+          // If first email needs hydration, prioritize it
+          if (emailsNeedingHydration.some((e: any) => e.id === firstEmail.id)) {
+            hydrateEmailBodies([firstEmail]);
+          }
+        } else if (activeEmailId) {
+          // If we have an activeEmailId from clicking, find and select that email
+          const emailToSelect = formattedEmailsForModal.find((e: any) => e.id === activeEmailId);
+          if (emailToSelect) {
+            setSelectedEmailForView(emailToSelect);
+            // If this email needs hydration, prioritize it
+            if (emailsNeedingHydration.some((e: any) => e.id === emailToSelect.id)) {
+              hydrateEmailBodies([emailToSelect]);
+            }
+            setActiveEmailId(null); // Clear after selecting
+          }
+        }
+        
+        // Hydrate ALL emails that are missing body_html (batch process in background)
+        if (emailsNeedingHydration.length > 0) {
+          console.log(`📧 Hydrating ${emailsNeedingHydration.length} emails missing body_html`);
+          // Hydrate in batches to avoid overwhelming the backend
+          const batchSize = 5;
+          for (let i = 0; i < emailsNeedingHydration.length; i += batchSize) {
+            const batch = emailsNeedingHydration.slice(i, i + batchSize);
+            setTimeout(() => hydrateEmailBodies(batch), i * 500); // Stagger requests
+          }
+        }
       }
     } catch (error) {
       console.error('❌ Error in fetchEmailsForModal:', error);
@@ -3717,7 +4463,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     } finally {
       setEmailsLoading(false);
     }
-  }, [client, selectedContactForEmail]);
+  }, [client, leadContacts, selectedContactForEmail, hydrateEmailBodies]); // Include leadContacts to match emails by contact email addresses
 
   const runMailboxSync = useCallback(async () => {
     if (!userId) {
@@ -3936,7 +4682,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const sentAt = sendResult?.sentAt || new Date().toISOString();
       
       toast.success('Email sent!');
-      await fetchInteractionsRef.current?.({ bypassCache: true });
+      
+      await fetchInteractions({ bypassCache: true });
       await fetchEmailsForModal();
 
       if (onClientUpdate) {
@@ -4183,7 +4930,6 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           const allManualInteractions = updatedInteractions.filter(i => i.id.toString().startsWith('manual_'));
           
           // Update manual_interactions and latest_interaction timestamp for new leads
-          const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
           if (!isLegacyLead) {
             const { error } = await supabase
               .from('leads')
@@ -4194,11 +4940,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               .eq('id', client.id);
             if (error) throw error;
           } else {
-            const { error } = await supabase
-              .from('leads')
-              .update({ manual_interactions: allManualInteractions })
-              .eq('id', client.id);
-            if (error) throw error;
+            // For legacy leads, manual interactions are stored in leads_leadinteractions
+            // We need to find the interaction ID and update it
+            // Since we're editing an existing interaction, we need to find its database ID
+            // For now, we'll update the local state and let the refresh handle the database sync
+            // Note: Editing legacy interactions in leads_leadinteractions requires the database ID
+            // which we don't have in the Interaction interface. This is a limitation.
+            // The interaction will be updated on the next fetch, but we should ideally store the DB ID.
+            console.warn('Editing legacy manual interactions requires database ID. Changes may not persist until refresh.');
+            // For legacy leads, we can't easily update individual interactions without the DB ID
+            // The optimistic update will show the change, but it may revert on refresh
           }
         }
       } else {
@@ -4322,9 +5073,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
   const handleSaveContact = async () => {
     if (!client) return;
 
-    // Ensure we have the current user's full name
+    // Ensure we have the current user's full name and employee_id
     let userFullName = currentUserFullName;
-    if (!userFullName) {
+    let employeeId: number | null = null;
+    if (!userFullName || !employeeId) {
       try {
         const { data: { user } } = await supabase.auth.getUser();
         if (user?.id) {
@@ -4343,6 +5095,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             // Use display_name from tenants_employee if available, otherwise full_name
             const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
             userFullName = employee?.display_name || userData.full_name;
+            employeeId = userData.employee_id;
           }
         }
       } catch (error) {
@@ -4351,20 +5104,39 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     }
 
     const now = new Date();
+    
+    // Determine recipient name based on direction (same logic as in fetchInteractions)
+    let employeeDisplay = '';
+    let recipientName = '';
+    
+    if (newContact.direction === 'out') {
+      // We contacted client - employee is sender
+      employeeDisplay = userFullName || 'You';
+      recipientName = newContact.contact_name || client.name;
+    } else {
+      // Client contacted us - client/contact is sender
+      employeeDisplay = newContact.contact_name || client.name;
+      recipientName = userFullName || 'You';
+    }
+    
+    // Normalize method: convert 'call_log' to 'call' for consistency
+    const normalizedMethod = newContact.method === 'call_log' ? 'call' : newContact.method;
+    
     const newInteraction: Interaction = {
       id: `manual_${now.getTime()}`,
       date: newContact.date || now.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: '2-digit' }),
       time: newContact.time || now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' }),
       raw_date: now.toISOString(),
-      employee: userFullName || 'You',
+      employee: employeeDisplay,
       direction: newContact.direction as 'in' | 'out',
-      kind: newContact.method,
+      kind: normalizedMethod, // Use normalized method (call_log -> call)
       length: newContact.length ? `${newContact.length}m` : '',
       content: newContact.content,
       observation: newContact.observation,
       editable: true,
       contact_id: newContact.contact_id,
       contact_name: newContact.contact_name,
+      recipient_name: recipientName, // Set recipient_name immediately for proper "From:" and "To:" display
     };
 
     // --- Optimistic Update ---
@@ -4375,21 +5147,114 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     // --- End Optimistic Update ---
 
     try {
-      // Save ALL manual interactions (including calls) to manual_interactions
-      // This preserves direction, contact info, and allows proper "To:" display
-      const existingInteractions = client.manual_interactions || [];
-      const updatedInteractions = [...existingInteractions, newInteraction];
+      // Check if this is a legacy lead
+      if (isLegacyLead) {
+        // For legacy leads, save to leads_leadinteractions table
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const numericLegacyId = parseInt(legacyId, 10);
+        
+        if (isNaN(numericLegacyId)) {
+          throw new Error(`Invalid legacy lead ID: ${legacyId}`);
+        }
 
-      // Update manual_interactions and latest_interaction timestamp
-      const { error: updateError } = await supabase
-        .from('leads')
-        .update({ 
-          manual_interactions: updatedInteractions,
-          latest_interaction: now.toISOString()
-        })
-        .eq('id', client.id);
+        // Map interaction kind to database format (use normalizedMethod for consistency)
+        const kindMap: Record<string, string> = {
+          'email': 'e',
+          'call': 'c',
+          'call_log': 'c', // Backwards compatibility: map call_log to 'c' as well
+          'whatsapp': 'w', // WhatsApp interactions use 'w' kind
+          'sms': 'EMPTY', // SMS interactions use 'EMPTY' kind (same as notes)
+          'note': 'EMPTY',
+          'meeting': 'EMPTY',
+        };
+        const dbKind = kindMap[normalizedMethod] || 'EMPTY';
 
-      if (updateError) throw updateError;
+        // Map direction to database format
+        const dbDirection = newContact.direction === 'out' ? 'o' : 'i';
+
+        // Parse minutes from length string (e.g., "5m" -> 5)
+        const minutes = newContact.length ? parseInt(newContact.length.replace(/[^0-9]/g, ''), 10) || null : null;
+
+        // Format date and time for database
+        const interactionDate = newContact.date || now.toISOString().split('T')[0];
+        const interactionTime = newContact.time || now.toTimeString().split(' ')[0].substring(0, 5);
+
+        // Get the next available ID for leads_leadinteractions
+        const { data: maxIdData, error: maxIdError } = await supabase
+          .from('leads_leadinteractions')
+          .select('id')
+          .order('id', { ascending: false })
+          .limit(1)
+          .single();
+
+        if (maxIdError && maxIdError.code !== 'PGRST116') { // PGRST116 = no rows returned
+          throw maxIdError;
+        }
+
+        const nextId = maxIdData?.id ? maxIdData.id + 1 : 1;
+
+        // Prepare description - if SMS, prefix with METHOD:sms| to preserve the kind when fetching
+        let descriptionValue = newContact.observation || null;
+        if (normalizedMethod === 'sms' && descriptionValue) {
+          descriptionValue = `METHOD:sms|${descriptionValue}`;
+        } else if (normalizedMethod === 'sms' && !descriptionValue) {
+          descriptionValue = 'METHOD:sms|';
+        }
+        
+        // Insert into leads_leadinteractions table
+        const { error: insertError } = await supabase
+          .from('leads_leadinteractions')
+          .insert({
+            id: nextId,
+            cdate: now.toISOString(),
+            udate: now.toISOString(),
+            kind: dbKind,
+            date: interactionDate,
+            time: interactionTime,
+            minutes: minutes,
+            content: newContact.content || '',
+            creator_id: employeeId ? String(employeeId) : null,
+            lead_id: numericLegacyId,
+            direction: dbDirection,
+            description: descriptionValue,
+            employee_id: employeeId ? String(employeeId) : null,
+          });
+
+        if (insertError) {
+          console.error('Error inserting legacy interaction:', insertError);
+          throw insertError;
+        }
+        console.log('✅ Legacy interaction saved successfully:', { 
+          id: nextId, 
+          kind: dbKind, 
+          lead_id: numericLegacyId,
+          method: normalizedMethod 
+        });
+        // Stage evaluation is handled automatically by database triggers
+      } else {
+        // For new leads, save to manual_interactions JSONB column
+        const existingInteractions = client.manual_interactions || [];
+        const updatedInteractions = [...existingInteractions, newInteraction];
+
+        // Update manual_interactions and latest_interaction timestamp
+        const { error: updateError } = await supabase
+          .from('leads')
+          .update({ 
+            manual_interactions: updatedInteractions,
+            latest_interaction: now.toISOString()
+          })
+          .eq('id', client.id);
+
+        if (updateError) {
+          console.error('Error updating new lead interaction:', updateError);
+          throw updateError;
+        }
+        console.log('✅ New lead interaction saved successfully:', { 
+          kind: normalizedMethod,
+          client_id: client.id 
+        });
+        // Stage evaluation is handled automatically by database triggers
+      }
       
       toast.success('Interaction saved!');
       if (onClientUpdate) await onClientUpdate(); // Silently refresh data
@@ -4397,7 +5262,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     } catch (error) {
       toast.error('Save failed. Reverting changes.');
       setInteractions(previousInteractions); // Revert on failure
-      console.error(error);
+      console.error('❌ Error saving interaction:', error);
     }
   };
 
@@ -4775,13 +5640,16 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               
               // Icon and color
               let icon, iconBg, cardBg, textGradient, avatarBg;
+              // Check if this is a call interaction (including manual calls and call_log for backwards compatibility)
+              const isCall = row.kind === 'call' || row.kind === 'call_log' || (row.editable && (row.kind === 'call' || row.kind === 'call_log'));
+              
               if (row.direction === 'out') {
                 // Employee (Outgoing)
                 if (row.kind === 'sms') {
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-purple-600 drop-shadow-sm" style={{color: '#9333ea'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-purple-200';
-                } else if (row.kind === 'call') {
-                  // All calls use same color, show direction with icon
+                } else if (isCall) {
+                  // All calls use same color, show direction with icon (including manual calls)
                   const DirectionIcon = row.direction === 'out' ? ArrowUpIcon : ArrowDownIcon;
                   icon = (
                     <div className="flex items-center justify-center relative">
@@ -4803,8 +5671,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-gray-600 drop-shadow-sm" style={{color: '#4b5563'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-gray-200';
                 }
-                // Use same color for all calls regardless of direction
-                if (row.kind === 'call') {
+                // Use same color for all calls regardless of direction (including manual calls)
+                if (isCall) {
                   cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
                   textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
                   avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
@@ -4818,8 +5686,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 if (row.kind === 'sms') {
                   icon = <ChatBubbleLeftRightIcon className="w-4 h-4 md:w-5 md:h-5 !text-indigo-600 drop-shadow-sm" style={{color: '#4f46e5'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-indigo-200';
-                } else if (row.kind === 'call') {
-                  // All calls use same color, show direction with icon (inbound direction = 'in')
+                } else if (isCall) {
+                  // All calls use same color, show direction with icon (inbound direction = 'in', including manual calls)
                   const DirectionIcon = ArrowDownIcon;
                   icon = (
                     <div className="flex items-center justify-center relative">
@@ -4841,8 +5709,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   icon = <UserIcon className="w-4 h-4 md:w-5 md:h-5 !text-slate-600 drop-shadow-sm" style={{color: '#475569'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-slate-200';
                 }
-                // Use same color for all calls regardless of direction
-                if (row.kind === 'call') {
+                // Use same color for all calls regardless of direction (including manual calls)
+                if (isCall) {
                   cardBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600';
                   textGradient = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 bg-clip-text text-transparent';
                   avatarBg = 'bg-gradient-to-tr from-blue-500 via-blue-600 to-indigo-600 text-white';
@@ -4923,46 +5791,49 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   {row.employee}
                                 </div>
                                 {/* Show recipient for call and manual interactions (excluding email/whatsapp which have their own logic) */}
-                                {(row.kind === 'call' || row.kind === 'call_log' || (row.editable && row.kind !== 'email' && row.kind !== 'whatsapp')) && (() => {
+                                {(row.kind === 'call' || row.kind === 'call_log' || row.kind === 'sms' || (row.editable && row.kind !== 'email' && row.kind !== 'whatsapp')) && (() => {
                                   // For call logs from database, get from call_log
-                                  if (row.kind === 'call') {
-                                    const callLog = (row as any).call_log;
-                                    if (!callLog) return null;
-                                    
-                                    // Use the stored recipient_name from the interaction object
+                                  if (row.kind === 'call' || row.kind === 'call_log') {
+                                    // Use the stored recipient_name from the interaction object (set during processing)
                                     const recipientName = (row as any).recipient_name;
                                     
-                                    // Fallback to destination if recipient_name is not available
-                                    const recipientDisplay = recipientName || callLog.destination;
-                                    
-                                    // Only show if we have a recipient to display
-                                    if (!recipientDisplay) return null;
+                                    // Only show if we have a recipient name to display
+                                    if (!recipientName) return null;
                                     
                                     return (
                                       <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
                                         <div className="flex items-center gap-1">
                                           <span>To:</span>
-                                          <span className="font-medium text-gray-700">{recipientDisplay}</span>
+                                          <span className="font-medium text-gray-700">{recipientName}</span>
                                         </div>
                                       </div>
                                     );
                                   }
                                   
-                                  // For manual interactions (excluding email/whatsapp), get from recipient_name
-                                  const recipientName = (row as any).recipient_name;
-                                  if (!recipientName) return null;
-                                  
-                                  return (
-                                    <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
-                                      <div className="flex items-center gap-1">
-                                        <span>To:</span>
-                                        <span className="font-medium text-gray-700">{recipientName}</span>
+                                  // For SMS and other manual interactions (excluding email/whatsapp), get from recipient_name
+                                  // Note: For legacy leads, SMS might be saved as 'note' kind, so we check editable as well
+                                  if (row.kind === 'sms' || (row.editable && row.kind !== 'email' && row.kind !== 'whatsapp' && row.kind !== 'call')) {
+                                    const recipientName = (row as any).recipient_name;
+                                    if (!recipientName) return null;
+                                    
+                                    return (
+                                      <div className="text-xs text-gray-500 flex flex-col gap-0.5 mt-1">
+                                        <div className="flex items-center gap-1">
+                                          <span>To:</span>
+                                          <span className="font-medium text-gray-700">{recipientName}</span>
+                                        </div>
                                       </div>
-                                    </div>
-                                  );
+                                    );
+                                  }
+                                  
+                                  return null;
                                 })()}
-                                {/* Show contact name for email and WhatsApp interactions */}
+                                {/* Show recipient for email and WhatsApp interactions */}
+                                {/* CRITICAL: If outgoing (employee to client), show client/contact name */}
+                                {/*          If incoming (client to employee), show employee name */}
                                 {(row.kind === 'email' || row.kind === 'whatsapp') && (() => {
+                                  const isOutgoing = row.direction === 'out';
+                                  
                                   // For manual interactions, use recipient_name set during processing
                                   if (row.editable && (row as any).recipient_name) {
                                     return (
@@ -4973,78 +5844,93 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                     );
                                   }
                                   
-                                  const interactionContactId = (row as any).contact_id;
-                                  const senderEmail = (row as any).sender_email?.toLowerCase().trim();
-                                  const recipientList = (row as any).recipient_list?.toLowerCase() || '';
-                                  const phoneNumber = (row as any).phone_number;
-                                  let contactName = null;
-                                  
-                                  // First, try to find by contact_id (most reliable)
-                                  if (interactionContactId !== null && interactionContactId !== undefined) {
-                                    if (leadContacts.length > 0) {
-                                      const contact = leadContacts.find(c => c.id === Number(interactionContactId));
-                                      if (contact) {
-                                        contactName = contact.name;
-                                      }
-                                    }
-                                  }
-                                  
-                                  // If not found by contact_id, try to match by email (for emails) or phone (for WhatsApp)
-                                  if (!contactName && leadContacts.length > 0) {
-                                    if (row.kind === 'email') {
-                                      // Email matching logic
-                                      const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim().toLowerCase()).filter((r: string) => r);
-                                      
-                                      const isOutgoing = row.direction === 'out';
-                                      for (const contact of leadContacts) {
-                                        const contactEmail = contact.email?.toLowerCase().trim();
-                                        if (contactEmail) {
-                                          if (isOutgoing && recipients.includes(contactEmail)) {
-                                            contactName = contact.name;
-                                            break;
-                                          } else if (!isOutgoing && senderEmail === contactEmail) {
-                                            contactName = contact.name;
-                                            break;
-                                          }
+                                  // If outgoing (employee to client), show client/contact name
+                                  if (isOutgoing) {
+                                    const interactionContactId = (row as any).contact_id;
+                                    const recipientList = (row as any).recipient_list?.toLowerCase() || '';
+                                    const phoneNumber = (row as any).phone_number;
+                                    let recipientName = null;
+                                    
+                                    // First, try to find by contact_id (most reliable)
+                                    if (interactionContactId !== null && interactionContactId !== undefined) {
+                                      if (leadContacts.length > 0) {
+                                        const contact = leadContacts.find(c => c.id === Number(interactionContactId));
+                                        if (contact) {
+                                          recipientName = contact.name;
                                         }
                                       }
-                                    } else if (row.kind === 'whatsapp') {
-                                      // WhatsApp matching logic - match by phone number
-                                      if (phoneNumber) {
-                                        // Normalize phone number (remove spaces, dashes, etc.)
-                                        const normalizePhone = (phone: string) => phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
-                                        const normalizedPhone = normalizePhone(phoneNumber);
+                                    }
+                                    
+                                    // If not found by contact_id, try to match by email (for emails) or phone (for WhatsApp)
+                                    if (!recipientName && leadContacts.length > 0) {
+                                      if (row.kind === 'email') {
+                                        // Email matching logic - find contact in recipient list
+                                        const recipients = recipientList.split(/[,;]/).map((r: string) => r.trim().toLowerCase()).filter((r: string) => r);
                                         
                                         for (const contact of leadContacts) {
-                                          const contactPhone = contact.phone ? normalizePhone(contact.phone) : null;
-                                          const contactMobile = contact.mobile ? normalizePhone(contact.mobile) : null;
-                                          
-                                          // Try exact match first
-                                          if (contactPhone === normalizedPhone || contactMobile === normalizedPhone) {
-                                            contactName = contact.name;
+                                          const contactEmail = contact.email?.toLowerCase().trim();
+                                          if (contactEmail && recipients.includes(contactEmail)) {
+                                            recipientName = contact.name;
                                             break;
                                           }
+                                        }
+                                        
+                                        // If no contact found, use client name as fallback
+                                        if (!recipientName) {
+                                          recipientName = client.name || 'Client';
+                                        }
+                                      } else if (row.kind === 'whatsapp') {
+                                        // WhatsApp matching logic - match by phone number
+                                        if (phoneNumber) {
+                                          const normalizePhone = (phone: string) => phone.replace(/[\s\-\(\)]/g, '').replace(/^\+/, '');
+                                          const normalizedPhone = normalizePhone(phoneNumber);
                                           
-                                          // Try last 4 digits match (fallback)
-                                          if (normalizedPhone.length >= 4) {
-                                            const last4 = normalizedPhone.slice(-4);
-                                            if ((contactPhone && contactPhone.slice(-4) === last4) || 
-                                                (contactMobile && contactMobile.slice(-4) === last4)) {
-                                              contactName = contact.name;
+                                          for (const contact of leadContacts) {
+                                            const contactPhone = contact.phone ? normalizePhone(contact.phone) : null;
+                                            const contactMobile = contact.mobile ? normalizePhone(contact.mobile) : null;
+                                            
+                                            if (contactPhone === normalizedPhone || contactMobile === normalizedPhone) {
+                                              recipientName = contact.name;
                                               break;
                                             }
+                                            
+                                            if (normalizedPhone.length >= 4) {
+                                              const last4 = normalizedPhone.slice(-4);
+                                              if ((contactPhone && contactPhone.slice(-4) === last4) || 
+                                                  (contactMobile && contactMobile.slice(-4) === last4)) {
+                                                recipientName = contact.name;
+                                                break;
+                                              }
+                                            }
+                                          }
+                                          
+                                          // If no contact found, use client name as fallback
+                                          if (!recipientName) {
+                                            recipientName = client.name || 'Client';
                                           }
                                         }
                                       }
                                     }
+                                    
+                                    return recipientName ? (
+                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                        <span>To:</span>
+                                        <span className="font-medium text-gray-700">{recipientName}</span>
+                                      </div>
+                                    ) : null;
+                                  } else {
+                                    // If incoming (client to employee), show employee name
+                                    // For incoming emails, row.employee contains the CLIENT name (the sender)
+                                    // Use the stored employee_recipient_name that was set when creating the interaction
+                                    const employeeRecipientName = (row as any).employee_recipient_name || 'Team';
+                                    
+                                    return (
+                                      <div className="text-xs text-gray-500 flex items-center gap-1">
+                                        <span>To:</span>
+                                        <span className="font-medium text-gray-700">{employeeRecipientName}</span>
+                                      </div>
+                                    );
                                   }
-                                  
-                                  return contactName ? (
-                                    <div className="text-xs text-gray-500 flex items-center gap-1">
-                                      <span>To:</span>
-                                      <span className="font-medium text-gray-700">{contactName}</span>
-                                    </div>
-                                  ) : null;
                                 })()}
                               </div>
                             </div>
@@ -5057,8 +5943,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                                   {row.status}
                                 </span>
                               )}
-                              {/* Call status badge - only show if status is known and not 'unread' */}
-                              {row.kind === 'call' && row.status && row.status !== 'unread' && row.status.toLowerCase() !== 'unknown' && (
+                              {/* Call status badge - only show if status is known and not 'unread', 'unknown', or 'sent' */}
+                              {row.kind === 'call' && row.status && 
+                               row.status !== 'unread' && 
+                               row.status.toLowerCase() !== 'unknown' && 
+                               row.status.toLowerCase() !== 'sent' && (
+                                <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
+                                  row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
+                                  (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
+                                  row.status.toLowerCase() === 'failed' ? 'bg-red-500 text-white' :
+                                  row.status.toLowerCase() === 'busy' ? 'bg-yellow-500 text-white' :
+                                  'bg-gray-600 text-white'
+                                }`}>
+                                  {row.status === 'NO+ANSWER' ? 'NO ANSWER' : row.status}
+                                </span>
+                              )}
+                              {/* SMS status badge - only show if status is known and not 'unread', 'unknown', or 'sent' */}
+                              {row.kind === 'sms' && row.status && 
+                               row.status !== 'unread' && 
+                               row.status.toLowerCase() !== 'unknown' && 
+                               row.status.toLowerCase() !== 'sent' && (
                                 <span className={`px-3 py-1 rounded-full font-medium shadow-sm text-xs ${
                                   row.status.toLowerCase() === 'answered' ? 'bg-green-500 text-white' :
                                   (row.status.toLowerCase() === 'no+answer' || row.status.toLowerCase() === 'no answer') ? 'bg-red-500 text-white' :
@@ -5091,42 +5995,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                         
                           {/* Content section - hide content for database calls, but show for manual calls */}
                           {row.content && (row.kind !== 'call' || row.editable) && (
-                            <div 
-                              className="text-sm sm:text-base text-gray-700 break-words mb-4"
-                              dir="auto"
-                              style={{ 
-                                lineHeight: '1.6'
-                              }}
-                            >
-                              {/* Subject in bold with colon, then body with spacing */}
-                              {row.subject ? (
-                                <>
-                                  <div 
-                                    className="font-bold text-base sm:text-lg mb-2 text-gray-900"
-                                    dir="auto"
-                                  >
-                                    {row.subject}
-                                  </div>
-                                  <div 
-                                    className="max-w-none whitespace-pre-wrap overflow-visible"
-                                    style={{ lineHeight: '1.6', maxHeight: 'none' }}
-                                    dir={getTextDirection(row.content)}
-                                    dangerouslySetInnerHTML={{ 
-                                      __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
-                                    }} 
-                                  />
-                                </>
-                              ) : (
-                                <div 
-                                  className="max-w-none whitespace-pre-wrap overflow-visible"
-                                  style={{ lineHeight: '1.6', maxHeight: 'none' }}
-                                  dir={getTextDirection(row.content)}
-                                  dangerouslySetInnerHTML={{ 
-                                    __html: row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')
-                                  }} 
-                                />
-                              )}
-                            </div>
+                            <TruncatedContent
+                              content={row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')}
+                              maxCharacters={500}
+                              direction={getTextDirection(row.content)}
+                              subject={row.subject}
+                            />
                           )}
                           
                           {/* Call recording playback controls - only show play button for NO+ANSWER and BUSY status */}
@@ -5251,6 +6125,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             .email-content img {
               max-width: 100% !important;
               height: auto !important;
+              display: inline-block !important;
+              object-fit: contain !important;
+            }
+            .email-content img[src^="data:"] {
+              max-width: 100% !important;
+              height: auto !important;
+              display: inline-block !important;
             }
             .email-content img[data-load-error="true"] {
               display: none !important;
@@ -5329,7 +6210,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </button>
                   )}
                   <button
-                    onClick={() => setIsEmailModalOpen(false)}
+                    onClick={() => {
+                      setIsEmailModalOpen(false);
+                      setSelectedEmailForView(null);
+                      setEmailSearchQuery('');
+                    }}
                     className="btn btn-ghost btn-circle"
                   >
                     <XMarkIcon className="w-5 h-5 md:w-6 md:h-6" />
@@ -5387,66 +6272,29 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               )}
             </div>
 
-            {/* Email Thread */}
-            <div className="flex-1 overflow-y-auto p-4 md:p-6 min-h-0 overscroll-contain bg-white" style={{ WebkitOverflowScrolling: 'touch' }}>
-              {emailsLoading ? (
-                <div className="flex items-center justify-center h-full">
-                  <div className="loading loading-spinner loading-lg text-purple-500"></div>
-                </div>
-              ) : emails.length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-500">
-                  <div className="text-center">
-                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
-                      </svg>
+            {/* Email List and Viewer - Split View */}
+            <div className="flex-1 flex overflow-hidden">
+              {/* Left Sidebar - Email List */}
+              <div className="w-80 border-r border-gray-200 flex flex-col overflow-hidden">
+                <div className="flex-1 overflow-y-auto p-2">
+                  {emailsLoading ? (
+                    <div className="flex items-center justify-center h-full">
+                      <div className="loading loading-spinner loading-lg text-purple-500"></div>
                     </div>
-                    <p className="text-lg font-medium">No emails available</p>
-                    <p className="text-sm">No emails found for {client.name}. Try syncing or send a new email.</p>
-                  </div>
-                </div>
-              ) : emails.filter((message) => {
-                if (!emailSearchQuery.trim()) return true;
-                
-                const searchTerm = emailSearchQuery.toLowerCase();
-                
-                // Search in subject
-                if (message.subject && message.subject.toLowerCase().includes(searchTerm)) return true;
-                
-                // Search in email body content
-                if (message.bodyPreview && message.bodyPreview.toLowerCase().includes(searchTerm)) return true;
-                
-                // Search in sender name (from field)
-                if (message.from && message.from.toLowerCase().includes(searchTerm)) return true;
-                
-                // Search in recipient (to field)
-                if (message.to && message.to.toLowerCase().includes(searchTerm)) return true;
-                
-                // Search in sender name (display name)
-                const senderName = message.direction === 'outgoing' ? (currentUserFullName || 'Team') : client.name;
-                if (senderName.toLowerCase().includes(searchTerm)) return true;
-                
-                return false;
-              }).length === 0 ? (
-                <div className="flex items-center justify-center h-full text-gray-500">
-                  <div className="text-center">
-                    <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                      <MagnifyingGlassIcon className="w-8 h-8 text-gray-400" />
+                  ) : emails.length === 0 ? (
+                    <div className="flex items-center justify-center h-full text-gray-500 p-4">
+                      <div className="text-center">
+                        <div className="w-12 h-12 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                          <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                          </svg>
+                        </div>
+                        <p className="text-sm font-medium">No emails</p>
+                        <p className="text-xs text-gray-400 mt-1">Try syncing emails</p>
+                      </div>
                     </div>
-                    <p className="text-lg font-medium">No emails found</p>
-                    <p className="text-sm">No emails match your search for "{emailSearchQuery}". Try a different search term.</p>
-                    <button
-                      onClick={() => setEmailSearchQuery('')}
-                      className="mt-2 text-sm text-purple-600 hover:text-purple-800 underline"
-                    >
-                      Clear search
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <div className="space-y-4">
-                  {[...emails]
-                    .filter((message) => {
+                  ) : (() => {
+                    const filteredEmails = [...emails].filter((message) => {
                       // STRICT filtering by selected contact if one is selected
                       if (selectedContactForEmail) {
                         const contactId = Number(selectedContactForEmail.contact.id);
@@ -5507,145 +6355,257 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                       if (senderName.toLowerCase().includes(searchTerm)) return true;
                       
                       return false;
-                    })
-                    .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
-                    .map((message, index, filteredMessages) => {
-                      const showDateSeparator = index === 0 || 
-                        new Date(message.date).toDateString() !== new Date(filteredMessages[index - 1].date).toDateString();
-                      
-                      // Determine if email is from team/user based on sender email domain
-                      // Emails from @lawoffice.org.il are ALWAYS team/user, never client
+                    });
+                    
+                    if (filteredEmails.length === 0 && emailSearchQuery.trim()) {
+                      return (
+                        <div className="flex items-center justify-center h-full text-gray-500 p-4">
+                          <div className="text-center">
+                            <MagnifyingGlassIcon className="w-12 h-12 text-gray-400 mx-auto mb-3" />
+                            <p className="text-sm font-medium">No emails found</p>
+                            <p className="text-xs text-gray-400 mt-1">No emails match "{emailSearchQuery}"</p>
+                            <button
+                              onClick={() => setEmailSearchQuery('')}
+                              className="mt-3 text-xs text-purple-600 hover:text-purple-800 underline"
+                            >
+                              Clear search
+                            </button>
+                          </div>
+                        </div>
+                      );
+                    }
+                    
+                    return (
+                      <div className="space-y-2">
+                        {filteredEmails
+                          .sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime())
+                          .map((message, index) => {
                       const senderEmail = message.from || '';
                       const isFromOffice = isOfficeEmail(senderEmail);
-                      // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
                       const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
+                      const senderDisplayName = isOutgoing
+                        ? ((message as any).sender_display_name || currentUserFullName || 'Team')
+                        : (selectedContactForEmail?.contact.name || client.name || 'Client');
+                      const isSelected = selectedEmailForView?.id === message.id;
                       
-                      // Get sender display name - use employee display_name for office emails
-                      let senderDisplayName: string;
-                      if (isOutgoing) {
-                        // For team/user emails: use employee display_name from cache if available, otherwise fallback
-                        senderDisplayName = (message as any).sender_display_name 
-                          || currentUserFullName 
-                          || message.from 
-                          || 'Team';
-                      } else {
-                        // For client emails
-                        senderDisplayName = selectedContactForEmail?.contact.name || client.name || message.from || 'Client';
-                      }
-                      const messageDirection = getMessageDirection(message);
-                      const isRTLMessage = messageDirection === 'rtl';
+                      // Get preview text (strip HTML) - prefer body_html if available for full content preview
+                      const contentForPreview = (message as any).body_html || message.bodyPreview || (message as any).body_preview || '';
+                      const previewText = contentForPreview
+                        ? contentForPreview.replace(/<[^>]*>/g, '').replace(/&nbsp;/g, ' ').trim().substring(0, 100)
+                        : 'No content';
                       
                       return (
-                        <React.Fragment key={message.id || index}>
-                          {showDateSeparator && (
-                            <div className="flex justify-center my-4">
-                              <div className="bg-white border border-gray-200 text-gray-600 text-sm font-medium px-3 py-1.5 rounded-full shadow-sm">
-                                {formatDateSeparator(message.date)}
+                        <button
+                          key={message.id || index}
+                          onClick={() => {
+                            setSelectedEmailForView(message);
+                            // Hydrate this email if needed
+                            hydrateEmailBodies([message]);
+                          }}
+                          className={`w-full text-left p-3 rounded-lg border transition-all ${
+                            isSelected
+                              ? 'bg-purple-50 border-purple-300 shadow-sm'
+                              : 'bg-white border-gray-200 hover:bg-gray-50 hover:border-gray-300'
+                          }`}
+                        >
+                          <div className="flex items-start gap-2 mb-2">
+                            <div className={`flex-shrink-0 w-2 h-2 rounded-full mt-1.5 ${
+                              isOutgoing ? 'bg-blue-500' : 'bg-pink-500'
+                            }`}></div>
+                            <div className="flex-1 min-w-0">
+                              <div className="flex items-center gap-2 mb-1">
+                                <span className="text-xs font-semibold text-gray-900 truncate" dir="auto">
+                                  {senderDisplayName}
+                                </span>
+                                <span className={`text-xs px-1.5 py-0.5 rounded ${
+                                  isOutgoing ? 'bg-blue-100 text-blue-700' : 'bg-pink-100 text-pink-700'
+                                }`}>
+                                  {isOutgoing ? 'Team' : 'Client'}
+                                </span>
                               </div>
-                            </div>
-                          )}
-                          
-                          <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
-                            <div className="flex items-center gap-2 mb-1">
-                              <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                isOutgoing
-                                  ? 'bg-blue-100 text-blue-700 border border-blue-200'
-                                  : 'bg-pink-100 text-pink-700 border border-pink-200'
-                              }`}>
-                                {isOutgoing ? 'Team' : 'Client'}
+                              <div className="text-sm font-semibold text-gray-900 mb-1 line-clamp-1" dir="auto">
+                                {message.subject || '(no subject)'}
                               </div>
-                              <div
-                                className={`text-xs font-semibold ${
-                                  isOutgoing ? 'text-blue-600' : 'text-gray-600'
-                                }`}
-                                dir={getTextDirection(senderDisplayName)}
-                              >
-                                {senderDisplayName}
+                              <div className="text-xs text-gray-500" dir="auto" style={{ 
+                                display: '-webkit-box',
+                                WebkitLineClamp: 'none',
+                                WebkitBoxOrient: 'vertical',
+                                overflow: 'visible',
+                                textOverflow: 'clip'
+                              }}>
+                                {previewText}
                               </div>
-                            </div>
-                            <div
-                              className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                              style={{ 
-                                wordBreak: 'break-word', 
-                                overflowWrap: 'anywhere'
-                              }}
-                            >
-                              <div className="mb-2">
-                                <div 
-                                  className="text-sm font-semibold text-gray-900" 
-                                  dir="auto"
-                                >
-                                  {message.subject || '(no subject)'}
-                                </div>
-                                <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.date)}</div>
+                              <div className="text-xs text-gray-400 mt-2">
+                                {formatTime(message.date)}
                               </div>
-                              
-                              {message.bodyPreview ? (
-                                <div
-                                  dangerouslySetInnerHTML={{ __html: message.bodyPreview }}
-                                  className="prose prose-sm max-w-none text-gray-700 break-words email-content"
-                                  style={{ 
-                                    wordBreak: 'break-word', 
-                                    overflowWrap: 'anywhere',
-                                    whiteSpace: 'normal', // Use normal wrapping since we handle breaks with <br> tags
-                                    lineHeight: '1.6' // Ensure proper line spacing
-                                  }}
-                                  dir="auto"
-                                />
-                              ) : (
-                                <div className="text-gray-500 italic" dir="ltr" style={{ textAlign: 'left' }}>No content available</div>
-                              )}
-
-                              {message.attachments && Array.isArray(message.attachments) && message.attachments.length > 0 && (
-                                <div className="mt-3 pt-3 border-t border-gray-200">
-                                  <div className="text-xs font-medium text-gray-600 mb-2">
-                                    Attachments ({message.attachments.length}):
-                                  </div>
-                                  <div className="space-y-1">
-                                    {message.attachments.map((attachment: any, idx: number) => {
-                                      if (!attachment || (!attachment.id && !attachment.name)) {
-                                        return null; // Skip invalid attachments
-                                      }
-                                      
-                                      const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
-                                      const attachmentName = attachment.name || `Attachment ${idx + 1}`;
-                                      const isDownloading = attachment.id && downloadingAttachments[attachment.id];
-                                      
-                                      return (
-                                        <button
-                                          key={attachmentKey}
-                                          type="button"
-                                          className="flex items-center gap-2 text-xs font-medium text-blue-600 hover:text-blue-800 transition-colors w-full text-left"
-                                          onClick={() => handleDownloadAttachment(message.id, attachment)}
-                                          disabled={Boolean(isDownloading)}
-                                        >
-                                          {isDownloading ? (
-                                            <span className="loading loading-spinner loading-xs text-blue-500" />
-                                          ) : (
-                                            <DocumentTextIcon className="w-4 h-4 flex-shrink-0" />
-                                          )}
-                                          <span className="truncate flex-1">
-                                            {attachmentName}
-                                          </span>
-                                          {(attachment.sizeInBytes || attachment.size) && (
-                                            <span className="text-xs text-gray-500 flex-shrink-0">
-                                              ({((attachment.sizeInBytes || attachment.size) / 1024).toFixed(1)} KB)
-                                            </span>
-                                          )}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              )}
                             </div>
                           </div>
-                        </React.Fragment>
+                        </button>
                       );
                     })}
-                  <div ref={messagesEndRef} />
+                      </div>
+                    );
+                  })()}
                 </div>
-              )}
+              </div>
+
+              {/* Right Side - Selected Email Viewer */}
+              <div className="flex-1 flex flex-col overflow-hidden bg-white">
+                {selectedEmailForView ? (
+                  <div className="flex-1 overflow-y-auto p-6">
+                    <div className="max-w-4xl mx-auto">
+                      {/* Email Header */}
+                      <div className="border-b border-gray-200 pb-4 mb-6">
+                        <div className="flex items-start justify-between mb-4">
+                          <div className="flex-1">
+                            <h2 className="text-xl font-bold text-gray-900 mb-2" dir="auto">
+                              {selectedEmailForView.subject || '(no subject)'}
+                            </h2>
+                            <div className="flex items-center gap-2 mb-3">
+                              <div className={`px-2 py-1 rounded text-xs font-semibold ${
+                                (isOfficeEmail(selectedEmailForView.from) || selectedEmailForView.direction === 'outgoing')
+                                  ? 'bg-blue-100 text-blue-700'
+                                  : 'bg-pink-100 text-pink-700'
+                              }`}>
+                                {(isOfficeEmail(selectedEmailForView.from) || selectedEmailForView.direction === 'outgoing') ? 'Team' : 'Client'}
+                              </div>
+                              <span className="text-sm font-semibold text-gray-700" dir="auto">
+                                {(isOfficeEmail(selectedEmailForView.from) || selectedEmailForView.direction === 'outgoing')
+                                  ? ((selectedEmailForView as any).sender_display_name || currentUserFullName || 'Team')
+                                  : (selectedContactForEmail?.contact.name || client.name || 'Client')}
+                              </span>
+                            </div>
+                          </div>
+                          <div className="text-sm text-gray-500">
+                            {formatTime(selectedEmailForView.date)}
+                          </div>
+                        </div>
+                        <div className="space-y-2 text-sm">
+                          <div>
+                            <span className="font-semibold text-gray-600">From:</span>
+                            <span className="ml-2 text-gray-900" dir="ltr">{selectedEmailForView.from || 'Unknown'}</span>
+                          </div>
+                          {selectedEmailForView.to && (() => {
+                            const recipients = selectedEmailForView.to.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
+                            return (
+                              <div>
+                                <span className="font-semibold text-gray-600">To:</span>
+                                <span className="ml-2 text-gray-900" dir="ltr">
+                                  {recipients.map((recipient: string, idx: number) => (
+                                    <span key={idx}>
+                                      {recipient}
+                                      {idx < recipients.length - 1 && ', '}
+                                    </span>
+                                  ))}
+                                </span>
+                              </div>
+                            );
+                          })()}
+                        </div>
+                      </div>
+
+                      {/* Email Body - Full Content */}
+                      <div className="mb-6">
+                        {(() => {
+                          // Prefer body_html over bodyPreview/body_preview for full content
+                          let emailContent = selectedEmailForView.body_html || selectedEmailForView.bodyPreview || selectedEmailForView.body_preview;
+                          
+                          if (emailContent) {
+                            // Process inline images (convert cid: references to data URLs)
+                            const attachments = selectedEmailForView.attachments || [];
+                            emailContent = processEmailHtmlWithInlineImages(emailContent, attachments);
+                            
+                            // Format and sanitize the HTML
+                            emailContent = formatEmailHtmlForDisplay(emailContent);
+                            emailContent = sanitizeEmailHtml(emailContent);
+                            
+                            return (
+                              <EmailContentWithErrorHandling 
+                                html={emailContent}
+                                emailId={selectedEmailForView.id}
+                              />
+                            );
+                          } else {
+                            return (
+                              <div className="text-gray-500 italic py-8 text-center">
+                                Loading email content...
+                                <div className="mt-2">
+                                  <button
+                                    onClick={() => {
+                                      if (selectedEmailForView) {
+                                        hydrateEmailBodies([selectedEmailForView]);
+                                      }
+                                    }}
+                                    className="btn btn-sm btn-outline"
+                                  >
+                                    Fetch Full Content
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          }
+                        })()}
+                      </div>
+
+                      {/* Attachments */}
+                      {selectedEmailForView.attachments && Array.isArray(selectedEmailForView.attachments) && selectedEmailForView.attachments.length > 0 && (
+                        <div className="border-t border-gray-200 pt-6">
+                          <h3 className="text-sm font-semibold text-gray-700 mb-3">
+                            Attachments ({selectedEmailForView.attachments.length})
+                          </h3>
+                          <div className="space-y-2">
+                            {selectedEmailForView.attachments.map((attachment: any, idx: number) => {
+                              if (!attachment || (!attachment.id && !attachment.name)) return null;
+                              
+                              const attachmentKey = attachment.id || attachment.name || `${selectedEmailForView.id}-${idx}`;
+                              const attachmentName = attachment.name || `Attachment ${idx + 1}`;
+                              const isDownloading = attachment.id && downloadingAttachments[attachment.id];
+                              
+                              return (
+                                <button
+                                  key={attachmentKey}
+                                  type="button"
+                                  className="flex items-center gap-3 w-full p-3 rounded-lg border border-gray-200 hover:bg-gray-50 hover:border-gray-300 transition-colors text-left"
+                                  onClick={() => handleDownloadAttachment(selectedEmailForView.id, attachment)}
+                                  disabled={Boolean(isDownloading)}
+                                >
+                                  {isDownloading ? (
+                                    <span className="loading loading-spinner loading-sm text-blue-500" />
+                                  ) : (
+                                    <DocumentTextIcon className="w-5 h-5 text-blue-600 flex-shrink-0" />
+                                  )}
+                                  <div className="flex-1 min-w-0">
+                                    <div className="text-sm font-medium text-gray-900 truncate">
+                                      {attachmentName}
+                                    </div>
+                                    {(attachment.sizeInBytes || attachment.size) && (
+                                      <div className="text-xs text-gray-500">
+                                        {((attachment.sizeInBytes || attachment.size) / 1024).toFixed(1)} KB
+                                      </div>
+                                    )}
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                ) : (
+                  <div className="flex-1 flex items-center justify-center text-gray-500">
+                    <div className="text-center">
+                      <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <svg className="w-8 h-8 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 8l7.89 4.26a2 2 0 002.22 0L21 8M5 19h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z" />
+                        </svg>
+                      </div>
+                      <p className="text-lg font-medium">Select an email</p>
+                      <p className="text-sm text-gray-400 mt-1">Choose an email from the list to view its content</p>
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
 
             {/* Compose Area */}

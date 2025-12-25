@@ -3256,14 +3256,26 @@ useEffect(() => {
     
     const loadAdditionalData = async () => {
       try {
+        // Check if this is a legacy lead
+        const isLegacyLead = selectedClient.lead_type === 'legacy' || 
+                             (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
+        
         // Fetch latest meeting date for case summary
-        const { data, error } = await supabase
+        let query = supabase
           .from('meetings')
           .select('meeting_date')
-          .eq('client_id', selectedClient.id)
           .not('meeting_date', 'is', null)
           .order('meeting_date', { ascending: false })
           .limit(1);
+        
+        if (isLegacyLead) {
+          const legacyId = selectedClient.id.toString().replace('legacy_', '');
+          query = query.eq('legacy_lead_id', parseInt(legacyId, 10));
+        } else {
+          query = query.eq('client_id', selectedClient.id);
+        }
+        
+        const { data, error } = await query;
         if (!error && data && data.length > 0) setLatestMeetingDate(data[0].meeting_date);
         else setLatestMeetingDate(null);
       } catch (error) {
@@ -5204,6 +5216,7 @@ useEffect(() => {
                 legacy_id: emailRecord.legacy_id,
                 savedId: data?.[0]?.id
               });
+              // Stage evaluation is handled automatically by database triggers
             } catch (dbError) {
               console.error('❌ Failed to save email to database:', dbError);
               // Don't fail the whole operation if DB save fails
@@ -8087,6 +8100,7 @@ useEffect(() => {
                 
                 await supabase.from('emails').insert(emailRecord);
                 console.log('📧 Invitation email record saved to database');
+                // Stage evaluation is handled automatically by database triggers
               } catch (dbError) {
                 console.error('❌ Failed to save invitation email to database:', dbError);
               }
@@ -9994,12 +10008,21 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         setIsSavingSubLead(false);
         return;
       }
-      const masterStageId =
-        selectedClient && selectedClient.stage !== undefined && selectedClient.stage !== null
-          ? resolveStageId(selectedClient.stage)
-          : null;
-      const targetStageId =
-        subLeadStep === 'sameContract' && masterStageId !== null ? masterStageId : createdStageId;
+      
+      // For subleads created with same contract, always set stage to 60 (client signed agreement)
+      let targetStageId: number | null = null;
+      if (subLeadStep === 'sameContract') {
+        const clientSignedStageId = getStageIdOrWarn('Client signed agreement');
+        if (clientSignedStageId === null) {
+          console.warn('Unable to resolve "Client signed agreement" stage, falling back to stage ID 60');
+          targetStageId = 60; // Fallback to direct ID if stage name resolution fails
+        } else {
+          targetStageId = clientSignedStageId;
+        }
+      } else {
+        // For other sublead creation scenarios, use the created stage
+        targetStageId = createdStageId;
+      }
 
       // Final validation - categoryIdValue should never be null at this point
       if (!categoryIdValue || categoryIdValue <= 0) {

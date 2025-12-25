@@ -3785,7 +3785,27 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                   >
                                     {message.subject}
                                   </div>
-                                  <div className="text-xs text-gray-500 mt-1" dir="ltr" style={{ textAlign: 'left' }}>{formatTime(message.sent_at)}</div>
+                                  <div className="text-xs text-gray-500 mt-1 space-y-0.5" dir="ltr" style={{ textAlign: 'left' }}>
+                                    <div>
+                                      <span className="font-medium">From:</span> <span className="text-gray-700">{message.sender_email || 'Unknown'}</span>
+                                    </div>
+                                    {message.recipient_list && (() => {
+                                      const recipients = message.recipient_list.split(/[,;]/).map((r: string) => r.trim()).filter((r: string) => r);
+                                      return (
+                                        <div>
+                                          <span className="font-medium">To:</span> <span className="text-gray-700">
+                                            {recipients.map((recipient: string, idx: number) => (
+                                              <span key={idx}>
+                                                {recipient}
+                                                {idx < recipients.length - 1 && ', '}
+                                              </span>
+                                            ))}
+                                          </span>
+                                        </div>
+                                      );
+                                    })()}
+                                    <div className="text-gray-400">{formatTime(message.sent_at)}</div>
+                                  </div>
                                 </div>
                                 
                                 {message.body_html ? (

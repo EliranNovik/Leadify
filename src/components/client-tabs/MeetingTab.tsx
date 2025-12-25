@@ -1591,6 +1591,7 @@ const formatEmailBody = async (
       if (successCount > 0) {
         const typeLabel = type === 'missed_appointment' ? 'missed appointment' : 'reminder';
         toast.success(`WhatsApp ${typeLabel} sent to ${successCount} contact${successCount !== 1 ? 's' : ''}`);
+        // Stage evaluation is handled automatically by database triggers
       }
       if (failureCount > 0) {
         const errors = results.filter((r): r is { success: boolean; phoneNumber: string; error?: string } => r !== undefined && !r.success).map(r => r.error || 'Unknown error').join(', ');
@@ -1859,6 +1860,8 @@ const formatEmailBody = async (
           attachments: null,
         }
       ], { onConflict: 'message_id' });
+      // Stage evaluation is handled automatically by database triggers
+      
       if (onClientUpdate) await onClientUpdate();
       // Refresh meetings to show updated data
       await fetchMeetings();

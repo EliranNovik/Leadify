@@ -1212,6 +1212,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
         textareaRef.current?.blur();
       }
       
+      // Stage evaluation is handled automatically by database triggers
+      
       if (onClientUpdate) {
         await onClientUpdate();
       }

@@ -649,6 +649,8 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
         toast.error('Failed to save WhatsApp message: ' + insertError.message);
         return;
       }
+      // Stage evaluation is handled automatically by database triggers
+      
       setWhatsAppInput('');
       // Refetch messages
       const { data, error } = await supabase
@@ -972,6 +974,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
           console.log('Email successfully saved to database:', savedEmail);
           dbSaveSuccess = true;
           toast.success('Email sent and saved to database successfully!');
+          // Stage evaluation is handled automatically by database triggers
         }
       } catch (saveError) {
         console.error('Unexpected error saving email to database:', saveError);
@@ -1275,6 +1278,7 @@ const CommunicationsTab: React.FC<HandlerTabProps> = ({ leads }) => {
         .eq('id', leads[0].id);
 
       if (updateError) throw updateError;
+      // Stage evaluation is handled automatically by database triggers
       
       toast.success('Interaction saved!');
 
