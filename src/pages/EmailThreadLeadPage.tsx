@@ -262,6 +262,7 @@ const EmailThreadLeadPage: React.FC = () => {
     'news@events.imhbusiness.com',
     'khawaish@usareaimmigrationservices.com',
     'message@shidurit.com',
+    'contact@legalimmigrationisrael.com',
   ]);
 
   // Blocked domains to ignore (add domain names here, e.g., 'example.com')

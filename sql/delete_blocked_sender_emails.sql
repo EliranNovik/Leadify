@@ -27,7 +27,6 @@ WHERE LOWER(sender_email) IN (
   'notification@facebookmail.com',
   'news@events.imhbusiness.com',
   'khawaish@usareaimmigrationservices.com',
-  'message@shidurit.com'
-'khawaish@usareaimmigrationservices.com'
-)
-
+  'message@shidurit.com',
+  'contact@legalimmigrationisrael.com'
+);

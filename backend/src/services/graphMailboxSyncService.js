@@ -50,6 +50,7 @@ const BLOCKED_SENDER_EMAILS = new Set([
   'news@events.imhbusiness.com',
   'khawaish@usareaimmigrationservices.com',
   'message@shidurit.com',
+  'contact@legalimmigrationisrael.com',
 ]);
 
 // Blocked domains to ignore (add domain names here, e.g., 'example.com')
@@ -1622,6 +1623,17 @@ class GraphMailboxSyncService {
       const clientId = !isLegacy ? context.clientId ?? null : null;
 
       const recipients = buildRecipientList(payload);
+      
+      // Skip emails sent to leads@lawoffice.org.il
+      const LEADS_EMAIL = 'leads@lawoffice.org.il';
+      const recipientListStr = recipients.join(', ').toLowerCase();
+      if (recipientListStr.includes(LEADS_EMAIL.toLowerCase())) {
+        console.log(
+          `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (filtered) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
+        );
+        return; // Don't save this email
+      }
+      
       const attachmentsMeta = Array.isArray(payload.attachments)
         ? payload.attachments.map((attachment) => ({
             name: attachment?.name || 'attachment',
