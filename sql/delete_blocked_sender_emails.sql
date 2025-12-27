@@ -26,10 +26,8 @@ WHERE LOWER(sender_email) IN (
   'noreply@mobilepunch.com',
   'notification@facebookmail.com',
   'news@events.imhbusiness.com',
-  'khawaish@usareaimmigrationservices.com'
-);
-
--- Also delete emails from blocked domains (lawoffice.org.il)
-DELETE FROM emails
-WHERE LOWER(sender_email) LIKE '%@lawoffice.org.il';
+  'khawaish@usareaimmigrationservices.com',
+  'message@shidurit.com'
+'khawaish@usareaimmigrationservices.com'
+)
 
