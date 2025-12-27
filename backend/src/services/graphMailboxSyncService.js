@@ -23,22 +23,56 @@ const isOfficeDomain = (email) => {
   return normalized.endsWith('@lawoffice.org.il');
 };
 
+// Blocked sender emails to ignore (should not be saved to emails table)
+const BLOCKED_SENDER_EMAILS = new Set([
+  'wordpress@german-and-austrian-citizenship.lawoffice.org.il',
+  'wordpress@insolvency-law.com',
+  'wordpress@citizenship-for-children.usa-immigration.lawyer',
+  'lawoffic@israel160.jetserver.net',
+  'list@wordfence.com',
+  'wordpress@usa-immigration.lawyer',
+  'wordpress@heritage-based-european-citizenship.lawoffice.org.il',
+  'wordpress@heritage-based-european-citizenship-heb.lawoffice.org.il',
+  'no-reply@lawzana.com',
+  'support@lawfirms1.com',
+  'no-reply@zoom.us',
+  'info@israel-properties.com',
+  'notifications@invoice4u.co.il',
+  'isetbeforeyou@yahoo.com',
+  'no-reply@support.microsoft.com',
+  'ivy@pipe.hnssd.com',
+  'no-reply@mail.instagram.com',
+  'no_reply@email.apple.com',
+  'noreplay@maskyoo.co.il',
+  'email@german-and-austrian-citizenship.lawoffice.org.il',
+  'noreply@mobilepunch.com',
+  'notification@facebookmail.com',
+  'news@events.imhbusiness.com',
+  'khawaish@usareaimmigrationservices.com',
+]);
+
+// Blocked domains to ignore (add domain names here, e.g., 'example.com')
+const BLOCKED_DOMAINS = [
+  'lawoffice.org.il',
+];
+
 // Check if email should be filtered out (internal office emails or specific addresses)
 const shouldFilterEmail = (email) => {
   if (!email) return false;
   const normalized = normalise(email);
   
-  // Filter out @lawoffice.org.il domain
-  if (normalized.endsWith('@lawoffice.org.il')) {
+  // Check if email is in blocked list
+  if (BLOCKED_SENDER_EMAILS.has(normalized)) {
     return true;
   }
   
-  // Filter out specific email addresses
-  const filteredEmails = [
-    'support@lawfirms1.com',
-  ];
+  // Check if email domain is blocked
+  const emailDomain = normalized.split('@')[1];
+  if (emailDomain && BLOCKED_DOMAINS.some(domain => emailDomain === domain || emailDomain.endsWith(`.${domain}`))) {
+    return true;
+  }
   
-  return filteredEmails.includes(normalized);
+  return false;
 };
 
 const stripHtml = (html = '') =>
@@ -853,9 +887,27 @@ class GraphMailboxSyncService {
     // Use expanded rows (all rows already have matches or are office emails)
     // Filter rows: only save emails that match client_id, contact_id, or office@lawoffice.org.il recipient
     const OFFICE_EMAIL = 'office@lawoffice.org.il';
+    const LEADS_EMAIL = 'leads@lawoffice.org.il'; // Ignore emails sent to this address
     const filteredRows = expandedRows.filter((row) => {
-      // Check if recipient email is office@lawoffice.org.il
+      // Skip emails from blocked senders
+      const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
+      if (senderEmail && shouldFilterEmail(senderEmail)) {
+        console.log(
+          `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - sender is blocked | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+        return false;
+      }
+      
+      // Skip emails sent to leads@lawoffice.org.il
       const recipientList = (row.recipient_list || '').toLowerCase();
+      if (recipientList.includes(LEADS_EMAIL.toLowerCase())) {
+        console.log(
+          `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - recipient is leads@lawoffice.org.il (filtered) | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+        return false;
+      }
+      
+      // Check if recipient email is office@lawoffice.org.il
       const hasOfficeRecipient = recipientList.includes(OFFICE_EMAIL.toLowerCase());
       
       // Check if email has client_id or legacy_id (matched to a lead)

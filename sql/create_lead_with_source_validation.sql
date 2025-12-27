@@ -38,10 +38,7 @@ DECLARE
   v_last_leads_lead_id bigint;
   v_last_leads_number text;
   v_max_number bigint;
-  v_new_contact_id bigint;
-  v_contact_cdate date;
-  v_contact_udate date;
-  v_new_relationship_id bigint;
+  v_language_id uuid;
 BEGIN
   -- Sync leads_contact sequence to prevent duplicate key errors
   PERFORM setval(
@@ -130,6 +127,28 @@ BEGIN
     v_creator_full_name := p_created_by;
   END IF;
   
+  -- Look up language_id from languages table
+  -- Try to match by name first (case-insensitive), then by iso_code
+  IF p_lead_language IS NOT NULL THEN
+    SELECT l.id INTO v_language_id
+    FROM languages l
+    WHERE l.is_active = true
+      AND (
+        UPPER(l.name) = UPPER(p_lead_language)
+        OR UPPER(l.iso_code) = UPPER(p_lead_language)
+      )
+    LIMIT 1;
+  END IF;
+  
+  -- If language not found, default to 'EN'
+  IF v_language_id IS NULL THEN
+    SELECT l.id INTO v_language_id
+    FROM languages l
+    WHERE l.is_active = true
+      AND (UPPER(l.name) = 'EN' OR UPPER(l.iso_code) = 'EN')
+    LIMIT 1;
+  END IF;
+  
   -- Insert the new lead with user tracking and source information
   INSERT INTO leads (
     lead_number,
@@ -137,7 +156,7 @@ BEGIN
     email,
     phone,
     topic,
-    language,
+    language_id,
     source,
     source_id,
     category_id,
@@ -154,7 +173,7 @@ BEGIN
     p_lead_email,
     p_lead_phone,
     v_final_topic,
-    p_lead_language,
+    v_language_id,
     v_source_name,
     v_source_id,
     v_final_category_id,
@@ -167,54 +186,8 @@ BEGIN
     p_proposal_currency
   ) RETURNING leads.id INTO v_new_lead_id;
   
-  -- Create the first contact in leads_contact table
-  -- Get current date for contact dates
-  v_contact_cdate := CURRENT_DATE;
-  v_contact_udate := CURRENT_DATE;
-  
-  -- Get the next available contact ID (manually calculate like create_new_lead_v3 does)
-  SELECT COALESCE(MAX(lc.id), 0) + 1 INTO v_new_contact_id
-  FROM leads_contact lc;
-  
-  -- Insert the first contact into leads_contact table
-  -- Manually set the ID to match how create_new_lead_v3 works (which works successfully)
-  INSERT INTO leads_contact (
-    id,
-    name,
-    mobile,
-    phone,
-    email,
-    newlead_id,
-    cdate,
-    udate
-  ) VALUES (
-    v_new_contact_id,
-    p_lead_name,
-    NULL, -- mobile can be null initially
-    p_lead_phone,
-    p_lead_email,
-    v_new_lead_id,
-    v_contact_cdate,
-    v_contact_udate
-  );
-  
-  -- Get the next available relationship ID (manually calculate like create_new_lead_v3 does)
-  SELECT COALESCE(MAX(llc.id), 0) + 1 INTO v_new_relationship_id
-  FROM lead_leadcontact llc;
-  
-  -- Create the relationship in lead_leadcontact table, marking it as main
-  -- Manually set the ID to match how create_new_lead_v3 works (which works successfully)
-  INSERT INTO lead_leadcontact (
-    id,
-    contact_id,
-    newlead_id,
-    main
-  ) VALUES (
-    v_new_relationship_id,
-    v_new_contact_id,
-    v_new_lead_id,
-    true -- This is the main contact
-  );
+  -- Note: Contact creation is handled automatically by the trigger trg_auto_create_main_contact
+  -- The trigger will create the contact in leads_contact and the relationship in lead_leadcontact
   
   -- Return the created lead information
   RETURN QUERY

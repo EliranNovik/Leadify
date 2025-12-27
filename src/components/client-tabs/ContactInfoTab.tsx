@@ -3201,7 +3201,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-visible"
                 >
                   {/* Header */}
-                  <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 rounded-tl-2xl rounded-tr-2xl rounded-br-2xl shadow-sm">
+                  <div className="pl-6 pr-4 pt-2 pb-2 w-full bg-gradient-to-r from-purple-600 to-blue-600 dark:!bg-[#0f172a] rounded-tl-2xl rounded-tr-2xl rounded-br-2xl shadow-sm">
                     <div className="flex items-center justify-between gap-2">
                       <div className="flex items-center gap-2 flex-shrink-0">
                         <h4 className="text-lg font-semibold text-white">

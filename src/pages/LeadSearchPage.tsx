@@ -2495,7 +2495,7 @@ const LeadSearchPage: React.FC = () => {
     const textColor = stageColour ? badgeTextColour : '#ffffff';
     
     return <span 
-      className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
+      className="badge stage-badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
       style={{
         backgroundColor: backgroundColor,
         borderColor: backgroundColor,

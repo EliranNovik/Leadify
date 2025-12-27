@@ -315,6 +315,20 @@ html.dark .btn:hover {
   border-color: rgba(255, 255, 255, 0.3) !important;
 }
 
+/* Header icons in dark mode - remove background box, show as standalone icons */
+html.dark .navbar .btn-ghost.btn-circle {
+  background: transparent !important;
+  border: none !important;
+  box-shadow: none !important;
+  padding: 0.5rem !important;
+}
+
+html.dark .navbar .btn-ghost.btn-circle:hover {
+  background: rgba(255, 255, 255, 0.1) !important;
+  box-shadow: none !important;
+  border: none !important;
+}
+
 /* Sidebar nav overrides */
 html.dark .sidebar-link,
 html.dark .sidebar-sublink {
@@ -354,8 +368,8 @@ html.dark .table tbody tr:hover {
   background-color: rgba(255, 255, 255, 0.1) !important;
 }
 
-/* Badge styling */
-html.dark .badge {
+/* Badge styling - exclude stage badges to preserve their colors */
+html.dark .badge:not(.stage-badge) {
   background: rgba(255, 255, 255, 0.1) !important;
   color: #ffffff !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
