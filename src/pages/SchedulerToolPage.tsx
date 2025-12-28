@@ -10,7 +10,9 @@ import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } fr
 import DocumentModal from '../components/DocumentModal';
 import { format, parseISO } from 'date-fns';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
+import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from '../components/CallOptionsModal';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 
 export interface SchedulerLead {
   id: string;
@@ -88,7 +90,7 @@ const SchedulerToolPage: React.FC = () => {
   const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>(FALLBACK_SCHEDULER_STAGE_IDS);
   
   // Filter states
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('schedulerTool_filters', {
     stage: '',
     language: '',
     source: '',
@@ -96,8 +98,12 @@ const SchedulerToolPage: React.FC = () => {
     topic: '',
     tags: '',
     country: ''
+  }, {
+    storage: 'sessionStorage',
   });
-  const [filteredLeads, setFilteredLeads] = useState<SchedulerLead[]>([]);
+  const [filteredLeads, setFilteredLeads] = usePersistedFilters<SchedulerLead[]>('schedulerTool_filteredLeads', [], {
+    storage: 'sessionStorage',
+  });
   const [showDropdowns, setShowDropdowns] = useState({
     stage: false,
     language: false,
@@ -109,17 +115,25 @@ const SchedulerToolPage: React.FC = () => {
   });
   
   // Sorting state
-  const [sortConfig, setSortConfig] = useState<{
+  const [sortConfig, setSortConfig] = usePersistedFilters<{
     key: string | null;
     direction: 'asc' | 'desc' | null;
-  }>({ key: null, direction: null });
+  }>('schedulerTool_sortConfig', { key: null, direction: null }, {
+    storage: 'sessionStorage',
+  });
   
   // Search state
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = usePersistedFilters('schedulerTool_searchTerm', '', {
+    storage: 'sessionStorage',
+  });
   
   // Date filter state
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = usePersistedFilters('schedulerTool_dateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [dateTo, setDateTo] = usePersistedFilters('schedulerTool_dateTo', '', {
+    storage: 'sessionStorage',
+  });
   
   // Collapsible rows state
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -138,7 +152,9 @@ const SchedulerToolPage: React.FC = () => {
   const [callLeadName, setCallLeadName] = useState<string>('');
   
   // View mode state (box view is default on mobile)
-  const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
+  const [viewMode, setViewMode] = usePersistedFilters<'table' | 'box'>('schedulerTool_viewMode', 'box', {
+    storage: 'sessionStorage',
+  });
   
   // Editing state
   const [editingField, setEditingField] = useState<{leadId: string, field: string} | null>(null);
@@ -875,7 +891,8 @@ const SchedulerToolPage: React.FC = () => {
             name
           )
         `)
-        .eq('scheduler', employeeDisplayName);
+        .eq('scheduler', employeeDisplayName)
+        .is('unactivated_at', null); // Only active leads
 
       if (stageIdsToUse.length === 1) {
         newLeadsQueryBuilder = newLeadsQueryBuilder.eq('stage', stageIdsToUse[0]);
@@ -948,6 +965,7 @@ const SchedulerToolPage: React.FC = () => {
           eligibile
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
+        .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
         .in('stage', [0, 10, 11, 15]); // Only show leads with stages 0, 10, 11, 15
 
       if (legacyError) {
@@ -2399,11 +2417,13 @@ const SchedulerToolPage: React.FC = () => {
             }
             break;
           case 'total':
-            // Extract numeric value from total string
+            // Extract numeric value from total string and convert to NIS for proper comparison across currencies
             const aTotalStr = String(a.total || '');
             const bTotalStr = String(b.total || '');
-            aValue = parseFloat(aTotalStr.replace(/[^\d.-]/g, '')) || 0;
-            bValue = parseFloat(bTotalStr.replace(/[^\d.-]/g, '')) || 0;
+            const aBalance = parseFloat(aTotalStr.replace(/[^\d.-]/g, '')) || 0;
+            const bBalance = parseFloat(bTotalStr.replace(/[^\d.-]/g, '')) || 0;
+            aValue = convertToNIS(aBalance, a.balance_currency);
+            bValue = convertToNIS(bBalance, b.balance_currency);
             break;
           case 'next_followup':
             {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
+import { usePersistedState } from '../hooks/usePersistedState';
 import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, Squares2X2Icon, Bars3Icon, StarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { format, parseISO } from 'date-fns';
@@ -129,11 +130,21 @@ interface LeadForExpert {
 const ExpertPage: React.FC = () => {
   const [leads, setLeads] = useState<LeadForExpert[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterMeetingDateFrom, setFilterMeetingDateFrom] = useState('');
-  const [filterMeetingDateTo, setFilterMeetingDateTo] = useState('');
-  const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'probability' | 'applicants' | 'value' | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [searchQuery, setSearchQuery] = usePersistedState<string>('expertPage_searchQuery', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterMeetingDateFrom, setFilterMeetingDateFrom] = usePersistedState<string>('expertPage_filterMeetingDateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterMeetingDateTo, setFilterMeetingDateTo] = usePersistedState<string>('expertPage_filterMeetingDateTo', '', {
+    storage: 'sessionStorage',
+  });
+  const [sortColumn, setSortColumn] = usePersistedState<'created_at' | 'meeting_date' | 'probability' | 'applicants' | 'value' | null>('expertPage_sortColumn', null, {
+    storage: 'sessionStorage',
+  });
+  const [sortDirection, setSortDirection] = usePersistedState<'asc' | 'desc'>('expertPage_sortDirection', 'desc', {
+    storage: 'sessionStorage',
+  });
   const [selectedLead, setSelectedLead] = useState<LeadForExpert | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
@@ -146,15 +157,21 @@ const ExpertPage: React.FC = () => {
   const [isCallModalOpen, setIsCallModalOpen] = useState(false);
   const [callPhoneNumber, setCallPhoneNumber] = useState<string>('');
   const [callLeadName, setCallLeadName] = useState<string>('');
-  const [meetingSort, setMeetingSort] = useState<'upcoming' | 'past'>('upcoming');
-  const [viewMode, setViewMode] = useState<'box' | 'list'>('list');
+  const [meetingSort, setMeetingSort] = usePersistedState<'upcoming' | 'past'>('expertPage_meetingSort', 'upcoming', {
+    storage: 'sessionStorage',
+  });
+  const [viewMode, setViewMode] = usePersistedState<'box' | 'list'>('expertPage_viewMode', 'list', {
+    storage: 'sessionStorage',
+  });
   const [newComment, setNewComment] = useState('');
   const [expandedRows, setExpandedRows] = useState<Set<string | number>>(new Set());
   const [commentSubmitting, setCommentSubmitting] = useState(false);
   const [editingComments, setEditingComments] = useState<Set<string | number>>(new Set());
   const [newCommentValues, setNewCommentValues] = useState<Record<string | number, string>>({});
   const [editingExpertNote, setEditingExpertNote] = useState<Record<string | number, { noteIdx: number; content: string }>>({});
-  const [tagFilter, setTagFilter] = useState('');
+  const [tagFilter, setTagFilter] = usePersistedState<string>('expertPage_tagFilter', '', {
+    storage: 'sessionStorage',
+  });
   const [labelDropdownOpen, setLabelDropdownOpen] = useState<number | string | null>(null);
   const [labelSubmitting, setLabelSubmitting] = useState(false);
   const [availableTags, setAvailableTags] = useState<string[]>([]);
@@ -673,6 +690,7 @@ const ExpertPage: React.FC = () => {
             )
           `)
           .or('eligibility_status.is.null,eligibility_status.eq.""')
+          .is('unactivated_at', null) // Only active leads
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
           .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
@@ -728,6 +746,7 @@ const ExpertPage: React.FC = () => {
             )
           `)
           .eq('expert_examination', 0) // Only fetch leads where expert_examination is 0
+          .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
           .gte('meeting_date', '2025-01-01') // Only fetch leads with meeting dates from 2025 onwards
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
           .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above

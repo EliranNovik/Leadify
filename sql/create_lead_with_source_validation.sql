@@ -38,7 +38,7 @@ DECLARE
   v_last_leads_lead_id bigint;
   v_last_leads_number text;
   v_max_number bigint;
-  v_language_id uuid;
+  v_language_id bigint;
 BEGIN
   -- Sync leads_contact sequence to prevent duplicate key errors
   PERFORM setval(
@@ -127,25 +127,25 @@ BEGIN
     v_creator_full_name := p_created_by;
   END IF;
   
-  -- Look up language_id from languages table
+  -- Look up language_id from misc_language table (not languages table)
   -- Try to match by name first (case-insensitive), then by iso_code
   IF p_lead_language IS NOT NULL THEN
-    SELECT l.id INTO v_language_id
-    FROM languages l
-    WHERE l.is_active = true
+    SELECT ml.id INTO v_language_id
+    FROM misc_language ml
+    WHERE ml.active = true
       AND (
-        UPPER(l.name) = UPPER(p_lead_language)
-        OR UPPER(l.iso_code) = UPPER(p_lead_language)
+        UPPER(ml.name) = UPPER(p_lead_language)
+        OR UPPER(ml.iso_code) = UPPER(p_lead_language)
       )
     LIMIT 1;
   END IF;
   
   -- If language not found, default to 'EN'
   IF v_language_id IS NULL THEN
-    SELECT l.id INTO v_language_id
-    FROM languages l
-    WHERE l.is_active = true
-      AND (UPPER(l.name) = 'EN' OR UPPER(l.iso_code) = 'EN')
+    SELECT ml.id INTO v_language_id
+    FROM misc_language ml
+    WHERE ml.active = true
+      AND (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
     LIMIT 1;
   END IF;
   

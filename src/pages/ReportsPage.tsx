@@ -13,18 +13,25 @@ import EmployeeLeadDrawer, {
 import { useNavigate, Link } from 'react-router-dom';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid, Legend, Cell } from 'recharts';
 import { convertToNIS } from '../lib/currencyConversion';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 
 // Stage Search Report Component
 const StageSearchReport = () => {
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('reports_stageSearch_filters', {
     fromDate: '',
     toDate: '',
     stage: '',
     category: '',
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = usePersistedFilters<any[]>('reports_stageSearch_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_stageSearch_performed', false, {
+    storage: 'sessionStorage',
+  });
 
   // Dropdown options
   const stageOptions = [
@@ -204,14 +211,20 @@ const StageSearchReport = () => {
 };
 // Anchor Search Report Component
 const AnchorSearchReport = () => {
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('reports_anchorSearch_filters', {
     name: '',
     dateOfBirth: '',
     placeOfBirth: '',
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = usePersistedFilters<any[]>('reports_anchorSearch_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_anchorSearch_performed', false, {
+    storage: 'sessionStorage',
+  });
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
@@ -4479,16 +4492,22 @@ const ExpertReport = ExpertPipelineReport;
 const SchedulerSuperPipelineReport = () => {
   const navigate = useNavigate();
   const today = new Date().toISOString().split('T')[0];
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('reports_schedulerPipeline_filters', {
     fromDate: today,
     toDate: today,
     category: '',
     employee: '',
     language: '',
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = usePersistedFilters<any[]>('reports_schedulerPipeline_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_schedulerPipeline_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: string; name: string }[]>([]);
@@ -6317,7 +6336,7 @@ const ExpertsAssignmentReport = () => <div className="p-6">Experts Assignment Re
 const ExpertsResultsReport = () => {
   const navigate = useNavigate();
   const today = new Date().toISOString().split('T')[0];
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('reports_expertsResults_filters', {
     fromDate: today,
     toDate: today,
     stage: '',
@@ -6326,10 +6345,16 @@ const ExpertsResultsReport = () => {
     expertExamination: '',
     expert: '',
     source: '',
+  }, {
+    storage: 'sessionStorage',
   });
-  const [results, setResults] = useState<any[]>([]);
+  const [results, setResults] = usePersistedFilters<any[]>('reports_expertsResults_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_expertsResults_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [stages, setStages] = useState<{ id: number; name: string }[]>([]);
   const [languages, setLanguages] = useState<{ id: number; name: string }[]>([]);
   const [categories, setCategories] = useState<{ id: number; name: string }[]>([]);
@@ -7365,7 +7390,7 @@ const CollectionDueReport = () => {
   const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
   const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
 
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('reports_collectionDue_filters', {
     fromDate: firstDayOfMonth,
     toDate: lastDayOfMonth,
     category: '',
@@ -7373,12 +7398,20 @@ const CollectionDueReport = () => {
     department: '',
     employee: '',
     employeeType: 'case_handler', // 'case_handler' or 'actual_employee_due'
+  }, {
+    storage: 'sessionStorage',
   });
-  const [employeeData, setEmployeeData] = useState<any[]>([]);
-  const [departmentData, setDepartmentData] = useState<any[]>([]);
+  const [employeeData, setEmployeeData] = usePersistedFilters<any[]>('reports_collectionDue_employeeData', [], {
+    storage: 'sessionStorage',
+  });
+  const [departmentData, setDepartmentData] = usePersistedFilters<any[]>('reports_collectionDue_departmentData', [], {
+    storage: 'sessionStorage',
+  });
   const [totalDue, setTotalDue] = useState<number>(0);
   const [loading, setLoading] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('reports_collectionDue_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);

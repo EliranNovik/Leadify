@@ -152,22 +152,26 @@ const webhookController = {
         });
       }
       
+      // Handle nested query object (some webhook providers send data nested in 'query')
+      // Fallback to req.body for backward compatibility
+      const bodyData = req.body.query || req.body;
+      
       // Log the received form data
       // Accept both 'source_code' and 'lead_source' as aliases
-      const sourceCodeValue = req.body.source_code || req.body.lead_source;
+      const sourceCodeValue = bodyData.source_code || bodyData.lead_source;
       const parsedSourceCode = parseIntegerSourceCode(sourceCodeValue);
       
       // Accept both 'facts' and 'desc' as aliases
-      const factsValue = req.body.facts || req.body.desc;
+      const factsValue = bodyData.facts || bodyData.desc;
 
       const formData = {
-        name: req.body.name,
-        email: req.body.email,
-        phone: req.body.phone,
-        topic: req.body.topic,
+        name: bodyData.name,
+        email: bodyData.email,
+        phone: bodyData.phone,
+        topic: bodyData.topic,
         facts: factsValue,
-        source: req.body.source || 'webhook',
-        language: req.body.language || 'English',
+        source: bodyData.source || 'webhook',
+        language: bodyData.language || 'English',
         source_code: parsedSourceCode
       };
 

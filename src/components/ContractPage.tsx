@@ -1075,12 +1075,58 @@ const ContractPage: React.FC = () => {
         }
 
         console.log('ContractPage: Executing query...');
-        const { data: contractData, error } = await query.single();
+        let { data: contractData, error } = await query.maybeSingle();
 
         console.log('ContractPage: Query result:', { contractData, error });
 
+        // If no contract found in contracts table and this is a legacy lead, try lead_leadcontact table
+        if (!contractData && leadNumber) {
+          const isLegacyLead = leadNumber.toString().startsWith('legacy_') ||
+            (!isNaN(Number(leadNumber)));
+          
+          if (isLegacyLead) {
+            const legacyId = leadNumber.toString().replace('legacy_', '');
+            console.log('ContractPage: No contract in contracts table, trying lead_leadcontact for legacy_id:', legacyId);
+            
+            // Try fetching from lead_leadcontact table
+            const { data: legacyContractData, error: legacyError } = await supabase
+              .from('lead_leadcontact')
+              .select('*')
+              .eq('lead_id', legacyId)
+              .maybeSingle();
+            
+            if (!legacyError && legacyContractData) {
+              // Check if there's contract HTML
+              const hasContractHtml = legacyContractData.contract_html && legacyContractData.contract_html.trim() !== '' && legacyContractData.contract_html !== '\\N';
+              const hasSignedContractHtml = legacyContractData.signed_contract_html && legacyContractData.signed_contract_html.trim() !== '' && legacyContractData.signed_contract_html !== '\\N';
+              
+              if (hasContractHtml || hasSignedContractHtml) {
+                // Transform legacy contract to match contracts table format for ContractPage
+                contractData = {
+                  id: `legacy_${legacyContractData.id}`,
+                  legacy_id: legacyId,
+                  contract_html: hasContractHtml ? legacyContractData.contract_html : null,
+                  signed_contract_html: hasSignedContractHtml ? legacyContractData.signed_contract_html : null,
+                  status: hasSignedContractHtml ? 'signed' : 'draft',
+                  isLegacyContract: true,
+                  lead_leadcontact_id: legacyContractData.id
+                };
+                error = null;
+                console.log('ContractPage: Found legacy contract in lead_leadcontact:', contractData);
+              }
+            }
+          }
+        }
+
         if (error) {
           console.error('Error fetching contract:', error);
+          setLoading(false);
+          return;
+        }
+
+        if (!contractData) {
+          console.error('ContractPage: No contract found');
+          setLoading(false);
           return;
         }
 

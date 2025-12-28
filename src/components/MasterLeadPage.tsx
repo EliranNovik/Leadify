@@ -535,6 +535,73 @@ const MasterLeadPage: React.FC = () => {
           console.error('Error fetching lead contacts:', leadContactsError);
         }
 
+        // Fetch contracts from contracts table for legacy leads (new contracts)
+        const { data: contractsData, error: contractsError } = await supabase
+          .from('contracts')
+          .select('id, legacy_id')
+          .in('legacy_id', allLeadIds)
+          .order('created_at', { ascending: false });
+
+        if (contractsError) {
+          console.error('Error fetching contracts:', contractsError);
+        }
+
+        // Fetch legacy contracts from lead_leadcontact table (old legacy contracts)
+        const { data: legacyContractsData, error: legacyContractsError } = await supabase
+          .from('lead_leadcontact')
+          .select('lead_id, id, public_token, contract_html, signed_contract_html')
+          .in('lead_id', allLeadIds);
+
+        if (legacyContractsError) {
+          console.error('Error fetching legacy contracts:', legacyContractsError);
+        }
+
+        // Create agreement link map (lead_id -> agreement link)
+        const agreementLinkMap = new Map<string, string>();
+        
+        // First, add contracts from contracts table (new contracts) - takes priority
+        if (contractsData) {
+          contractsData.forEach((contract: any) => {
+            if (contract.legacy_id && contract.id) {
+              // Use the same route format as ContractPage.tsx: /contract/:contractId
+              const agreementUrl = `/contract/${contract.id}`;
+              agreementLinkMap.set(String(contract.legacy_id), agreementUrl);
+            }
+          });
+        }
+
+        // Then, add legacy contracts from lead_leadcontact (old legacy contracts)
+        // Only add if not already in map (new contracts take priority)
+        // For legacy contracts, navigate to ContractPage using the clients route format
+        // Format: /clients/{leadNumber}/contract (ContractPage will need to handle legacy contracts from lead_leadcontact)
+        if (legacyContractsData) {
+          legacyContractsData.forEach((lc: any) => {
+            // Check if there's a contract (either draft or signed)
+            const hasContract = (lc.contract_html && lc.contract_html !== '\\N' && lc.contract_html.trim() !== '') ||
+                               (lc.signed_contract_html && lc.signed_contract_html !== '\\N' && lc.signed_contract_html.trim() !== '');
+            
+            if (lc.lead_id && lc.id && hasContract && !agreementLinkMap.has(String(lc.lead_id))) {
+              // Navigate to ContractPage using the legacy lead number route
+              // Format: /clients/{leadNumber}/contract (same route pattern as App.tsx line 542)
+              const agreementUrl = `/clients/${lc.lead_id}/contract`;
+              agreementLinkMap.set(String(lc.lead_id), agreementUrl);
+            }
+          });
+        }
+
+        console.log('🔍 Agreement link map:', {
+          contractsData,
+          legacyContractsData: legacyContractsData?.map((lc: any) => ({
+            lead_id: lc.lead_id,
+            id: lc.id,
+            has_contract_html: !!lc.contract_html,
+            has_signed_contract_html: !!lc.signed_contract_html,
+            public_token: lc.public_token ? 'exists' : 'missing'
+          })),
+          agreementLinkMap: Array.from(agreementLinkMap.entries()),
+          allLeadIds
+        });
+
         // Then, get the contact details for the contact IDs we found
         const contactIds = leadContacts?.map(lc => lc.contact_id).filter(Boolean) || [];
         let contactDetails: any[] = [];
@@ -633,16 +700,28 @@ const MasterLeadPage: React.FC = () => {
             stage: String(masterLead.stage), // Store stage ID for badge rendering
             contact: getContactInfo(masterLead, contactMap),
             applicants: parseInt(masterLead.no_of_applicants) || 0,
-            agreement: masterLead.docs_url ? (
-              <a 
-                href={masterLead.docs_url} 
-                target="_blank" 
-                rel="noopener noreferrer"
-                className="text-blue-600 hover:text-blue-800 underline"
-              >
-                View Agreement
-              </a>
-            ) : '---',
+            agreement: (() => {
+              // For legacy leads, use agreement link from contracts table (same as ContractPage.tsx)
+              const agreementUrl = agreementLinkMap.get(String(masterLead.id));
+              
+              console.log('🔍 Master lead agreement check:', {
+                leadId: masterLead.id,
+                agreementUrl,
+                agreementLinkMapKeys: Array.from(agreementLinkMap.keys())
+              });
+              
+              if (agreementUrl) {
+                return (
+                  <a 
+                    href={agreementUrl}
+                    className="text-blue-600 hover:text-blue-800 underline"
+                  >
+                    View Agreement
+                  </a>
+                );
+              }
+              return '---';
+            })(),
             scheduler: (() => {
               const scheduler = Array.isArray(masterLead.scheduler) ? masterLead.scheduler[0] : masterLead.scheduler;
               return (scheduler as any)?.display_name || '---';
@@ -700,16 +779,28 @@ const MasterLeadPage: React.FC = () => {
               stage: String(lead.stage), // Store stage ID for badge rendering
               contact: getContactInfo(lead, contactMap),
               applicants: parseInt(lead.no_of_applicants) || 0,
-              agreement: lead.docs_url ? (
-                <a 
-                  href={lead.docs_url} 
-                  target="_blank" 
-                  rel="noopener noreferrer"
-                  className="text-blue-600 hover:text-blue-800 underline"
-                >
-                  View Agreement
-                </a>
-              ) : '---',
+              agreement: (() => {
+                // For legacy leads, use agreement link from contracts table (same as ContractPage.tsx)
+                const agreementUrl = agreementLinkMap.get(String(lead.id));
+                
+                console.log('🔍 Sub-lead agreement check:', {
+                  leadId: lead.id,
+                  agreementUrl,
+                  agreementLinkMapKeys: Array.from(agreementLinkMap.keys())
+                });
+                
+                if (agreementUrl) {
+                  return (
+                    <a 
+                      href={agreementUrl}
+                      className="text-blue-600 hover:text-blue-800 underline"
+                    >
+                      View Agreement
+                    </a>
+                  );
+                }
+                return '---';
+              })(),
               scheduler: (() => {
                 const scheduler = Array.isArray(lead.scheduler) ? lead.scheduler[0] : lead.scheduler;
                 return (scheduler as any)?.display_name || '---';

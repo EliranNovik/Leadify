@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
+import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -17,6 +18,7 @@ import { toast } from 'react-hot-toast';
 import { getStageName, initializeStageNames } from '../lib/stageUtils';
 import { ResponsiveContainer, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from 'recharts';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
+import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from './CallOptionsModal';
 
 interface LeadForPipeline {
@@ -197,19 +199,19 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
     
     if (examStatus === 1) {
       return (
-        <span className="w-7 h-7 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+        <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
           <XCircleIcon className="w-4 h-4" />
         </span>
       );
     } else if (examStatus === 5) {
       return (
-        <span className="w-7 h-7 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
+        <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
           <ExclamationTriangleIcon className="w-4 h-4" />
         </span>
       );
     } else if (examStatus === 8) {
       return (
-        <span className="w-7 h-7 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+        <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
           <CheckCircleIcon className="w-4 h-4" />
         </span>
       );
@@ -222,19 +224,19 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
     
     if (statusStr === 'not_feasible') {
       return (
-        <span className="w-7 h-7 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
+        <span className="w-7 h-7 rounded-full bg-red-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
           <XCircleIcon className="w-4 h-4" />
         </span>
       );
     } else if (statusStr === 'feasible_no_check') {
       return (
-        <span className="w-7 h-7 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
+        <span className="w-7 h-7 rounded-full bg-green-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
           <CheckCircleIcon className="w-4 h-4" />
         </span>
       );
     } else if (statusStr === 'feasible_with_check') {
       return (
-        <span className="w-7 h-7 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
+        <span className="w-7 h-7 rounded-full bg-orange-500 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
           <ExclamationTriangleIcon className="w-4 h-4" />
         </span>
       );
@@ -243,7 +245,7 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
 
   // Default: Not checked
   return (
-    <span className="w-7 h-7 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
+    <span className="w-7 h-7 rounded-full bg-gray-400 text-white inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
       <QuestionMarkCircleIcon className="w-4 h-4" />
     </span>
   );
@@ -254,14 +256,30 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
 const PipelinePage: React.FC = () => {
   const [leads, setLeads] = useState<LeadForPipeline[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filterCreatedDateFrom, setFilterCreatedDateFrom] = useState('');
-  const [filterCreatedDateTo, setFilterCreatedDateTo] = useState('');
-  const [filterBy, setFilterBy] = useState('all');
-  const [filterCountry, setFilterCountry] = useState('');
-  const [filterLanguage, setFilterLanguage] = useState('');
-  const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up' | null>(null);
-  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
+  const [searchQuery, setSearchQuery] = usePersistedFilters('pipeline_searchQuery', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterCreatedDateFrom, setFilterCreatedDateFrom] = usePersistedFilters('pipeline_filterCreatedDateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterCreatedDateTo, setFilterCreatedDateTo] = usePersistedFilters('pipeline_filterCreatedDateTo', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterBy, setFilterBy] = usePersistedFilters('pipeline_filterBy', 'all', {
+    storage: 'sessionStorage',
+  });
+  const [filterCountry, setFilterCountry] = usePersistedFilters('pipeline_filterCountry', '', {
+    storage: 'sessionStorage',
+  });
+  const [filterLanguage, setFilterLanguage] = usePersistedFilters('pipeline_filterLanguage', '', {
+    storage: 'sessionStorage',
+  });
+  const [sortColumn, setSortColumn] = usePersistedFilters<'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up' | null>('pipeline_sortColumn', null, {
+    storage: 'sessionStorage',
+  });
+  const [sortDirection, setSortDirection] = usePersistedFilters<'asc' | 'desc'>('pipeline_sortDirection', 'desc', {
+    storage: 'sessionStorage',
+  });
   const [selectedLead, setSelectedLead] = useState<LeadForPipeline | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
@@ -643,10 +661,15 @@ const PipelinePage: React.FC = () => {
     return 'list';
   });
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
-  const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
+  const [pipelineMode, setPipelineMode] = usePersistedState<'closer' | 'scheduler'>('pipeline_pipelineMode', 'closer', {
+    storage: 'sessionStorage',
+  });
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null); // User ID from users table (for RLS)
+  const [currentUserBonusRole, setCurrentUserBonusRole] = useState<string | null>(null);
+  const [pipelineModeInitialized, setPipelineModeInitialized] = useState(false); // Track if default mode has been set
+  const [isSuperUser, setIsSuperUser] = useState(false);
   
   // State for editing fields in collapsible section
   const [editingFields, setEditingFields] = useState<Record<string | number, { facts?: boolean; special_notes?: boolean }>>({});
@@ -1143,7 +1166,8 @@ const PipelinePage: React.FC = () => {
                     meeting_date
                   )
                 `)
-                .eq('scheduler', currentUserFullName);
+                .eq('scheduler', currentUserFullName)
+                .is('unactivated_at', null); // Only active leads
               
               console.log('🔍 Pipeline Debug - Scheduler mode, checking lead counts...');
               
@@ -2223,10 +2247,14 @@ const PipelinePage: React.FC = () => {
       // Only leads with at least one comment
       return filtered.filter(lead => lead.comments && lead.comments.length > 0);
     } else if (filterBy === 'top10_offer') {
-      // Top 10 highest offer
+      // Top 10 highest offer - convert to NIS for proper comparison across currencies
       return [...filtered]
-        .filter(lead => typeof lead.balance === 'number')
-        .sort((a, b) => (b.balance || 0) - (a.balance || 0))
+        .filter(lead => lead.balance != null && lead.balance !== 0)
+        .sort((a, b) => {
+          const aValue = convertToNIS(a.balance ?? 0, a.balance_currency);
+          const bValue = convertToNIS(b.balance ?? 0, b.balance_currency);
+          return bValue - aValue; // Sort descending (highest first)
+        })
         .slice(0, 10);
     } else if (filterBy === 'top10_probability') {
       // Top 10 highest probability
@@ -2312,8 +2340,9 @@ const PipelinePage: React.FC = () => {
             bValue = b.stage || '';
             break;
           case 'offer':
-            aValue = a.balance ?? 0;
-            bValue = b.balance ?? 0;
+            // Convert to NIS for proper comparison across currencies
+            aValue = convertToNIS(a.balance ?? 0, a.balance_currency);
+            bValue = convertToNIS(b.balance ?? 0, b.balance_currency);
             break;
           case 'probability':
             aValue = a.probability ?? 0;
@@ -4474,37 +4503,85 @@ const PipelinePage: React.FC = () => {
               full_name,
               email,
               employee_id,
+              is_superuser,
               tenants_employee!employee_id(
                 id,
-                display_name
+                display_name,
+                bonuses_role
               )
             `)
             .eq('auth_id', user.id)
             .single();
           
-          if (userError) {
+          // If not found by auth_id, try by email (fallback)
+          let finalUserData = userData;
+          if ((userError || !userData) && user.email) {
+            const { data: userByEmail } = await supabase
+              .from('users')
+              .select(`
+                id,
+                full_name,
+                email,
+                employee_id,
+                is_superuser,
+                tenants_employee!employee_id(
+                  id,
+                  display_name,
+                  bonuses_role
+                )
+              `)
+              .eq('email', user.email)
+              .maybeSingle();
+            
+            if (userByEmail) {
+              finalUserData = userByEmail;
+            }
+          }
+          
+          if (userError && !finalUserData) {
             console.error('🔍 User data fetch error details:', userError);
             setCurrentUserFullName('Eliran');
             return;
           }
           
-          if (userData?.id) {
-            setCurrentUserId(userData.id); // Store user ID from users table for RLS
+          if (finalUserData?.id) {
+            setCurrentUserId(finalUserData.id); // Store user ID from users table for RLS
           }
           
-          if (userData?.full_name) {
-            setCurrentUserFullName(userData.full_name);
-          } else if (userData?.tenants_employee && Array.isArray(userData.tenants_employee) && userData.tenants_employee.length > 0) {
-            setCurrentUserFullName(userData.tenants_employee[0].display_name);
+          // Set superuser status
+          if (finalUserData?.is_superuser !== undefined) {
+            setIsSuperUser(finalUserData.is_superuser === true || finalUserData.is_superuser === 'true' || finalUserData.is_superuser === 1);
+          }
+          
+          if (finalUserData?.full_name) {
+            setCurrentUserFullName(finalUserData.full_name);
+          } else if (finalUserData?.tenants_employee && Array.isArray(finalUserData.tenants_employee) && finalUserData.tenants_employee.length > 0) {
+            setCurrentUserFullName(finalUserData.tenants_employee[0].display_name);
           } else {
             setCurrentUserFullName('Eliran');
           }
           
           // Store employee ID for efficient filtering
-          if (userData?.employee_id && typeof userData.employee_id === 'number') {
-            setCurrentUserEmployeeId(userData.employee_id);
+          if (finalUserData?.employee_id && typeof finalUserData.employee_id === 'number') {
+            setCurrentUserEmployeeId(finalUserData.employee_id);
           } else {
             setCurrentUserEmployeeId(null);
+          }
+          
+          // Store bonus role for default pipeline mode
+          if (finalUserData?.tenants_employee && Array.isArray(finalUserData.tenants_employee) && finalUserData.tenants_employee.length > 0) {
+            const bonusRole = finalUserData.tenants_employee[0].bonuses_role;
+            setCurrentUserBonusRole(bonusRole || null);
+          } else if (finalUserData?.employee_id) {
+            // Fallback: fetch bonus role directly if not in join
+            const { data: employeeData } = await supabase
+              .from('tenants_employee')
+              .select('bonuses_role')
+              .eq('id', finalUserData.employee_id)
+              .single();
+            if (employeeData?.bonuses_role) {
+              setCurrentUserBonusRole(employeeData.bonuses_role);
+            }
           }
         } else {
           setCurrentUserFullName('Eliran');
@@ -4516,6 +4593,28 @@ const PipelinePage: React.FC = () => {
       }
     })();
   }, []);
+
+  // Set default pipeline mode based on bonus role (only once on initial load, if no persisted value exists)
+  useEffect(() => {
+    if (!pipelineModeInitialized && currentUserBonusRole) {
+      // Check if there's a persisted value in sessionStorage
+      const persistedMode = sessionStorage.getItem('persisted_state_pipeline_pipelineMode');
+      
+      // Only set default if there's no persisted value (meaning first time loading)
+      if (!persistedMode) {
+        if (currentUserBonusRole === 's') {
+          setPipelineMode('scheduler');
+          setPipelineModeInitialized(true);
+        } else if (currentUserBonusRole === 'c') {
+          // Already defaulting to 'closer', just mark as initialized
+          setPipelineModeInitialized(true);
+        }
+      } else {
+        // There's a persisted value, just mark as initialized
+        setPipelineModeInitialized(true);
+      }
+    }
+  }, [currentUserBonusRole, pipelineModeInitialized, setPipelineMode]);
 
   // Helper function to add highlight to user_highlights table
   const handleHighlight = async (lead: LeadForPipeline) => {
@@ -4969,8 +5068,11 @@ const PipelinePage: React.FC = () => {
           aValue = a.created_at;
           bValue = b.created_at;
         } else if (assignmentSortColumn === 'offer') {
-          aValue = typeof a.balance === 'number' ? a.balance : (typeof a.balance === 'string' ? parseFloat(a.balance) || 0 : 0);
-          bValue = typeof b.balance === 'number' ? b.balance : (typeof b.balance === 'string' ? parseFloat(b.balance) || 0 : 0);
+          // Convert to NIS for proper comparison across currencies
+          const aBalance = typeof a.balance === 'number' ? a.balance : (typeof a.balance === 'string' ? parseFloat(a.balance) || 0 : 0);
+          const bBalance = typeof b.balance === 'number' ? b.balance : (typeof b.balance === 'string' ? parseFloat(b.balance) || 0 : 0);
+          aValue = convertToNIS(aBalance, a.balance_currency);
+          bValue = convertToNIS(bBalance, b.balance_currency);
         } else if (assignmentSortColumn === 'probability') {
           aValue = a.probability || 0;
           bValue = b.probability || 0;
@@ -5124,17 +5226,19 @@ const PipelinePage: React.FC = () => {
             )}
           </button>
           
-          {/* Assignment Button */}
-          <button
-            onClick={() => {
-              setAssignmentModalOpen(true);
-              fetchAssignmentLeads();
-            }}
-            className="btn btn-primary btn-sm flex items-center gap-2"
-          >
-            <UserIcon className="w-4 h-4" />
-            Assign Leads
-          </button>
+          {/* Assignment Button - Only visible for superusers */}
+          {isSuperUser && (
+            <button
+              onClick={() => {
+                setAssignmentModalOpen(true);
+                fetchAssignmentLeads();
+              }}
+              className="btn btn-primary btn-sm flex items-center gap-2"
+            >
+              <UserIcon className="w-4 h-4" />
+              Assign Leads
+            </button>
+          )}
         </div>
       </div>
       {/* Filters and Search */}
@@ -5593,7 +5697,7 @@ const PipelinePage: React.FC = () => {
                     {/* Expert Status */}
                     <td className="px-2 py-3 md:py-4 text-center">
                       <div className="flex items-center justify-center gap-2">
-                        <span className="text-xs sm:text-sm text-gray-700 font-medium">
+                        <span className="text-xs sm:text-sm text-gray-700 font-medium min-w-[80px] inline-block text-center">
                           {getExpertDisplayName(lead, allEmployees)}
                         </span>
                         {getExpertStatusIcon(lead)}

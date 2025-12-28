@@ -5,6 +5,7 @@ import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplic
 import { supabase } from '../lib/supabase';
 import { convertToNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import { fetchStageNames, areStagesEquivalent } from '../lib/stageUtils';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 
 type EmployeeOption = {
   id: string;
@@ -384,21 +385,29 @@ const reports: ReportSection[] = [
 const SignedSalesReportPage: React.FC = () => {
   const navigate = useNavigate();
   const todayIso = useMemo(() => new Date().toISOString().split('T')[0], []);
-  const [filters, setFilters] = useState<FiltersState>({
+  const [filters, setFilters] = usePersistedFilters<FiltersState>('signedSalesReport_filters', {
     fromDate: todayIso,
     toDate: todayIso,
     category: '',
     employee: '',
     language: '',
+  }, {
+    storage: 'sessionStorage',
   });
-  const [searchQuery, setSearchQuery] = useState<string>('');
+  const [searchQuery, setSearchQuery] = usePersistedFilters<string>('signedSalesReport_searchQuery', '', {
+    storage: 'sessionStorage',
+  });
   const [stageMap, setStageMap] = useState<{ [key: string]: string }>({});
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
-  const [rows, setRows] = useState<SignedLeadRow[]>([]);
+  const [rows, setRows] = usePersistedFilters<SignedLeadRow[]>('signedSalesReport_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isLoading, setIsLoading] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('signedSalesReport_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [roleEditor, setRoleEditor] = useState<RoleEditorState | null>(null);
   const [isSavingRole, setIsSavingRole] = useState(false);

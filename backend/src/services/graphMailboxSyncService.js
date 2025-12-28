@@ -55,10 +55,10 @@ const BLOCKED_SENDER_EMAILS = new Set([
 
 // Blocked domains to ignore (add domain names here, e.g., 'example.com')
 const BLOCKED_DOMAINS = [
-  'lawoffice.org.il',
+  // 'lawoffice.org.il', // Removed - block specific addresses instead via BLOCKED_SENDER_EMAILS
 ];
 
-// Check if email should be filtered out (internal office emails or specific addresses)
+// Check if email should be filtered out (specific blocked addresses)
 const shouldFilterEmail = (email) => {
   if (!email) return false;
   const normalized = normalise(email);
@@ -75,6 +75,46 @@ const shouldFilterEmail = (email) => {
   }
   
   return false;
+};
+
+// Check if email domain is @lawoffice.org.il
+const isLawofficeDomain = (email) => {
+  if (!email) return false;
+  const normalized = normalise(email);
+  return normalized.endsWith('@lawoffice.org.il');
+};
+
+// Check if email should be filtered as internal-to-internal email
+// Block if: sender is @lawoffice.org.il AND all recipients are @lawoffice.org.il
+const shouldFilterInternalEmail = (senderEmail, recipientList) => {
+  if (!senderEmail) return false;
+  
+  // Check if sender is from @lawoffice.org.il domain
+  if (!isLawofficeDomain(senderEmail)) {
+    return false;
+  }
+  
+  // Check if recipient_list exists and is not empty
+  if (!recipientList || !recipientList.trim()) {
+    return false;
+  }
+  
+  // Parse recipient list (comma-separated)
+  const recipients = recipientList
+    .split(',')
+    .map(addr => normalise(addr.trim()))
+    .filter(Boolean);
+  
+  // If no valid recipients, don't filter (edge case)
+  if (recipients.length === 0) {
+    return false;
+  }
+  
+  // Check if ALL recipients are from @lawoffice.org.il domain
+  const allRecipientsAreInternal = recipients.every(addr => isLawofficeDomain(addr));
+  
+  // Block only if sender is internal AND all recipients are internal
+  return allRecipientsAreInternal;
 };
 
 const stripHtml = (html = '') =>
@@ -891,8 +931,10 @@ class GraphMailboxSyncService {
     const OFFICE_EMAIL = 'office@lawoffice.org.il';
     const LEADS_EMAIL = 'leads@lawoffice.org.il'; // Ignore emails sent to this address
     const filteredRows = expandedRows.filter((row) => {
-      // Skip emails from blocked senders
       const senderEmail = row.sender_email ? normalise(row.sender_email) : null;
+      const recipientList = row.recipient_list || '';
+      
+      // Skip emails from blocked senders (specific addresses in BLOCKED_SENDER_EMAILS)
       if (senderEmail && shouldFilterEmail(senderEmail)) {
         console.log(
           `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - sender is blocked | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
@@ -900,9 +942,17 @@ class GraphMailboxSyncService {
         return false;
       }
       
+      // Skip internal-to-internal emails (@lawoffice.org.il to @lawoffice.org.il)
+      if (shouldFilterInternalEmail(senderEmail, recipientList)) {
+        console.log(
+          `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - internal to internal email | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
+        );
+        return false;
+      }
+      
       // Skip emails sent to leads@lawoffice.org.il
-      const recipientList = (row.recipient_list || '').toLowerCase();
-      if (recipientList.includes(LEADS_EMAIL.toLowerCase())) {
+      const recipientListLower = recipientList.toLowerCase();
+      if (recipientListLower.includes(LEADS_EMAIL.toLowerCase())) {
         console.log(
           `🚫 Skipping email ${row.message_id?.substring(0, 20) || 'unknown'}... - recipient is leads@lawoffice.org.il (filtered) | sender=${row.sender_email || 'unknown'} | recipients=${row.recipient_list || 'none'}`
         );
@@ -1623,11 +1673,21 @@ class GraphMailboxSyncService {
       const clientId = !isLegacy ? context.clientId ?? null : null;
 
       const recipients = buildRecipientList(payload);
+      const senderEmail = normalise(mailboxAddress);
+      const recipientListStr = recipients.join(', ');
+      
+      // Skip internal-to-internal emails (@lawoffice.org.il to @lawoffice.org.il)
+      if (shouldFilterInternalEmail(senderEmail, recipientListStr)) {
+        console.log(
+          `🚫 Skipping outgoing email record - internal to internal email | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
+        );
+        return; // Don't save this email
+      }
       
       // Skip emails sent to leads@lawoffice.org.il
       const LEADS_EMAIL = 'leads@lawoffice.org.il';
-      const recipientListStr = recipients.join(', ').toLowerCase();
-      if (recipientListStr.includes(LEADS_EMAIL.toLowerCase())) {
+      const recipientListStrLower = recipientListStr.toLowerCase();
+      if (recipientListStrLower.includes(LEADS_EMAIL.toLowerCase())) {
         console.log(
           `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (filtered) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
         );

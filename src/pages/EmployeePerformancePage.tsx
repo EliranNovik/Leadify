@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 import { UserGroupIcon, ChartBarIcon, AcademicCapIcon, CurrencyDollarIcon, ClockIcon, CheckCircleIcon, XCircleIcon, DocumentTextIcon, BanknotesIcon, Squares2X2Icon, ListBulletIcon, CalendarDaysIcon } from '@heroicons/react/24/outline';
 import EmployeeModal from '../components/EmployeeModal';
 import SalaryModal from '../components/SalaryModal';
@@ -342,16 +343,34 @@ const EmployeePerformancePage: React.FC = () => {
   const [graphStartMonth, setGraphStartMonth] = useState<number>(1);
   const [graphEndMonth, setGraphEndMonth] = useState<number>(new Date().getMonth() + 1);
   const [error, setError] = useState<string | null>(null);
-  const [selectedDepartment, setSelectedDepartment] = useState<string>('all');
-  const [selectedRole, setSelectedRole] = useState<string>('all');
-  const [searchQuery, setSearchQuery] = useState<string>('');
-  const [dateFrom, setDateFrom] = useState<string>('');
-  const [dateTo, setDateTo] = useState<string>('');
-  const [appliedDateFrom, setAppliedDateFrom] = useState<string>('');
-  const [appliedDateTo, setAppliedDateTo] = useState<string>('');
+  const [selectedDepartment, setSelectedDepartment] = usePersistedFilters('employeePerformance_selectedDepartment', 'all', {
+    storage: 'sessionStorage',
+  });
+  const [selectedRole, setSelectedRole] = usePersistedFilters('employeePerformance_selectedRole', 'all', {
+    storage: 'sessionStorage',
+  });
+  const [searchQuery, setSearchQuery] = usePersistedFilters('employeePerformance_searchQuery', '', {
+    storage: 'sessionStorage',
+  });
+  const [dateFrom, setDateFrom] = usePersistedFilters('employeePerformance_dateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [dateTo, setDateTo] = usePersistedFilters('employeePerformance_dateTo', '', {
+    storage: 'sessionStorage',
+  });
+  const [appliedDateFrom, setAppliedDateFrom] = usePersistedFilters('employeePerformance_appliedDateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [appliedDateTo, setAppliedDateTo] = usePersistedFilters('employeePerformance_appliedDateTo', '', {
+    storage: 'sessionStorage',
+  });
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
-  const [viewMode, setViewMode] = useState<'department' | 'subdepartment'>('department');
-  const [selectedSubdepartment, setSelectedSubdepartment] = useState<string>('all');
+  const [viewMode, setViewMode] = usePersistedFilters<'department' | 'subdepartment'>('employeePerformance_viewMode', 'department', {
+    storage: 'sessionStorage',
+  });
+  const [selectedSubdepartment, setSelectedSubdepartment] = usePersistedFilters('employeePerformance_selectedSubdepartment', 'all', {
+    storage: 'sessionStorage',
+  });
   const [selectedEmployee, setSelectedEmployee] = useState<Employee | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isSalaryModalOpen, setIsSalaryModalOpen] = useState(false);

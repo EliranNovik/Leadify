@@ -4,6 +4,7 @@ import { convertToNIS, getCurrencySymbol as getCurrencySymbolFromLib } from '../
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, BarChart, Bar, PieChart, Pie, Cell, Legend } from 'recharts';
 import { supabase } from '../lib/supabase';
 import { calculateEmployeeBonus, getRoleDisplayName as getBonusRoleDisplayName, fetchMonthlyBonusPool, getRoleConfig, getBonusConfig } from '../lib/bonusCalculation';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 
 // Extend window object to include monthly bonus pools cache
 declare global {
@@ -775,10 +776,18 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
   const [selectedRole, setSelectedRole] = useState<string>('');
   const [roleLeads, setRoleLeads] = useState<any[]>([]);
   const [loadingRoleLeads, setLoadingRoleLeads] = useState(false);
-  const [fromDate, setFromDate] = useState<string>('');
-  const [toDate, setToDate] = useState<string>('');
-  const [appliedFromDate, setAppliedFromDate] = useState<string>('');
-  const [appliedToDate, setAppliedToDate] = useState<string>('');
+  const [fromDate, setFromDate] = usePersistedFilters('employeeModal_fromDate', '', {
+    storage: 'sessionStorage',
+  });
+  const [toDate, setToDate] = usePersistedFilters('employeeModal_toDate', '', {
+    storage: 'sessionStorage',
+  });
+  const [appliedFromDate, setAppliedFromDate] = usePersistedFilters('employeeModal_appliedFromDate', '', {
+    storage: 'sessionStorage',
+  });
+  const [appliedToDate, setAppliedToDate] = usePersistedFilters('employeeModal_appliedToDate', '', {
+    storage: 'sessionStorage',
+  });
   const [isApplyingFilter, setIsApplyingFilter] = useState(false);
   const [activeTab, setActiveTab] = useState<'overview' | 'availability' | 'tasks' | 'clients' | 'feedback' | 'salary' | 'bonus'>('overview');
 

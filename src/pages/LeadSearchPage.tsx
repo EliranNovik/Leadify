@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { MagnifyingGlassIcon } from '@heroicons/react/24/outline';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
+import { usePersistedFilters } from '../hooks/usePersistedState';
 
 // Static dropdown options - moved outside component to prevent re-creation on every render
 const REASON_OPTIONS = ["Inquiry", "Follow-up", "Complaint", "Consultation", "Other"];
@@ -804,7 +805,8 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 };
 
 const LeadSearchPage: React.FC = () => {
-  const [filters, setFilters] = useState({
+  // Use persisted filters - state will be saved and restored automatically
+  const [filters, setFilters] = usePersistedFilters('leadSearch', {
     fromDate: new Date().toISOString().split('T')[0], // Default to today
     toDate: new Date().toISOString().split('T')[0], // Default to today
     category: [] as string[],
@@ -825,10 +827,18 @@ const LeadSearchPage: React.FC = () => {
     closer: [] as string[],
     case_handler: [] as string[],
     expert_examination: [] as string[],
+  }, {
+    storage: 'sessionStorage', // Use sessionStorage (clears when browser closes)
+    // syncWithUrl: true, // Uncomment to also sync with URL query params
   });
-  const [results, setResults] = useState<Lead[]>([]);
+  // Persist search results and search state
+  const [results, setResults] = usePersistedFilters<Lead[]>('leadSearch_results', [], {
+    storage: 'sessionStorage',
+  });
   const [isSearching, setIsSearching] = useState(false);
-  const [searchPerformed, setSearchPerformed] = useState(false);
+  const [searchPerformed, setSearchPerformed] = usePersistedFilters('leadSearch_performed', false, {
+    storage: 'sessionStorage',
+  });
   const [stageOptions, setStageOptions] = useState<string[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [mainCategoryOptions, setMainCategoryOptions] = useState<string[]>([]);
