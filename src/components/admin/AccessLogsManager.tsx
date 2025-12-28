@@ -177,12 +177,6 @@ const getMethodColor = (method: string) => {
         <p className="text-gray-600">
           View access logs for {HOOK_ENDPOINTS.join(' & ')}
         </p>
-        <button
-          onClick={fetchLogs}
-          className="mt-2 px-4 py-2 bg-blue-500 text-white rounded-md hover:bg-blue-600"
-        >
-          Refresh Logs
-        </button>
       </div>
 
       {/* Filters */}
@@ -258,7 +252,7 @@ const getMethodColor = (method: string) => {
                 dateFrom: '',
                 dateTo: ''
               })}
-              className="w-full px-4 py-2 bg-gray-500 text-white rounded-md hover:bg-gray-600 focus:outline-none focus:ring-2 focus:ring-gray-500"
+              className="w-full px-4 py-2 bg-white text-black border border-black rounded-md hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-500"
             >
               Clear Filters
             </button>

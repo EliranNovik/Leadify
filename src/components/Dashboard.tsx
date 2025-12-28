@@ -2952,7 +2952,10 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  // Fetch invoiced data using the same logic as agreement data
+  // Fetch invoiced data using the same logic as CollectionDueReport
+  // For new leads: payment_plans where ready_to_pay = true and paid = false
+  // For legacy leads: finances_paymentplanrow where ready_to_pay = true and actual_date IS NULL
+  // Group by department instead of employee
   const fetchInvoicedData = async () => {
     setInvoicedDataLoading(true);
     try {
@@ -2965,12 +2968,13 @@ const Dashboard: React.FC = () => {
       const selectedMonthIndex = months.indexOf(selectedMonth);
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-        // Fetch only important departments (same as agreement data)
-        const { data: allDepartments, error: departmentsError } = await supabase
-          .from('tenant_departement')
-          .select('id, name, min_income, important')
-          .eq('important', 't')
-          .order('id');
+      
+      // Fetch only important departments (same as agreement data)
+      const { data: allDepartments, error: departmentsError } = await supabase
+        .from('tenant_departement')
+        .select('id, name, min_income, important')
+        .eq('important', 't')
+        .order('id');
       
       if (departmentsError) {
         throw departmentsError;
@@ -2984,11 +2988,13 @@ const Dashboard: React.FC = () => {
       departmentTargets?.forEach(dept => {
         targetMap[dept.id] = parseFloat(dept.min_income || '0');
       });
+      
       // Calculate date ranges
       const todayStr = today.toISOString().split('T')[0];
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
       const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
       const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
+      const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
       
       // Check if we're at the end of the month
       const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
@@ -3024,607 +3030,359 @@ const Dashboard: React.FC = () => {
         ],
       };
       
-      // FIXED APPROACH: Use correct table - proformainvoice
-      // Fetch invoice records first
-      // First, let's test without date filters to see if we get any records
-      const { data: testRecords, error: testError } = await supabase
-        .from('proformainvoice')
-        .select('id, lead_id, sub_total, cdate, currency_id')
-        .limit(5);
+      // Fetch new payment plans - only unpaid ones that are ready to pay (same as CollectionDueReport)
+      // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
+      // We'll filter by date in the processing step
+      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true...');
+      let newPaymentsQuery = supabase
+        .from('payment_plans')
+        .select(`
+          id,
+          lead_id,
+          value,
+          value_vat,
+          currency,
+          due_date,
+          cancel_date,
+          ready_to_pay,
+          paid
+        `)
+        .eq('ready_to_pay', true)
+        .eq('paid', false) // Only unpaid payments
+        .not('due_date', 'is', null)
+        .is('cancel_date', null);
       
-      if (testError) {
-      } else {
-        if (testRecords && testRecords.length > 0) {
-        } else {
-        }
+      const { data: newPayments, error: newError } = await newPaymentsQuery;
+      if (newError) {
+        console.error('❌ Invoiced Data - Error fetching new payments:', newError);
+        throw newError;
+      }
+      console.log('✅ Invoiced Data - Fetched new payments:', newPayments?.length || 0);
+      if (newPayments && newPayments.length > 0) {
+        console.log('📊 Invoiced Data - Sample new payment:', {
+          id: newPayments[0].id,
+          lead_id: newPayments[0].lead_id,
+          due_date: newPayments[0].due_date,
+          value: newPayments[0].value,
+          ready_to_pay: newPayments[0].ready_to_pay,
+          paid: newPayments[0].paid
+        });
       }
       
-      // Fetch invoiced data from finances_paymentplanrow table (payments sent to finance)
-      // Filter by due_date and exclude cancelled records
-      const expandedStartDate = '2025-04-01'; // Start from April 2025 where data exists
-      
-      // Helper function to check if a string is a UUID (used for separating new vs legacy leads)
-      const isUUID = (str: string): boolean => {
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-        return uuidRegex.test(str);
-      };
-      
-      // Fetch payment plan rows from finances_paymentplanrow table
-      // Filter by due_date and exclude cancelled records
-      const { data: paymentPlanRows, error: paymentPlanRowsError } = await supabase
+      // Fetch legacy payment plans from finances_paymentplanrow (same as CollectionDueReport)
+      // Note: CollectionDueReport does NOT filter by ready_to_pay for legacy payments
+      // It only filters by cancel_date IS NULL, actual_date IS NULL (unpaid), and date range
+      // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
+      // We'll filter by date in the processing step
+      console.log('🔍 Invoiced Data - Fetching legacy payment plans...');
+      let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
         .select(`
           id,
           lead_id,
-          client_id,
           value,
+          value_base,
           vat_value,
           currency_id,
           due_date,
           date,
           cancel_date,
-          accounting_currencies!finances_paymentplanrow_currency_id_fkey(id, name, iso_code)
+          ready_to_pay,
+          actual_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
-        .is('cancel_date', null) // Exclude cancelled records
-        .gte('due_date', expandedStartDate)
-        .lte('due_date', todayStr);
+        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
+        .is('cancel_date', null) // Exclude cancelled payments (only fetch if cancel_date IS NULL)
+        .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
       
-      if (paymentPlanRowsError) {
-        throw paymentPlanRowsError;
+      const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
+      if (legacyError) {
+        console.error('❌ Invoiced Data - Error fetching legacy payments:', legacyError);
+        throw legacyError;
       }
+      console.log('✅ Invoiced Data - Fetched legacy payments:', legacyPayments?.length || 0);
       
-      // Transform payment plan rows to invoice records format
-      // Handle both legacy leads (lead_id) and new leads (client_id or lead_id as UUID)
-      // Following CollectionFinancesReport pattern: use lead_id for both, detect UUID vs numeric
-      const invoiceRecords: any[] = (paymentPlanRows || []).map(row => {
-        // Exclude cancelled/deleted payment plan rows (cancel_date is not null)
-        if (row.cancel_date) return null;
-        
-        // Prefer lead_id if it exists (used for both legacy and new in CollectionFinancesReport)
-        // Fall back to client_id if lead_id is null
-        const leadId = row.lead_id ? String(row.lead_id) : (row.client_id ? String(row.client_id) : null);
-        
-        if (!leadId) return null;
-        
-        // Detect if it's a UUID (new lead) or numeric (legacy lead)
-        const isNewLead = isUUID(leadId);
-        
-        // Use due_date as the date field (as specified by user)
-        const recordDate = row.due_date || row.date;
-        if (!recordDate) return null;
-        
-        const recordDateStr = typeof recordDate === 'string' 
-          ? recordDate.split('T')[0] 
-          : new Date(recordDate).toISOString().split('T')[0];
-        
-        return {
-          id: `payment-plan-row-${row.id}`,
-          lead_id: leadId,
-          sub_total: parseFloat(row.value || 0),
-          cdate: recordDateStr, // Use due_date as the date
-          currency_id: row.currency_id,
-          isNewLead: isNewLead,
-        };
-      }).filter(record => record !== null);
+      // Note: CollectionDueReport does NOT filter by ready_to_pay for legacy payments
+      // So we use all legacy payments without filtering by ready_to_pay
+      const filteredLegacyPayments = legacyPayments || [];
       
-      // Fetch leads data separately if we have invoice records
-      let processedInvoiceRecords: any[] = [];
-      if (invoiceRecords && invoiceRecords.length > 0) {
-        const leadIds = [...new Set(invoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
-        // Separate UUIDs (new leads) from numeric IDs (legacy leads)
-        const uuidIds: string[] = [];
-        const numericIds: number[] = [];
-        
-        leadIds.forEach(id => {
-          const idStr = String(id);
-          if (isUUID(idStr)) {
-            uuidIds.push(idStr);
-          } else {
-            const numericId = Number(idStr);
-            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
-              numericIds.push(numericId);
-            }
-          }
+      if (filteredLegacyPayments.length > 0) {
+        console.log('📊 Invoiced Data - Sample legacy payment:', {
+          id: filteredLegacyPayments[0].id,
+          lead_id: filteredLegacyPayments[0].lead_id,
+          due_date: filteredLegacyPayments[0].due_date,
+          date: filteredLegacyPayments[0].date,
+          value_base: filteredLegacyPayments[0].value_base,
+          actual_date: filteredLegacyPayments[0].actual_date
         });
-        // Fetch legacy leads from leads_lead table (only numeric IDs)
-        let legacyLeadsData: any[] = [];
-        if (numericIds.length > 0) {
-          const { data, error: legacyLeadsError } = await supabase
-            .from('leads_lead')
-            .select(`
-              id,
-              misc_category(
-                id, name, parent_id,
-                misc_maincategory(
-                  id, name, department_id,
-                  tenant_departement(id, name)
-                )
-              )
-            `)
-            .in('id', numericIds);
-          
-          if (legacyLeadsError) {
-            throw legacyLeadsError;
-          }
-          
-          legacyLeadsData = data || [];
-        }
-        
-        // Fetch new leads from leads table (only UUIDs)
-        let newLeadsData: any[] = [];
-        if (uuidIds.length > 0) {
-          const { data, error: newLeadsError } = await supabase
-            .from('leads')
-            .select(`
-              id,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement(id, name)
-                )
-              )
-            `)
-            .in('id', uuidIds);
-          
-          if (newLeadsError) {
-            throw newLeadsError;
-          }
-          
-          newLeadsData = data || [];
-        }
-        
-        // Join the data - combine both legacy and new leads
-        // Map legacy leads by numeric ID (convert to number for matching)
-        const legacyLeadsMap = new Map(legacyLeadsData?.map(lead => {
-          const id = typeof lead.id === 'number' ? lead.id : Number(lead.id);
-          return [id, lead];
-        }) || []);
-        // Map new leads by UUID string
-        const newLeadsMap = new Map(newLeadsData?.map(lead => [String(lead.id), lead]) || []);
-        
-        const allJoinedRecords = invoiceRecords.map((invoiceRecord: any) => {
-          const leadIdStr = String(invoiceRecord.lead_id);
-          let lead = null;
-          // Use the isNewLead flag if it's already set (from new lead invoice records), otherwise detect
-          const recordIsNewLead = invoiceRecord.isNewLead !== undefined ? invoiceRecord.isNewLead : false;
-          
-          // Check if it's a UUID (new lead) or numeric (legacy lead)
-          if (recordIsNewLead || isUUID(leadIdStr)) {
-            lead = newLeadsMap.get(leadIdStr) || null;
-          } else {
-            const numericId = Number(leadIdStr);
-            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
-              lead = legacyLeadsMap.get(numericId) || null;
-            }
-          }
-          
-          return {
-            ...invoiceRecord,
-            leads_lead: lead || null,
-            isNewLead: recordIsNewLead || (!!lead && isUUID(leadIdStr))
-          };
-        }).filter(record => record.leads_lead !== null);
-        // Debug: Check the variables we're using for filtering
-        // Now filter by actual date ranges for Today and Last 30d
-        let todayRecords: any[] = [];
-        let last30dRecords: any[] = [];
-        
-        try {
-          todayRecords = allJoinedRecords.filter(record => {
-            const recordDate = record.cdate;
-            return recordDate === todayStr;
-          });
-          
-          // For Last 30d, ALWAYS use the actual last 30 days from current date (like agreement signed table)
-          // This should NOT be affected by the month filter - it's always relative to today
-          last30dRecords = allJoinedRecords.filter(record => {
-            const recordDate = record.cdate;
-            return recordDate >= effectiveThirtyDaysAgo && recordDate <= todayStr;
-          });
-        } catch (error) {
-        }
-        // Process both Today and Last 30d records separately
-        const processRecords = (records: any[], period: string) => {
-          records.forEach((record, index) => {
-            if (index < 5) { // Only log first 5 records to avoid spam
-            }
-            
-            const lead = record.leads_lead as any;
-            if (!lead) {
-              return;
-            }
-            
-            const amount = Math.ceil(parseFloat(record.sub_total) || 0);
-            const amountInNIS = convertToNIS(amount, record.currency_id);
-            const recordDate = record.cdate;
-            
-            // Debug currency conversion
-            // Log non-NIS currencies for verification
-            if (record.currency_id && record.currency_id !== 1) {
-            }
-            
-            // Get department ID from the JOIN
-            let departmentId = null;
-            if (lead.misc_category?.misc_maincategory?.department_id) {
-              departmentId = lead.misc_category.misc_maincategory.department_id;
-            }
-            
-            if (index < 5) { // Only log first 5 records
-            }
-            
-            if (departmentId && departmentIds.includes(departmentId)) {
-              if (index < 5) {
-              }
-              
-              // For Today and Last 30d, use the department index + 1 (to skip General)
-              const deptIndex = departmentIds.indexOf(departmentId) + 1;
-              
-              // Extract date part for comparison
-              const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
-              
-              // Add to Today data if it's today
-              if (recordDateOnly === todayStr) {
-                newInvoicedData["Today"][deptIndex].count += 1;
-                newInvoicedData["Today"][deptIndex].amount += amountInNIS; // Use NIS amount
-              }
-              
-              // Add to Last 30d data if it's within the actual last 30 days (like agreement signed table)
-              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= todayStr) {
-                newInvoicedData["Last 30d"][deptIndex].count += 1;
-                newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
-              }
-            }
-          });
-        };
-        
-        // Process both Today and Last 30d records
-        processRecords(todayRecords, 'Today');
-        processRecords(last30dRecords, 'Last 30d');
-        // Debug: Show the data after processing
-        // Use all joined records for processing (not just Last 30d filtered)
-        processedInvoiceRecords = allJoinedRecords; // Use all records for the main processing
-      } else {
-        processedInvoiceRecords = []; // Set empty array if no records
       }
       
-      // Fetch data for selected month (separate query)
-      const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
+      // Get unique lead IDs
+      const newLeadIds = Array.from(new Set((newPayments || []).map(p => p.lead_id).filter(Boolean)));
+      const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
       
-      // Fetch payment plan rows for selected month from finances_paymentplanrow table
-      const { data: monthPaymentPlanRows, error: monthPaymentPlanRowsError } = await supabase
-        .from('finances_paymentplanrow')
-        .select(`
-          id,
-          lead_id,
-          client_id,
-          value,
-          vat_value,
-          currency_id,
-          due_date,
-          date,
-          cancel_date,
-          accounting_currencies!finances_paymentplanrow_currency_id_fkey(id, name, iso_code)
-        `)
-        .is('cancel_date', null) // Exclude cancelled records
-        .gte('due_date', startOfMonthStr)
-        .lte('due_date', endOfMonthStr);
+      console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
+      console.log('📊 Invoiced Data - Unique legacy lead IDs:', legacyLeadIds.length);
       
-      if (monthPaymentPlanRowsError) {
-        throw monthPaymentPlanRowsError;
-      }
-      
-      // Transform payment plan rows to invoice records format for month
-      // Following CollectionFinancesReport pattern: use lead_id for both, detect UUID vs numeric
-      const monthInvoiceRecords: any[] = (monthPaymentPlanRows || []).map(row => {
-        // Exclude cancelled/deleted payment plan rows (cancel_date is not null)
-        if (row.cancel_date) return null;
-        
-        // Prefer lead_id if it exists (used for both legacy and new in CollectionFinancesReport)
-        // Fall back to client_id if lead_id is null
-        const leadId = row.lead_id ? String(row.lead_id) : (row.client_id ? String(row.client_id) : null);
-        
-        if (!leadId) return null;
-        
-        // Detect if it's a UUID (new lead) or numeric (legacy lead)
-        const isNewLead = isUUID(leadId);
-        
-        // Use due_date as the date field (as specified by user)
-        const recordDate = row.due_date || row.date;
-        if (!recordDate) return null;
-        
-        const recordDateStr = typeof recordDate === 'string' 
-          ? recordDate.split('T')[0] 
-          : new Date(recordDate).toISOString().split('T')[0];
-        
-        return {
-          id: `month-payment-plan-row-${row.id}`,
-          lead_id: leadId,
-          sub_total: parseFloat(row.value || 0),
-          cdate: recordDateStr, // Use due_date as the date
-          currency_id: row.currency_id,
-          isNewLead: isNewLead,
-        };
-      }).filter(record => record !== null);
-      // Fetch leads data separately for month if we have invoice records
-      let processedMonthInvoiceRecords: any[] = [];
-      if (monthInvoiceRecords && monthInvoiceRecords.length > 0) {
-        const monthLeadIds = [...new Set(monthInvoiceRecords.map(record => record.lead_id).filter(id => id !== null))];
-        // Separate UUIDs (new leads) from numeric IDs (legacy leads)
-        const monthUuidIds: string[] = [];
-        const monthNumericIds: number[] = [];
-        
-        monthLeadIds.forEach(id => {
-          const idStr = String(id);
-          if (isUUID(idStr)) {
-            monthUuidIds.push(idStr);
-          } else {
-            const numericId = Number(idStr);
-            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
-              monthNumericIds.push(numericId);
-            }
-          }
-        });
-        // Fetch legacy leads from leads_lead table (only numeric IDs)
-        let monthLegacyLeadsData: any[] = [];
-        if (monthNumericIds.length > 0) {
-          const { data, error: monthLegacyLeadsError } = await supabase
-            .from('leads_lead')
-            .select(`
+      // Fetch lead metadata with category and department info
+      let newLeadsMap = new Map();
+      if (newLeadIds.length > 0) {
+        console.log('🔍 Invoiced Data - Fetching new leads metadata...');
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
+            id,
+            category_id,
+            misc_category!category_id(
               id,
-              misc_category(
-                id, name, parent_id,
-                misc_maincategory(
-                  id, name, department_id,
-                  tenant_departement(id, name)
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
                 )
               )
-            `)
-            .in('id', monthNumericIds);
-          
-          if (monthLegacyLeadsError) {
-            throw monthLegacyLeadsError;
-          }
-          
-          monthLegacyLeadsData = data || [];
-        }
-        
-        // Fetch new leads from leads table (only UUIDs)
-        let monthNewLeadsData: any[] = [];
-        if (monthUuidIds.length > 0) {
-          const { data, error: monthNewLeadsError } = await supabase
-            .from('leads')
-            .select(`
-              id,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement(id, name)
-                )
-              )
-            `)
-            .in('id', monthUuidIds);
-          
-          if (monthNewLeadsError) {
-            throw monthNewLeadsError;
-          }
-          
-          monthNewLeadsData = data || [];
-        }
-        
-        // Join the data - combine both legacy and new leads
-        // Map legacy leads by numeric ID (convert to number for matching)
-        const monthLegacyLeadsMap = new Map(monthLegacyLeadsData?.map(lead => {
-          const id = typeof lead.id === 'number' ? lead.id : Number(lead.id);
-          return [id, lead];
-        }) || []);
-        // Map new leads by UUID string
-        const monthNewLeadsMap = new Map(monthNewLeadsData?.map(lead => [String(lead.id), lead]) || []);
-        
-        processedMonthInvoiceRecords = monthInvoiceRecords.map(invoiceRecord => {
-          const leadIdStr = String(invoiceRecord.lead_id);
-          let lead = null;
-          let isNewLead = false;
-          
-          // Check if it's a UUID (new lead) or numeric (legacy lead)
-          if (isUUID(leadIdStr)) {
-            lead = monthNewLeadsMap.get(leadIdStr) || null;
-            isNewLead = !!lead;
-          } else {
-            const numericId = Number(leadIdStr);
-            if (!Number.isNaN(numericId) && Number.isFinite(numericId)) {
-              lead = monthLegacyLeadsMap.get(numericId) || null;
-            }
-          }
-          
-          return {
-            ...invoiceRecord,
-            leads_lead: lead || null,
-            isNewLead
-          };
-        }).filter(record => record.leads_lead !== null);
-      }
-      if (processedInvoiceRecords && processedInvoiceRecords.length > 0) {
-        // Process all invoice records
-        let processedCount = 0;
-        let skippedCount = 0;
-        processedInvoiceRecords.forEach((record, index) => {
-          if (index < 5) { // Only log first 5 records to avoid spam
-          }
-          
-          const lead = record.leads_lead as any;
-          if (!lead) {
-            return;
-          }
-          
-          // For new leads, amount calculation might be different (already in sub_total from payment plan)
-          // For legacy leads, amount is in sub_total from proformainvoice
-          const amount = Math.ceil(parseFloat(record.sub_total) || 0); // Round up to nearest whole number
-          const amountInNIS = convertToNIS(amount, record.currency_id);
-          const recordDate = record.cdate;
-          
-          // Get department ID from the JOIN (works for both legacy and new leads)
-          let departmentId = null;
-          if (lead.misc_category?.misc_maincategory?.department_id) {
-            departmentId = lead.misc_category.misc_maincategory.department_id;
-          }
-          
-          if (index < 5 && record.isNewLead) {
-          }
-          
-          if (index < 5) { // Only log first 5 records
-          }
-          
-          if (departmentId && departmentIds.includes(departmentId)) {
-            processedCount++;
-            
-            if (index < 5) {
-            }
-            
-            // For Today and Last 30d, use the department index + 1 (to skip General)
-            const deptIndex = departmentIds.indexOf(departmentId) + 1;
-            
-            // For current month, use the department index directly (no General column)
-            const monthDeptIndex = departmentIds.indexOf(departmentId);
-            
-            // Extract date part for comparison
-            const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
-            
-            if (index < 5) {
-            }
-            
-            // Check if it's today
-            if (recordDateOnly === todayStr) {
-              newInvoicedData.Today[deptIndex].count++;
-              newInvoicedData.Today[deptIndex].amount += amountInNIS; // Use NIS amount
-              newInvoicedData.Today[0].count++; // General
-              newInvoicedData.Today[0].amount += amountInNIS; // Use NIS amount
-            }
-            
-            // Check if it's in last 30 days (or entire month if at month end)
-            if (recordDateOnly >= effectiveThirtyDaysAgo) {
-              newInvoicedData["Last 30d"][deptIndex].count++;
-              newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
-              newInvoicedData["Last 30d"][0].count++; // General
-              newInvoicedData["Last 30d"][0].amount += amountInNIS; // Use NIS amount
-            }
-            
-            // Note: Month data will be processed separately from monthInvoiceRecords
-          } else {
-            skippedCount++;
-            if (index < 5) {
-            }
-          }
-        });
-        // Process month invoice data separately
-        if (processedMonthInvoiceRecords && processedMonthInvoiceRecords.length > 0) {
-          let monthProcessedCount = 0;
-          let monthSkippedCount = 0;
-          
-          // Track processed records to prevent duplicates
-          const processedMonthRecordIds = new Set();
-          
-          processedMonthInvoiceRecords.forEach((record, index) => {
-            // Skip if already processed
-            if (processedMonthRecordIds.has(record.id)) {
-              return;
-            }
-            processedMonthRecordIds.add(record.id);
-            
-            const lead = record.leads_lead as any;
-            if (!lead) {
-              return;
-            }
-            
-            const amount = Math.ceil(parseFloat(record.sub_total) || 0); // Round up to nearest whole number
-            const amountInNIS = convertToNIS(amount, record.currency_id);
-            const recordDate = record.cdate;
-            
-            // Get department ID from the JOIN (works for both legacy and new leads)
-            let departmentId = null;
-            // For legacy leads: lead.misc_category.misc_maincategory.department_id
-            // For new leads: lead.misc_category.misc_maincategory.department_id (same structure)
-            if (lead.misc_category?.misc_maincategory?.department_id) {
-              departmentId = lead.misc_category.misc_maincategory.department_id;
-            }
-            
-            if (index < 5) { // Only log first 5 records
-            }
-            
-            if (departmentId && departmentIds.includes(departmentId)) {
-              monthProcessedCount++;
-              
-              if (index < 5) {
-              }
-              
-              // For current month, use the department index directly (no General column)
-              const monthDeptIndex = departmentIds.indexOf(departmentId);
-              
-              // Extract date part for comparison
-              const recordDateOnly = recordDate.includes('T') ? recordDate.split('T')[0] : recordDate;
-              
-              if (index < 5) {
-              }
-              
-              // Check if it's in selected month
-              if (recordDateOnly >= startOfMonthStr) {
-                newInvoicedData[selectedMonthName][monthDeptIndex].count++;
-                newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
-              }
-            } else {
-              monthSkippedCount++;
-              if (index < 5) {
-              }
-            }
-          });
+            )
+          `)
+          .in('id', newLeadIds);
+
+        if (newLeadsError) {
+          console.error('❌ Invoiced Data - Error fetching new leads:', newLeadsError);
         } else {
+          console.log('✅ Invoiced Data - Fetched new leads:', newLeads?.length || 0);
+          if (newLeads) {
+            newLeads.forEach(lead => {
+              newLeadsMap.set(lead.id, lead);
+            });
+          }
+        }
+      }
+
+      let legacyLeadsMap = new Map();
+      if (legacyLeadIds.length > 0) {
+        console.log('🔍 Invoiced Data - Fetching legacy leads metadata...');
+        const { data: legacyLeads, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            category_id,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', legacyLeadIds);
+
+        if (legacyLeadsError) {
+          console.error('❌ Invoiced Data - Error fetching legacy leads:', legacyLeadsError);
+        } else {
+          console.log('✅ Invoiced Data - Fetched legacy leads:', legacyLeads?.length || 0);
+          if (legacyLeads) {
+            legacyLeads.forEach(lead => {
+              const key = lead.id?.toString() || String(lead.id);
+              legacyLeadsMap.set(key, lead);
+              if (typeof lead.id === 'number') {
+                legacyLeadsMap.set(lead.id, lead);
+              }
+            });
+          }
+        }
+      }
+      
+      console.log('📊 Invoiced Data - Date ranges:', {
+        todayStr,
+        effectiveThirtyDaysAgo,
+        startOfMonthStr,
+        endOfMonthStr,
+        selectedMonthName
+      });
+      
+      // Process payments and group by department
+      // Process new payments
+      let newPaymentsProcessed = 0;
+      let newPaymentsSkipped = 0;
+      (newPayments || []).forEach(payment => {
+        const lead = newLeadsMap.get(payment.lead_id);
+        if (!lead) {
+          newPaymentsSkipped++;
+          return;
+        }
+
+        // Get department from category -> main category -> department
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentId = department?.id || null;
+
+        if (!departmentId || !departmentIds.includes(departmentId)) return;
+
+        const value = Number(payment.value || 0);
+        let vat = Number(payment.value_vat || 0);
+        if (!vat && (payment.currency || '₪') === '₪') {
+          vat = Math.round(value * 0.18 * 100) / 100;
+        }
+        const amount = value + vat;
+        const amountInNIS = convertToNIS(amount, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
+
+        const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
+        if (!dueDate) return;
+
+        const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
+
+        // Check if it's today
+        if (dueDate === todayStr) {
+          newInvoicedData["Today"][deptIndex].count += 1;
+          newInvoicedData["Today"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Today"][0].count += 1; // General
+          newInvoicedData["Today"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in last 30 days
+        if (dueDate >= effectiveThirtyDaysAgo && dueDate <= todayStr) {
+          newInvoicedData["Last 30d"][deptIndex].count += 1;
+          newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Last 30d"][0].count += 1; // General
+          newInvoicedData["Last 30d"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in selected month
+        if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
+          const monthDeptIndex = departmentIds.indexOf(departmentId); // No General column for month
+          newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
+          newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
+        }
+      });
+      
+      console.log('📊 Invoiced Data - New payments processing:', {
+        total: (newPayments || []).length,
+        processed: newPaymentsProcessed,
+        skipped: newPaymentsSkipped
+      });
+
+      // Process legacy payments
+      let legacyPaymentsProcessed = 0;
+      let legacyPaymentsSkipped = 0;
+      filteredLegacyPayments.forEach(payment => {
+        const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
+        const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
+        let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
+        
+        if (!lead) {
+          legacyPaymentsSkipped++;
+          return;
+        }
+
+        // Get department from category -> main category -> department
+        const category = lead.misc_category;
+        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
+        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
+        const departmentId = department?.id || null;
+
+        if (!departmentId || !departmentIds.includes(departmentId)) return;
+
+        // Use value_base for legacy payments as specified in CollectionDueReport
+        const value = Number(payment.value_base || 0);
+        let vat = Number(payment.vat_value || 0);
+        
+        // Get currency from accounting_currencies relation
+        const accountingCurrency: any = payment.accounting_currencies 
+          ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
+          : null;
+        
+        let currencyId = 1; // Default to NIS
+        if (accountingCurrency?.name) {
+          if (accountingCurrency.name === 'NIS' || accountingCurrency.name === '₪') currencyId = 1;
+          else if (accountingCurrency.name === 'EUR' || accountingCurrency.name === '€') currencyId = 2;
+          else if (accountingCurrency.name === 'USD' || accountingCurrency.name === '$') currencyId = 3;
+          else if (accountingCurrency.name === 'GBP' || accountingCurrency.name === '£') currencyId = 4;
+        } else if (payment.currency_id) {
+          currencyId = payment.currency_id;
         }
         
-        // Calculate totals and round amounts up
-        // Calculate dynamic totals based on actual number of departments
-        const numDepartments = departmentTargets.length;
-        const totalIndexToday = numDepartments + 1; // General + departments + Total
-        const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-        // Today totals (sum of departments, excluding General and Total)
-        const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-        const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
-        newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
-        
-        // Last 30d totals - sum of departments (excluding General and Total)
-        const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-        const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
-        newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
-        
-        // Current month totals - calculate by summing the individual department values
-        const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
-        const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
-        newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
-        // Log currency distribution summary for invoiced data
-        const invoiceCurrencyDistribution = {
-          NIS: 0,
-          USD: 0,
-          EUR: 0,
-          GBP: 0,
-          Unknown: 0
-        };
-        
-        // Count currencies from all invoice records
-        const allInvoiceRecords = [...(invoiceRecords || []), ...(monthInvoiceRecords || [])];
-        allInvoiceRecords.forEach(record => {
-          if (record.currency_id) {
-            switch (record.currency_id) {
-              case 1: invoiceCurrencyDistribution.NIS++; break;
-              case 2: invoiceCurrencyDistribution.USD++; break;
-              case 3: invoiceCurrencyDistribution.EUR++; break;
-              case 4: invoiceCurrencyDistribution.GBP++; break;
-              default: invoiceCurrencyDistribution.Unknown++; break;
-            }
-          }
-        });
-        setInvoicedData(newInvoicedData);
-      } else {
-      }
+        // Calculate VAT if not provided and currency is NIS
+        if (!vat && (currencyId === 1)) {
+          vat = Math.round(value * 0.18 * 100) / 100;
+        }
+        const amount = value + vat;
+        const amountInNIS = convertToNIS(amount, currencyId);
+
+        // Use due_date for date filtering (same as CollectionDueReport)
+        const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
+        if (!dueDate) return;
+
+        const deptIndex = departmentIds.indexOf(departmentId) + 1; // +1 to skip General column
+
+        // Check if it's today
+        if (dueDate === todayStr) {
+          newInvoicedData["Today"][deptIndex].count += 1;
+          newInvoicedData["Today"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Today"][0].count += 1; // General
+          newInvoicedData["Today"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in last 30 days
+        if (dueDate >= effectiveThirtyDaysAgo && dueDate <= todayStr) {
+          newInvoicedData["Last 30d"][deptIndex].count += 1;
+          newInvoicedData["Last 30d"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Last 30d"][0].count += 1; // General
+          newInvoicedData["Last 30d"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in selected month
+        if (dueDate >= startOfMonthStr && dueDate <= endOfMonthStr) {
+          const monthDeptIndex = departmentIds.indexOf(departmentId); // No General column for month
+          newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
+          newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
+        }
+      });
+      
+      console.log('📊 Invoiced Data - Legacy payments processing:', {
+        total: filteredLegacyPayments.length,
+        processed: legacyPaymentsProcessed,
+        skipped: legacyPaymentsSkipped
+      });
+      
+      console.log('📊 Invoiced Data - Final data before totals:', {
+        Today: newInvoicedData["Today"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
+        Last30d: newInvoicedData["Last 30d"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
+        Month: newInvoicedData[selectedMonthName].map((item, idx) => ({ idx, count: item.count, amount: item.amount }))
+      });
+      
+      // Calculate totals
+      const numDepartments = departmentTargets.length;
+      const totalIndexToday = numDepartments + 1; // General + departments + Total
+      const totalIndexMonth = numDepartments; // departments + Total (no General for month)
+      
+      // Today totals (sum of departments, excluding General and Total)
+      const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+      
+      // Last 30d totals
+      const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
+      
+      // Current month totals
+      const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
+      const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
+      
+      setInvoicedData(newInvoicedData);
       
     } catch (error: any) {
     } finally {

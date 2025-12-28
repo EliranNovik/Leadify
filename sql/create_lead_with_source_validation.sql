@@ -39,6 +39,7 @@ DECLARE
   v_last_leads_number text;
   v_max_number bigint;
   v_language_id bigint;
+  v_language_name text;
 BEGIN
   -- Sync leads_contact sequence to prevent duplicate key errors
   PERFORM setval(
@@ -131,7 +132,7 @@ BEGIN
   -- Try to match by name first (case-insensitive), then by iso_code
   -- Note: misc_language table doesn't have an 'active' column, so we don't filter by it
   IF p_lead_language IS NOT NULL THEN
-    SELECT ml.id INTO v_language_id
+    SELECT ml.id, ml.name INTO v_language_id, v_language_name
     FROM misc_language ml
     WHERE (
         UPPER(ml.name) = UPPER(p_lead_language)
@@ -142,10 +143,15 @@ BEGIN
   
   -- If language not found, default to 'EN'
   IF v_language_id IS NULL THEN
-    SELECT ml.id INTO v_language_id
+    SELECT ml.id, ml.name INTO v_language_id, v_language_name
     FROM misc_language ml
     WHERE (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
     LIMIT 1;
+  END IF;
+  
+  -- If still no language found, use the passed language value or default to 'English'
+  IF v_language_name IS NULL THEN
+    v_language_name := COALESCE(p_lead_language, 'English');
   END IF;
   
   -- Insert the new lead with user tracking and source information
@@ -155,6 +161,7 @@ BEGIN
     email,
     phone,
     topic,
+    language,
     language_id,
     source,
     source_id,
@@ -172,6 +179,7 @@ BEGIN
     p_lead_email,
     p_lead_phone,
     v_final_topic,
+    v_language_name,
     v_language_id,
     v_source_name,
     v_source_id,
