@@ -154,19 +154,31 @@ const webhookController = {
       
       // Handle nested query object (some webhook providers send data nested in 'query')
       // Also check req.query for URL query parameters
-      // Fallback order: req.body.query -> req.body -> req.query
-      const bodyData = req.body.query || req.body || req.query;
+      // Fallback order: req.body.query -> req.body (if not empty) -> req.query
+      // Note: req.body can be {} (empty object) which is truthy, so we need to check if it has keys
+      let bodyData;
+      if (req.body?.query && Object.keys(req.body.query).length > 0) {
+        bodyData = req.body.query;
+      } else if (req.body && Object.keys(req.body).length > 0) {
+        bodyData = req.body;
+      } else if (req.query && Object.keys(req.query).length > 0) {
+        bodyData = req.query;
+      } else {
+        bodyData = {};
+      }
       
       // Debug logging to help diagnose issues
       console.log('🔍 Webhook body data extraction:', {
         hasBodyQuery: !!req.body.query,
         hasBody: !!req.body,
-        hasQuery: !!req.query,
         bodyKeys: req.body ? Object.keys(req.body) : [],
+        bodyKeysLength: req.body ? Object.keys(req.body).length : 0,
+        hasQuery: !!req.query,
         queryKeys: req.query ? Object.keys(req.query) : [],
         bodyDataKeys: bodyData ? Object.keys(bodyData) : [],
         bodyDataName: bodyData?.name,
-        bodyDataEmail: bodyData?.email
+        bodyDataEmail: bodyData?.email,
+        bodyDataSource: bodyData === req.body.query ? 'req.body.query' : (bodyData === req.body ? 'req.body' : (bodyData === req.query ? 'req.query' : 'null'))
       });
       
       // Log the received form data
@@ -174,8 +186,8 @@ const webhookController = {
       const sourceCodeValue = bodyData?.source_code || bodyData?.lead_source;
       const parsedSourceCode = parseIntegerSourceCode(sourceCodeValue);
       
-      // Accept both 'facts' and 'desc' as aliases
-      const factsValue = bodyData?.facts || bodyData?.desc;
+      // Accept both 'facts' and 'desc' as aliases - prioritize desc if present
+      const factsValue = (bodyData?.desc || bodyData?.facts) || null;
 
       const formData = {
         name: bodyData?.name,
@@ -187,6 +199,20 @@ const webhookController = {
         language: bodyData?.language || 'English',
         source_code: parsedSourceCode
       };
+
+      // Log all extracted form data for debugging
+      console.log('📋 Extracted form data:', {
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        topic: formData.topic,
+        facts: formData.facts,
+        source: formData.source,
+        language: formData.language,
+        source_code: formData.source_code,
+        allBodyDataKeys: bodyData ? Object.keys(bodyData) : [],
+        bodyData: bodyData
+      });
 
       // Validate required fields
       if (!formData.name || !formData.email) {
