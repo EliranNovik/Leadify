@@ -381,7 +381,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             </span>
           </div>
           <div className="flex items-center gap-2">
-            <span className="text-2xl font-bold text-gray-700 truncate max-w-[200px]">
+            <span className="text-lg font-bold text-gray-700 max-w-[200px]" style={{ fontSize: 'clamp(0.875rem, 2vw, 1.125rem)' }}>
               {selectedClient ? (selectedClient.name || '---') : '---'}
             </span>
             {selectedClient?.language && (

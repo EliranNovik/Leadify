@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Fragment } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { getStageName, getStageColour, fetchStageNames } from '../lib/stageUtils';
@@ -11,8 +11,65 @@ import {
   XCircleIcon,
   ClockIcon,
   LinkIcon,
-  ExclamationTriangleIcon
+  ExclamationTriangleIcon,
+  XMarkIcon
 } from '@heroicons/react/24/outline';
+import { createPortal } from 'react-dom';
+import { toast } from 'react-hot-toast';
+
+// Helper function to process HTML for editing with consistent styling
+const processHtmlForEditing = (html: string): string => {
+  if (!html) return '';
+  
+  // Replace placeholders with styled input fields and signature pads
+  let processed = html
+    .replace(/\{\{text\}\}/g, '<input type="text" class="inline-input" style="border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" placeholder="Enter text..." />')
+    .replace(/\{\{sig\}\}/g, '<div class="signature-pad" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500;">Click to sign</div>');
+  
+  return processed;
+};
+
+// Helper function to process signed contract HTML for display (replaces placeholders with filled values)
+const processSignedContractHtml = (html: string, signedDate?: string): string => {
+  if (!html) return '';
+  
+  let processed = html;
+  
+  // First, handle base64 signature data (data:image/png;base64,...) - do this before replacing placeholders
+  processed = processed.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match) => {
+    return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+  });
+  
+  // Replace {{date}} placeholders with the actual signed date (if available)
+  if (signedDate) {
+    const formattedDate = new Date(signedDate).toLocaleDateString('en-US', { 
+      year: 'numeric', 
+      month: 'long', 
+      day: 'numeric' 
+    });
+    processed = processed.replace(/\{\{date\}\}/g, `<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">${formattedDate}</span>`);
+  } else {
+    // If no date provided, show placeholder
+    processed = processed.replace(/\{\{date\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
+  }
+  
+  // Replace {{text}} placeholders with styled filled text
+  processed = processed.replace(/\{\{text\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
+  
+  // Replace {{sig}} placeholders with signature image display (only if not already replaced by base64)
+  processed = processed.replace(/\{\{sig\}\}/g, '<div style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; min-width: 200px; min-height: 80px; display: flex; align-items: center; justify-content: center;"><span style="color: #065f46; font-size: 12px;">✓ Signed</span></div>');
+  
+  return processed;
+};
+
+// Helper function for rich text editing commands
+const executeCommand = (command: string, value?: string) => {
+  const contentDiv = document.querySelector('[contenteditable="true"]');
+  if (contentDiv) {
+    (contentDiv as HTMLElement).focus();
+    document.execCommand(command, false, value);
+  }
+};
 
 interface SubLead {
   id: string;
@@ -45,6 +102,8 @@ const MasterLeadPage: React.FC = () => {
   const [subLeadsLoading, setSubLeadsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [masterLeadInfo, setMasterLeadInfo] = useState<any>(null);
+  const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string; signed_at?: string } | null>(null);
+  const [contractsDataMap, setContractsDataMap] = useState<Map<string, { id: string; isLegacy: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string; signed_at?: string }>>(new Map());
 
   // Add compact table styles
   const compactTableStyles = `
@@ -329,6 +388,42 @@ const MasterLeadPage: React.FC = () => {
           return stageNameLookup.get(stageKey) || getStageName(stageKey) || stageKey;
         };
 
+        // Fetch contracts for new leads
+        const leadIdsForContracts = [
+          masterLead?.id,
+          ...(subLeadsData?.map((lead: any) => lead.id) || []),
+        ].filter(Boolean);
+
+        const newContractsMap = new Map<string, { id: string; isLegacy: boolean }>();
+        if (leadIdsForContracts.length > 0) {
+          const { data: newContractsData, error: newContractsError } = await supabase
+            .from('contracts')
+            .select('id, client_id')
+            .in('client_id', leadIdsForContracts.map(id => String(id)));
+
+          if (newContractsError) {
+            console.error('Error fetching new contracts:', newContractsError);
+          } else if (newContractsData) {
+            newContractsData.forEach((contract: any) => {
+              if (contract.client_id && contract.id) {
+                newContractsMap.set(String(contract.client_id), {
+                  id: contract.id,
+                  isLegacy: false
+                });
+              }
+            });
+          }
+        }
+
+        // Update contractsDataMap with new leads contracts (merge with existing if any)
+        setContractsDataMap(prev => {
+          const merged = new Map(prev);
+          newContractsMap.forEach((value, key) => {
+            merged.set(key, value);
+          });
+          return merged;
+        });
+
         const processedSubLeads: SubLead[] = [];
 
         const formatNewLead = (lead: any, isMaster: boolean): SubLead => {
@@ -340,15 +435,18 @@ const MasterLeadPage: React.FC = () => {
           const categoryName = getCategoryName(lead.category_id, categories || []) || lead.category || 'Unknown';
           const applicantsValue = lead.number_of_applicants_meeting ?? lead.number_of_applicants ?? lead.applicants ?? 0;
           const contactName = resolveContactName(lead);
-          const agreementNode = lead.docs_url ? (
-            <a 
-              href={lead.docs_url} 
-              target="_blank" 
-              rel="noopener noreferrer"
-              className="text-blue-600 hover:text-blue-800 underline"
+          // Check if contract exists in newContractsMap (local map for this fetch)
+          const contractData = newContractsMap.get(String(lead.id));
+          const agreementNode = contractData ? (
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                handleViewContract(contractData.id, false);
+              }}
+              className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
             >
               View Agreement
-            </a>
+            </button>
           ) : '---';
 
           return {
@@ -551,13 +649,40 @@ const MasterLeadPage: React.FC = () => {
           .from('lead_leadcontact')
           .select('lead_id, id, public_token, contract_html, signed_contract_html')
           .in('lead_id', allLeadIds);
+        
+        // Fetch signed dates for legacy leads (from leads_leadstage where stage = 60)
+        const signedDatesMap = new Map<number, string>();
+        if (allLeadIds.length > 0) {
+          const { data: stageData } = await supabase
+            .from('leads_leadstage')
+            .select('lead_id, cdate')
+            .in('lead_id', allLeadIds)
+            .eq('stage', 60)
+            .order('cdate', { ascending: false });
+          
+          if (stageData) {
+            // Group by lead_id and take the most recent date for each lead
+            stageData.forEach(stage => {
+              const leadId = Number(stage.lead_id);
+              if (!signedDatesMap.has(leadId) || 
+                  (stage.cdate && (!signedDatesMap.get(leadId) || new Date(stage.cdate) > new Date(signedDatesMap.get(leadId)!)))) {
+                if (stage.cdate) {
+                  signedDatesMap.set(leadId, stage.cdate);
+                }
+              }
+            });
+          }
+        }
 
         if (legacyContractsError) {
           console.error('Error fetching legacy contracts:', legacyContractsError);
         }
 
-        // Create agreement link map (lead_id -> agreement link)
+        // Create agreement link map (lead_id -> agreement URL) - for backwards compatibility
         const agreementLinkMap = new Map<string, string>();
+        
+        // Create contract data map (lead_id -> contract data) - stores full contract info
+        const contractsMap = new Map<string, { id: string; isLegacy: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string; signed_at?: string }>();
         
         // First, add contracts from contracts table (new contracts) - takes priority
         if (contractsData) {
@@ -566,28 +691,48 @@ const MasterLeadPage: React.FC = () => {
               // Use the same route format as ContractPage.tsx: /contract/:contractId
               const agreementUrl = `/contract/${contract.id}`;
               agreementLinkMap.set(String(contract.legacy_id), agreementUrl);
+              
+              // Store contract data for new contracts (not legacy)
+              contractsMap.set(String(contract.legacy_id), {
+                id: contract.id,
+                isLegacy: false
+              });
             }
           });
         }
 
         // Then, add legacy contracts from lead_leadcontact (old legacy contracts)
         // Only add if not already in map (new contracts take priority)
-        // For legacy contracts, navigate to ContractPage using the clients route format
-        // Format: /clients/{leadNumber}/contract (ContractPage will need to handle legacy contracts from lead_leadcontact)
         if (legacyContractsData) {
           legacyContractsData.forEach((lc: any) => {
             // Check if there's a contract (either draft or signed)
             const hasContract = (lc.contract_html && lc.contract_html !== '\\N' && lc.contract_html.trim() !== '') ||
                                (lc.signed_contract_html && lc.signed_contract_html !== '\\N' && lc.signed_contract_html.trim() !== '');
             
-            if (lc.lead_id && lc.id && hasContract && !agreementLinkMap.has(String(lc.lead_id))) {
-              // Navigate to ContractPage using the legacy lead number route
-              // Format: /clients/{leadNumber}/contract (same route pattern as App.tsx line 542)
+            if (lc.lead_id && lc.id && hasContract && !contractsMap.has(String(lc.lead_id))) {
+              // Get signed date for this lead
+              const leadIdNum = Number(lc.lead_id);
+              const signedDate = signedDatesMap.get(leadIdNum);
+              
+              // Store legacy contract data with HTML content and signed date
+              contractsMap.set(String(lc.lead_id), {
+                id: `legacy_${lc.id}`,
+                isLegacy: true,
+                contractHtml: lc.contract_html,
+                signedContractHtml: lc.signed_contract_html,
+                public_token: lc.public_token,
+                signed_at: signedDate
+              });
+              
+              // Also store in agreementLinkMap for backwards compatibility (but won't be used for legacy)
               const agreementUrl = `/clients/${lc.lead_id}/contract`;
               agreementLinkMap.set(String(lc.lead_id), agreementUrl);
             }
           });
         }
+
+        // Store contracts data map in state
+        setContractsDataMap(contractsMap);
 
         console.log('🔍 Agreement link map:', {
           contractsData,
@@ -599,6 +744,7 @@ const MasterLeadPage: React.FC = () => {
             public_token: lc.public_token ? 'exists' : 'missing'
           })),
           agreementLinkMap: Array.from(agreementLinkMap.entries()),
+          contractsMap: Array.from(contractsMap.entries()),
           allLeadIds
         });
 
@@ -701,23 +847,27 @@ const MasterLeadPage: React.FC = () => {
             contact: getContactInfo(masterLead, contactMap),
             applicants: parseInt(masterLead.no_of_applicants) || 0,
             agreement: (() => {
-              // For legacy leads, use agreement link from contracts table (same as ContractPage.tsx)
-              const agreementUrl = agreementLinkMap.get(String(masterLead.id));
+              // Check if contract exists in contractsMap (using lead_id as key)
+              const contractData = contractsMap.get(String(masterLead.id));
               
               console.log('🔍 Master lead agreement check:', {
                 leadId: masterLead.id,
-                agreementUrl,
-                agreementLinkMapKeys: Array.from(agreementLinkMap.keys())
+                contractData,
+                contractsMapKeys: Array.from(contractsMap.keys())
               });
               
-              if (agreementUrl) {
+              if (contractData) {
                 return (
-                  <a 
-                    href={agreementUrl}
-                    className="text-blue-600 hover:text-blue-800 underline"
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // For legacy leads, pass true for isLegacyContract
+                      handleViewContract(contractData.id, contractData.isLegacy);
+                    }}
+                    className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
                   >
                     View Agreement
-                  </a>
+                  </button>
                 );
               }
               return '---';
@@ -780,23 +930,27 @@ const MasterLeadPage: React.FC = () => {
               contact: getContactInfo(lead, contactMap),
               applicants: parseInt(lead.no_of_applicants) || 0,
               agreement: (() => {
-                // For legacy leads, use agreement link from contracts table (same as ContractPage.tsx)
-                const agreementUrl = agreementLinkMap.get(String(lead.id));
+                // Check if contract exists in contractsMap (using lead_id as key)
+                const contractData = contractsMap.get(String(lead.id));
                 
                 console.log('🔍 Sub-lead agreement check:', {
                   leadId: lead.id,
-                  agreementUrl,
-                  agreementLinkMapKeys: Array.from(agreementLinkMap.keys())
+                  contractData,
+                  contractsMapKeys: Array.from(contractsMap.keys())
                 });
                 
-                if (agreementUrl) {
+                if (contractData) {
                   return (
-                    <a 
-                      href={agreementUrl}
-                      className="text-blue-600 hover:text-blue-800 underline"
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        // For legacy leads, pass true for isLegacyContract
+                        handleViewContract(contractData.id, contractData.isLegacy);
+                      }}
+                      className="text-blue-600 hover:text-blue-800 underline cursor-pointer"
                     >
                       View Agreement
-                    </a>
+                    </button>
                   );
                 }
                 return '---';
@@ -860,6 +1014,110 @@ const MasterLeadPage: React.FC = () => {
   useEffect(() => {
     fetchSubLeads();
   }, [lead_number]);
+
+  // Handle view contract - for legacy contracts opens modal, for new contracts navigates
+  const handleViewContract = async (contractId: string, isLegacyContract: boolean = false) => {
+    console.log('🔍 handleViewContract called with:', contractId, 'isLegacyContract:', isLegacyContract);
+    
+    // Check if this is a legacy contract (ID starts with 'legacy_' or isLegacyContract is true)
+    if (isLegacyContract || contractId.startsWith('legacy_')) {
+      console.log('🔍 Legacy contract detected');
+      
+      // For legacy contracts, find the contract data and display it in a modal
+      const legacyContractId = contractId.startsWith('legacy_') 
+        ? contractId.replace('legacy_', '') 
+        : contractId;
+      
+      // Find the contract data in contractsDataMap by searching for the contract ID
+      const contractData = Array.from(contractsDataMap.values()).find((value) => 
+        value.isLegacy && (value.id === contractId || value.id === `legacy_${legacyContractId}`)
+      );
+      
+      console.log('🔍 Found contract data:', contractData);
+      
+      if (contractData && contractData.isLegacy && (contractData.contractHtml || contractData.signedContractHtml)) {
+        console.log('🔍 Setting up legacy contract modal');
+        
+        // Determine if contract is signed or draft
+        const hasSignedContract = contractData.signedContractHtml && 
+          contractData.signedContractHtml.trim() !== '' && 
+          contractData.signedContractHtml !== '\\N';
+        const hasDraftContract = contractData.contractHtml && 
+          contractData.contractHtml.trim() !== '' && 
+          contractData.contractHtml !== '\\N';
+        
+        console.log('🔍 Contract status check:', { hasSignedContract, hasDraftContract });
+        
+        if (hasSignedContract || hasDraftContract) {
+          setViewingContract({
+            id: contractData.id,
+            mode: hasSignedContract ? 'view' : 'edit', // If signed, view only; if draft, editable
+            contractHtml: contractData.contractHtml,
+            signedContractHtml: contractData.signedContractHtml,
+            status: hasSignedContract ? 'signed' : 'draft',
+            public_token: contractData.public_token,
+            signed_at: contractData.signed_at
+          });
+          
+          console.log('🔍 Set viewingContract with mode:', hasSignedContract ? 'view' : 'edit');
+          return;
+        } else {
+          console.log('🔍 No contract content found');
+          toast.error('No contract content found for this legacy contract.');
+          return;
+        }
+      } else {
+        // Try to fetch the contract data from database if not in map
+        console.log('🔍 Contract data not in map, fetching from database...');
+        const { data: legacyContractData, error: legacyError } = await supabase
+          .from('lead_leadcontact')
+          .select('id, contract_html, signed_contract_html, public_token, lead_id')
+          .eq('id', legacyContractId)
+          .maybeSingle();
+        
+        if (!legacyError && legacyContractData) {
+          const hasContractHtml = legacyContractData.contract_html && legacyContractData.contract_html.trim() !== '' && legacyContractData.contract_html !== '\\N';
+          const hasSignedContractHtml = legacyContractData.signed_contract_html && legacyContractData.signed_contract_html.trim() !== '' && legacyContractData.signed_contract_html !== '\\N';
+          
+          if (hasContractHtml || hasSignedContractHtml) {
+            const hasSigned = hasSignedContractHtml;
+            
+            // Fetch signed date from leads_leadstage table (stage 60 = Client signed agreement)
+            let signedDate: string | undefined = undefined;
+            if (hasSigned && legacyContractData.lead_id) {
+              const { data: stageData } = await supabase
+                .from('leads_leadstage')
+                .select('cdate')
+                .eq('lead_id', legacyContractData.lead_id)
+                .eq('stage', 60)
+                .order('cdate', { ascending: false })
+                .limit(1)
+                .maybeSingle();
+              
+              signedDate = stageData?.cdate || undefined;
+            }
+            
+            setViewingContract({
+              id: `legacy_${legacyContractData.id}`,
+              mode: hasSigned ? 'view' : 'edit',
+              contractHtml: legacyContractData.contract_html,
+              signedContractHtml: legacyContractData.signed_contract_html,
+              status: hasSigned ? 'signed' : 'draft',
+              public_token: legacyContractData.public_token,
+              signed_at: signedDate
+            });
+            return;
+          }
+        }
+        toast.error('No contract found for this legacy lead.');
+        return;
+      }
+    }
+    
+    // For new contracts, navigate to the contract page
+    console.log('🔍 New contract, navigating to:', `/contract/${contractId}`);
+    navigate(`/contract/${contractId}`);
+  };
 
   const handleSubLeadClick = (subLead: SubLead) => {
     if (subLead.route) {
@@ -1192,6 +1450,459 @@ const MasterLeadPage: React.FC = () => {
           )}
         </div>
       </div>
+
+      {/* Legacy Contract Viewing Modal */}
+      {viewingContract && viewingContract.contractHtml && typeof window !== 'undefined' && createPortal(
+        <div className="fixed inset-0 z-50 bg-white flex flex-col">
+          <style>
+            {`
+              .inline-input {
+                display: inline-block !important;
+                vertical-align: middle !important;
+                border: 2px solid #3b82f6 !important;
+                border-radius: 6px !important;
+                padding: 4px 8px !important;
+                margin: 0 4px !important;
+                min-width: 150px !important;
+                font-family: inherit !important;
+                font-size: 14px !important;
+                background: #ffffff !important;
+                color: #374151 !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+                line-height: 1.5 !important;
+                height: auto !important;
+              }
+              .signature-pad {
+                display: inline-block !important;
+                vertical-align: middle !important;
+                border: 2px dashed #3b82f6 !important;
+                border-radius: 6px !important;
+                padding: 12px !important;
+                margin: 0 4px !important;
+                min-width: 180px !important;
+                min-height: 50px !important;
+                background: #f8fafc !important;
+                cursor: pointer !important;
+                text-align: center !important;
+                font-size: 14px !important;
+                color: #6b7280 !important;
+                font-weight: 500 !important;
+                line-height: 1.5 !important;
+              }
+              .signature-input {
+                display: inline-block !important;
+                vertical-align: middle !important;
+                border: 2px solid #3b82f6 !important;
+                border-radius: 6px !important;
+                padding: 4px 8px !important;
+                margin: 0 4px !important;
+                min-width: 150px !important;
+                font-family: inherit !important;
+                font-size: 14px !important;
+                background: #ffffff !important;
+                color: #374151 !important;
+                box-shadow: 0 1px 3px rgba(0,0,0,0.1) !important;
+                line-height: 1.5 !important;
+                height: auto !important;
+              }
+              /* Right alignment for Hebrew text */
+              .ql-align-right {
+                text-align: right !important;
+              }
+              .ql-direction-rtl {
+                direction: rtl !important;
+              }
+              /* Ensure paragraphs with right alignment are properly aligned */
+              p.ql-align-right {
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Override any conflicting alignment */
+              .prose p.ql-align-right {
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Specific styling for signature images */
+              .signature-image {
+                border: none !important;
+                background: transparent !important;
+                padding: 0 !important;
+                margin: 0 !important;
+                box-shadow: none !important;
+                border-radius: 0 !important;
+                display: inline-block !important;
+                vertical-align: middle !important;
+                max-width: 200px !important;
+                max-height: 80px !important;
+                object-fit: contain !important;
+              }
+            `}
+          </style>
+          <div className="flex flex-col h-full">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-gray-200 bg-gray-50 flex-shrink-0">
+              <div>
+                <h3 className="text-2xl font-bold text-gray-900">
+                  {viewingContract.mode === 'edit' ? 'Edit Legacy Contract' : 'Legacy Contract'}
+                </h3>
+                <p className="text-sm text-gray-600 mt-1">
+                  Status: <span className={`font-semibold ${viewingContract.status === 'signed' ? 'text-green-600' : 'text-yellow-600'}`}>
+                    {viewingContract.status === 'signed' ? 'Signed' : 'Draft'}
+                  </span>
+                  {viewingContract.mode === 'edit' && (
+                    <span className="ml-2 text-blue-600 font-semibold">(Editable)</span>
+                  )}
+                </p>
+              </div>
+              <button
+                className="btn btn-ghost btn-lg"
+                onClick={() => setViewingContract(null)}
+              >
+                <XMarkIcon className="w-8 h-8" />
+              </button>
+            </div>
+
+            {/* Content */}
+            <div className="flex-1 p-6 overflow-y-auto">
+                <div>
+                  <h4 className="text-lg font-semibold text-gray-800 mb-4">
+                    {viewingContract.status === 'signed' 
+                      ? 'Signed Contract (Read Only)' 
+                      : viewingContract.mode === 'edit' 
+                        ? 'Contract Draft (Editable)' 
+                        : 'Contract Draft'
+                    }
+                  </h4>
+                  {viewingContract.mode === 'edit' ? (
+                    <div className="border border-gray-300 rounded-lg p-4 flex flex-col">
+                      <div className="bg-white rounded-lg flex flex-col">
+                        {/* Rich Text Toolbar */}
+                        <div className="border-b border-gray-200 p-2 bg-gray-50">
+                          <div className="flex flex-wrap gap-2">
+                            <button
+                              onClick={() => executeCommand('bold')}
+                              className="btn btn-sm btn-ghost"
+                              title="Bold"
+                            >
+                              <strong>B</strong>
+                            </button>
+                            <button
+                              onClick={() => executeCommand('italic')}
+                              className="btn btn-sm btn-ghost"
+                              title="Italic"
+                            >
+                              <em>I</em>
+                            </button>
+                            <button
+                              onClick={() => executeCommand('underline')}
+                              className="btn btn-sm btn-ghost"
+                              title="Underline"
+                            >
+                              <u>U</u>
+                            </button>
+                            <button
+                              onClick={() => executeCommand('strikeThrough')}
+                              className="btn btn-sm btn-ghost"
+                              title="Strikethrough"
+                            >
+                              <s>S</s>
+                            </button>
+                            <div className="divider divider-horizontal mx-1"></div>
+                            <button
+                              onClick={() => executeCommand('formatBlock', 'p')}
+                              className="btn btn-sm btn-ghost"
+                              title="Paragraph"
+                            >
+                              P
+                            </button>
+                            <button
+                              onClick={() => executeCommand('formatBlock', 'h1')}
+                              className="btn btn-sm btn-ghost"
+                              title="Heading 1"
+                            >
+                              H1
+                            </button>
+                            <button
+                              onClick={() => executeCommand('formatBlock', 'h2')}
+                              className="btn btn-sm btn-ghost"
+                              title="Heading 2"
+                            >
+                              H2
+                            </button>
+                            <button
+                              onClick={() => executeCommand('formatBlock', 'h3')}
+                              className="btn btn-sm btn-ghost"
+                              title="Heading 3"
+                            >
+                              H3
+                            </button>
+                            <div className="divider divider-horizontal mx-1"></div>
+                            <button
+                              onClick={() => executeCommand('insertUnorderedList')}
+                              className="btn btn-sm btn-ghost"
+                              title="Bullet List"
+                            >
+                              • List
+                            </button>
+                            <button
+                              onClick={() => executeCommand('insertOrderedList')}
+                              className="btn btn-sm btn-ghost"
+                              title="Numbered List"
+                            >
+                              1. List
+                            </button>
+                            <div className="divider divider-horizontal mx-1"></div>
+                            <button
+                              onClick={() => executeCommand('justifyLeft')}
+                              className="btn btn-sm btn-ghost"
+                              title="Align Left"
+                            >
+                              ←
+                            </button>
+                            <button
+                              onClick={() => executeCommand('justifyCenter')}
+                              className="btn btn-sm btn-ghost"
+                              title="Align Center"
+                            >
+                              ↔
+                            </button>
+                            <button
+                              onClick={() => executeCommand('justifyRight')}
+                              className="btn btn-sm btn-ghost"
+                              title="Align Right"
+                            >
+                              →
+                            </button>
+                            <button
+                              onClick={() => executeCommand('justifyFull')}
+                              className="btn btn-sm btn-ghost"
+                              title="Justify"
+                            >
+                              ≡
+                            </button>
+                          </div>
+                        </div>
+                        <div 
+                          key={`editor-content-${viewingContract?.id}-${Date.now()}`}
+                          className="flex-1 prose prose-lg max-w-none p-4 overflow-y-auto"
+                          style={{ maxHeight: 'calc(100vh - 300px)' }}
+                        >
+                          {viewingContract?.contractHtml && (
+                            <div 
+                              className="prose prose-lg max-w-none"
+                              contentEditable={viewingContract.mode === 'edit'}
+                              suppressContentEditableWarning={true}
+                              dangerouslySetInnerHTML={{ 
+                                __html: viewingContract.mode === 'edit' 
+                                  ? processHtmlForEditing(viewingContract.contractHtml)
+                                  : (viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                                      ? viewingContract.signedContractHtml
+                                      : viewingContract.contractHtml)
+                              }} 
+                            />
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="bg-gray-50 p-6 rounded-lg h-full overflow-y-auto">
+                      <div className="prose prose-lg max-w-none">
+                        <div 
+                          className="font-sans text-base leading-relaxed text-gray-800"
+                          dangerouslySetInnerHTML={{ 
+                            __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                              ? viewingContract.signedContractHtml 
+                              : viewingContract.contractHtml || ''
+                          }}
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+            </div>
+
+            {/* Footer */}
+            <div className="flex justify-end gap-3 p-6 border-t border-gray-200 flex-shrink-0">
+              {/* Share button for both edit and signed modes */}
+              <button
+                className="btn btn-info"
+                onClick={async () => {
+                  try {
+                    console.log('🔍 Creating share link for legacy contract');
+                    
+                    // Extract the legacy contract ID from the viewingContract.id
+                    const legacyContractId = viewingContract.id.replace('legacy_', '');
+                    console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
+                    
+                    let publicToken = viewingContract.public_token;
+                    
+                    // For signed contracts, always fetch the actual token from database
+                    if (viewingContract.status === 'signed') {
+                      console.log('🔍 Fetching actual public token from database for signed contract');
+                      const { data, error } = await supabase
+                        .from('lead_leadcontact')
+                        .select('public_token')
+                        .eq('id', legacyContractId)
+                        .single();
+                      
+                      if (error) {
+                        console.error('❌ Error fetching public token:', error);
+                        toast.error('Failed to get share link.');
+                        return;
+                      }
+                      
+                      publicToken = data?.public_token;
+                      if (!publicToken) {
+                        toast.error('No share link found for this contract.');
+                        return;
+                      }
+                      
+                      console.log('🔍 Found existing public token:', publicToken);
+                    }
+                    
+                    // For draft contracts, generate a new token if it doesn't exist
+                    if (viewingContract.status === 'draft' && !publicToken) {
+                      publicToken = crypto.randomUUID();
+                      console.log('🔍 Generated new public token for draft contract:', publicToken);
+                      
+                      // Update the contract with the public token
+                      const { error } = await supabase
+                        .from('lead_leadcontact')
+                        .update({ public_token: publicToken })
+                        .eq('id', legacyContractId);
+                      
+                      if (error) {
+                        console.error('❌ Error updating legacy contract with public token:', error);
+                        toast.error('Failed to create share link.');
+                        return;
+                      }
+                    }
+                    
+                    // Create the public URL
+                    const publicUrl = `${window.location.origin}/public-legacy-contract/${legacyContractId}/${publicToken}`;
+                    console.log('🔍 Public URL created:', publicUrl);
+                    
+                    // Copy to clipboard
+                    await navigator.clipboard.writeText(publicUrl);
+                    toast.success('Share link copied to clipboard!');
+                    
+                  } catch (error) {
+                    console.error('❌ Error creating share link:', error);
+                    toast.error('Failed to create share link.');
+                  }
+                }}
+              >
+                <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8.684 13.342C8.886 12.938 9 12.482 9 12c0-.482-.114-.938-.316-1.342m0 2.684a3 3 0 110-2.684m0 2.684l6.632 3.316m-6.632-6l6.632-3.316m0 0a3 3 0 105.367-2.684 3 3 0 00-5.367 2.684zm0 9.316a3 3 0 105.367 2.684 3 3 0 00-5.367-2.684z" />
+                </svg>
+                Share
+              </button>
+              
+              {viewingContract.mode === 'edit' && (
+                  <button
+                    className="btn btn-success"
+                    onClick={async () => {
+                    try {
+                      console.log('🔍 Saving edited legacy contract');
+                      
+                      // Get the content from the contentEditable div
+                      const contentDiv = document.querySelector('[contenteditable="true"]');
+                      if (!contentDiv) {
+                        toast.error('Editor not found');
+                        return;
+                      }
+                      
+                      let htmlContent = contentDiv.innerHTML;
+                      console.log('🔍 Content from editor:', htmlContent);
+                      
+                      // Extract values from input fields and replace them back with placeholders
+                      const inputs = contentDiv.querySelectorAll('input.inline-input');
+                      inputs.forEach((input) => {
+                        const value = (input as HTMLInputElement).value || '_____________';
+                        // Replace the input element with the value
+                        const inputRegex = /<input[^>]*class="inline-input"[^>]*>/g;
+                        htmlContent = htmlContent.replace(inputRegex, value);
+                      });
+                      
+                      // Replace signature pad containers and signature inputs with placeholders
+                      htmlContent = htmlContent.replace(
+                        /<div[^>]*class="signature-pad"[^>]*>.*?<\/div>/gs,
+                        '{{sig}}'
+                      );
+                      htmlContent = htmlContent.replace(
+                        /<input[^>]*class="signature-input"[^>]*>/g,
+                        '{{sig}}'
+                      );
+                      
+                      console.log('🔍 Processed HTML content:', htmlContent);
+                      
+                      // Extract the legacy contract ID from the viewingContract.id
+                      const legacyContractId = viewingContract.id.replace('legacy_', '');
+                      console.log('🔍 Legacy contract ID to update:', legacyContractId);
+                      
+                      // Update the contract_html in lead_leadcontact table
+                      const { error } = await supabase
+                        .from('lead_leadcontact')
+                        .update({ contract_html: htmlContent })
+                        .eq('id', legacyContractId);
+                      
+                      if (error) {
+                        console.error('❌ Error updating legacy contract:', error);
+                        toast.error('Failed to save contract changes.');
+                        return;
+                      }
+                      
+                      console.log('✅ Legacy contract updated successfully');
+                      toast.success('Contract saved successfully!');
+                      
+                      // Close the modal
+                      setViewingContract(null);
+                      
+                      // Refresh the page data
+                      fetchSubLeads();
+                      
+                    } catch (error) {
+                      console.error('❌ Error saving legacy contract:', error);
+                      toast.error('Failed to save contract changes.');
+                    }
+                  }}
+                >
+                  Save Changes
+                </button>
+              )}
+              
+              <button
+                className="btn btn-primary"
+                onClick={() => {
+                  // Create a blob and download the contract
+                  const htmlContent = viewingContract.status === 'signed' && viewingContract.signedContractHtml 
+                    ? viewingContract.signedContractHtml 
+                    : viewingContract.contractHtml || '';
+                  
+                  const blob = new Blob([htmlContent], { type: 'text/html' });
+                  const url = URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `contract_${viewingContract.id}.html`;
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+                  URL.revokeObjectURL(url);
+                }}
+              >
+                Download Contract
+              </button>
+              <button
+                className="btn btn-ghost"
+                onClick={() => setViewingContract(null)}
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>,
+        document.body
+      )}
     </div>
   );
 };

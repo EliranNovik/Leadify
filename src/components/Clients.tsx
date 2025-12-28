@@ -1567,6 +1567,10 @@ const Clients: React.FC<ClientsProps> = ({
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
 
+  // State for delete confirmation modal
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [isDeletingLead, setIsDeletingLead] = useState(false);
+
   // Helper function to get tomorrow's date in YYYY-MM-DD format (moved here for use in state initialization)
   const getTomorrowDate = () => {
     const tomorrow = new Date();
@@ -5862,6 +5866,220 @@ useEffect(() => {
     if (!selectedClient) return;
     await updateLeadStage('client_declined');
     setShowDeclinedDrawer(false);
+  };
+
+  // Handle delete lead
+  const handleDeleteLead = async () => {
+    if (!selectedClient || !selectedClient.id) {
+      console.error('❌ No client selected for deletion');
+      toast.error('No lead selected for deletion');
+      return;
+    }
+
+    console.log('🔍 Delete lead called with:', {
+      id: selectedClient.id,
+      lead_type: selectedClient.lead_type,
+      lead_number: selectedClient.lead_number,
+      name: selectedClient.name
+    });
+
+    setIsDeletingLead(true);
+    try {
+      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      
+      console.log('🔍 Deleting lead:', {
+        id: selectedClient.id,
+        lead_type: selectedClient.lead_type,
+        isLegacyLead,
+        lead_number: selectedClient.lead_number
+      });
+      
+      if (isLegacyLead) {
+        // Delete from leads_lead table
+        let legacyId: number;
+        
+        if (typeof selectedClient.id === 'string') {
+          // Remove 'legacy_' prefix if present
+          const idString = selectedClient.id.replace('legacy_', '');
+          legacyId = parseInt(idString, 10);
+        } else {
+          legacyId = Number(selectedClient.id);
+        }
+        
+        if (isNaN(legacyId)) {
+          console.error('❌ Invalid legacy ID:', selectedClient.id);
+          toast.error('Invalid lead ID. Cannot delete.');
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        console.log('🔍 Attempting to delete legacy lead with ID:', legacyId);
+        
+        // First verify the lead exists
+        const { data: existingLead } = await supabase
+          .from('leads_lead')
+          .select('id, name, manual_id')
+          .eq('id', legacyId)
+          .single();
+        
+        if (!existingLead) {
+          console.warn('⚠️ Legacy lead not found, may have already been deleted');
+          toast.error('Lead not found. It may have already been deleted.');
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        console.log('🔍 Legacy lead found, proceeding with deletion:', existingLead);
+        
+        // Use .select() to get the count of deleted rows
+        const { data: deletedData, error } = await supabase
+          .from('leads_lead')
+          .delete()
+          .eq('id', legacyId)
+          .select();
+        
+        if (error) {
+          console.error('❌ Error deleting legacy lead:', error);
+          console.error('❌ Error details:', JSON.stringify(error, null, 2));
+          toast.error(`Failed to delete lead: ${error.message || error.code || 'Unknown error'}`);
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        // Check if any rows were actually deleted
+        if (!deletedData || deletedData.length === 0) {
+          console.error('❌ No rows were deleted. This might be due to RLS policies or the lead not existing.');
+          
+          // Verify deletion by checking if lead still exists
+          const { data: verifyDeleted } = await supabase
+            .from('leads_lead')
+            .select('id')
+            .eq('id', legacyId)
+            .maybeSingle();
+          
+          if (verifyDeleted) {
+            console.error('❌ Legacy lead still exists after deletion attempt - likely RLS policy issue');
+            toast.error('Failed to delete lead. You may not have permission to delete this lead, or it may be protected by database policies.');
+          } else {
+            console.log('✅ Legacy lead deleted (verification confirms it no longer exists)');
+          }
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        console.log('✅ Legacy lead deleted successfully. Deleted rows:', deletedData.length);
+      } else {
+        // Delete from leads table (new leads)
+        const leadId = selectedClient.id;
+        
+        console.log('🔍 Attempting to delete new lead with ID:', leadId);
+        
+        // First verify the lead exists
+        const { data: existingLead } = await supabase
+          .from('leads')
+          .select('id, name, lead_number')
+          .eq('id', leadId)
+          .single();
+        
+        if (!existingLead) {
+          console.warn('⚠️ Lead not found, may have already been deleted');
+          toast.error('Lead not found. It may have already been deleted.');
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        console.log('🔍 Lead found, proceeding with deletion:', existingLead);
+        
+        // Use .select() to get the count of deleted rows
+        const { data: deletedData, error } = await supabase
+          .from('leads')
+          .delete()
+          .eq('id', leadId)
+          .select();
+        
+        if (error) {
+          console.error('❌ Error deleting new lead:', error);
+          console.error('❌ Error details:', JSON.stringify(error, null, 2));
+          toast.error(`Failed to delete lead: ${error.message || error.code || 'Unknown error'}`);
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        // Check if any rows were actually deleted
+        if (!deletedData || deletedData.length === 0) {
+          console.error('❌ No rows were deleted. This might be due to RLS policies or the lead not existing.');
+          
+          // Verify deletion by checking if lead still exists
+          const { data: verifyDeleted } = await supabase
+            .from('leads')
+            .select('id')
+            .eq('id', leadId)
+            .maybeSingle();
+          
+          if (verifyDeleted) {
+            console.error('❌ Lead still exists after deletion attempt - likely RLS policy issue');
+            toast.error('Failed to delete lead. You may not have permission to delete this lead, or it may be protected by database policies.');
+          } else {
+            console.log('✅ Lead deleted (verification confirms it no longer exists)');
+          }
+          setIsDeletingLead(false);
+          return;
+        }
+        
+        console.log('✅ New lead deleted successfully. Deleted rows:', deletedData.length);
+      }
+
+      console.log('✅ Lead deletion completed successfully');
+      toast.success('Lead deleted successfully');
+      setShowDeleteModal(false);
+      
+      // Fetch the last lead to navigate to it
+      try {
+        console.log('🔍 Fetching last lead to navigate to...');
+        
+        // Try to get the last new lead first
+        const { data: lastNewLead } = await supabase
+          .from('leads')
+          .select('id, lead_number')
+          .order('created_at', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (lastNewLead) {
+          console.log('🔍 Found last new lead:', lastNewLead);
+          navigate(`/clients/${lastNewLead.lead_number || lastNewLead.id}`);
+          return;
+        }
+        
+        // If no new leads, try to get the last legacy lead
+        const { data: lastLegacyLead } = await supabase
+          .from('leads_lead')
+          .select('id, manual_id')
+          .order('cdate', { ascending: false })
+          .limit(1)
+          .maybeSingle();
+        
+        if (lastLegacyLead) {
+          console.log('🔍 Found last legacy lead:', lastLegacyLead);
+          const legacyId = lastLegacyLead.manual_id || lastLegacyLead.id;
+          navigate(`/clients/${legacyId}`);
+          return;
+        }
+        
+        // If no leads at all, navigate to empty clients page
+        console.log('🔍 No leads found, navigating to empty clients page');
+        navigate('/clients');
+      } catch (navError) {
+        console.error('❌ Error fetching last lead for navigation:', navError);
+        // Fallback to empty clients page if there's an error
+        navigate('/clients');
+      }
+    } catch (error: any) {
+      console.error('❌ Exception deleting lead:', error);
+      console.error('❌ Exception stack:', error.stack);
+      toast.error(`Failed to delete lead: ${error.message || 'Unknown error'}`);
+      setIsDeletingLead(false);
+    }
   };
 
   useEffect(() => {
@@ -11537,6 +11755,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                   </a>
                                 </li>
                                 <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                                {isSuperuser && (
+                                  <li>
+                                    <a
+                                      className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                                      onClick={() => {
+                                        setShowDeleteModal(true);
+                                        (document.activeElement as HTMLElement | null)?.blur();
+                                      }}
+                                    >
+                                      <TrashIcon className="w-5 h-5 text-red-500" />
+                                      <span className="text-red-600 font-medium">Delete Lead</span>
+                                    </a>
+                                  </li>
+                                )}
                               </ul>
                             </div>
                           </div>
@@ -12181,6 +12413,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             </a>
                           </li>
                           <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                          {isSuperuser && (
+                            <li>
+                              <a
+                                className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                                onClick={() => {
+                                  setShowDeleteModal(true);
+                                  (document.activeElement as HTMLElement | null)?.blur();
+                                }}
+                              >
+                                <TrashIcon className="w-5 h-5 text-red-500" />
+                                <span className="text-red-600 font-medium">Delete Lead</span>
+                              </a>
+                            </li>
+                          )}
                         </ul>
                       </div>
                       </div>
@@ -12398,6 +12644,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       </a>
                     </li>
                     <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                    {isSuperuser && (
+                      <li>
+                        <a
+                          className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                          onClick={() => {
+                            setShowDeleteModal(true);
+                            setShowMobileActionsDropdown(false);
+                          }}
+                        >
+                          <TrashIcon className="w-5 h-5 text-red-500" />
+                          <span className="text-red-600 font-medium">Delete Lead</span>
+                        </a>
+                      </li>
+                    )}
                   </ul>
                 </div>
               </div>
@@ -12631,6 +12891,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </a>
                 </li>
                 <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                {isSuperuser && (
+                  <li>
+                    <a
+                      className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                      onClick={() => {
+                        setShowDeleteModal(true);
+                        (document.activeElement as HTMLElement | null)?.blur();
+                      }}
+                    >
+                      <TrashIcon className="w-5 h-5 text-red-500" />
+                      <span className="text-red-600 font-medium">Delete Lead</span>
+                    </a>
+                  </li>
+                )}
               </ul>
             </div>
           </div>
@@ -13744,6 +14018,63 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 )}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Delete Lead Confirmation Modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" onClick={() => !isDeletingLead && setShowDeleteModal(false)} />
+          <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-2xl font-bold text-error">Delete Lead</h3>
+              <button 
+                className="btn btn-ghost btn-sm btn-circle" 
+                onClick={() => setShowDeleteModal(false)}
+                disabled={isDeletingLead}
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="flex flex-col gap-4">
+              <div className="alert alert-error">
+                <ExclamationTriangleIcon className="w-6 h-6" />
+                <div>
+                  <h4 className="font-bold">Warning: This action cannot be undone!</h4>
+                  <p>Are you sure you want to delete this lead? This will permanently remove the lead and all associated data.</p>
+                </div>
+              </div>
+              {selectedClient && (
+                <div className="bg-base-200 rounded-lg p-4">
+                  <p className="font-semibold">Lead: {selectedClient.lead_number || selectedClient.id}</p>
+                  <p className="text-base-content/70">Name: {selectedClient.name || '---'}</p>
+                </div>
+              )}
+            </div>
+            <div className="mt-6 flex gap-3 justify-end">
+              <button 
+                className="btn btn-ghost" 
+                onClick={() => setShowDeleteModal(false)}
+                disabled={isDeletingLead}
+              >
+                Cancel
+              </button>
+              <button 
+                className="btn btn-error" 
+                onClick={handleDeleteLead}
+                disabled={isDeletingLead}
+              >
+                {isDeletingLead ? (
+                  <>
+                    <span className="loading loading-spinner loading-sm"></span>
+                    Deleting...
+                  </>
+                ) : (
+                  'Yes, delete lead'
+                )}
+              </button>
+            </div>
           </div>
         </div>
       )}

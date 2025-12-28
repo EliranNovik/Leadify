@@ -4526,7 +4526,9 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                               dangerouslySetInnerHTML={{ 
                                 __html: viewingContract.mode === 'edit' 
                                   ? processHtmlForEditing(viewingContract.contractHtml)
-                                  : processSignedContractHtml(viewingContract.signedContractHtml || viewingContract.contractHtml)
+                                  : (viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                                      ? viewingContract.signedContractHtml
+                                      : viewingContract.contractHtml)
                               }} 
                             />
                           )}
@@ -4538,7 +4540,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       <div className="prose prose-lg max-w-none">
                         <div 
                           className="font-sans text-base leading-relaxed text-gray-800"
-                          dangerouslySetInnerHTML={{ __html: processSignedContractHtml(viewingContract.contractHtml || '') }}
+                          dangerouslySetInnerHTML={{ 
+                            __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
+                              ? viewingContract.signedContractHtml 
+                              : viewingContract.contractHtml || ''
+                          }}
                         />
                       </div>
                     </div>
