@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { InteractionRequiredAuthError, IPublicClientApplication } from '@azure/msal-browser';
 import toast from 'react-hot-toast';
-import { sendEmail } from '../lib/graph';
+import { sendEmailViaBackend } from '../lib/mailboxApi';
 import { supabase } from '../lib/supabase';
 import { updateLeadStageWithHistory } from '../lib/leadStageManager';
 import { PaperAirplaneIcon, PlusIcon, XMarkIcon, ChevronDownIcon, PaperClipIcon, SparklesIcon, LinkIcon, UserPlusIcon, CheckIcon } from '@heroicons/react/24/outline';
@@ -909,25 +909,14 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
 
     setSending(true);
     try {
-      const account = msalInstance.getAllAccounts()[0];
-      if (!account) {
+      // Get Supabase auth user for userId
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+      if (!authUser) {
         toast.error('You must be signed in to send an email.');
         setSending(false);
         return;
       }
-
-      let accessToken;
-      try {
-        const response = await msalInstance.acquireTokenSilent({ ...loginRequest, account });
-        accessToken = response.accessToken;
-      } catch (error) {
-        if (error instanceof InteractionRequiredAuthError) {
-          const response = await msalInstance.loginPopup(loginRequest);
-          accessToken = response.accessToken;
-        } else {
-          throw error;
-        }
-      }
+      const userId = authUser.id;
 
       const closerName = (await fetchCurrentUserFullName()) || 'Current User';
 
@@ -938,12 +927,29 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         ? await mapAttachmentsForBackend(attachments)
         : undefined;
 
-      await sendEmail(accessToken, {
+      const isLegacyLead = typeof client?.id === 'string' && client.id.startsWith('legacy_');
+      const legacyId = isLegacyLead
+        ? Number.parseInt(String(client.id).replace('legacy_', ''), 10)
+        : null;
+
+      // Use sendEmailViaBackend for consistency and proper backend processing
+      await sendEmailViaBackend({
+        userId,
+        subject,
+        bodyHtml: htmlBody,
         to: finalToRecipients,
         cc: finalCcRecipients,
-        subject,
-        body: htmlBody,
         attachments: emailAttachments,
+        context: {
+          clientId: !isLegacyLead ? client.id : null,
+          legacyLeadId: isLegacyLead ? legacyId : null,
+          leadType: client?.lead_type || (isLegacyLead ? 'legacy' : 'new'),
+          leadNumber: client?.lead_number || null,
+          contactEmail: client?.email || null,
+          contactName: client?.name || null,
+          senderName: closerName,
+          userInternalId: client?.user_internal_id || undefined,
+        },
       });
 
       let parsedTotal: number | null = null;
@@ -970,23 +976,24 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         },
       });
 
+      // Optimistic insert to emails table to ensure email appears immediately
+      // The backend will also save it later, but this ensures it shows up right away
       const now = new Date();
       const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
       const messageId = `offer_${client?.id}_${now.getTime()}`;
-      const isLegacyLead = typeof client?.id === 'string' && client.id.startsWith('legacy_');
-      const legacyNumericId = isLegacyLead
-        ? Number.parseInt(String(client.id).replace('legacy_', ''), 10)
-        : null;
-      const plainBody = body;
+      
+      // Strip HTML from body_preview (body is already plain text, but htmlBody might have HTML)
+      // Use plain text body for preview (first 500 chars), or strip HTML from htmlBody if needed
+      const bodyPreview = body.length > 500 ? body.substring(0, 500) : body;
 
       const emailRecord: Record<string, any> = {
         message_id: messageId,
         thread_id: null,
         sender_name: closerName,
-        sender_email: account.username || account.homeAccountId || null,
+        sender_email: authUser.email || null,
         recipient_list: recipientListForLog,
         subject,
-        body_preview: plainBody,
+        body_preview: bodyPreview,
         body_html: htmlBody,
         sent_at: now.toISOString(),
         direction: 'outgoing',
@@ -995,13 +1002,28 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
           : null,
       };
 
+      // Set either client_id OR legacy_id, not both
       if (isLegacyLead) {
-        emailRecord.legacy_id = Number.isNaN(legacyNumericId) ? null : legacyNumericId;
+        emailRecord.legacy_id = Number.isNaN(legacyId) ? null : legacyId;
+        emailRecord.client_id = null;
       } else {
         emailRecord.client_id = client.id;
+        emailRecord.legacy_id = null;
       }
 
-      await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+      // Optimistic insert to ensure email appears immediately
+      try {
+        const { error: dbError } = await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+        if (dbError) {
+          console.warn('Optimistic email insert failed (backend will save it later):', dbError);
+          // Don't throw - backend will save it later
+        } else {
+          console.log('✅ Email saved optimistically:', messageId);
+        }
+      } catch (dbError) {
+        console.warn('Exception in optimistic email insert (backend will save it later):', dbError);
+        // Don't throw - backend will save it later
+      }
       // Stage evaluation is handled automatically by database triggers
 
       toast.success('Offer email sent!');

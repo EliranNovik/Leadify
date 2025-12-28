@@ -4707,6 +4707,46 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       const conversationId = sendResult?.conversationId || null;
       const sentAt = sendResult?.sentAt || new Date().toISOString();
       
+      // Optimistic insert to emails table to ensure email appears immediately
+      // The backend will also save it, but this ensures it shows up right away
+      const emailRecord: any = {
+        message_id: messageId,
+        thread_id: conversationId,
+        sender_name: senderName,
+        sender_email: userEmail || null,
+        recipient_list: finalToRecipients.join(', ') + (finalCcRecipients.length > 0 ? `, ${finalCcRecipients.join(', ')}` : ''),
+        subject,
+        body_html: emailContentWithSignature,
+        body_preview: emailContentWithSignature.substring(0, 500), // First 500 chars as preview
+        sent_at: sentAt,
+        direction: 'outgoing',
+        attachments: composeAttachments.length > 0 ? composeAttachments.map(att => ({
+          name: att.name,
+          contentType: att.contentType || 'application/octet-stream',
+        })) : null,
+      };
+      
+      // Set either client_id OR legacy_id, not both
+      if (isLegacyLead) {
+        emailRecord.legacy_id = legacyId;
+        emailRecord.client_id = null;
+      } else {
+        emailRecord.client_id = client.id;
+        emailRecord.legacy_id = null;
+      }
+      
+      // Add contact_id if available
+      if (contactId) {
+        emailRecord.contact_id = contactId;
+      }
+      
+      try {
+        await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+      } catch (dbError) {
+        console.warn('Optimistic email insert failed (backend will save it):', dbError);
+        // Don't throw - backend will save it
+      }
+      
       toast.success('Email sent!');
       
       await fetchInteractions({ bypassCache: true });

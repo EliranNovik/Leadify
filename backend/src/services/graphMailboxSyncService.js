@@ -1676,20 +1676,25 @@ class GraphMailboxSyncService {
       const senderEmail = normalise(mailboxAddress);
       const recipientListStr = recipients.join(', ');
       
+      // Check if we have a lead context (client_id or legacy_id) - if so, always save the email
+      // even if it's internal-to-internal, because it's relevant to that lead
+      const hasLeadContext = !!(clientId || legacyId || context.contactId);
+      
       // Skip internal-to-internal emails (@lawoffice.org.il to @lawoffice.org.il)
-      if (shouldFilterInternalEmail(senderEmail, recipientListStr)) {
+      // BUT only if we don't have a lead context (emails sent from a lead's context should be saved)
+      if (!hasLeadContext && shouldFilterInternalEmail(senderEmail, recipientListStr)) {
         console.log(
-          `🚫 Skipping outgoing email record - internal to internal email | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
+          `🚫 Skipping outgoing email record - internal to internal email (no lead context) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
         );
         return; // Don't save this email
       }
       
-      // Skip emails sent to leads@lawoffice.org.il
+      // Skip emails sent to leads@lawoffice.org.il (unless we have lead context)
       const LEADS_EMAIL = 'leads@lawoffice.org.il';
       const recipientListStrLower = recipientListStr.toLowerCase();
-      if (recipientListStrLower.includes(LEADS_EMAIL.toLowerCase())) {
+      if (!hasLeadContext && recipientListStrLower.includes(LEADS_EMAIL.toLowerCase())) {
         console.log(
-          `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (filtered) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
+          `🚫 Skipping outgoing email record - recipient is leads@lawoffice.org.il (filtered, no lead context) | sender=${mailboxAddress || 'unknown'} | recipients=${recipients.join(', ') || 'none'}`
         );
         return; // Don't save this email
       }

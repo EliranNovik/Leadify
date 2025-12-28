@@ -432,9 +432,9 @@ const CalendarPage: React.FC = () => {
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<{[locationName: string]: string}>({});
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
-  const [activeDropdown, setActiveDropdown] = useState<{ meetingId: number; type: 'manager' | 'helper' } | null>(null);
+  const [activeDropdown, setActiveDropdown] = useState<{ meetingId: string | number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
-    [meetingId: number]: {
+    [meetingId: string | number]: {
       managerSearch: string;
       helperSearch: string;
       showManagerDropdown: boolean;
@@ -2621,7 +2621,7 @@ const CalendarPage: React.FC = () => {
   };
 
   // Handle dropdown positioning
-  const handleDropdownOpen = (meetingId: number, type: 'manager' | 'helper', inputRef: HTMLInputElement) => {
+  const handleDropdownOpen = (meetingId: string | number, type: 'manager' | 'helper', inputRef: HTMLInputElement) => {
     const rect = inputRef.getBoundingClientRect();
     setDropdownPosition({
       x: rect.left,
@@ -2636,7 +2636,7 @@ const CalendarPage: React.FC = () => {
     setDropdownPosition(null);
   };
 
-  const handleAssignStaff = async (meetingId: number, field: 'meeting_manager' | 'helper', value: string) => {
+  const handleAssignStaff = async (meetingId: string | number, field: 'meeting_manager' | 'helper', value: string) => {
     try {
       // Find the meeting to get the client_id
       const meeting = assignStaffMeetings.find(m => m.id === meetingId);
@@ -2660,31 +2660,65 @@ const CalendarPage: React.FC = () => {
         }
       }
 
+      // Determine if this is a legacy meeting stored in leads_lead (not in meetings table)
+      const isLegacyMeetingInLeadsLead = typeof meetingId === 'string' && meetingId.startsWith('legacy_') && !meeting.client_id && meeting.legacy_lead_id;
+      
+      // Only update meetings table if the meeting exists in the meetings table (not legacy-only in leads_lead)
+      if (!isLegacyMeetingInLeadsLead && typeof meetingId === 'number') {
+        const { error: meetingError } = await supabase
+          .from('meetings')
+          .update({ [field]: value })
+          .eq('id', meetingId);
 
-      // Update meetings table
-      const { error: meetingError } = await supabase
-        .from('meetings')
-        .update({ [field]: value })
-        .eq('id', meetingId);
-
-      if (meetingError) throw meetingError;
+        if (meetingError) throw meetingError;
+      }
 
       // Update the appropriate lead table based on lead type
-      if (meeting.lead?.lead_type === 'legacy') {
+      if (meeting.lead?.lead_type === 'legacy' || isLegacyMeetingInLeadsLead) {
         // For legacy leads, update leads_lead table
-        let leadId;
-        if (meeting.id.startsWith('legacy_')) {
-          // Extract original ID from prefixed ID
-          leadId = meeting.id.replace('legacy_', '');
+        let leadId: number;
+        if (typeof meetingId === 'string' && meetingId.startsWith('legacy_')) {
+          // Extract original ID from prefixed ID and convert to number
+          const idString = meetingId.replace('legacy_', '');
+          leadId = parseInt(idString, 10);
+          if (isNaN(leadId)) {
+            throw new Error(`Invalid legacy lead ID: ${idString}`);
+          }
+        } else if (meeting.legacy_lead_id) {
+          leadId = typeof meeting.legacy_lead_id === 'number' ? meeting.legacy_lead_id : parseInt(String(meeting.legacy_lead_id), 10);
         } else {
-          leadId = meeting.legacy_lead_id;
+          throw new Error('No legacy lead ID found for legacy meeting');
         }
+        
+        // Get employee ID from display name (required for legacy leads)
+        // If value is empty string, set to null to clear the assignment
+        let employeeId: number | null = null;
+        if (value && value.trim() !== '') {
+          const employee = allEmployees.find(emp => emp.display_name === value);
+          if (employee) {
+            employeeId = employee.id;
+          } else {
+            // Try to find employee in database if not in allEmployees
+            const { data: employeeData, error: empError } = await supabase
+              .from('tenants_employee')
+              .select('id')
+              .eq('display_name', value)
+              .maybeSingle();
+            
+            if (!empError && employeeData) {
+              employeeId = employeeData.id;
+            } else {
+              throw new Error(`Employee not found for display name: ${value}`);
+            }
+          }
+        }
+        // If value is empty, employeeId remains null which will clear the assignment
         
         const updateField = field === 'meeting_manager' ? 'meeting_manager_id' : 'meeting_lawyer_id';
         
         const { error: leadError } = await supabase
           .from('leads_lead')
-          .update({ [updateField]: value })
+          .update({ [updateField]: employeeId })
           .eq('id', leadId);
 
         if (leadError) throw leadError;
@@ -2692,7 +2726,6 @@ const CalendarPage: React.FC = () => {
         // For new leads, update leads table
         const leadId = meeting.client_id;
         const updateField = field === 'meeting_manager' ? 'manager' : 'helper';
-        
         
         const { error: leadError } = await supabase
           .from('leads')
@@ -2762,6 +2795,24 @@ const CalendarPage: React.FC = () => {
       
     }
     
+    // Sort by meeting time (earliest first)
+    filtered = filtered.sort((a, b) => {
+      const timeA = a.meeting_time || '';
+      const timeB = b.meeting_time || '';
+      
+      // If both have times, compare them
+      if (timeA && timeB) {
+        return timeA.localeCompare(timeB);
+      }
+      
+      // If only one has time, prioritize the one with time
+      if (timeA && !timeB) return -1;
+      if (!timeA && timeB) return 1;
+      
+      // If neither has time, keep original order
+      return 0;
+    });
+    
     return filtered;
   };
 
@@ -2808,7 +2859,7 @@ const CalendarPage: React.FC = () => {
   }, [showMoreUnavailableDropdown, activeDropdown]);
 
   // Helper functions to manage dropdown states
-  const getMeetingDropdownState = (meetingId: number) => {
+  const getMeetingDropdownState = (meetingId: string | number) => {
     return dropdownStates[meetingId] || {
       managerSearch: '',
       helperSearch: '',
@@ -2817,7 +2868,7 @@ const CalendarPage: React.FC = () => {
     };
   };
 
-  const updateMeetingDropdownState = (meetingId: number, updates: Partial<{
+  const updateMeetingDropdownState = (meetingId: string | number, updates: Partial<{
     managerSearch: string;
     helperSearch: string;
     showManagerDropdown: boolean;

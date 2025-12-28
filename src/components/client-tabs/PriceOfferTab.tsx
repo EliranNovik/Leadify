@@ -16,23 +16,109 @@ interface PriceOfferHistoryEntry {
 
 const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   // Use values from client, fallback to defaults if missing
-  const total = client?.proposal_total;
+  const proposalTotal = client?.proposal_total;
   const currency = client?.proposal_currency ?? 'NIS';
   const closer = client?.closer || '---';
   const proposal = client?.proposal_text ?? '';
 
   const [isEditing, setIsEditing] = useState(false);
-  const [editTotal, setEditTotal] = useState(total);
   const [editExtra, setEditExtra] = useState(3060.0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [history, setHistory] = useState<PriceOfferHistoryEntry[]>([]);
   const [activeOfferId, setActiveOfferId] = useState<string | null>(null);
+  const [closerDisplayName, setCloserDisplayName] = useState<string>('---');
+  const [legacyTotal, setLegacyTotal] = useState<number | null>(null);
 
   const isLegacyLead = useMemo(
     () => typeof client?.id === 'string' && client.id.startsWith('legacy_'),
     [client?.id]
   );
+
+  // Use legacyTotal for legacy leads, otherwise use proposalTotal
+  const total = isLegacyLead && legacyTotal !== null ? legacyTotal : proposalTotal;
+  
+  const [editTotal, setEditTotal] = useState<number | null | undefined>(proposalTotal);
+  
+  // Update editTotal when total changes (but not while editing)
+  useEffect(() => {
+    if (!isEditing) {
+      setEditTotal(total);
+    }
+  }, [total, isEditing]);
+
+  // Fetch closer display name and total for legacy leads
+  useEffect(() => {
+    const fetchLegacyData = async () => {
+      if (!client?.id) {
+        setCloserDisplayName('---');
+        setLegacyTotal(null);
+        return;
+      }
+
+      if (isLegacyLead) {
+        // For legacy leads, closer_id is numeric, fetch display_name from tenants_employee
+        const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
+        if (Number.isNaN(legacyId)) {
+          setCloserDisplayName('---');
+          setLegacyTotal(null);
+          return;
+        }
+
+        try {
+          // Fetch closer_id and total from leads_lead table
+          const { data: leadData, error: leadError } = await supabase
+            .from('leads_lead')
+            .select('closer_id, total')
+            .eq('id', legacyId)
+            .maybeSingle();
+
+          if (leadError) {
+            setCloserDisplayName('---');
+            setLegacyTotal(null);
+            return;
+          }
+
+          // Set total if available
+          if (leadData?.total !== null && leadData?.total !== undefined) {
+            const totalNum = typeof leadData.total === 'string' 
+              ? parseFloat(leadData.total) 
+              : Number(leadData.total);
+            setLegacyTotal(!isNaN(totalNum) ? totalNum : null);
+          } else {
+            setLegacyTotal(null);
+          }
+
+          // Fetch display_name from tenants_employee if closer_id exists
+          if (leadData?.closer_id) {
+            const { data: employeeData, error: employeeError } = await supabase
+              .from('tenants_employee')
+              .select('display_name')
+              .eq('id', leadData.closer_id)
+              .maybeSingle();
+
+            if (!employeeError && employeeData?.display_name) {
+              setCloserDisplayName(employeeData.display_name);
+            } else {
+              setCloserDisplayName('---');
+            }
+          } else {
+            setCloserDisplayName('---');
+          }
+        } catch (error) {
+          console.error('Error fetching legacy data:', error);
+          setCloserDisplayName('---');
+          setLegacyTotal(null);
+        }
+      } else {
+        // For new leads, closer is already a display_name string
+        setCloserDisplayName(closer || '---');
+        setLegacyTotal(null);
+      }
+    };
+
+    fetchLegacyData();
+  }, [client?.id, isLegacyLead, closer]);
 
   const convertHtmlToPlainText = (html: string | null | undefined): string => {
     if (!html) return '';
@@ -87,13 +173,48 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
           return {
             id: `email_${email.id}`,
             messageId: email.message_id,
-            senderName: email.sender_name || closer || '---',
+            senderName: email.sender_name || closerDisplayName || '---',
             senderEmail: email.sender_email || null,
             sentAt: email.sent_at || null,
             body: convertHtmlToPlainText(fallbackBody) || proposal,
             isFallback: false,
           };
         });
+
+        // For legacy leads, also fetch proposal from leads_lead table
+        if (isLegacyLead) {
+          const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
+          if (!Number.isNaN(legacyId)) {
+            const { data: legacyLeadData, error: legacyError } = await supabase
+              .from('leads_lead')
+              .select('proposal')
+              .eq('id', legacyId)
+              .maybeSingle();
+
+            if (!legacyError && legacyLeadData?.proposal && legacyLeadData.proposal.trim()) {
+              const legacyProposal = legacyLeadData.proposal.trim();
+              
+              // Check if this proposal is already in the entries (from emails)
+              const alreadyExists = entries.some(entry => {
+                const entryBody = entry.body.trim();
+                return entryBody === legacyProposal || entryBody.includes(legacyProposal) || legacyProposal.includes(entryBody);
+              });
+
+              // If not already in entries, add it as a separate entry
+              if (!alreadyExists) {
+                entries.unshift({
+                  id: 'legacy_proposal',
+                  messageId: null,
+                  senderName: closerDisplayName,
+                  senderEmail: null,
+                  sentAt: null, // No date available from leads_lead.proposal
+                  body: legacyProposal,
+                  isFallback: false,
+                });
+              }
+            }
+          }
+        }
 
         setHistory(entries);
         if (entries.length > 0) {
@@ -112,7 +233,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
     };
 
     fetchHistory();
-  }, [client?.id, isLegacyLead, closer, proposal]);
+  }, [client?.id, isLegacyLead, closerDisplayName, proposal]);
 
   const linkifyLine = (line: string, lineIndex: number): React.ReactNode => {
     const urlRegex = /(https?:\/\/[^\s]+)/gi;
@@ -200,13 +321,13 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
     return {
       id: 'current_offer',
       messageId: null,
-      senderName: closer,
+      senderName: closerDisplayName,
       senderEmail: null,
       sentAt: client?.last_stage_changed_at ?? null,
       body: proposal,
       isFallback: true,
     };
-  }, [proposal, closer, client?.last_stage_changed_at]);
+  }, [proposal, closerDisplayName, client?.last_stage_changed_at]);
 
   const combinedOffers = useMemo(() => {
     if (history.length === 0) {
@@ -241,7 +362,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
     [combinedOffers, activeOfferId]
   );
 
-  const displayCloser = activeOffer?.senderName || closer;
+  const displayCloser = activeOffer?.senderName || closerDisplayName;
   const displayProposal = activeOffer?.body || proposal;
   const displaySentAt = activeOffer?.sentAt
     ? new Date(activeOffer.sentAt).toLocaleString()
@@ -353,4 +474,4 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
   );
 };
 
-export default PriceOfferTab; 
+export default PriceOfferTab;

@@ -2350,8 +2350,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
       // Only set emails if this is still the contact we're loading for
       if (currentLoadingContactIdRef.current === loadingContactId) {
-        setEmailThread(formattedThread);
-        hydrateEmailThreadBodies(formattedThread);
+        // Deduplicate emails by message_id before setting state
+        const uniqueEmails = formattedThread.reduce((acc, email) => {
+          const messageId = email.id;
+          if (messageId && !acc.some(e => e.id === messageId)) {
+            acc.push(email);
+          }
+          return acc;
+        }, [] as typeof formattedThread);
+        
+        setEmailThread(uniqueEmails);
+        hydrateEmailThreadBodies(uniqueEmails);
         
         // Mark incoming emails as read when viewing the conversation
         if (databaseUserId && data && data.length > 0) {
@@ -3071,6 +3080,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Force refresh the thread by clearing fetch flags
         isFetchingRef.current = false;
         lastFetchedKeyRef.current = null;
+        
+        // Remove optimistic email first to avoid duplicates, then fetch fresh emails
+        setEmailThread((prev) => {
+          // Remove optimistic emails by filtering out temp IDs
+          const filtered = prev.filter(email => {
+            const msgId = email.id;
+            return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
+          });
+          return filtered;
+        });
         
         // Add a delay to ensure the email is saved in the database
         // Increase delay to 2 seconds to allow backend processing

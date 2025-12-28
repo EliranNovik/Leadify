@@ -1166,8 +1166,17 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
         };
       });
       
-      setEmails(formattedEmailsForModal);
-      await hydrateEmailBodies(formattedEmailsForModal);
+      // Deduplicate emails by message_id before setting state
+      const uniqueEmails = formattedEmailsForModal.reduce((acc, email) => {
+        const messageId = email.message_id || email.id;
+        if (messageId && !acc.some(e => (e.message_id || e.id) === messageId)) {
+          acc.push(email);
+        }
+        return acc;
+      }, [] as typeof formattedEmailsForModal);
+      
+      setEmails(uniqueEmails);
+      await hydrateEmailBodies(uniqueEmails);
     } catch (error) {
       console.error('❌ Error in fetchEmailsForModal:', error);
       setEmails([]);
@@ -1176,7 +1185,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     }
   }, [client, hydrateEmailBodies]);
 
-  const runMailboxSync = useCallback(async () => {
+  const runMailboxSync = useCallback(async (skipFetch = false) => {
     if (!userId) {
       toast.error('Please sign in to sync emails.');
       return;
@@ -1189,7 +1198,10 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
     try {
       await triggerMailboxSync(userId);
       await refreshMailboxStatus();
-      await fetchEmailsForModal();
+      // Only fetch emails if skipFetch is false (allows caller to control fetching)
+      if (!skipFetch) {
+        await fetchEmailsForModal();
+      }
       if (onClientUpdate) {
         await onClientUpdate();
       }
@@ -1214,7 +1226,13 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
       // then trigger a background sync that will update the DB.
       syncOnOpenRef.current = true;
       fetchEmailsForModal();
-      runMailboxSync();
+      // Skip fetch in runMailboxSync since we just fetched - will fetch again after sync completes
+      // We pass skipFetch=true to avoid double fetch, but we'll fetch after a delay to get synced emails
+      runMailboxSync(true);
+      // Fetch again after sync completes (backend sync takes time, so wait a bit)
+      setTimeout(() => {
+        fetchEmailsForModal();
+      }, 2000);
     } else {
       // Subsequent opens: just load from DB.
       fetchEmailsForModal();
@@ -1360,7 +1378,7 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
           }
         }
 
-        await sendEmailViaBackend({
+        const sendResult = await sendEmailViaBackend({
           userId,
           subject: subjectSnapshot,
           bodyHtml: emailContentWithSignature,
@@ -1380,7 +1398,62 @@ const SchedulerEmailThreadModal: React.FC<SchedulerEmailThreadModalProps> = ({ i
           },
         });
 
+        // Optimistic insert to emails table to ensure email appears immediately
+        // The backend will also save it, but this ensures it shows up right away
+        const messageId = sendResult?.id || sendResult?.messageId || `temp_${Date.now()}`;
+        const conversationId = sendResult?.conversationId || null;
+        const sentAt = sendResult?.sentAt || new Date().toISOString();
+        
+        const emailRecord: any = {
+          message_id: messageId,
+          thread_id: conversationId,
+          sender_name: currentUserFullName || userEmail || 'Team',
+          sender_email: userEmail || null,
+          recipient_list: toSnapshot.join(', ') + (ccSnapshot.length > 0 ? `, ${ccSnapshot.join(', ')}` : ''),
+          subject: subjectSnapshot,
+          body_html: emailContentWithSignature,
+          body_preview: emailContentWithSignature.substring(0, 500), // First 500 chars as preview
+          sent_at: sentAt,
+          direction: 'outgoing',
+          attachments: attachmentsPayload.length > 0 ? attachmentsPayload.map(att => ({
+            name: att.name,
+            contentType: att.contentType || 'application/octet-stream',
+          })) : null,
+        };
+        
+        // Set either client_id OR legacy_id, not both
+        if (isLegacyLead) {
+          emailRecord.legacy_id = legacyId;
+          emailRecord.client_id = null;
+        } else {
+          emailRecord.client_id = client.id;
+          emailRecord.legacy_id = null;
+        }
+        
+        // Add contact_id if available
+        if (contactId) {
+          emailRecord.contact_id = contactId;
+        }
+        
+        try {
+          await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+        } catch (dbError) {
+          console.warn('Optimistic email insert failed (backend will save it):', dbError);
+          // Don't throw - backend will save it
+        }
+
         // Refresh from DB so optimistic email is replaced with stored one.
+        // Remove optimistic email first to avoid duplicates, then fetch fresh emails
+        setEmails((prev) => {
+          // Remove optimistic email by filtering out temp IDs
+          const filtered = prev.filter(email => {
+            const msgId = email.message_id || email.id;
+            return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
+          });
+          return filtered;
+        });
+        // Small delay to ensure state update, then fetch fresh emails
+        await new Promise(resolve => setTimeout(resolve, 100));
         await fetchEmailsForModal();
       } catch (error) {
         console.error('Error sending email (background):', error);
