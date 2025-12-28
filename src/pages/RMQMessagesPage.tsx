@@ -3086,34 +3086,37 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
       
-      // Add message to local state immediately (optimistic update)
-      const enhancedMessage: Message = {
-        ...messageData as unknown as Message,
-        read_receipts: [],
-        delivery_status: 'sent',
-        is_deleted: false,
-        reactions: [],
-        edited_at: undefined,
-        reply_to_message_id: undefined,
-        reply_to_message: undefined,
-        voice_duration: undefined,
-        voice_waveform: undefined,
-        is_voice_message: false,
-      };
-      
-      setMessages(prev => {
-        // Check if message already exists (shouldn't happen, but safety check)
-        const exists = prev.some(m => m.id === enhancedMessage.id);
-        if (exists) {
-          // Update existing message
-          const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
-          // Sort by sent_at to ensure correct chronological order
+      // Only add message optimistically if WebSocket is NOT connected
+      // If WebSocket IS connected, let the WebSocket handler add it to avoid duplicates
+      if (!websocketService.isSocketConnected()) {
+        const enhancedMessage: Message = {
+          ...messageData as unknown as Message,
+          read_receipts: [],
+          delivery_status: 'sent',
+          is_deleted: false,
+          reactions: [],
+          edited_at: undefined,
+          reply_to_message_id: undefined,
+          reply_to_message: undefined,
+          voice_duration: undefined,
+          voice_waveform: undefined,
+          is_voice_message: false,
+        };
+        
+        setMessages(prev => {
+          // Check if message already exists (shouldn't happen, but safety check)
+          const exists = prev.some(m => m.id === enhancedMessage.id);
+          if (exists) {
+            // Update existing message
+            const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
+            // Sort by sent_at to ensure correct chronological order
+            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          }
+          // Add new message and sort by sent_at to ensure correct chronological order
+          const updated = [...prev, enhancedMessage];
           return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-        }
-        // Add new message and sort by sent_at to ensure correct chronological order
-        const updated = [...prev, enhancedMessage];
-        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-      });
+        });
+      }
       
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
@@ -3236,40 +3239,41 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
 
-      // Add message to local state immediately (optimistic update)
-      // This ensures the message appears right away, even when WebSocket is connected
-      // The WebSocket handler will handle deduplication when the server message arrives
-      const enhancedMessage: Message = {
-        ...messageData as unknown as Message,
-        read_receipts: [],
-        delivery_status: 'sent',
-        is_deleted: false,
-        reactions: [],
-        edited_at: undefined,
-        reply_to_message_id: undefined,
-        reply_to_message: undefined,
-        attachment_url: undefined,
-        attachment_name: undefined,
-        attachment_type: undefined,
-        attachment_size: undefined,
-        voice_duration: undefined,
-        voice_waveform: undefined,
-        is_voice_message: false,
-      };
-      
-      setMessages(prev => {
-        // Check if message already exists (shouldn't happen, but safety check)
-        const exists = prev.some(m => m.id === enhancedMessage.id);
-        if (exists) {
-          // Update existing message
-          const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
-          // Sort by sent_at to ensure correct chronological order
+      // Only add message optimistically if WebSocket is NOT connected
+      // If WebSocket IS connected, let the WebSocket handler add it to avoid duplicates
+      if (!websocketService.isSocketConnected()) {
+        const enhancedMessage: Message = {
+          ...messageData as unknown as Message,
+          read_receipts: [],
+          delivery_status: 'sent',
+          is_deleted: false,
+          reactions: [],
+          edited_at: undefined,
+          reply_to_message_id: undefined,
+          reply_to_message: undefined,
+          attachment_url: undefined,
+          attachment_name: undefined,
+          attachment_type: undefined,
+          attachment_size: undefined,
+          voice_duration: undefined,
+          voice_waveform: undefined,
+          is_voice_message: false,
+        };
+        
+        setMessages(prev => {
+          // Check if message already exists (shouldn't happen, but safety check)
+          const exists = prev.some(m => m.id === enhancedMessage.id);
+          if (exists) {
+            // Update existing message
+            const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
+            // Sort by sent_at to ensure correct chronological order
+            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          }
+          // Add new message and sort by sent_at to ensure correct chronological order
+          const updated = [...prev, enhancedMessage];
           return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-        }
-        // Add new message and sort by sent_at to ensure correct chronological order
-        const updated = [...prev, enhancedMessage];
-        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
-      });
+        });
+      }
       
       setNewMessage('');
       resetInputHeights();
@@ -4554,28 +4558,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
           // First check by exact ID match (if message from DB already exists)
-          const existingById = prev.find(m => m.id === message.id);
-          if (existingById) {
-            // Message already exists with this ID, update it with WebSocket data
-            const updated = prev.map(m => m.id === message.id ? {
-              ...m,
-              ...message,
-              read_receipts: readReceipts,
-              delivery_status: 'sent'
-            } as Message : m);
-            // Sort by sent_at to ensure correct chronological order
-            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          if (message.id) {
+            const existingById = prev.find(m => m.id === message.id);
+            if (existingById) {
+              // Message already exists with this ID, update it with WebSocket data
+              const updated = prev.map(m => m.id === message.id ? {
+                ...m,
+                ...message,
+                read_receipts: readReceipts,
+                delivery_status: 'sent'
+              } as Message : m);
+              // Sort by sent_at to ensure correct chronological order
+              return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+            }
           }
           
-          // Check if this is a duplicate by content and timing (for temporary IDs)
-          const exists = prev.some(m => 
-            m.conversation_id === message.conversation_id && 
-            m.sender_id === message.sender_id && 
-            m.content === message.content && 
-            Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 2000);
-          if (exists) {
-            // This message was already added optimistically, skip adding it again
-            return prev;
+          // Check if this is a duplicate by content, sender, and timing (for messages sent by current user)
+          // This prevents duplicates when WebSocket broadcasts back a message we just sent
+          const isCurrentUserMessage = message.sender_id === currentUser?.id;
+          if (isCurrentUserMessage && message.content) {
+            const duplicateByContent = prev.find(m => 
+              m.conversation_id === message.conversation_id && 
+              m.sender_id === message.sender_id && 
+              m.content === message.content && 
+              Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 3000);
+            if (duplicateByContent) {
+              // This message was already added, update it with the new ID if available
+              if (message.id && duplicateByContent.id !== message.id) {
+                const updated = prev.map(m => 
+                  m.id === duplicateByContent.id 
+                    ? { ...m, id: message.id, read_receipts: readReceipts } as Message
+                    : m
+                );
+                return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+              }
+              // Skip adding duplicate
+              return prev;
+            }
           }
           
           // Enhance WebSocket message with real user data from conversation participants
@@ -4819,7 +4838,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   if (isLoading) {
     return (
-      <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
+      <div className="fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)]">
         <div className="flex items-center justify-center h-full">
         <div className="text-center">
           <div className="loading loading-spinner loading-lg text-primary mb-4"></div>
@@ -4832,7 +4851,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
 
   return (
     <div 
-      className={`fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${
+      className={`fixed inset-0 z-50 bg-white dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${
         isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
       }`}
       onDragOver={handleDragOver}
