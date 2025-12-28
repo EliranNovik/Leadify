@@ -174,6 +174,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [isUploadingFile, setIsUploadingFile] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(0);
   
+  // Drag and drop state
+  const [isDragOver, setIsDragOver] = useState(false);
+  
   // Media gallery state
   const [isMediaModalOpen, setIsMediaModalOpen] = useState(false);
   const [selectedMediaIndex, setSelectedMediaIndex] = useState(0);
@@ -373,6 +376,36 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return /[\u0590-\u05FF]/.test(text);
   };
 
+  // Helper function to clean markdown syntax from text
+  const cleanMarkdown = (text: string): string => {
+    if (!text) return '';
+    // Remove markdown bold syntax (**text**)
+    return text.replace(/\*\*(.*?)\*\*/g, '$1');
+  };
+
+  // Helper function to determine text direction for mixed content
+  const getTextDirection = (content: string): 'ltr' | 'rtl' | 'auto' => {
+    if (!content) return 'ltr';
+    // Check if content contains Hebrew characters
+    const hasHebrew = /[\u0590-\u05FF]/.test(content);
+    // Check if content contains English/Latin characters
+    const hasLatin = /[a-zA-Z]/.test(content);
+    
+    // If both Hebrew and Latin are present, use 'auto' to let browser handle bidirectional text
+    // This allows the browser's Unicode bidirectional algorithm to correctly handle mixed content
+    if (hasHebrew && hasLatin) {
+      return 'auto';
+    }
+    
+    // If only Hebrew, use RTL
+    if (hasHebrew) {
+      return 'rtl';
+    }
+    
+    // Default to LTR for English and other languages
+    return 'ltr';
+  };
+
   const isEmojiOnly = (text: string): boolean => {
     // Simple approach: check if the text length is very short and contains emoji-like characters
     const cleanText = text.trim();
@@ -393,43 +426,71 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return hasEmoji && isShort && !hasHebrew;
   };
 
-  // Helper function to render clickable links in messages
+  // Helper function to render clickable links and line breaks in messages
   const renderMessageContent = (content: string, isOwn: boolean = false) => {
-    // Check if content contains markdown-style links
-    const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
-    const parts = [];
-    let lastIndex = 0;
-    let match;
-
-    while ((match = linkRegex.exec(content)) !== null) {
-      // Add text before the link
-      if (match.index > lastIndex) {
-        parts.push(content.slice(lastIndex, match.index));
+    if (!content) return '';
+    
+    // Clean markdown syntax first
+    const cleanedContent = cleanMarkdown(content);
+    
+    // First, split by line breaks to preserve them
+    const lines = cleanedContent.split('\n');
+    const result: React.ReactNode[] = [];
+    
+    lines.forEach((line, lineIndex) => {
+      // Add line break before each line except the first
+      if (lineIndex > 0) {
+        result.push(<br key={`br-${lineIndex}`} />);
       }
       
-      // Add the clickable link with appropriate styling based on message ownership
-      parts.push(
-        <a
-          key={match.index}
-          href={match[2]}
-          target="_blank"
-          rel="noopener noreferrer"
-          className={isOwn ? "text-white hover:text-gray-200 underline" : "text-blue-600 hover:text-blue-800 underline"}
-        >
-          {match[1]}
-        </a>
-      );
+      // Process each line for markdown-style links
+      const linkRegex = /\[([^\]]+)\]\(([^)]+)\)/g;
+      const parts: React.ReactNode[] = [];
+      let lastIndex = 0;
+      let match;
+      let linkKey = 0;
+
+      while ((match = linkRegex.exec(line)) !== null) {
+        // Add text before the link
+        if (match.index > lastIndex) {
+          parts.push(line.slice(lastIndex, match.index));
+        }
+        
+        // Add the clickable link with appropriate styling based on message ownership
+        parts.push(
+          <a
+            key={`link-${lineIndex}-${linkKey++}`}
+            href={match[2]}
+            target="_blank"
+            rel="noopener noreferrer"
+            className={isOwn ? "text-white hover:text-gray-200 underline" : "text-blue-600 hover:text-blue-800 underline"}
+          >
+            {match[1]}
+          </a>
+        );
+        
+        lastIndex = match.index + match[0].length;
+      }
       
-      lastIndex = match.index + match[0].length;
-    }
+      // Add remaining text after the last link in this line
+      if (lastIndex < line.length) {
+        parts.push(line.slice(lastIndex));
+      }
+      
+      // If no links found in this line, just add the line text
+      if (parts.length === 0) {
+        parts.push(line);
+      }
+      
+      // Add all parts for this line to the result
+      result.push(
+        <React.Fragment key={`line-${lineIndex}`}>
+          {parts}
+        </React.Fragment>
+      );
+    });
     
-    // Add remaining text after the last link
-    if (lastIndex < content.length) {
-      parts.push(content.slice(lastIndex));
-    }
-    
-    // If no links found, return original content
-    return parts.length > 0 ? parts : content;
+    return result.length > 0 ? result : cleanedContent;
   };
 
   const isImageMessage = (message: Message): boolean => {
@@ -2714,6 +2775,109 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
+  // Handle paste event for images and videos
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    // Only handle paste if we have a selected conversation
+    if (!selectedConversation || !currentUser) return;
+    
+    const items = e.clipboardData?.items;
+    if (!items) return;
+
+    // Check for image or video files in clipboard
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      
+      // Check if it's an image
+      if (item.type.indexOf('image') !== -1) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          // Create a File object with a proper name if needed
+          const imageFile = file.name ? file : new File([file], `pasted-image-${Date.now()}.png`, { type: file.type });
+          const fileUrl = await uploadFile(imageFile);
+          if (fileUrl) {
+            await sendMessageWithAttachment(imageFile, fileUrl);
+          }
+        }
+        return;
+      }
+      
+      // Check if it's a video
+      if (item.type.indexOf('video') !== -1) {
+        e.preventDefault();
+        const file = item.getAsFile();
+        if (file) {
+          // Create a File object with a proper name if needed
+          const videoFile = file.name ? file : new File([file], `pasted-video-${Date.now()}.mp4`, { type: file.type });
+          const fileUrl = await uploadFile(videoFile);
+          if (fileUrl) {
+            await sendMessageWithAttachment(videoFile, fileUrl);
+          }
+        }
+        return;
+      }
+    }
+    
+    // If no image/video found, allow normal paste behavior for text
+  };
+
+  // Handle drag and drop for images and videos
+  const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only show drag indicator if we have a selected conversation
+    if (selectedConversation && currentUser) {
+      setIsDragOver(true);
+    }
+  };
+
+  const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    
+    // Only hide drag indicator if we're actually leaving the main container
+    // Check if we're actually leaving (not just entering a child element)
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    
+    // Check if mouse is outside the container bounds
+    if (x <= rect.left || x >= rect.right || y <= rect.top || y >= rect.bottom) {
+      setIsDragOver(false);
+    }
+  };
+
+  const handleDrop = async (e: React.DragEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setIsDragOver(false);
+    
+    // Only handle drop if we have a selected conversation
+    if (!selectedConversation || !currentUser) return;
+    
+    const files = Array.from(e.dataTransfer.files);
+    if (files.length === 0) return;
+    
+    // Filter for images and videos only
+    const mediaFiles = files.filter(file => 
+      file.type.startsWith('image/') || file.type.startsWith('video/')
+    );
+    
+    if (mediaFiles.length === 0) {
+      toast.error('Please drop only images or videos');
+      return;
+    }
+    
+    // Process each file (upload and send)
+    for (const file of mediaFiles) {
+      const fileUrl = await uploadFile(file);
+      if (fileUrl) {
+        await sendMessageWithAttachment(file, fileUrl);
+      }
+    }
+  };
+
   // Forward message to another conversation
   const forwardMessage = async (targetConversationId: number) => {
     if (!messageToForward || !currentUser) return;
@@ -2922,28 +3086,50 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
       
-      // Only add message to local state if WebSocket is NOT connected
-      if (!websocketService.isSocketConnected()) {
-        setMessages(prev => [...prev, messageData as unknown as Message]);
-      }
+      // Add message to local state immediately (optimistic update)
+      const enhancedMessage: Message = {
+        ...messageData as unknown as Message,
+        read_receipts: [],
+        delivery_status: 'sent',
+        is_deleted: false,
+        reactions: [],
+        edited_at: undefined,
+        reply_to_message_id: undefined,
+        reply_to_message: undefined,
+        voice_duration: undefined,
+        voice_waveform: undefined,
+        is_voice_message: false,
+      };
+      
+      setMessages(prev => {
+        // Check if message already exists (shouldn't happen, but safety check)
+        const exists = prev.some(m => m.id === enhancedMessage.id);
+        if (exists) {
+          // Update existing message
+          const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
+          // Sort by sent_at to ensure correct chronological order
+          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+        }
+        // Add new message and sort by sent_at to ensure correct chronological order
+        const updated = [...prev, enhancedMessage];
+        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+      });
       
       // Always scroll to bottom when user sends a message
       setTimeout(() => scrollToBottom('smooth'), 100);
       
-      // Only update conversation list if WebSocket is NOT connected
-      if (!websocketService.isSocketConnected()) {
-        setConversations(prev => 
-          prev.map(conv => 
-            conv.id === selectedConversation.id
-              ? {
-                  ...conv,
-                  last_message_at: messageData.sent_at,
-                  last_message_preview: `📎 ${file.name}`
-                }
-              : conv
-          ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
-        );
-      }
+      // Update conversation list immediately
+      setConversations(prev => 
+        prev.map(conv => 
+          conv.id === selectedConversation.id
+            ? {
+                ...conv,
+                last_message_at: messageData.sent_at,
+                last_message_preview: `📎 ${file.name}`
+              }
+            : conv
+        ).sort((a, b) => new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime())
+      );
       
     } catch (error) {
       toast.error('Failed to send attachment');
@@ -3050,11 +3236,40 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         }
       }
 
-      // Only add message to local state if WebSocket is NOT connected
-      // If WebSocket is connected, the message will come through the WebSocket handler
-      if (!websocketService.isSocketConnected()) {
-        setMessages(prev => [...prev, messageData as unknown as Message]);
-      }
+      // Add message to local state immediately (optimistic update)
+      // This ensures the message appears right away, even when WebSocket is connected
+      // The WebSocket handler will handle deduplication when the server message arrives
+      const enhancedMessage: Message = {
+        ...messageData as unknown as Message,
+        read_receipts: [],
+        delivery_status: 'sent',
+        is_deleted: false,
+        reactions: [],
+        edited_at: undefined,
+        reply_to_message_id: undefined,
+        reply_to_message: undefined,
+        attachment_url: undefined,
+        attachment_name: undefined,
+        attachment_type: undefined,
+        attachment_size: undefined,
+        voice_duration: undefined,
+        voice_waveform: undefined,
+        is_voice_message: false,
+      };
+      
+      setMessages(prev => {
+        // Check if message already exists (shouldn't happen, but safety check)
+        const exists = prev.some(m => m.id === enhancedMessage.id);
+        if (exists) {
+          // Update existing message
+          const updated = prev.map(msg => msg.id === enhancedMessage.id ? enhancedMessage : msg);
+          // Sort by sent_at to ensure correct chronological order
+          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+        }
+        // Add new message and sort by sent_at to ensure correct chronological order
+        const updated = [...prev, enhancedMessage];
+        return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+      });
       
       setNewMessage('');
       resetInputHeights();
@@ -4338,12 +4553,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
-          const exists = prev.some(m => m.id === message.id || 
-            (m.conversation_id === message.conversation_id && 
-             m.sender_id === message.sender_id && 
-             m.content === message.content && 
-             Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 1000));
+          // First check by exact ID match (if message from DB already exists)
+          const existingById = prev.find(m => m.id === message.id);
+          if (existingById) {
+            // Message already exists with this ID, update it with WebSocket data
+            const updated = prev.map(m => m.id === message.id ? {
+              ...m,
+              ...message,
+              read_receipts: readReceipts,
+              delivery_status: 'sent'
+            } as Message : m);
+            // Sort by sent_at to ensure correct chronological order
+            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          }
+          
+          // Check if this is a duplicate by content and timing (for temporary IDs)
+          const exists = prev.some(m => 
+            m.conversation_id === message.conversation_id && 
+            m.sender_id === message.sender_id && 
+            m.content === message.content && 
+            Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 2000);
           if (exists) {
+            // This message was already added optimistically, skip adding it again
             return prev;
           }
           
@@ -4372,7 +4603,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             enhancedMessage.attachment_type = message.attachment_type;
             enhancedMessage.attachment_size = message.attachment_size;
           }
-          return [...prev, enhancedMessage];
+          // Add message and sort by sent_at to ensure correct chronological order
+          const updated = [...prev, enhancedMessage];
+          return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
         });
         
         // Scroll to bottom when new message arrives
@@ -4598,7 +4831,14 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   }
 
   return (
-    <div className="fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden">
+    <div 
+      className={`fixed inset-0 z-50 bg-gray-100 dark:bg-gradient-to-br dark:from-[rgba(62,40,205,0.05)] dark:to-[rgba(59,130,246,0.05)] flex overflow-hidden transition-all duration-200 ${
+        isDragOver ? 'bg-blue-50/50 dark:bg-blue-900/20' : ''
+      }`}
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
       {/* Sidebar - Desktop */}
       <div className="hidden lg:flex w-96 bg-base-100 border-r border-base-300 flex-col shadow-lg">
         {/* Header */}
@@ -5491,7 +5731,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       ) : isEmojiOnly(message.content || '') ? (
                         <div 
                           className={`flex flex-col ${isOwn ? 'items-end ml-auto' : 'items-start'} max-w-xs sm:max-w-md`}
-                          dir={containsHebrew(message.content || '') ? 'rtl' : 'ltr'}
+                          dir={getTextDirection(message.content || '')}
                         >
                           <div className="text-6xl">
                             {renderMessageContent(message.content || '', isOwn)}
@@ -5564,20 +5804,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                               >
                               {/* Message content */}
                               {message.content && (
-                                <p 
-                                  className="break-words text-base"
-                                  dir={containsHebrew(message.content) ? 'rtl' : 'ltr'}
+                                <div 
+                                  className="break-words text-base whitespace-pre-wrap"
+                                  dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
                                   style={{ 
-                                    textAlign: containsHebrew(message.content) ? 'right' : 'left',
-                                    direction: containsHebrew(message.content) ? 'rtl' : 'ltr',
+                                    textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
+                                               getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                    ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
                                     fontSize: '1rem',
                                     lineHeight: '1.5',
                                     wordBreak: 'break-word',
-                                    overflowWrap: 'break-word'
+                                    overflowWrap: 'break-word',
+                                    whiteSpace: 'pre-wrap',
+                                    unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
                                   }}
                                 >
                                   {renderMessageContent(message.content, isOwn)}
-                                </p>
+                                </div>
                               )}
                               
                               {/* File attachment */}
@@ -6010,6 +6253,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     value={newMessage}
                     onChange={handleMessageInputChange}
                     onKeyDown={handleMessageKeyDown}
+                    onPaste={handlePaste}
                     placeholder="Type a message..."
                     className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                     rows={1}
@@ -6569,7 +6813,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     ) : isEmojiOnly(message.content || '') ? (
                       <div 
                         className={`flex flex-col ${isOwn ? 'items-end' : 'items-start'} max-w-[75%]`}
-                        dir={containsHebrew(message.content || '') ? 'rtl' : 'ltr'}
+                        dir={getTextDirection(message.content || '')}
                       >
                         <div className="text-6xl">
                           {renderMessageContent(message.content || '', isOwn)}
@@ -6641,20 +6885,23 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             >
                             {/* Message content */}
                             {message.content && (
-                              <p 
-                                className="break-words text-base"
-                                dir={containsHebrew(message.content) ? 'rtl' : 'ltr'}
+                              <div 
+                                className="break-words text-base whitespace-pre-wrap"
+                                dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
                                 style={{ 
-                                  textAlign: containsHebrew(message.content) ? 'right' : 'left',
-                                  direction: containsHebrew(message.content) ? 'rtl' : 'ltr',
+                                  textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
+                                             getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                  ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
                                   fontSize: '1rem',
                                   lineHeight: '1.5',
                                   wordBreak: 'break-word',
-                                  overflowWrap: 'break-word'
+                                  overflowWrap: 'break-word',
+                                  whiteSpace: 'pre-wrap',
+                                  unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
                                 }}
                               >
                                 {renderMessageContent(message.content, isOwn)}
-                              </p>
+                              </div>
                             )}
                             
                             {/* File attachment */}
@@ -6958,6 +7205,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       value={newMessage}
                       onChange={handleMessageInputChange}
                       onKeyDown={handleMessageKeyDown}
+                      onPaste={handlePaste}
                       placeholder="Type a message..."
                       className="textarea w-full resize-none text-sm max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
@@ -7617,6 +7865,31 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         accept="image/*,video/*,.pdf,.doc,.docx,.txt,.zip,.rar"
         onChange={handleFileInputChange}
       />
+
+      {/* Drag and Drop Overlay */}
+      {isDragOver && selectedConversation && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center pointer-events-none">
+          <div className="bg-blue-500/20 backdrop-blur-sm border-4 border-dashed border-blue-500 rounded-2xl p-12 m-8 pointer-events-none">
+            <div className="flex flex-col items-center gap-4 text-blue-600 dark:text-blue-400">
+              <svg 
+                className="w-16 h-16" 
+                fill="none" 
+                stroke="currentColor" 
+                viewBox="0 0 24 24"
+              >
+                <path 
+                  strokeLinecap="round" 
+                  strokeLinejoin="round" 
+                  strokeWidth={2} 
+                  d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" 
+                />
+              </svg>
+              <p className="text-2xl font-bold">Drop image or video here</p>
+              <p className="text-lg">Release to send</p>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* WhatsApp-style Media Modal */}
       {isMediaModalOpen && conversationMedia.length > 0 && (
