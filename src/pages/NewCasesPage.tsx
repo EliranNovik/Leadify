@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useRef, useMemo, useCallback } from 'react';
 import { supabase } from '../lib/supabase';
-import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon } from '@heroicons/react/24/outline';
+import { ChevronDownIcon, MagnifyingGlassIcon, CalendarIcon, UserIcon, ChartBarIcon, EyeIcon, ChatBubbleLeftRightIcon } from '@heroicons/react/24/outline';
 import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
@@ -488,7 +488,7 @@ const NewCasesPage: React.FC = () => {
   const renderResultCard = (lead: any) => {
     return (
     <div 
-      className={`card shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group h-full flex flex-col ${
+      className={`card shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group flex flex-col ${
         selectedLeadBoxes.has(lead.id) ? 'bg-gray-300' : 'bg-base-100'
       }`}
       onClick={(e) => {
@@ -509,7 +509,7 @@ const NewCasesPage: React.FC = () => {
         navigate(`/clients/${lead.lead_number || lead.id}`);
       }}
     >
-      <div className="card-body p-5 flex flex-col flex-1">
+      <div className="card-body p-4 flex flex-col">
         <div className="flex justify-between items-start mb-2">
             <div className="flex items-center gap-2 min-w-0 flex-1">
             <h2 className="card-title text-xl font-bold group-hover:text-primary transition-colors truncate">
@@ -521,34 +521,37 @@ const NewCasesPage: React.FC = () => {
             </div>
         </div>
         
-        <p className="text-sm text-base-content/60 font-mono mb-4 truncate">#{lead.lead_number}</p>
+        <p className="text-sm text-base-content/60 font-mono mb-2 truncate">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
 
-        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-4">
+        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-sm mt-3">
           <div className="flex items-center gap-2 min-w-0" title="Date Created">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M8 7V3m8 4V3m-9 8h10M5 21h14a2 2 0 002-2V7a2 2 0 00-2-2H5a2 2 0 00-2 2v12a2 2 0 002 2z" /></svg>
             <span className="font-medium truncate">{new Date(lead.created_at).toLocaleDateString()}</span>
-          </div>
-          <div className="flex items-center gap-2 min-w-0" title="Category">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
-            <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
-          </div>
-          <div className="flex items-center gap-2 min-w-0" title="Source">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
-            <span className="truncate">{lead.source || 'N/A'}</span>
           </div>
           <div className="flex items-center gap-2 min-w-0" title="Language">
             <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path d="M7 21a4 4 0 01-4-4V5a2 2 0 012-2h4a2 2 0 012 2v12a4 4 0 01-4 4zm0 0h12a2 2 0 002-2v-4a2 2 0 00-2-2h-2.343M11 7.343l1.657-1.657a2 2 0 012.828 0l2.829 2.829a2 2 0 010 2.828l-8.486 8.485M7 17h.01" /></svg>
             <span className="truncate">{lead.language || 'N/A'}</span>
           </div>
+          <div className="flex items-center gap-2 min-w-0" title="Source">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
+            <span className="truncate">{lead.source || 'N/A'}</span>
+          </div>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-base-200/50 flex-1">
-          <p className="text-sm font-semibold text-base-content/80 line-clamp-2">{lead.topic || 'No topic specified'}</p>
+        <div className="mt-3 flex items-center gap-4 text-sm">
+          <div className="flex items-center gap-2 min-w-0 flex-1" title="Topic">
+            <ChatBubbleLeftRightIcon className="h-4 w-4 text-base-content/50 flex-shrink-0" />
+            <span className="font-semibold text-base-content/80 truncate">{lead.topic || 'No topic specified'}</span>
+          </div>
+          <div className="flex items-center gap-2 min-w-0 flex-1" title="Category">
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" /></svg>
+            <span className="truncate">{formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}</span>
+          </div>
         </div>
 
-        <div className="mt-4 pt-4 border-t border-base-200/50 flex justify-end flex-shrink-0">
+        <div className="mt-3 pt-3 border-t border-base-200/50 flex justify-end flex-shrink-0">
           <button
             className="btn btn-ghost btn-sm btn-circle"
             onClick={(e) => {
@@ -2878,7 +2881,7 @@ const NewCasesPage: React.FC = () => {
           <div className="overflow-x-auto -mx-2 sm:-mx-4 md:-mx-6 lg:-mx-8 px-2 sm:px-4 md:px-6 lg:px-8">
             <div className="flex gap-3 sm:gap-4 min-w-max pb-4">
               {leads.map(lead => (
-                <div key={lead.id} className="flex-shrink-0 w-72 sm:w-80 h-[500px]">
+                <div key={lead.id} className="flex-shrink-0 w-80 sm:w-96">
                   {renderResultCard(lead)}
                 </div>
               ))}

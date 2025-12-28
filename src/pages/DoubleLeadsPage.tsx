@@ -23,6 +23,8 @@ interface DoubleLead {
   status: 'pending' | 'accepted' | 'rejected' | 'merged';
   created_at: string;
   existing_lead?: any;
+  source_id?: number | null;
+  category_id?: number | null;
 }
 
 const getContrastingTextColor = (hexColor?: string | null) => {
@@ -218,6 +220,14 @@ const DoubleLeadsPage: React.FC = () => {
 
       // Create the new lead using the same function as webhook
       const newLeadData = doubleLead.new_lead_data;
+      
+      // Extract source_code from newLeadData if available (for backward compatibility)
+      let sourceCode = null;
+      if (newLeadData.source_code) {
+        sourceCode = parseInt(newLeadData.source_code);
+        if (isNaN(sourceCode)) sourceCode = null;
+      }
+      
       const { data: newLead, error: createError } = await supabase.rpc('create_lead_with_source_validation', {
         p_lead_name: newLeadData.name,
         p_lead_email: newLeadData.email || null,
@@ -226,7 +236,7 @@ const DoubleLeadsPage: React.FC = () => {
         p_lead_language: newLeadData.language || 'English',
         p_lead_source: newLeadData.source || 'Manual Review',
         p_created_by: user.email,
-        p_source_code: null, // Can be extracted from newLeadData if available
+        p_source_code: sourceCode,
         p_balance_currency: 'NIS',
         p_proposal_currency: 'NIS'
       });
@@ -236,12 +246,36 @@ const DoubleLeadsPage: React.FC = () => {
         throw createError;
       }
 
-      // Update the lead with facts if provided
-      if (newLeadData.facts && newLead && newLead.length > 0) {
-        await supabase
+      if (!newLead || newLead.length === 0) {
+        throw new Error('No lead data returned from function');
+      }
+
+      const createdLead = newLead[0];
+      
+      // Update the lead with facts, source_id, and category_id if provided
+      const updateData: any = {};
+      if (newLeadData.facts) {
+        updateData.facts = newLeadData.facts;
+      }
+      
+      // If source_id or category_id are available in double_leads, use them (they take precedence over function defaults)
+      if (doubleLead.source_id !== null && doubleLead.source_id !== undefined) {
+        updateData.source_id = doubleLead.source_id;
+      }
+      if (doubleLead.category_id !== null && doubleLead.category_id !== undefined) {
+        updateData.category_id = doubleLead.category_id;
+      }
+      
+      if (Object.keys(updateData).length > 0) {
+        const { error: updateLeadError } = await supabase
           .from('leads')
-          .update({ facts: newLeadData.facts })
-          .eq('id', newLead[0].id);
+          .update(updateData)
+          .eq('id', createdLead.id);
+        
+        if (updateLeadError) {
+          console.error('Error updating lead with facts/source_id/category_id:', updateLeadError);
+          // Don't throw - lead was created successfully, just log the error
+        }
       }
 
       // Update double lead status

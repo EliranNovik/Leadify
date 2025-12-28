@@ -406,13 +406,38 @@ const webhookController = {
           comments: formData.comments || null
         };
 
+        // Look up source_id and category_id from source_code if available
+        let sourceId = null;
+        let categoryId = null;
+        
+        if (parsedSourceCode !== null) {
+          try {
+            const { data: sourceData, error: sourceError } = await supabase
+              .from('misc_leadsource')
+              .select('id, default_category_id')
+              .eq('code', parsedSourceCode)
+              .eq('active', true)
+              .single();
+            
+            if (!sourceError && sourceData) {
+              sourceId = sourceData.id;
+              categoryId = sourceData.default_category_id;
+              console.log('📋 Looked up source_id and category_id:', { sourceId, categoryId, sourceCode: parsedSourceCode });
+            }
+          } catch (error) {
+            console.error('Error looking up source_id and category_id:', error);
+          }
+        }
+
         const { error: doubleLeadError } = await supabase
           .from('double_leads')
           .insert([{
             new_lead_data: newLeadData,
             existing_lead_id: existingLead.id,
             duplicate_fields: duplicateFields,
-            status: 'pending'
+            status: 'pending',
+            source_id: sourceId,
+            category_id: categoryId
           }]);
 
         if (doubleLeadError) {
