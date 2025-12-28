@@ -153,13 +153,17 @@ const webhookController = {
       }
       
       // Handle nested query object (some webhook providers send data nested in 'query')
-      // Fallback to req.body for backward compatibility
-      const bodyData = req.body.query || req.body;
+      // Also check req.query for URL query parameters
+      // Fallback order: req.body.query -> req.body -> req.query
+      const bodyData = req.body.query || req.body || req.query;
       
       // Debug logging to help diagnose issues
       console.log('🔍 Webhook body data extraction:', {
-        hasQuery: !!req.body.query,
+        hasBodyQuery: !!req.body.query,
         hasBody: !!req.body,
+        hasQuery: !!req.query,
+        bodyKeys: req.body ? Object.keys(req.body) : [],
+        queryKeys: req.query ? Object.keys(req.query) : [],
         bodyDataKeys: bodyData ? Object.keys(bodyData) : [],
         bodyDataName: bodyData?.name,
         bodyDataEmail: bodyData?.email
