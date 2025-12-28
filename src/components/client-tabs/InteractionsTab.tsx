@@ -4379,8 +4379,21 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Build employee email-to-name mapping once for all emails
         const employeeEmailMap = await buildEmployeeEmailToNameMap();
         
+        // Deduplicate emails by message_id before formatting
+        const uniqueEmailsMap = new Map<string, any>();
+        clientEmails.forEach((e: any) => {
+          const messageId = e.message_id;
+          if (messageId) {
+            // If we already have this message_id, skip it to avoid duplicates
+            if (!uniqueEmailsMap.has(messageId)) {
+              uniqueEmailsMap.set(messageId, e);
+            }
+          }
+        });
+        const uniqueClientEmails = Array.from(uniqueEmailsMap.values());
+        
         // Format emails for modal display - preserve Outlook HTML structure
-        const formattedEmailsForModal = clientEmails.map((e: any) => {
+        const formattedEmailsForModal = uniqueClientEmails.map((e: any) => {
           const rawHtml = typeof e.body_html === 'string' ? e.body_html : null;
           const rawPreview = typeof e.body_preview === 'string' ? e.body_preview : null;
           
@@ -4444,16 +4457,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           };
         });
         
-        setEmails(formattedEmailsForModal);
+        // Additional deduplication by message_id after formatting (double-check)
+        const finalUniqueEmails = formattedEmailsForModal.reduce((acc: any[], email: any) => {
+          if (email.id && !acc.some(e => e.id === email.id)) {
+            acc.push(email);
+          }
+          return acc;
+        }, []);
+        
+        setEmails(finalUniqueEmails);
         
         // Check which emails need hydration (missing body_html)
-        const emailsNeedingHydration = formattedEmailsForModal.filter((e: any) => 
+        const emailsNeedingHydration = finalUniqueEmails.filter((e: any) => 
           !e.body_html || e.body_html.trim() === ''
         );
         
         // Auto-select first email if none is selected
-        if (formattedEmailsForModal.length > 0 && !selectedEmailForView) {
-          const firstEmail = formattedEmailsForModal[0];
+        if (finalUniqueEmails.length > 0 && !selectedEmailForView) {
+          const firstEmail = finalUniqueEmails[0];
           setSelectedEmailForView(firstEmail);
           // If first email needs hydration, prioritize it
           if (emailsNeedingHydration.some((e: any) => e.id === firstEmail.id)) {
@@ -4461,7 +4482,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
         } else if (activeEmailId) {
           // If we have an activeEmailId from clicking, find and select that email
-          const emailToSelect = formattedEmailsForModal.find((e: any) => e.id === activeEmailId);
+          const emailToSelect = finalUniqueEmails.find((e: any) => e.id === activeEmailId);
           if (emailToSelect) {
             setSelectedEmailForView(emailToSelect);
             // If this email needs hydration, prioritize it
@@ -4748,6 +4769,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
       
       toast.success('Email sent!');
+      
+      // Remove optimistic emails (those with temp_ IDs) before fetching fresh emails
+      setEmails((prev) => {
+        return prev.filter((email: any) => {
+          const msgId = email.id;
+          return !(typeof msgId === 'string' && msgId.startsWith('temp_'));
+        });
+      });
       
       await fetchInteractions({ bypassCache: true });
       await fetchEmailsForModal();
@@ -7215,14 +7244,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           {/* Overlay */}
           <div className="fixed inset-0 bg-black/30" onClick={closeContactDrawer} />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between mb-6">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-[999]">
+            <div className="flex items-center justify-between p-8 pb-6 flex-shrink-0">
               <h3 className="text-2xl font-bold">Contact Client</h3>
               <button className="btn btn-ghost btn-sm" onClick={closeContactDrawer}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
+            <div className="flex flex-col gap-4 flex-1 overflow-y-auto min-h-0 px-8">
               <div>
                 <label className="block font-semibold mb-1">Direction</label>
                 <select
@@ -7312,7 +7341,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 />
               </div>
             </div>
-            <div className="mt-6 flex justify-end">
+            <div className="p-8 pt-6 flex justify-end flex-shrink-0 border-t border-base-300">
               <button className="btn btn-primary px-8" onClick={handleSaveContact}>
                 Save
               </button>
@@ -7416,13 +7445,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           <div className="fixed inset-0 bg-black/30" onClick={() => setDetailsDrawerOpen(false)} />
           {/* Drawer */}
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-[999]">
-            <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center justify-between mb-6 flex-shrink-0">
               <h3 className="text-2xl font-bold">Interaction Details</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => setDetailsDrawerOpen(false)}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
+            <div className="flex flex-col gap-4 flex-1 overflow-y-auto min-h-0">
               <div><span className="font-semibold">Type:</span> {activeInteraction.kind}</div>
               <div><span className="font-semibold">Date:</span> {activeInteraction.date} {activeInteraction.time}</div>
               <div><span className="font-semibold">Employee:</span> {activeInteraction.employee}</div>

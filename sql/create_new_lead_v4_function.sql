@@ -1,10 +1,12 @@
 -- Create a complete function for creating new leads that:
 -- 1. Syncs sequences to prevent duplicate key errors
 -- 2. Checks both leads and leads_lead tables for lead number continuity
--- 3. Creates the lead, contact, and relationship
+-- 3. Creates the lead (contact and relationship are created automatically by trigger trg_auto_create_main_contact)
 -- 
 -- Usage: Call create_new_lead_v4 instead of create_new_lead_v3
 -- This ensures lead numbers are always one higher than the highest ID in leads_lead table
+-- 
+-- Note: Contact creation is handled by the trigger to prevent duplicate contacts
 
 CREATE OR REPLACE FUNCTION create_new_lead_v4(
   p_lead_name TEXT,
@@ -34,10 +36,6 @@ DECLARE
   v_last_leads_lead_id BIGINT;
   v_max_number BIGINT;
   v_next_number BIGINT;
-  v_new_contact_id BIGINT;
-  v_contact_cdate DATE;
-  v_contact_udate DATE;
-  v_new_relationship_id BIGINT;
 BEGIN
   -- Sync leads_contact sequence to prevent duplicate key errors
   PERFORM setval(
@@ -125,52 +123,9 @@ BEGIN
     p_proposal_currency
   ) RETURNING leads.id INTO v_new_lead_id;
   
-  -- Create the first contact in leads_contact table
-  -- Get current date for contact dates
-  v_contact_cdate := CURRENT_DATE;
-  v_contact_udate := CURRENT_DATE;
-  
-  -- Get the next available contact ID
-  SELECT COALESCE(MAX(leads_contact.id), 0) + 1 INTO v_new_contact_id
-  FROM leads_contact;
-  
-  -- Insert the first contact into leads_contact table
-  INSERT INTO leads_contact (
-    id,
-    name,
-    mobile,
-    phone,
-    email,
-    newlead_id,
-    cdate,
-    udate
-  ) VALUES (
-    v_new_contact_id,
-    p_lead_name,
-    NULL, -- mobile can be null initially
-    p_lead_phone,
-    p_lead_email,
-    v_new_lead_id,
-    v_contact_cdate,
-    v_contact_udate
-  );
-  
-  -- Get the next available relationship ID
-  SELECT COALESCE(MAX(lead_leadcontact.id), 0) + 1 INTO v_new_relationship_id
-  FROM lead_leadcontact;
-  
-  -- Create the relationship in lead_leadcontact table, marking it as main
-  INSERT INTO lead_leadcontact (
-    id,
-    contact_id,
-    newlead_id,
-    main
-  ) VALUES (
-    v_new_relationship_id,
-    v_new_contact_id,
-    v_new_lead_id,
-    true -- This is the main contact
-  );
+  -- Note: Contact creation is handled automatically by the trigger trg_auto_create_main_contact
+  -- The trigger will create the contact in leads_contact and the relationship in lead_leadcontact
+  -- This prevents duplicate contact creation
   
   -- Return the created lead information
   RETURN QUERY
