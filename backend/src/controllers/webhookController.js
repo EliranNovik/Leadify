@@ -156,27 +156,42 @@ const webhookController = {
       // Fallback to req.body for backward compatibility
       const bodyData = req.body.query || req.body;
       
+      // Debug logging to help diagnose issues
+      console.log('🔍 Webhook body data extraction:', {
+        hasQuery: !!req.body.query,
+        hasBody: !!req.body,
+        bodyDataKeys: bodyData ? Object.keys(bodyData) : [],
+        bodyDataName: bodyData?.name,
+        bodyDataEmail: bodyData?.email
+      });
+      
       // Log the received form data
       // Accept both 'source_code' and 'lead_source' as aliases
-      const sourceCodeValue = bodyData.source_code || bodyData.lead_source;
+      const sourceCodeValue = bodyData?.source_code || bodyData?.lead_source;
       const parsedSourceCode = parseIntegerSourceCode(sourceCodeValue);
       
       // Accept both 'facts' and 'desc' as aliases
-      const factsValue = bodyData.facts || bodyData.desc;
+      const factsValue = bodyData?.facts || bodyData?.desc;
 
       const formData = {
-        name: bodyData.name,
-        email: bodyData.email,
-        phone: bodyData.phone,
-        topic: bodyData.topic,
+        name: bodyData?.name,
+        email: bodyData?.email,
+        phone: bodyData?.phone,
+        topic: bodyData?.topic,
         facts: factsValue,
-        source: bodyData.source || 'webhook',
-        language: bodyData.language || 'English',
+        source: bodyData?.source || 'webhook',
+        language: bodyData?.language || 'English',
         source_code: parsedSourceCode
       };
 
       // Validate required fields
       if (!formData.name || !formData.email) {
+        console.error('❌ Missing required fields:', {
+          name: formData.name,
+          email: formData.email,
+          bodyData,
+          reqBody: req.body
+        });
         return res.status(400).json({ 
           error: 'Missing required fields: name and email are required' 
         });

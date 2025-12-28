@@ -129,11 +129,11 @@ BEGIN
   
   -- Look up language_id from misc_language table (not languages table)
   -- Try to match by name first (case-insensitive), then by iso_code
+  -- Note: misc_language table doesn't have an 'active' column, so we don't filter by it
   IF p_lead_language IS NOT NULL THEN
     SELECT ml.id INTO v_language_id
     FROM misc_language ml
-    WHERE ml.active = true
-      AND (
+    WHERE (
         UPPER(ml.name) = UPPER(p_lead_language)
         OR UPPER(ml.iso_code) = UPPER(p_lead_language)
       )
@@ -144,8 +144,7 @@ BEGIN
   IF v_language_id IS NULL THEN
     SELECT ml.id INTO v_language_id
     FROM misc_language ml
-    WHERE ml.active = true
-      AND (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
+    WHERE (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
     LIMIT 1;
   END IF;
   

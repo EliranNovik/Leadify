@@ -52,7 +52,10 @@ export const convertToNIS = (amount: number, currency: string | number | null | 
   
   const rate = currencyRates[currencyCode as keyof typeof currencyRates] || 1;
   
-  console.log(`💰 Converting ${amount} ${currencyCode} to NIS (rate: ${rate}) = ${amount * rate}`);
+  // Only log if actually converting (rate !== 1), to avoid spam for NIS-to-NIS conversions
+  if (rate !== 1) {
+    console.log(`💰 Converting ${amount} ${currencyCode} to NIS (rate: ${rate}) = ${amount * rate}`);
+  }
   return amount * rate;
 };
 

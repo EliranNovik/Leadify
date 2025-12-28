@@ -5,6 +5,7 @@ import { useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { useMsal } from '@azure/msal-react';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
+import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 
 // This will be replaced with dynamic scheduler list based on preferred categories
 const defaultSchedulers = ['Anna Zh', 'Mindi', 'Sarah L', 'David K', 'Yael', 'Michael R'];
@@ -63,7 +64,7 @@ const NewCasesPage: React.FC = () => {
   const navigate = useNavigate();
   const [leads, setLeads] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
-  const [stageFilter, setStageFilter] = useState('');
+  const [stageFilter, setStageFilter] = usePersistedState('newCasesPage_stageFilter', '');
   const [dateFilter, setDateFilter] = useState('');
   
   // New state for enhanced features
@@ -72,9 +73,11 @@ const NewCasesPage: React.FC = () => {
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [employeePreferredCategories, setEmployeePreferredCategories] = useState<any[]>([]);
   const [displayedMainCategoryIds, setDisplayedMainCategoryIds] = useState<number[]>([]);
-  const [statsDateFilter, setStatsDateFilter] = useState({
+  const [statsDateFilter, setStatsDateFilter] = usePersistedFilters('newCasesPage_statsDateFilter', {
     fromDate: new Date().toISOString().split('T')[0], // Current day
     toDate: new Date().toISOString().split('T')[0] // Current day
+  }, {
+    storage: 'sessionStorage',
   });
   const [loadingStats, setLoadingStats] = useState(false);
   const [stages, setStages] = useState<any[]>([]);
@@ -108,7 +111,7 @@ const NewCasesPage: React.FC = () => {
   
   // Re-assign leads modal state
   const [showReassignModal, setShowReassignModal] = useState(false);
-  const [reassignFilters, setReassignFilters] = useState({
+  const [reassignFilters, setReassignFilters] = usePersistedFilters('newCasesPage_reassignFilters', {
     fromDate: '',
     toDate: '',
     category: '',
@@ -117,6 +120,8 @@ const NewCasesPage: React.FC = () => {
     language: '',
     stage: '',
     meetingScheduler: ''
+  }, {
+    storage: 'sessionStorage',
   });
   const [reassignResults, setReassignResults] = useState<any[]>([]);
   const [reassignLoading, setReassignLoading] = useState(false);

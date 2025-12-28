@@ -2291,13 +2291,13 @@ const EmployeeModal: React.FC<EmployeeModalProps> = ({ employee, allEmployees, i
     };
     
     
-    // CRITICAL DEBUG: Check if employee ID matching is working
-    console.log('🚨 CRITICAL DEBUG - Employee ID Matching Issue:');
-    console.log('🚨 Employee ID:', employeeIdNum, 'Type:', typeof employeeIdNum);
-    console.log('🚨 First lead closer_id:', signedLeads[0]?.closer_id, 'Type:', typeof signedLeads[0]?.closer_id);
-    console.log('🚨 First lead meeting_scheduler_id:', signedLeads[0]?.meeting_scheduler_id, 'Type:', typeof signedLeads[0]?.meeting_scheduler_id);
-    console.log('🚨 Are they equal?', Number(signedLeads[0]?.closer_id) === employeeIdNum);
-    console.log('🚨 Are they equal (scheduler)?', Number(signedLeads[0]?.meeting_scheduler_id) === employeeIdNum);
+    // Removed debug logs - uncomment if needed for debugging
+    // console.log('🚨 CRITICAL DEBUG - Employee ID Matching Issue:');
+    // console.log('🚨 Employee ID:', employeeIdNum, 'Type:', typeof employeeIdNum);
+    // console.log('🚨 First lead closer_id:', signedLeads[0]?.closer_id, 'Type:', typeof signedLeads[0]?.closer_id);
+    // console.log('🚨 First lead meeting_scheduler_id:', signedLeads[0]?.meeting_scheduler_id, 'Type:', typeof signedLeads[0]?.meeting_scheduler_id);
+    // console.log('🚨 Are they equal?', Number(signedLeads[0]?.closer_id) === employeeIdNum);
+    // console.log('🚨 Are they equal (scheduler)?', Number(signedLeads[0]?.meeting_scheduler_id) === employeeIdNum);
     
     return result;
   };
