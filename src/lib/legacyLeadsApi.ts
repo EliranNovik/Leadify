@@ -336,21 +336,52 @@ async function searchNewLeadsSimple(query: string, limit = 20): Promise<Combined
   try {
     let queryBuilder = supabase.from('leads').select(selectFields);
 
+    // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2" or "L39854/2")
+    const hasSubLeadPattern = trimmed.includes('/');
+    let masterIdFromQuery: number | null = null;
+    let suffixFromQuery: number | null = null;
+    
+    if (hasSubLeadPattern) {
+      const parts = trimmed.split('/');
+      if (parts.length === 2) {
+        const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
+        const suffixPart = parts[1];
+        const masterNum = parseInt(masterPart, 10);
+        const suffixNum = parseInt(suffixPart, 10);
+        if (!isNaN(masterNum) && !isNaN(suffixNum)) {
+          masterIdFromQuery = masterNum;
+          suffixFromQuery = suffixNum;
+        }
+      }
+    }
+
     // Search as lead number if detected (any length for new leads)
-    if (isLeadNumber) {
+    if (isLeadNumber || hasSubLeadPattern) {
       // Search for lead_number - use ALL digits typed for precise matching
       // If user types "12345", find "12345", "L12345", "C12345", "123456", etc.
       // As user types more digits, search becomes more precise (no reload needed)
       const searchDigits = noPrefix; // Use all digits, not just first 4
       
-      if (hasPrefix) {
-        // User typed with prefix (e.g., "L12345") - search for numbers starting with "12345"
+      if (hasPrefix || hasSubLeadPattern) {
+        // User typed with prefix (e.g., "L12345") or sub-lead pattern (e.g., "39854/2")
         // Match: "L12345", "C12345", "12345", "L123456", "C123456", "123456", etc.
+        // For sub-leads: "L39854/2", "39854/2", "L39854/3", etc.
         queryBuilder = queryBuilder.or(`lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%,lead_number.ilike.${searchDigits}%`);
+        
+        // For sub-lead pattern, also search for master number to find all sub-leads
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          queryBuilder = queryBuilder.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
+        }
       } else {
         // User typed without prefix (e.g., "12345") - search for numbers starting with "12345"
         // Match: "12345", "L12345", "C12345", "123456", "L123456", "C123456", etc.
+        // For sub-leads: "39854/2", "L39854/2", "39854/3", etc.
         queryBuilder = queryBuilder.or(`lead_number.ilike.${searchDigits}%,lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%`);
+        
+        // For sub-lead pattern, also search for master number to find all sub-leads
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          queryBuilder = queryBuilder.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
+        }
       }
     } else if (isEmail) {
       queryBuilder = queryBuilder.ilike('email', `${lower}%`);
@@ -645,8 +676,27 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
     let foundLegacyLeadIds: number[] = []; // Declare outside block so it's accessible later
     let cachedLegacyLeadsMap = new Map<number, any>(); // Cache for legacy leads to avoid re-fetching
 
+    // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2")
+    const hasSubLeadPattern = trimmed.includes('/');
+    let masterIdFromQuery: number | null = null;
+    let suffixFromQuery: number | null = null;
+    
+    if (hasSubLeadPattern) {
+      const parts = trimmed.split('/');
+      if (parts.length === 2) {
+        const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
+        const suffixPart = parts[1];
+        const masterNum = parseInt(masterPart, 10);
+        const suffixNum = parseInt(suffixPart, 10);
+        if (!isNaN(masterNum) && !isNaN(suffixNum)) {
+          masterIdFromQuery = masterNum;
+          suffixFromQuery = suffixNum;
+        }
+      }
+    }
+
     // Step 1: If searching by lead number, find contacts via junction table
-    if (isLeadNumber) {
+    if (isLeadNumber || hasSubLeadPattern) {
       // Use all digits typed (not just first 4) for precise matching
       const searchDigits = noPrefix;
       const hasPrefix = /^[LC]/i.test(trimmed);
@@ -656,6 +706,9 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         searchDigits,
         hasPrefix,
         isLeadNumber,
+        hasSubLeadPattern,
+        masterIdFromQuery,
+        suffixFromQuery,
         digitsLength: digits.length
       });
       
@@ -665,10 +718,18 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         .select('id, lead_number')
         .limit(50);
       
-      if (hasPrefix) {
+      if (hasPrefix || hasSubLeadPattern) {
         leadQuery = leadQuery.or(`lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%,lead_number.ilike.${searchDigits}%`);
+        // For sub-lead pattern, also search for master number to find all sub-leads
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          leadQuery = leadQuery.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
+        }
       } else {
         leadQuery = leadQuery.or(`lead_number.ilike.${searchDigits}%,lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%`);
+        // For sub-lead pattern, also search for master number to find all sub-leads
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          leadQuery = leadQuery.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
+        }
       }
       
       const { data: matchingLeads } = await leadQuery;
@@ -678,7 +739,10 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
       
       // Also search for legacy leads by ID (legacy leads use id as lead_number)
       // Support both exact match and prefix match for legacy lead IDs
-      const num = parseInt(noPrefix, 10);
+      // For sub-lead patterns, search by master_id
+      const num = hasSubLeadPattern && masterIdFromQuery !== null 
+        ? masterIdFromQuery 
+        : parseInt(noPrefix, 10);
       foundLegacyLeadIds = []; // Reset for this search
       
       if (!Number.isNaN(num)) {
@@ -719,7 +783,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           // OPTIMIZATION: Fetch full lead data in one query instead of just IDs
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
-            .select('id, name, email, phone, mobile, topic, stage, cdate')
+            .select('id, name, email, phone, mobile, topic, stage, cdate, master_id')
             .gte('id', minId)
             .lte('id', maxId)
             .limit(200); // Increased limit for prefix matches
@@ -1035,7 +1099,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           (async () => {
             const result = await supabase
               .from('leads_lead')
-              .select('id, name, email, phone, mobile, topic, stage, cdate')
+              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id')
               .in('id', missingLegacyIds)
               .limit(limit);
             
@@ -1236,8 +1300,23 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           if (!seen.has(key)) {
             seen.add(key);
             addedCount++;
+            // Format lead number with suffix for sub-leads
+            let leadNumber: string;
+            if (legacyLead.master_id) {
+              // It's a sub-lead - calculate suffix from all legacy leads with same master_id
+              const allSubLeads = Array.from(legacyLeadMap.values())
+                .filter(l => l.master_id === legacyLead.master_id)
+                .sort((a, b) => a.id - b.id);
+              const suffix = allSubLeads.findIndex(l => l.id === legacyLead.id) + 2;
+              leadNumber = `${legacyLead.master_id}/${suffix}`;
+            } else {
+              // It's a master lead
+              leadNumber = String(legacyLead.id);
+            }
             results.push({
               id: String(legacyLead.id),
+              lead_number: leadNumber,
+              manual_id: leadNumber,
               lead_number: String(legacyLead.id),
               manual_id: String(legacyLead.id),
               name: legacyLead.name || '',

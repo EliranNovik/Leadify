@@ -981,7 +981,7 @@ const Clients: React.FC<ClientsProps> = ({
   const location = useLocation();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedLeadNumber = searchParams.get('lead');
-  const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, ''));
+  const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
     const manualString = manualId?.toString().trim() || '';
@@ -2061,12 +2061,34 @@ useEffect(() => {
   const getDisplayLeadNumber = (lead: any): string => {
     if (!lead) return '---';
     let displayNumber = lead.lead_number || lead.manual_id || lead.id || '---';
+    
+    // Remove any existing / suffix for processing (we'll add /1 if needed)
+    const displayStr = displayNumber.toString();
+    const hasExistingSuffix = displayStr.includes('/');
+    
+    // For master leads, we want to show /1, so strip any existing suffix first
+    let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+    
     const isSuccessStage = lead.stage === '100' || lead.stage === 100;
     // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
-    if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
+    if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
       // Replace "L" prefix with "C" for display only
-      displayNumber = displayNumber.toString().replace(/^L/, 'C');
+      baseNumber = baseNumber.toString().replace(/^L/, 'C');
     }
+    
+    // Add /1 suffix to master leads (frontend only)
+    // A lead is a master if: it has no master_id AND (isMasterLead is true OR has sub-leads)
+    const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
+    const hasSubLeads = subLeads && subLeads.length > 0;
+    // Use isMasterLead state or check subLeads array - either indicates it's a master lead
+    const shouldAddSuffix = hasNoMasterId && (isMasterLead || hasSubLeads);
+    
+    if (shouldAddSuffix) {
+      displayNumber = `${baseNumber}/1`;
+    } else {
+      displayNumber = baseNumber;
+    }
+    
     return displayNumber.toString();
   };
 
@@ -2853,12 +2875,14 @@ useEffect(() => {
     const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
     
-    // If route changed, always refetch to ensure fresh data and reset all state
+    // Always refetch if route changed (including coming back from /master)
     if (routeChanged) {
       lastRouteRef.current = currentRoute;
       // Clear selectedClient immediately to reset all child components
       setSelectedClient(null);
-    } else if (selectedClient && lead_number) {
+      // Continue to fetch data below - don't return early
+    } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
+      // Only skip fetch if we have the same client AND we're not on the master route
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const currentClientId = isLegacy 
         ? selectedClient.id?.toString().replace('legacy_', '')
@@ -2885,12 +2909,14 @@ useEffect(() => {
     const fetchEssentialData = async () => {
       // Always set loading when fetching new data
       setLocalLoading(true);
-      if (lead_number) {
+      // Use fullLeadNumber if lead_number is empty (fallback for route parsing)
+      const effectiveLeadNumber = lead_number || fullLeadNumber;
+      if (effectiveLeadNumber) {
         // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
         
-        const isManualIdCandidate = /^\d+$/.test(fullLeadNumber);
-        const isLegacyLeadId = /^\d+$/.test(fullLeadNumber);
+        const isManualIdCandidate = /^\d+$/.test(effectiveLeadNumber);
+        const isLegacyLeadId = /^\d+$/.test(effectiveLeadNumber);
         
         // Run all possible queries in parallel to find the lead faster
         const queries = [];
@@ -2900,7 +2926,7 @@ useEffect(() => {
             supabase
               .from('leads')
               .select('*')
-              .eq('manual_id', fullLeadNumber)
+              .eq('manual_id', effectiveLeadNumber)
               .then(({ data, error }) => ({ type: 'manual', data, error }))
           );
         }
@@ -2919,7 +2945,7 @@ useEffect(() => {
                   name
                 )
               `)
-              .eq('id', parseInt(fullLeadNumber))
+              .eq('id', parseInt(effectiveLeadNumber))
               .single()
               .then(({ data, error }) => ({ type: 'legacy', data, error }))
           );
@@ -2930,7 +2956,7 @@ useEffect(() => {
           supabase
             .from('leads')
             .select('*')
-            .eq('lead_number', fullLeadNumber)
+            .eq('lead_number', effectiveLeadNumber)
             .single()
             .then(({ data, error }) => ({ type: 'lead_number', data, error }))
         );
@@ -3073,7 +3099,7 @@ useEffect(() => {
         
         // If no client found from parallel queries, try fallback lookup
         if (!clientData) {
-          const numericLeadCandidate = fullLeadNumber.replace(/^[LC]/i, '');
+          const numericLeadCandidate = effectiveLeadNumber.replace(/^[LC]/i, '');
           if (numericLeadCandidate && /^\d+$/.test(numericLeadCandidate)) {
             const { data: leadsByManualId, error: manualLookupError } = await supabase
               .from('leads')
@@ -9300,20 +9326,6 @@ useEffect(() => {
       </div>
     );
   }
-  // Lead is cold logic (must be after null check)
-  let isLeadCold = false;
-  let coldLeadText = '';
-  if (selectedClient && selectedClient.next_followup) {
-    const today = new Date();
-    const followupDate = new Date(selectedClient.next_followup);
-    const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-    const followupMidnight = new Date(followupDate.getFullYear(), followupDate.getMonth(), followupDate.getDate());
-    const diffDays = Math.floor((todayMidnight.getTime() - followupMidnight.getTime()) / (1000 * 60 * 60 * 24));
-    if (diffDays >= 7) {
-      isLeadCold = true;
-      coldLeadText = 'Follow up with client!';
-    }
-  }
   const interactionsCacheForLead =
     selectedClient?.id && interactionsCache?.leadId === selectedClient.id
       ? interactionsCache
@@ -11337,16 +11349,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </button>
               )}
               
-              {/* Lead is Cold Badge */}
-              {isLeadCold && (
-                <div className="w-full rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20">
-                  <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                  </svg>
-                  Lead is cold: {coldLeadText}
-                </div>
-              )}
-              
               {/* Duplicate Contact Badge */}
               {duplicateContacts.length > 0 && (
                 <button
@@ -12005,7 +12007,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       </div>
-      {/* Badges section - Duplicate Contacts on left, Lead is cold on right */}
+      {/* Badges section - Duplicate Contacts */}
       <div className="hidden md:flex w-full justify-between items-center mt-2 mb-2 px-4">
         {/* Duplicate Contacts Badge - Left side */}
         {duplicateContacts.length > 0 ? (
@@ -12080,17 +12082,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div></div>
         )}
 
-          {/* Vibrant 'Lead is cold' badge - Right side */}
-          {isLeadCold ? (
-            <div className="flex justify-end">
-              <span className="rounded-xl bg-gradient-to-tr from-cyan-500 via-blue-500 to-indigo-600 text-white shadow px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20">
-                <svg className="w-4 h-4 text-white/90" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                Lead is cold: {coldLeadText}
-              </span>
-            </div>
-          ) : (
-            <div></div>
-          )}
         </div>
       {/* Client Details Section (desktop) */}
       <div className="hidden md:block bg-white dark:bg-gray-900 w-full">

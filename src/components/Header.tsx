@@ -635,25 +635,61 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         });
       }
 
+      // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2" or "L39854/2")
+      const hasSubLeadPattern = trimmed.includes('/');
+      let masterIdFromQuery: number | null = null;
+      let suffixFromQuery: number | null = null;
+      
+      if (hasSubLeadPattern) {
+        const parts = trimmed.split('/');
+        if (parts.length === 2) {
+          const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
+          const suffixPart = parts[1];
+          const masterNum = parseInt(masterPart, 10);
+          const suffixNum = parseInt(suffixPart, 10);
+          if (!isNaN(masterNum) && !isNaN(suffixNum)) {
+            masterIdFromQuery = masterNum;
+            suffixFromQuery = suffixNum;
+          }
+        }
+      }
+
       // Phone number search - prioritize phone search if detected as phone
-      if (isPhone && digits.length >= 3) {
+      if (isPhone && digits.length >= 3 && !hasSubLeadPattern) {
         // Phone numbers: search phone/mobile fields only
         newLeadConditions.push(`phone.ilike.%${digits}%`);
         newLeadConditions.push(`mobile.ilike.%${digits}%`);
         legacyLeadConditions.push(`phone.ilike.%${digits}%`);
         legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
         // Don't search lead_number or ID for phone numbers
-      } else if (isLeadNumber) {
+      } else if (isLeadNumber || hasSubLeadPattern) {
         // Lead number search - search lead_number fields and ID (for legacy)
+        // Also handle sub-lead patterns (e.g., "39854/2", "L39854/2")
         newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
         newLeadConditions.push(`lead_number.ilike.L%${trimmed}%`);
         newLeadConditions.push(`lead_number.ilike.C%${trimmed}%`);
-        // For legacy leads, only search by ID if it's a valid small number (1-6 digits, no leading zero)
-        // Note: lead_number in leads_lead is bigint, so we can't use ilike on it
-        if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
+        
+        // For sub-lead pattern, also search without the suffix to find all sub-leads
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          newLeadConditions.push(`lead_number.ilike.%${masterIdFromQuery}/%`);
+          newLeadConditions.push(`lead_number.ilike.L%${masterIdFromQuery}/%`);
+          newLeadConditions.push(`lead_number.ilike.C%${masterIdFromQuery}/%`);
+        }
+        
+        // For legacy leads, search by master_id if sub-lead pattern detected
+        if (hasSubLeadPattern && masterIdFromQuery !== null) {
+          // Search for master lead
+          legacyLeadConditions.push(`id.eq.${masterIdFromQuery}`);
+          // Search for sub-leads with this master_id
+          legacyLeadConditions.push(`master_id.eq.${masterIdFromQuery}`);
+        } else if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
+          // For legacy leads, only search by ID if it's a valid small number (1-6 digits, no leading zero)
+          // Note: lead_number in leads_lead is bigint, so we can't use ilike on it
           const numId = parseInt(noPrefix, 10);
           if (!isNaN(numId) && numId > 0) {
             legacyLeadConditions.push(`id.eq.${numId}`);
+            // Also search for sub-leads with this master_id
+            legacyLeadConditions.push(`master_id.eq.${numId}`);
           }
         }
         // Don't search legacy lead_number with ilike (it's bigint) - only search by ID above
@@ -721,13 +757,55 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (legacyLeadConditions.length > 0) {
         const { data: legacyLeads } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
           .or(legacyLeadConditions.join(','))
-          .limit(20);
+          .limit(50); // Increased limit to handle sub-lead searches
 
         if (legacyLeads) {
-          legacyLeads.forEach((lead: any) => {
-            const leadNumber = lead.lead_number ? String(lead.lead_number) : String(lead.id);
+          // If searching for a specific sub-lead (has suffix), filter to match the suffix
+          let filteredLegacyLeads = legacyLeads;
+          if (hasSubLeadPattern && masterIdFromQuery !== null && suffixFromQuery !== null) {
+            // Get all sub-leads with this master_id, ordered by ID
+            const subLeadsWithMaster = legacyLeads
+              .filter(lead => lead.master_id === masterIdFromQuery)
+              .sort((a, b) => a.id - b.id);
+            
+            // Find the lead at the position that matches the suffix (suffix starts at 2)
+            const targetIndex = suffixFromQuery - 2;
+            if (targetIndex >= 0 && targetIndex < subLeadsWithMaster.length) {
+              // Return only the specific sub-lead
+              filteredLegacyLeads = [subLeadsWithMaster[targetIndex]];
+            } else {
+              // Also include master lead if searching for sub-lead
+              const masterLead = legacyLeads.find(lead => lead.id === masterIdFromQuery && !lead.master_id);
+              if (masterLead) {
+                filteredLegacyLeads = [masterLead, ...subLeadsWithMaster];
+              } else {
+                filteredLegacyLeads = subLeadsWithMaster;
+              }
+            }
+          } else if (masterIdFromQuery !== null && !hasSubLeadPattern) {
+            // Searching for master lead - include master and all sub-leads
+            const masterLead = legacyLeads.find(lead => lead.id === masterIdFromQuery && !lead.master_id);
+            const subLeads = legacyLeads.filter(lead => lead.master_id === masterIdFromQuery);
+            filteredLegacyLeads = masterLead ? [masterLead, ...subLeads] : subLeads;
+          }
+
+          filteredLegacyLeads.forEach((lead: any) => {
+            // Format lead number with suffix for sub-leads
+            let leadNumber: string;
+            if (lead.master_id) {
+              // It's a sub-lead - calculate suffix
+              const allSubLeads = legacyLeads
+                .filter(l => l.master_id === lead.master_id)
+                .sort((a, b) => a.id - b.id);
+              const suffix = allSubLeads.findIndex(l => l.id === lead.id) + 2;
+              leadNumber = `${lead.master_id}/${suffix}`;
+            } else {
+              // It's a master lead
+              leadNumber = String(lead.id);
+            }
+            
             results.push({
               id: `legacy_${lead.id}`,
               lead_number: leadNumber,

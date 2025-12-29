@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { UserIcon, PencilIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 
 interface ClientInformationBoxProps {
   selectedClient: any;
@@ -10,6 +11,7 @@ interface ClientInformationBoxProps {
 }
 
 const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient, getEmployeeDisplayName, onClientUpdate }) => {
+  const navigate = useNavigate();
   const [legacyContactInfo, setLegacyContactInfo] = useState<{email: string | null, phone: string | null}>({
     email: null,
     phone: null
@@ -21,6 +23,8 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [categoryInputValue, setCategoryInputValue] = useState<string>('');
   const [allSources, setAllSources] = useState<Array<{id: number | string, name: string}>>([]);
+  const [isMasterLead, setIsMasterLead] = useState(false);
+  const [subLeadsCount, setSubLeadsCount] = useState(0);
 
   // Fetch categories
   useEffect(() => {
@@ -71,6 +75,50 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
     fetchSources();
   }, []);
+
+  // Check if current lead is a master lead (has sub-leads)
+  useEffect(() => {
+    const checkIfMasterLead = async () => {
+      if (!selectedClient) {
+        setIsMasterLead(false);
+        setSubLeadsCount(0);
+        return;
+      }
+
+      try {
+        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        let count = 0;
+
+        if (isLegacyLead) {
+          // For legacy leads, check leads_lead table
+          const legacyId = selectedClient.id.toString().replace('legacy_', '');
+          const { count: actualCount } = await supabase
+            .from('leads_lead')
+            .select('id', { count: 'exact', head: true })
+            .eq('master_id', parseInt(legacyId, 10));
+
+          count = actualCount || 0;
+        } else {
+          // For new leads, check leads table
+          const { count: actualCount } = await supabase
+            .from('leads')
+            .select('id', { count: 'exact', head: true })
+            .eq('master_id', selectedClient.id);
+
+          count = actualCount || 0;
+        }
+
+        setIsMasterLead(count > 0);
+        setSubLeadsCount(count);
+      } catch (error) {
+        console.error('Error checking if master lead:', error);
+        setIsMasterLead(false);
+        setSubLeadsCount(0);
+      }
+    };
+
+    checkIfMasterLead();
+  }, [selectedClient?.id, selectedClient?.lead_type]);
 
   // Handle category save
   const handleSaveCategory = async () => {
@@ -363,6 +411,27 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
           <UserIcon className="w-5 h-5 text-white" />
         </div>
         <div className="flex flex-col flex-1">
+          {/* Master Lead Indicator */}
+          {isMasterLead && selectedClient && (
+            <div className="mb-2">
+              <button
+                onClick={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                  const leadId = isLegacyLead 
+                    ? selectedClient.id.toString().replace('legacy_', '')
+                    : selectedClient.id;
+                  const leadNumber = selectedClient.lead_number || selectedClient.manual_id || leadId;
+                  navigate(`/clients/${encodeURIComponent(leadNumber)}/master`);
+                }}
+                className="text-xs font-semibold text-purple-600 hover:text-purple-700 hover:underline transition-colors cursor-pointer"
+                title={`View all ${subLeadsCount} sub-lead${subLeadsCount !== 1 ? 's' : ''}`}
+              >
+                Master lead ({subLeadsCount} sub-lead{subLeadsCount !== 1 ? 's' : ''})
+              </button>
+            </div>
+          )}
           <div className="flex items-center gap-2">
             <span className="text-xl font-bold text-gray-900">
               {selectedClient ? (() => {
