@@ -2170,13 +2170,15 @@ const Dashboard: React.FC = () => {
         let stageError: any = null;
         
         try {
+          // Query legacy leads - use cdate for filtering as it's more reliable for recent records
+          // cdate is set when the record is created, so it accurately reflects when the stage change occurred
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, lead_id')
             .eq('stage', 60)
             .not('lead_id', 'is', null) // Legacy leads only
-            .gte('date', thirtyDaysAgoStr)
-            .lte('date', todayStr)
+            .gte('cdate', thirtyDaysAgoStr)
+            .lte('cdate', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2360,7 +2362,8 @@ const Dashboard: React.FC = () => {
           const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
           const legacyRecords = stageRecords.map(stageRecord => {
             const lead = leadsMap.get(stageRecord.lead_id);
-            const recordDate = stageRecord.date || stageRecord.cdate || stageRecord.date;
+            // Use cdate if date is null, otherwise use date (cdate is more reliable for recent records)
+            const recordDate = stageRecord.cdate || stageRecord.date;
             return {
               ...stageRecord,
               date: recordDate,

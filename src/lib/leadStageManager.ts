@@ -182,7 +182,7 @@ export const recordLeadStageChange = async ({
   stage: string | number;
   actor?: StageActorInfo;
   timestamp?: string;
-}) => {
+}): Promise<boolean> => {
   const stageActor = actor ?? (await fetchStageActorInfo());
   const resolvedStageId = await resolveStageId(stage);
   const effectiveTimestamp = timestamp ?? new Date().toISOString();
@@ -205,35 +205,180 @@ export const recordLeadStageChange = async ({
   };
 
   if (isLegacy) {
-    payload.lead_id = typeof recordId === 'number' ? recordId : toNumeric(String(recordId));
+    // For legacy leads, ensure lead_id is a number
+    const legacyId = typeof recordId === 'number' 
+      ? recordId 
+      : toNumeric(String(recordId));
+    
+    if (legacyId === null) {
+      console.error('Unable to convert legacy lead ID to number:', {
+        lead,
+        recordId,
+        leadId: lead.id,
+        isLegacy,
+      });
+      throw new Error(`Unable to determine numeric ID for legacy lead: ${lead.id}`);
+    }
+    
+    payload.lead_id = legacyId;
+    console.log('📝 Recording stage change for legacy lead:', {
+      leadId: lead.id,
+      numericId: legacyId,
+      stage: resolvedStageId,
+      payload,
+    });
   } else {
     payload.newlead_id = typeof recordId === 'string' ? recordId : String(recordId);
+    console.log('📝 Recording stage change for new lead:', {
+      leadId: lead.id,
+      stage: resolvedStageId,
+      payload,
+    });
   }
 
-  const { error } = await supabase.from('leads_leadstage').insert(payload);
+  // Check for very recent duplicates (within 1 second) to prevent true double-clicks
+  // But allow legitimate stage changes even if the same stage was set before
+  const duplicateCheckColumn = isLegacy ? 'lead_id' : 'newlead_id';
+  const duplicateCheckValue = isLegacy ? payload.lead_id : payload.newlead_id;
+  
+  if (duplicateCheckValue !== null && duplicateCheckValue !== undefined) {
+    const oneSecondAgo = new Date(Date.now() - 1000).toISOString(); // Only check last 1 second for true duplicates
+    
+    const { data: recentRecords, error: checkError } = await supabase
+      .from('leads_leadstage')
+      .select('id, date, cdate, stage, creator_id')
+      .eq(duplicateCheckColumn, duplicateCheckValue)
+      .eq('stage', payload.stage)
+      .eq('creator_id', payload.creator_id)
+      .gte('cdate', oneSecondAgo) // Check cdate, very short window (1 second) for true duplicates only
+      .order('cdate', { ascending: false })
+      .limit(1);
+    
+    if (checkError) {
+      console.warn('⚠️ Error checking for duplicates (continuing with insert anyway):', checkError);
+    } else if (recentRecords && recentRecords.length > 0) {
+      // Only skip if it's a true duplicate within 1 second (double-click scenario)
+      const timeDiff = Date.now() - new Date(recentRecords[0].date || recentRecords[0].cdate).getTime();
+      if (timeDiff < 1000) {
+        console.warn('⚠️ Duplicate stage change detected (true duplicate within 1 second), skipping insert:', {
+          leadId: lead.id,
+          stage: resolvedStageId,
+          lastRecordDate: recentRecords[0].date || recentRecords[0].cdate,
+          timeDiffMs: timeDiff,
+          message: 'This appears to be a true duplicate (double-click) - same stage change was just recorded.',
+        });
+        return false; // Return false to indicate the insert was skipped
+      }
+      // Otherwise, continue with the insert - it's a legitimate stage change
+    }
+  }
+
+  // Ensure we're not including an 'id' field in the payload - let Supabase auto-generate it via bigserial
+  // Also ensure we're not accidentally including any other fields that might cause issues
+  const insertPayload: Record<string, any> = {
+    stage: payload.stage,
+    date: payload.date,
+    cdate: payload.cdate,
+    udate: payload.udate,
+    creator_id: payload.creator_id,
+  };
+  
+  // Only include lead_id or newlead_id, not both
+  if (isLegacy && payload.lead_id !== null && payload.lead_id !== undefined) {
+    insertPayload.lead_id = payload.lead_id;
+  } else if (!isLegacy && payload.newlead_id !== null && payload.newlead_id !== undefined) {
+    insertPayload.newlead_id = payload.newlead_id;
+  }
+
+  // Explicitly do NOT include 'id' - let the database auto-generate it via bigserial
+  console.log('📤 Inserting stage change record (id will be auto-generated):', {
+    payload: insertPayload,
+    hasId: 'id' in insertPayload,
+  });
+
+  const { error, data } = await supabase.from('leads_leadstage').insert(insertPayload).select('id');
 
   if (error) {
     // Handle duplicate key error gracefully (code 23505)
-    // This can happen if the same stage change is recorded twice
+    // This could be a true duplicate (same stage change in quick succession)
+    // or a legitimate stage change that happens to match a constraint
     if (error.code === '23505') {
-      console.warn('Duplicate stage change record detected, skipping insert:', {
-        error,
-        payload,
-        stage,
-        resolvedStageId,
-      });
-      // Don't throw - this is not a critical error
-      return;
+      // Check if it's a primary key violation (sequence out of sync)
+      const isPrimaryKeyViolation = error.message?.includes('leads_leadstage_pkey') || 
+                                     error.message?.includes('duplicate key value violates unique constraint');
+      
+      if (isPrimaryKeyViolation) {
+        // If sequence is out of sync, try to fix it by getting max ID and resetting sequence
+        // Then retry the insert
+        try {
+          const { data: maxIdData } = await supabase
+            .from('leads_leadstage')
+            .select('id')
+            .order('id', { ascending: false })
+            .limit(1)
+            .maybeSingle();
+          
+          if (maxIdData?.id) {
+            console.warn('📊 Sequence out of sync. Current max ID:', maxIdData.id);
+            console.warn('💡 Attempting to continue - sequence fix may be needed. Run: SELECT setval(\'leads_leadstage_id_seq\', ' + maxIdData.id + ', false);');
+            
+            // Note: We can't fix the sequence from the client side easily
+            // The database admin needs to run the fix SQL
+            // For now, we'll log the error and continue
+          }
+        } catch (diagnosticError) {
+          // Ignore diagnostic errors
+        }
+        
+        console.error('❌ Primary key violation on leads_leadstage - sequence may be out of sync:', {
+          error: error.message,
+          errorCode: error.code,
+          errorDetails: error.details,
+          insertPayload,
+          stage: resolvedStageId,
+          leadId: lead.id,
+          message: 'The database sequence (bigserial) for id generation may be out of sync. The stage update succeeded, but history recording failed. Run the SQL script: sql/fix_leads_leadstage_sequence.sql',
+        });
+        
+        // Return false - can't insert due to sequence issue
+        return false;
+      } else {
+        // Other unique constraint violations
+        console.error('❌ Duplicate stage change record blocked by unique constraint:', {
+          error: error.message,
+          errorCode: error.code,
+          errorDetails: error.details,
+          insertPayload,
+          stage: resolvedStageId,
+          leadId: lead.id,
+          message: 'The database has a unique constraint preventing this insert. The stage update succeeded, but history recording failed.',
+        });
+      }
+      
+      // Return false to indicate failure
+      return false;
     }
     
-    console.error('Error recording lead stage change:', {
+    console.error('❌ Error recording lead stage change:', {
       error,
       payload,
       stage,
       resolvedStageId,
+      isLegacy,
+      recordId,
+      leadId: lead.id,
     });
     throw error;
   }
+  
+  console.log('✅ Successfully recorded stage change:', {
+    isLegacy,
+    leadId: lead.id,
+    stage: resolvedStageId,
+    insertedId: data?.[0]?.id,
+  });
+  
+  return true; // Return true to indicate success
 };
 
 /**
@@ -263,122 +408,43 @@ const getEmployeeDisplayNameById = async (employeeId: number | null): Promise<st
 
 /**
  * Triggers celebration for client signed agreement (stage 60)
+ * Uses the actor who made the stage change (currently signed-in user)
  */
-const triggerCelebrationIfNeeded = async (lead: CombinedLead, resolvedStageId: number | null) => {
+const triggerCelebrationIfNeeded = async (
+  lead: CombinedLead, 
+  resolvedStageId: number | null,
+  actor?: StageActorInfo
+) => {
   // Check if stage is 60 (Client signed agreement)
   if (resolvedStageId !== 60) return;
   
   try {
-    // Get closer information
-    let closerEmployeeId: number | null = null;
-    let closerName: string | null = null;
+    // Use the actor who made the stage change (currently signed-in user)
+    const stageActor = actor ?? (await fetchStageActorInfo());
     
-    const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
-    
-    // First, try to get creator_id from the most recent stage change for this lead
-    let creatorId: number | null = null;
-    const isLegacyForQuery = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
-    let stageHistoryQuery = supabase
-      .from('leads_leadstage')
-      .select('creator_id')
-      .order('date', { ascending: false })
-      .limit(1);
-    
-    if (isLegacyForQuery) {
-      const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
-        ? parseInt(lead.id.replace('legacy_', ''), 10)
-        : typeof lead.id === 'number' ? lead.id : null;
-      if (legacyId) {
-        stageHistoryQuery = stageHistoryQuery.eq('lead_id', legacyId);
-      }
-    } else {
-      stageHistoryQuery = stageHistoryQuery.eq('newlead_id', lead.id);
-    }
-    
-    const { data: stageHistory } = await stageHistoryQuery.single();
-    if (stageHistory?.creator_id) {
-      creatorId = stageHistory.creator_id;
-    }
-    
-    // If creator_id exists, use it
-    if (creatorId) {
-      closerEmployeeId = creatorId;
-      closerName = await getEmployeeDisplayNameById(closerEmployeeId);
-    }
-    
-    // If creator_id is empty, use the closer from the lead
-    if (!closerName) {
-      if (isLegacy) {
-        // For legacy leads, get closer_id from lead data or query
-        const closerId = (lead as any).closer_id;
-        if (closerId) {
-          closerEmployeeId = typeof closerId === 'number' ? closerId : parseInt(String(closerId), 10);
-          closerName = await getEmployeeDisplayNameById(closerEmployeeId);
-        } else {
-          // Query if not in lead data
-          const legacyId = typeof lead.id === 'string' && lead.id.startsWith('legacy_')
-            ? parseInt(lead.id.replace('legacy_', ''), 10)
-            : typeof lead.id === 'number' ? lead.id : null;
-          
-          if (legacyId) {
-            const { data: legacyLead } = await supabase
-              .from('leads_lead')
-              .select('closer_id')
-              .eq('id', legacyId)
-              .single();
-            
-            if (legacyLead?.closer_id) {
-              closerEmployeeId = legacyLead.closer_id;
-              closerName = await getEmployeeDisplayNameById(closerEmployeeId);
-            }
-          }
-        }
-      } else {
-        // For new leads, get closer (string) from lead data
-        const closerString = (lead as any).closer;
-        if (closerString && closerString.trim() && closerString !== '---') {
-          closerName = closerString;
-          // Try to find employee ID by name
-          const { data: employee } = await supabase
-            .from('tenants_employee')
-            .select('id')
-            .eq('display_name', closerString)
-            .single();
-          if (employee) {
-            closerEmployeeId = employee.id;
-          }
-        } else {
-          // If closer is not in lead data, query it
-          const { data: newLead } = await supabase
-            .from('leads')
-            .select('closer')
-            .eq('id', lead.id)
-            .single();
-          
-          if (newLead?.closer && newLead.closer.trim() && newLead.closer !== '---') {
-            closerName = newLead.closer;
-            // Try to find employee ID by name
-            const { data: employee } = await supabase
-              .from('tenants_employee')
-              .select('id')
-              .eq('display_name', newLead.closer)
-              .single();
-            if (employee) {
-              closerEmployeeId = employee.id;
-            }
-          }
-        }
+    // Get employee display name if we have an employee ID
+    let employeeName = stageActor.fullName;
+    if (stageActor.employeeId) {
+      const displayName = await getEmployeeDisplayNameById(stageActor.employeeId);
+      if (displayName) {
+        employeeName = displayName;
       }
     }
     
-    // Trigger celebration via custom event (since we can't directly access context here)
-    if (closerName) {
+    console.log('🎉 Triggering celebration for stage 60:', {
+      employeeName,
+      employeeId: stageActor.employeeId,
+      fullName: stageActor.fullName,
+    });
+    
+    // Trigger celebration via custom event
+    if (employeeName) {
       // Use setTimeout to ensure the event is dispatched after the DOM is ready
       setTimeout(() => {
         window.dispatchEvent(new CustomEvent('celebrate-contract-signed', {
           detail: {
-            employeeName: closerName,
-            employeeId: closerEmployeeId,
+            employeeName: employeeName,
+            employeeId: stageActor.employeeId,
           }
         }));
       }, 100);
@@ -419,20 +485,48 @@ export const updateLeadStageWithHistory = async ({
     ...additionalFields,
   };
 
+  console.log('📝 Updating lead stage:', {
+    tableName,
+    recordId,
+    resolvedStageId,
+    stage,
+    leadId: lead.id,
+    isLegacy: lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_'),
+  });
+
   const { error } = await supabase
     .from(tableName)
     .update(updatePayload)
     .eq('id', recordId);
 
   if (error) {
-    console.error('Error updating lead stage:', { error, tableName, recordId, updatePayload });
+    console.error('❌ Error updating lead stage:', { error, tableName, recordId, updatePayload });
     throw error;
   }
 
-  await recordLeadStageChange({ lead, stage, actor: stageActor, timestamp: effectiveTimestamp });
+  console.log('✅ Lead stage updated successfully, now recording stage change history...');
+  
+  try {
+    const recordSuccess = await recordLeadStageChange({ lead, stage, actor: stageActor, timestamp: effectiveTimestamp });
+    if (recordSuccess) {
+      console.log('✅ Stage change history recorded successfully');
+    } else {
+      console.warn('⚠️ Stage change history recording was skipped (likely duplicate)');
+    }
+  } catch (recordError) {
+    console.error('❌ Error recording stage change history:', recordError);
+    // Don't throw - we want the stage update to succeed even if history recording fails
+    // But log it prominently so we can debug
+  }
   
   // Trigger celebration if stage is 60 (Client signed agreement)
-  await triggerCelebrationIfNeeded(lead, resolvedStageId);
+  // Pass the actor so celebration shows the currently signed-in user
+  try {
+    await triggerCelebrationIfNeeded(lead, resolvedStageId, stageActor);
+  } catch (celebrationError) {
+    console.error('❌ Error triggering celebration:', celebrationError);
+    // Don't throw - celebration is non-critical
+  }
 };
 
 /**

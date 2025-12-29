@@ -282,20 +282,36 @@ const loadPayments = async () => {
         row.leadType === 'legacy' ? { ...row, hasProforma: legacyProformaSet.has(row.leadId) } : row,
       );
       const filtered = withProforma.filter((row) => {
+        // Category filter
         if (filters.categoryId && row.mainCategoryId !== filters.categoryId) {
           return false;
         }
-        if (filters.collected === 'yes' && !row.collected) return false;
-        if (filters.collected === 'no_with_proforma' && (row.collected || !row.hasProforma)) return false;
-        if (filters.collected === 'no_without_proforma' && (row.collected || row.hasProforma)) return false;
+        
+        // Collected filter
+        if (filters.collected !== 'all') {
+          if (filters.collected === 'yes') {
+            if (!row.collected) return false;
+          } else if (filters.collected === 'no_with_proforma') {
+            // Keep only uncollected rows with proforma
+            if (row.collected || !row.hasProforma) return false;
+          } else if (filters.collected === 'no_without_proforma') {
+            // Keep only uncollected rows without proforma
+            if (row.collected || row.hasProforma) return false;
+          }
+        }
+        
+        // Order filter
         if (filters.order && filters.order !== '') {
           if (row.orderCode !== filters.order) return false;
         }
+        
+        // Due date filter
         if (filters.due === 'due_only' && row.dueDate) {
           const due = new Date(row.dueDate).getTime();
           const limit = filters.toDate ? new Date(filters.toDate).getTime() : new Date().getTime();
           if (due > limit) return false;
         }
+        
         return true;
       });
       filtered.sort((a, b) => {

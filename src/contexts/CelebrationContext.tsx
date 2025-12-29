@@ -43,18 +43,36 @@ export const CelebrationProvider: React.FC<CelebrationProviderProps> = ({ childr
         // Send to the employee who signed (if they have push enabled)
         if (data.employeeId) {
           // Get user ID for the employee
-          const { data: employeeUser } = await supabase
+          const { data: employeeUser, error: employeeError } = await supabase
             .from('tenants_employee')
             .select('user_id')
             .eq('id', data.employeeId)
-            .single();
+            .maybeSingle();
           
-          if (employeeUser?.user_id) {
-            await sendAgreementCelebrationNotification(
-              employeeUser.user_id,
-              data.employeeName,
-              data.employeeId
-            );
+          if (employeeError) {
+            console.warn('⚠️ Error fetching employee user_id for push notification:', employeeError);
+          } else if (employeeUser?.user_id) {
+            // Only send if user_id is a valid UUID string
+            const userIdString = String(employeeUser.user_id);
+            // Check if it's a valid UUID format (basic check)
+            const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+            if (uuidRegex.test(userIdString)) {
+              try {
+                await sendAgreementCelebrationNotification(
+                  userIdString,
+                  data.employeeName,
+                  data.employeeId
+                );
+              } catch (pushError) {
+                console.warn('⚠️ Error sending push notification to employee:', pushError);
+              }
+            } else {
+              console.warn('⚠️ Employee user_id is not a valid UUID, skipping push notification:', {
+                employeeId: data.employeeId,
+                userId: employeeUser.user_id,
+                userIdType: typeof employeeUser.user_id,
+              });
+            }
           }
         }
         
