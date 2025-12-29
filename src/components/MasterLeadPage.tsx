@@ -142,6 +142,26 @@ const MasterLeadPage: React.FC = () => {
     return 'Unknown';
   };
 
+  // Helper function to format lead number for legacy leads (same logic as Clients.tsx)
+  const formatLegacyLeadNumber = (legacyLead: any, subLeadSuffix?: number): string => {
+    const masterId = legacyLead.master_id;
+    const leadId = String(legacyLead.id);
+    
+    // If master_id is null/empty, it's a master lead - return just the ID
+    if (!masterId || String(masterId).trim() === '') {
+      return leadId;
+    }
+    
+    // If master_id exists, it's a sub-lead
+    // Use provided suffix if available, otherwise calculate it
+    if (subLeadSuffix !== undefined) {
+      return `${masterId}/${subLeadSuffix}`;
+    }
+    
+    // If suffix not provided, return a placeholder that will be calculated when data is fetched
+    return `${masterId}/?`;
+  };
+
   // Helper function to get currency symbol
   const getCurrencySymbol = (currencyCode?: string) => {
     if (!currencyCode) return '₪';
@@ -816,8 +836,9 @@ const MasterLeadPage: React.FC = () => {
 
         // Add master lead first
         if (masterLead) {
-          const masterLeadNumber = masterLead.manual_id || String(masterLead.id);
-          const displayNumber = masterLead.stage === 100 ? `C${masterLeadNumber}` : masterLeadNumber;
+          // Format lead number using the same logic as Clients.tsx
+          const formattedLeadNumber = formatLegacyLeadNumber(masterLead);
+          const displayNumber = masterLead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
           const currencyInfo = getCurrencyInfo(masterLead);
           
           // Debug master lead lookups
@@ -893,9 +914,24 @@ const MasterLeadPage: React.FC = () => {
 
         // Add sub-leads
         if (subLeadsData) {
-          subLeadsData.forEach((lead, index) => {
-            const subLeadNumber = lead.manual_id || String(lead.id);
-            const displayNumber = lead.stage === 100 ? `C${subLeadNumber}` : subLeadNumber;
+          // Calculate suffix for each sub-lead
+          const subLeadsWithSuffix = subLeadsData.map((lead, index) => {
+            let subLeadSuffix: number | undefined;
+            if (lead.master_id) {
+              // Find position of this lead in the ordered list of sub-leads with same master_id
+              const sameMasterLeads = subLeadsData.filter(l => l.master_id === lead.master_id);
+              const sortedSameMaster = [...sameMasterLeads].sort((a, b) => a.id - b.id);
+              const currentIndex = sortedSameMaster.findIndex(l => l.id === lead.id);
+              // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+              subLeadSuffix = currentIndex >= 0 ? currentIndex + 2 : sameMasterLeads.length + 2;
+            }
+            return { lead, subLeadSuffix };
+          });
+
+          subLeadsWithSuffix.forEach(({ lead, subLeadSuffix }, index) => {
+            // Format lead number using the same logic as Clients.tsx
+            const formattedLeadNumber = formatLegacyLeadNumber(lead, subLeadSuffix);
+            const displayNumber = lead.stage === 100 ? `C${formattedLeadNumber}` : formattedLeadNumber;
             const currencyInfo = getCurrencyInfo(lead);
             
             // Debug first sub-lead lookups
@@ -1193,8 +1229,9 @@ const MasterLeadPage: React.FC = () => {
                   Master lead #{(() => {
                     if (!masterLeadInfo) return lead_number;
                     
-                    // Use lead_number if available, then manual_id, otherwise fallback to id
-                    let displayNumber = masterLeadInfo.lead_number || masterLeadInfo.manual_id || String(masterLeadInfo.id);
+                    // Format lead number using the same logic as Clients.tsx
+                    const formattedLeadNumber = formatLegacyLeadNumber(masterLeadInfo);
+                    let displayNumber = formattedLeadNumber;
                     
                     // Add "C" prefix for legacy leads with stage "100" (Success) or higher (after stage 60)
                     if (masterLeadInfo.stage === '100' || masterLeadInfo.stage === 100) {
@@ -1306,10 +1343,10 @@ const MasterLeadPage: React.FC = () => {
                               <span className="truncate">{subLead.contact}</span>
                             </div>
                           )}
-                          {subLead.applicants > 0 && (
+                          {(subLead.applicants ?? 0) > 0 && (
                             <div className="flex items-center gap-2" title="Applicants">
                               <UserIcon className="h-4 w-4 text-base-content/50" />
-                              <span>{subLead.applicants} applicant{subLead.applicants !== 1 ? 's' : ''}</span>
+                              <span>{subLead.applicants} applicant{(subLead.applicants ?? 0) !== 1 ? 's' : ''}</span>
                             </div>
                           )}
                         </div>

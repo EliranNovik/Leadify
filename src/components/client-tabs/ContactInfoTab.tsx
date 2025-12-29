@@ -2276,8 +2276,20 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           }
           
           let relationshipError: any = null;
+          let isMainContact = false;
           
           try {
+            // First, check if there are existing main contacts
+            // New contacts should NOT be main if there's already a main contact
+            const { data: existingMainContacts } = await supabase
+              .from('lead_leadcontact')
+              .select('id, contact_id')
+              .eq('lead_id', legacyId)
+              .eq('main', 'true');
+            
+            // Only set main=true if there are NO existing main contacts
+            isMainContact = !existingMainContacts || existingMainContacts.length === 0;
+            
             // Always get the next highest available ID before inserting to avoid duplicate key errors
             const { data: maxIdData, error: maxIdError } = await supabase
               .from('lead_leadcontact')
@@ -2294,13 +2306,14 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               console.log('Next available relationship ID:', nextId);
               
               // Insert with explicit ID to avoid duplicate key errors
+              // New contacts should NOT be main if there's already a main contact
               const result = await supabase
                 .from('lead_leadcontact')
                 .insert([{
                   id: nextId,
                   contact_id: newContact.id,
                   lead_id: legacyId,
-                  main: 'false'
+                  main: isMainContact ? 'true' : 'false'
                 }]);
               
               relationshipError = result.error;
@@ -2315,7 +2328,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                     id: retryId,
                     contact_id: newContact.id,
                     lead_id: legacyId,
-                    main: 'false'
+                    main: isMainContact ? 'true' : 'false'
                   }]);
                 
                 relationshipError = retryResult.error;
@@ -2338,7 +2351,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           setContacts(prevContacts => {
             // Remove the old temporary contact and add the new one with real ID
             const filtered = prevContacts.filter(c => c.id !== id && c.id !== newContact.id);
-            return [...filtered, { ...contact, id: newContact.id, isEditing: false, isMain: false }];
+            return [...filtered, { ...contact, id: newContact.id, isEditing: false, isMain: isMainContact }];
           });
           
           toast.success('New contact created successfully!');
@@ -2368,14 +2381,18 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             })
             .eq('id', contactToUpdate.id);
           
-          if (updateError) throw updateError;
-          // Use functional update to avoid stale state
+          if (updateError) {
+            console.error('Error updating legacy contact:', updateError);
+            throw updateError;
+          }
+          // Use functional update to avoid stale state - preserve isMain status
           setContacts(prevContacts => 
             prevContacts.map(c => 
-            c.id === id ? { ...contact, isEditing: false } : c
+              c.id === id ? { ...contact, isEditing: false, isMain: c.isMain } : c
             )
           );
           
+          toast.success('Contact updated successfully');
           console.log('Legacy contact updated in local state');
         }
         
@@ -2563,15 +2580,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             })
             .eq('id', contactToUpdate.id);
 
-          if (updateError) throw updateError;
+          if (updateError) {
+            console.error('Error updating contact:', updateError);
+            throw updateError;
+          }
 
-          // Use functional update to avoid stale state
+          // Use functional update to avoid stale state - preserve isMain status
           setContacts(prevContacts => 
             prevContacts.map(c => 
-          c.id === id ? { ...contact, isEditing: false } : c
+              c.id === id ? { ...contact, isEditing: false, isMain: c.isMain } : c
             )
           );
           
+          toast.success('Contact updated successfully');
           console.log('Contact updated in local state');
           
           // Don't call onClientUpdate to prevent unnecessary re-fetches
