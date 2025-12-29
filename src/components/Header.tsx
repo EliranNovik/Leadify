@@ -143,7 +143,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
   const isMouseOverSearchRef = useRef(false);
   const masterSearchResultsRef = useRef<CombinedLead[]>([]);
+  const exactMatchesRef = useRef<CombinedLead[]>([]);
+  const fuzzyMatchesRef = useRef<CombinedLead[]>([]);
   const previousSearchQueryRef = useRef<string>('');
+  const fuzzySearchTimeoutRef = useRef<NodeJS.Timeout>();
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -923,10 +926,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
   };
 
-  // Handle search - with fuzzy search fallback and incremental filtering
+  // Handle search - with improved fuzzy search behavior and incremental filtering
   useEffect(() => {
+    // Clear any existing timeouts
     if (searchTimeoutRef.current) {
       clearTimeout(searchTimeoutRef.current);
+    }
+    if (fuzzySearchTimeoutRef.current) {
+      clearTimeout(fuzzySearchTimeoutRef.current);
     }
 
     const trimmedQuery = searchValue.trim();
@@ -935,83 +942,126 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (!trimmedQuery) {
       setSearchResults([]);
       masterSearchResultsRef.current = [];
+      exactMatchesRef.current = [];
+      fuzzyMatchesRef.current = [];
       previousSearchQueryRef.current = '';
       setIsSearching(false);
       return;
     }
 
-    // Check if this is an extension of the previous query (user is continuing to type)
-    // An extension means: the new query is longer AND starts with the previous query
-    // BUT: Don't use incremental filtering for:
-    // - Numeric queries (lead numbers) - need precise database searches
-    // - Phone numbers - need precise database searches
-    // - Very short queries (< 3 chars) - might not have enough results to filter
+    // Detect query type for better filtering decisions
     const isNumeric = /^\d+$/.test(trimmedQuery);
     const digits = trimmedQuery.replace(/\D/g, '');
     const isPhoneNumber = /^[\d\s\-\(\)\+]+$/.test(trimmedQuery) && digits.length >= 3;
     const startsWithZero = digits.startsWith('0') && digits.length >= 4;
     const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
-    const isVeryShortQuery = trimmedQuery.length < 3;
+    const isVeryShortQuery = trimmedQuery.length < 2;
     
+    // Check if this is an extension of the previous query (user is continuing to type)
+    // An extension means: the new query is longer AND starts with the previous query
     const isQueryExtension = previousQuery && 
       trimmedQuery.length > previousQuery.length && 
       trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
-      masterSearchResultsRef.current.length > 0 &&
+      (exactMatchesRef.current.length > 0 || fuzzyMatchesRef.current.length > 0) &&
       !isNumeric && // Don't use incremental filtering for pure numeric queries
       !isPhoneNumber && // Don't use incremental filtering for phone numbers
       !isLeadNumber && // Don't use incremental filtering for lead numbers
       !isVeryShortQuery && // Don't use incremental filtering for very short queries
-      previousQuery.length >= 3; // Previous query must also be at least 3 chars
+      previousQuery.length >= 2; // Previous query must be at least 2 chars
     
-    if (isQueryExtension) {
-      // Filter existing results client-side for faster response
-      // This prevents unnecessary API calls when user is just continuing to type
-      // Only works for text queries (names, emails) with sufficient length
-      const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
+    if (isQueryExtension && fuzzyMatchesRef.current.length > 0) {
+      // User is continuing to type - filter existing fuzzy results client-side
+      // This provides smooth, instant filtering without jumping around
+      const filteredFuzzy = filterResultsClientSide(fuzzyMatchesRef.current, trimmedQuery);
       
-      // If filtering results in empty results, perform a new search instead
-      // This handles cases where the extended query doesn't match any existing results
-      if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
-        // Don't return early - let it perform a new search
-        // This ensures we don't show "no results" when there might be matches
-      } else {
-        setSearchResults(filtered);
-        setIsSearching(false);
-        previousSearchQueryRef.current = trimmedQuery;
-        return;
+      // Combine exact matches (if any) with filtered fuzzy matches
+      const combinedResults = [...exactMatchesRef.current, ...filteredFuzzy];
+      masterSearchResultsRef.current = combinedResults;
+      fuzzyMatchesRef.current = filteredFuzzy; // Update fuzzy matches
+      setSearchResults(combinedResults);
+      setIsSearching(false);
+      previousSearchQueryRef.current = trimmedQuery;
+      
+      // Cancel any pending fuzzy search since we're filtering existing results
+      if (fuzzySearchTimeoutRef.current) {
+        clearTimeout(fuzzySearchTimeoutRef.current);
       }
+      return;
     }
 
-    // Otherwise, perform new search (query got shorter or changed significantly)
+    // Query changed significantly or is new - perform fresh search
     setIsSearching(true);
 
+    // First, try exact/direct search (faster, 300ms delay)
     searchTimeoutRef.current = setTimeout(async () => {
       try {
-        // First try direct search
+        // Try direct search first
         const directResults = await searchLeads(trimmedQuery);
         
-        // Check if we have direct matches (non-fuzzy)
-        const directMatches = directResults.filter(r => !r.isFuzzyMatch);
+        // Separate exact matches (non-fuzzy) from fuzzy matches
+        const exactMatches = directResults.filter(r => !r.isFuzzyMatch);
+        const directFuzzyMatches = directResults.filter(r => r.isFuzzyMatch);
         
-        if (directMatches.length > 0) {
-          // Show only direct matches
-          masterSearchResultsRef.current = directMatches;
-          setSearchResults(directMatches);
+        // Store exact matches
+        exactMatchesRef.current = exactMatches;
+        
+        // If we have exact matches, show them immediately
+        if (exactMatches.length > 0) {
+          masterSearchResultsRef.current = exactMatches;
+          setSearchResults(exactMatches);
+          setIsSearching(false);
+          previousSearchQueryRef.current = trimmedQuery;
+          
+          // Still perform fuzzy search in background if query is long enough
+          // but don't show loading state
+          if (trimmedQuery.length >= 3 && directFuzzyMatches.length === 0) {
+            fuzzySearchTimeoutRef.current = setTimeout(async () => {
+              try {
+                const fuzzyResults = await performFuzzySearch(trimmedQuery);
+                fuzzyMatchesRef.current = fuzzyResults;
+                // Combine exact matches with fuzzy matches
+                const combinedResults = [...exactMatches, ...fuzzyResults];
+                masterSearchResultsRef.current = combinedResults;
+                setSearchResults(combinedResults);
+              } catch (error) {
+                console.error('Error performing fuzzy search:', error);
+              }
+            }, 500); // Additional delay for fuzzy search
+          } else if (directFuzzyMatches.length > 0) {
+            // If direct search returned fuzzy matches, use them
+            fuzzyMatchesRef.current = directFuzzyMatches;
+            const combinedResults = [...exactMatches, ...directFuzzyMatches];
+            masterSearchResultsRef.current = combinedResults;
+            setSearchResults(combinedResults);
+            setIsSearching(false);
+          }
         } else {
-          // No direct matches, perform fuzzy search
-          const fuzzyResults = await performFuzzySearch(trimmedQuery);
-          masterSearchResultsRef.current = fuzzyResults;
-          setSearchResults(fuzzyResults);
+          // No exact matches - perform fuzzy search (longer delay to avoid jumping)
+          fuzzySearchTimeoutRef.current = setTimeout(async () => {
+            try {
+              const fuzzyResults = await performFuzzySearch(trimmedQuery);
+              fuzzyMatchesRef.current = fuzzyResults;
+              masterSearchResultsRef.current = fuzzyResults;
+              setSearchResults(fuzzyResults);
+              setIsSearching(false);
+              previousSearchQueryRef.current = trimmedQuery;
+            } catch (error) {
+              console.error('Error performing fuzzy search:', error);
+              setSearchResults([]);
+              masterSearchResultsRef.current = [];
+              setIsSearching(false);
+            }
+          }, 600); // Longer delay for fuzzy search to reduce jumping
         }
-        previousSearchQueryRef.current = trimmedQuery;
       } catch (error) {
         console.error('Error searching leads:', error);
         setSearchResults([]);
         masterSearchResultsRef.current = [];
-      } finally {
+        exactMatchesRef.current = [];
+        fuzzyMatchesRef.current = [];
         setIsSearching(false);
       }
-    }, 300);
+    }, 300); // Fast response for exact matches
   }, [searchValue]);
 
   // Keep search active when filter dropdown is open
@@ -2323,10 +2373,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setSearchValue('');
     setSearchResults([]);
     masterSearchResultsRef.current = [];
+    exactMatchesRef.current = [];
+    fuzzyMatchesRef.current = [];
     previousSearchQueryRef.current = '';
     setIsSearchActive(false);
     setHasAppliedFilters(false);
     setIsSearching(false);
+    if (fuzzySearchTimeoutRef.current) {
+      clearTimeout(fuzzySearchTimeoutRef.current);
+    }
     searchInputRef.current?.blur();
   };
 
@@ -2334,11 +2389,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setIsSearchActive(false);
     setSearchResults([]);
     masterSearchResultsRef.current = [];
+    exactMatchesRef.current = [];
+    fuzzyMatchesRef.current = [];
     previousSearchQueryRef.current = '';
     setSearchValue('');
     setHasAppliedFilters(false);
     setShowFilterDropdown(false);
     setIsSearching(false);
+    if (fuzzySearchTimeoutRef.current) {
+      clearTimeout(fuzzySearchTimeoutRef.current);
+    }
     searchInputRef.current?.blur();
   };
 
@@ -3450,53 +3510,142 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               </div>
             ) : searchResults.length > 0 ? (
               <div className="space-y-2">
-                {searchResults.map((result, index) => {
-                  // Use a more unique key to avoid React key conflicts
-                  const uniqueKey = result.lead_type === 'legacy' 
-                    ? `legacy_${result.id}_${result.contactName || result.name}_${index}`
-                    : `${result.id}_${result.contactName || result.name}_${index}`;
+                {/* Separate exact matches from fuzzy matches */}
+                {(() => {
+                  const exactMatches = searchResults.filter(r => !r.isFuzzyMatch);
+                  const allFuzzyMatches = searchResults.filter(r => r.isFuzzyMatch);
                   
-                  const displayName = result.contactName || result.name || '';
+                  // Create a set of exact match lead identifiers to filter duplicates
+                  const exactMatchIdentifiers = new Set<string>();
+                  exactMatches.forEach(match => {
+                    const identifier = match.lead_number?.toString().trim() || '';
+                    if (identifier) {
+                      exactMatchIdentifiers.add(identifier.toLowerCase());
+                    }
+                  });
+                  
+                  // Filter out fuzzy matches that have the same lead_number as exact matches
+                  const fuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
+                    const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || '';
+                    if (!fuzzyIdentifier) return true; // Keep if no identifier
+                    return !exactMatchIdentifiers.has(fuzzyIdentifier.toLowerCase());
+                  });
                   
                   return (
-                    <button
-                      key={uniqueKey}
-                      onClick={() => handleSearchResultClick(result)}
-                      className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
-                    >
-                      <div className="absolute top-2 right-2 z-10">
-                        {getStageBadge(result.stage)}
-                      </div>
-                      <div className="flex items-start gap-3 pr-24 md:pr-16">
-                        <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
-                          <span className="font-semibold text-white">
-                            {displayName.charAt(0).toUpperCase()}
-                          </span>
+                    <>
+                      {/* Exact Matches Section */}
+                      {exactMatches.length > 0 && (
+                        <>
+                          {exactMatches.map((result, index) => {
+                            const uniqueKey = result.lead_type === 'legacy' 
+                              ? `exact_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                              : `exact_${result.id}_${result.contactName || result.name}_${index}`;
+                            
+                            const displayName = result.contactName || result.name || '';
+                            
+                            return (
+                              <button
+                                key={uniqueKey}
+                                onClick={() => handleSearchResultClick(result)}
+                                className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
+                              >
+                                <div className="absolute top-2 right-2 z-10">
+                                  {getStageBadge(result.stage)}
+                                </div>
+                                <div className="flex items-start gap-3 pr-24 md:pr-16">
+                                  <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
+                                    <span className="font-semibold text-white">
+                                      {displayName.charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
+                                    <div className="mb-1">
+                                      <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                      </p>
+                                    </div>
+                                    <div className="mb-1">
+                                      <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    </div>
+                                    {result.category && (
+                                      <p className="text-sm text-base-content/80 truncate">
+                                        <span className="font-medium">Category:</span> {result.category}
+                                      </p>
+                                    )}
+                                    {result.topic && (
+                                      <p className="text-sm text-base-content/80 truncate">
+                                        <span className="font-medium">Topic:</span> {result.topic}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </>
+                      )}
+                      
+                      {/* Divider between exact and fuzzy matches */}
+                      {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
+                        <div className="px-4 py-2 border-t border-base-300">
+                          <p className="text-xs text-base-content/60 font-medium">Similar matches</p>
                         </div>
-                        <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
-                          <div className="mb-1">
-                            <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                              {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
-                            </p>
-                          </div>
-                          <div className="mb-1">
-                            <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
-                          </div>
-                          {result.category && (
-                            <p className="text-sm text-base-content/80 truncate">
-                              <span className="font-medium">Category:</span> {result.category}
-                            </p>
-                          )}
-                          {result.topic && (
-                            <p className="text-sm text-base-content/80 truncate">
-                              <span className="font-medium">Topic:</span> {result.topic}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                    </button>
+                      )}
+                      
+                      {/* Fuzzy Matches Section */}
+                      {fuzzyMatches.length > 0 && (
+                        <>
+                          {fuzzyMatches.map((result, index) => {
+                            const uniqueKey = result.lead_type === 'legacy' 
+                              ? `fuzzy_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                              : `fuzzy_${result.id}_${result.contactName || result.name}_${index}`;
+                            
+                            const displayName = result.contactName || result.name || '';
+                            
+                            return (
+                              <button
+                                key={uniqueKey}
+                                onClick={() => handleSearchResultClick(result)}
+                                className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
+                              >
+                                <div className="absolute top-2 right-2 z-10">
+                                  {getStageBadge(result.stage)}
+                                </div>
+                                <div className="flex items-start gap-3 pr-24 md:pr-16">
+                                  <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
+                                    <span className="font-semibold text-white">
+                                      {displayName.charAt(0).toUpperCase()}
+                                    </span>
+                                  </div>
+                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
+                                    <div className="mb-1">
+                                      <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                      </p>
+                                    </div>
+                                    <div className="mb-1">
+                                      <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    </div>
+                                    {result.category && (
+                                      <p className="text-sm text-base-content/80 truncate">
+                                        <span className="font-medium">Category:</span> {result.category}
+                                      </p>
+                                    )}
+                                    {result.topic && (
+                                      <p className="text-sm text-base-content/80 truncate">
+                                        <span className="font-medium">Topic:</span> {result.topic}
+                                      </p>
+                                    )}
+                                  </div>
+                                </div>
+                              </button>
+                            );
+                          })}
+                        </>
+                      )}
+                    </>
                   );
-                })}
+                })()}
               </div>
             ) : searchValue.trim() ? (
               <div className="text-center py-8 text-base-content/70">
