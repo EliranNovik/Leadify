@@ -292,7 +292,10 @@ export async function getMeetingLink(
     }
     
     // Fetch the most recent meeting
-    const { data: meetings, error } = await supabase
+    let meetings: any[] | null = null;
+    let error: any = null;
+    
+    const { data: meetingsData, error: meetingsError } = await supabase
       .from('meetings')
       .select('teams_meeting_url')
       .eq(columnName, queryId)
@@ -300,6 +303,12 @@ export async function getMeetingLink(
       .order('meeting_date', { ascending: false })
       .order('meeting_time', { ascending: false })
       .limit(1);
+    
+    meetings = meetingsData;
+    error = meetingsError;
+    
+    // Legacy leads in leads_lead table don't have teams_meeting_url, so no need to check there
+    // (teams_meeting_url is only in the meetings table)
     
     if (error) {
       console.error('Error fetching meeting link:', error);
@@ -364,7 +373,11 @@ export async function getMeetingDateTime(
     // Fetch the most recent meeting (past or future) - get the last meeting
     console.log(`🔍 Querying last meeting for ${columnName}=${queryId}`);
     
-    const { data: meetings, error } = await supabase
+    let meetings: any[] | null = null;
+    let error: any = null;
+    
+    // First try the meetings table
+    const { data: meetingsData, error: meetingsError } = await supabase
       .from('meetings')
       .select('meeting_date, meeting_time, status')
       .eq(columnName, queryId)
@@ -372,6 +385,31 @@ export async function getMeetingDateTime(
       .order('meeting_date', { ascending: false }) // Most recent date first
       .order('meeting_time', { ascending: false }) // Most recent time first
       .limit(1);
+    
+    meetings = meetingsData;
+    error = meetingsError;
+    
+    // If no meeting found in meetings table and it's a legacy lead, check leads_lead table
+    if (isLegacyLead && (!meetings || meetings.length === 0)) {
+      console.log(`🔍 No meeting in meetings table, checking leads_lead table for id=${queryId}`);
+      const { data: legacyLeadData, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('meeting_date, meeting_time')
+        .eq('id', queryId)
+        .not('meeting_date', 'is', null)
+        .single();
+      
+      if (!legacyError && legacyLeadData && legacyLeadData.meeting_date && legacyLeadData.meeting_time) {
+        // Convert leads_lead format to meetings format
+        meetings = [{
+          meeting_date: legacyLeadData.meeting_date,
+          meeting_time: legacyLeadData.meeting_time,
+          status: null
+        }];
+        error = null;
+        console.log(`✅ Found meeting in leads_lead table:`, meetings[0]);
+      }
+    }
     
     console.log(`🔍 Last meeting query result:`, { meetings, error, count: meetings?.length || 0 });
     
@@ -456,7 +494,11 @@ export async function getMeetingTime(
     // Fetch the most recent meeting
     console.log(`🔍 Querying meeting time for ${columnName}=${queryId}`);
     
-    const { data: meetings, error } = await supabase
+    let meetings: any[] | null = null;
+    let error: any = null;
+    
+    // First try the meetings table
+    const { data: meetingsData, error: meetingsError } = await supabase
       .from('meetings')
       .select('meeting_time, meeting_date, status')
       .eq(columnName, queryId)
@@ -464,6 +506,32 @@ export async function getMeetingTime(
       .order('meeting_date', { ascending: false })
       .order('meeting_time', { ascending: false })
       .limit(1);
+    
+    meetings = meetingsData;
+    error = meetingsError;
+    
+    // If no meeting found in meetings table and it's a legacy lead, check leads_lead table
+    if (isLegacyLead && (!meetings || meetings.length === 0)) {
+      console.log(`🔍 No meeting in meetings table, checking leads_lead table for id=${queryId}`);
+      const { data: legacyLeadData, error: legacyError } = await supabase
+        .from('leads_lead')
+        .select('meeting_date, meeting_time')
+        .eq('id', queryId)
+        .not('meeting_date', 'is', null)
+        .not('meeting_time', 'is', null)
+        .single();
+      
+      if (!legacyError && legacyLeadData && legacyLeadData.meeting_date && legacyLeadData.meeting_time) {
+        // Convert leads_lead format to meetings format
+        meetings = [{
+          meeting_date: legacyLeadData.meeting_date,
+          meeting_time: legacyLeadData.meeting_time,
+          status: null
+        }];
+        error = null;
+        console.log(`✅ Found meeting in leads_lead table:`, meetings[0]);
+      }
+    }
     
     if (error) {
       console.error('❌ Error fetching meeting time:', error);

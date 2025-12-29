@@ -1427,8 +1427,9 @@ const formatEmailBody = async (
         );
 
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+        // Keep the 'legacy_' prefix for backend - backend expects it to identify legacy leads
         const normalizedLeadId = isLegacyLead 
-          ? (typeof client.id === 'string' ? client.id.replace('legacy_', '') : String(client.id))
+          ? (typeof client.id === 'string' ? client.id : `legacy_${client.id}`)
           : client.id;
 
         // Generate template parameters - same approach as SchedulerWhatsAppModal
@@ -1742,7 +1743,7 @@ const formatEmailBody = async (
           meetingTime: undefined,
           location: locationName,
           category: '',
-          topic,
+          topic: '', // Topic removed - not to be included in emails
           joinLink,
           senderName: senderName,
         });
