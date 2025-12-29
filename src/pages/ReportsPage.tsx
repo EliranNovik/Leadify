@@ -7426,6 +7426,8 @@ const CollectionDueReport = () => {
   // Store maps for accessing leadIds when drawer opens
   const [employeeMapStore, setEmployeeMapStore] = useState<Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
   const [departmentMapStore, setDepartmentMapStore] = useState<Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
+  // Store payment values per lead for drawer display
+  const [paymentValueMap, setPaymentValueMap] = useState<Map<string, { value: number; currency: string }>>(new Map());
 
   useEffect(() => {
     const fetchOptions = async () => {
@@ -7479,6 +7481,30 @@ const CollectionDueReport = () => {
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Helper function to normalize order code (similar to CollectionFinancesReport)
+  const normalizeOrderCode = (order: string | number | null | undefined): string => {
+    if (order === null || order === undefined) return '';
+    const raw = order.toString().trim();
+    if (!raw) return '';
+    if (!Number.isNaN(Number(raw))) {
+      return raw;
+    }
+    switch (raw.toLowerCase()) {
+      case 'first payment':
+        return '1';
+      case 'intermediate payment':
+        return '5';
+      case 'final payment':
+        return '9';
+      case 'single payment':
+        return '90';
+      case 'expense (no vat)':
+        return '99';
+      default:
+        return raw;
+    }
   };
 
   // Helper function to get category name from ID with main category (similar to CalendarPage)
@@ -7630,7 +7656,8 @@ const CollectionDueReport = () => {
           cancel_date,
           ready_to_pay,
           ready_to_pay_by,
-          paid
+          paid,
+          payment_order
         `)
         .eq('ready_to_pay', true)
         .eq('paid', false) // Only unpaid payments
@@ -7722,10 +7749,14 @@ const CollectionDueReport = () => {
           ready_to_pay,
           actual_date,
           due_by_id,
+          order,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
         .is('cancel_date', null); // Exclude cancelled payments (only fetch if cancel_date IS NULL)
+      
+      // Debug: Check for payments with due_by_id = 14 before filtering
+      console.log('🔍 DEBUG Employee 14 - About to apply date filters to legacy payments query');
 
       // Filter by 'date' column from finances_paymentplanrow for date range
       if (filters.fromDate) {
@@ -7788,6 +7819,8 @@ const CollectionDueReport = () => {
       
       console.log('🔍 Collection Due Report - Unique new lead IDs:', newLeadIds.length);
       console.log('🔍 Collection Due Report - Unique legacy lead IDs:', legacyLeadIds.length);
+      console.log('🔍 DEBUG Employee 14 - Legacy lead IDs:', legacyLeadIds);
+      console.log('🔍 DEBUG Employee 14 - Is 163739 in legacyLeadIds?', legacyLeadIds.includes(163739));
 
       // Fetch lead metadata
       let newLeadsMap = new Map();
@@ -7859,6 +7892,8 @@ const CollectionDueReport = () => {
           console.error('❌ Collection Due Report - Error fetching legacy leads:', legacyLeadsError);
         } else {
           console.log('✅ Collection Due Report - Fetched legacy leads:', legacyLeads?.length || 0);
+          console.log('🔍 DEBUG Employee 14 - Fetched legacy leads:', legacyLeads?.length || 0);
+          console.log('🔍 DEBUG Employee 14 - Legacy leads with case_handler_id 14:', legacyLeads?.filter((l: any) => Number(l.case_handler_id) === 14).map((l: any) => ({ id: l.id, case_handler_id: l.case_handler_id })));
           if (legacyLeads) {
             legacyLeads.forEach(lead => {
               // Store with string key to match payment.lead_id (which might be string or number)
@@ -7870,6 +7905,7 @@ const CollectionDueReport = () => {
               }
             });
             console.log('📊 Collection Due Report - Legacy leads map keys:', Array.from(legacyLeadsMap.keys()));
+            console.log('🔍 DEBUG Employee 14 - Is lead 163739 in legacyLeadsMap?', legacyLeadsMap.has('163739') || legacyLeadsMap.has(163739));
           }
         }
       }
@@ -7950,6 +7986,13 @@ const CollectionDueReport = () => {
           const handlerId = normalizeHandlerId(payment.due_by_id);
           if (handlerId !== null) {
             allHandlerIds.push(handlerId);
+            if (handlerId === 14) {
+              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy payment due_by_id:', {
+                paymentId: payment.id,
+                leadId: payment.lead_id,
+                due_by_id: payment.due_by_id
+              });
+            }
             console.log('✅ Added due_by_id:', handlerId);
           }
         });
@@ -7977,12 +8020,15 @@ const CollectionDueReport = () => {
           legacyLeadsMap.forEach((lead: any, leadId: any) => {
             console.log('📊 Legacy lead handler info:', {
               leadId,
-              case_handler_id: lead.case_handler_id,
+              case_handler_id: lead?.case_handler_id,
               case_handler_id_type: typeof lead.case_handler_id
             });
             const handlerId = normalizeHandlerId(lead.case_handler_id);
             if (handlerId !== null) {
               allHandlerIds.push(handlerId);
+              if (handlerId === 14) {
+                console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy lead:', leadId);
+              }
               console.log('✅ Added handler ID:', handlerId);
             } else {
               console.log('⚠️ Handler ID is null for lead:', leadId);
@@ -7992,6 +8038,7 @@ const CollectionDueReport = () => {
       }
       console.log('📊 Collection Due Report - All collected handler names (new):', Array.from(allHandlerNames));
       console.log('📊 Collection Due Report - All collected handler IDs (legacy):', allHandlerIds);
+      console.log('🔍 DEBUG Employee 14 - Employee 14 in allHandlerIds?', allHandlerIds.includes(14));
 
       // Fetch handler information:
       // 1. For new leads (case_handler mode): fetch employees by display_name (handler text field) to get their IDs
@@ -7999,6 +8046,10 @@ const CollectionDueReport = () => {
       // 3. For legacy leads: fetch employees by ID (case_handler_id or due_by_id) to get their display_name
       const handlerMap = new Map<number, string>(); // ID -> display_name
       const handlerNameToIdMap = new Map<string, number>(); // display_name -> ID (for new leads in case_handler mode)
+      
+      console.log('🔍 DEBUG Employee 14 - All collected handler names (new):', Array.from(allHandlerNames));
+      console.log('🔍 DEBUG Employee 14 - All collected handler IDs (legacy):', allHandlerIds);
+      console.log('🔍 DEBUG Employee 14 - Employee 14 in handler IDs?', allHandlerIds.includes(14));
       
       // Fetch employees by display_name for new leads
       if (allHandlerNames.size > 0) {
@@ -8037,11 +8088,15 @@ const CollectionDueReport = () => {
           console.error('❌ Collection Due Report - Error fetching handlers by ID:', handlerError);
         } else {
           console.log('📊 Collection Due Report - Handler data by ID received:', handlerData?.map(emp => ({ id: emp.id, display_name: emp.display_name })));
+          console.log('🔍 DEBUG Employee 14 - Employee 14 in handlerData?', handlerData?.some(emp => Number(emp.id) === 14));
           handlerData?.forEach(emp => {
             const empId = Number(emp.id);
             if (!Number.isNaN(empId)) {
               const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
               handlerMap.set(empId, displayName);
+              if (empId === 14) {
+                console.log('✅ DEBUG Employee 14 - Added to handlerMap:', { id: empId, displayName });
+              }
             }
           });
         }
@@ -8054,11 +8109,14 @@ const CollectionDueReport = () => {
       type PaymentEntry = {
         leadId: string;
         leadType: 'new' | 'legacy';
-        amount: number;
+        amount: number; // Total with VAT
+        value: number; // Value without VAT
+        currency: string; // Currency code
         handlerId: number | null;
         handlerName: string;
         departmentId: string | null;
         departmentName: string;
+        orderCode: string; // Store normalized order code for filtering
       };
 
       const payments: PaymentEntry[] = [];
@@ -8077,8 +8135,18 @@ const CollectionDueReport = () => {
         if (filters.employeeType === 'actual_employee_due') {
           // Use ready_to_pay_by from payment if "Actual Employee Due" is selected
           handlerId = normalizeHandlerId(payment.ready_to_pay_by);
+          if (handlerId === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              ready_to_pay_by: payment.ready_to_pay_by
+            });
+          }
           if (handlerId !== null) {
             handlerName = handlerMap.get(handlerId) || '—';
+            if (handlerId === 14) {
+              console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
+            }
           }
         } else {
           // For new leads, handler is stored as text (display_name) in the 'handler' column
@@ -8086,6 +8154,9 @@ const CollectionDueReport = () => {
             const handlerNameFromLead = lead.handler.trim();
             // Look up the employee ID by display_name
             handlerId = handlerNameToIdMap.get(handlerNameFromLead) || null;
+            if (handlerId === 14) {
+              console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in handlerNameToIdMap for:', handlerNameFromLead);
+            }
             if (handlerId !== null) {
               handlerName = handlerMap.get(handlerId) || handlerNameFromLead;
             } else {
@@ -8108,19 +8179,187 @@ const CollectionDueReport = () => {
           vat = Math.round(value * 0.18 * 100) / 100;
         }
         const amount = value + vat;
+        const orderCode = normalizeOrderCode(payment.payment_order);
+        const currency = payment.currency || '₪';
 
         payments.push({
           leadId: payment.lead_id,
           leadType: 'new',
           amount,
+          value, // Store value without VAT
+          currency,
           handlerId,
           handlerName,
           departmentId,
           departmentName,
+          orderCode,
         });
       });
 
       console.log('🔍 Collection Due Report - Processing legacy payments...');
+      
+      // First, identify any missing leads that we need to fetch
+      const missingLeadIds = new Set<number>();
+      filteredLegacyPayments.forEach(payment => {
+        const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
+        const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
+        const lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
+        
+        if (!lead && !Number.isNaN(leadIdNum)) {
+          missingLeadIds.add(leadIdNum);
+        }
+      });
+      
+      // Fetch missing leads if any
+      if (missingLeadIds.size > 0) {
+        const missingIdsArray = Array.from(missingLeadIds);
+        console.log('🔍 Collection Due Report - Fetching', missingIdsArray.length, 'missing legacy leads:', missingIdsArray);
+        
+        // Try fetching with .in() first
+        let { data: missingLeads, error: missingLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+            id,
+            case_handler_id,
+            category_id,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
+          `)
+          .in('id', missingIdsArray);
+        
+        // If no results, try individual queries as a fallback (in case of RLS issues or data inconsistencies)
+        if ((!missingLeads || missingLeads.length === 0) && missingIdsArray.length <= 10) {
+          console.log('🔍 Collection Due Report - No results with .in(), trying individual queries for:', missingIdsArray);
+          const individualResults: any[] = [];
+          for (const leadId of missingIdsArray) {
+            const { data: singleLead, error: singleError } = await supabase
+              .from('leads_lead')
+              .select(`
+                id,
+                case_handler_id,
+                category_id,
+                misc_category!category_id(
+                  id,
+                  name,
+                  parent_id,
+                  misc_maincategory!parent_id(
+                    id,
+                    name,
+                    department_id,
+                    tenant_departement!department_id(
+                      id,
+                      name
+                    )
+                  )
+                )
+              `)
+              .eq('id', leadId)
+              .maybeSingle();
+            
+            if (singleError) {
+              console.error(`❌ Collection Due Report - Error fetching individual lead ${leadId}:`, singleError);
+            } else if (singleLead) {
+              individualResults.push(singleLead);
+              console.log(`✅ Collection Due Report - Found individual lead ${leadId} with case_handler_id:`, singleLead.case_handler_id);
+              if (Number(singleLead.case_handler_id) === 14) {
+                console.log('✅ DEBUG Employee 14 - Found lead with case_handler_id 14:', leadId);
+              }
+            } else {
+              console.warn(`⚠️ Collection Due Report - Lead ${leadId} not found (does not exist or RLS blocking)`);
+            }
+          }
+          
+          if (individualResults.length > 0) {
+            missingLeads = individualResults;
+            missingLeadsError = null;
+            console.log(`✅ Collection Due Report - Found ${individualResults.length} leads via individual queries`);
+          }
+        }
+        
+        if (missingLeadsError) {
+          console.error('❌ Collection Due Report - Error fetching missing legacy leads:', missingLeadsError);
+        } else {
+          console.log('✅ Collection Due Report - Fetched', missingLeads?.length || 0, 'missing legacy leads');
+          
+          // If we didn't find the leads, try a direct query without RLS to see if they exist
+          if (missingLeads?.length === 0 && missingIdsArray.length > 0) {
+            console.warn('⚠️ Collection Due Report - No leads found for IDs:', missingIdsArray);
+            console.warn('⚠️ This might be due to RLS policies or the leads not existing. Payments for these leads will be skipped unless employeeType is "actual_employee_due"');
+          }
+          
+          if (missingLeads) {
+            missingLeads.forEach(lead => {
+              const key = lead.id?.toString() || String(lead.id);
+              legacyLeadsMap.set(key, lead);
+              if (typeof lead.id === 'number') {
+                legacyLeadsMap.set(lead.id, lead);
+              }
+              
+              // Also collect handler IDs from newly fetched leads
+              if (filters.employeeType !== 'actual_employee_due') {
+                const handlerId = normalizeHandlerId(lead.case_handler_id);
+                if (handlerId !== null && !allHandlerIds.includes(handlerId)) {
+                  allHandlerIds.push(handlerId);
+                  if (handlerId === 14) {
+                    console.log('✅ DEBUG Employee 14 - Added handler ID 14 from newly fetched missing lead:', lead.id);
+                  }
+                  console.log('✅ Added handler ID from missing lead:', handlerId);
+                }
+              }
+            });
+            console.log('🔍 DEBUG Employee 14 - Missing leads with case_handler_id 14:', missingLeads.filter((l: any) => Number(l.case_handler_id) === 14).map((l: any) => ({ id: l.id, case_handler_id: l.case_handler_id })));
+            
+            // Re-fetch handler data if we discovered new handler IDs from missing leads
+            if (filters.employeeType !== 'actual_employee_due') {
+              const newHandlerIds = missingLeads
+                .map((l: any) => normalizeHandlerId(l.case_handler_id))
+                .filter((id): id is number => id !== null && !handlerMap.has(id));
+              
+              if (newHandlerIds.length > 0) {
+                console.log('🔍 Collection Due Report - Re-fetching handler data for newly discovered handler IDs:', newHandlerIds);
+                console.log('🔍 DEBUG Employee 14 - Is employee 14 in newHandlerIds?', newHandlerIds.includes(14));
+                const { data: newHandlerData, error: newHandlerError } = await supabase
+                  .from('tenants_employee')
+                  .select('id, display_name')
+                  .in('id', newHandlerIds);
+                
+                if (newHandlerError) {
+                  console.error('❌ Collection Due Report - Error re-fetching handlers:', newHandlerError);
+                } else {
+                  console.log('📊 Collection Due Report - New handler data received:', newHandlerData?.map(emp => ({ id: emp.id, display_name: emp.display_name })));
+                  newHandlerData?.forEach(emp => {
+                    const empId = Number(emp.id);
+                    if (!Number.isNaN(empId)) {
+                      const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+                      handlerMap.set(empId, displayName);
+                      if (empId === 14) {
+                        console.log('✅ DEBUG Employee 14 - Added to handlerMap after re-fetch:', { id: empId, displayName });
+                      }
+                    }
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // After fetching missing leads, we need to fetch their handler names if we haven't already
+      // This will be handled by the existing handler fetching logic below, but we need to ensure
+      // allHandlerIds includes the handler IDs from missing leads
+      
       // Process legacy payments - use due_date if available, otherwise use date (like CollectionFinancesReport)
       filteredLegacyPayments.forEach(payment => {
         // Try both string and number keys for lead_id lookup
@@ -8128,17 +8367,6 @@ const CollectionDueReport = () => {
         const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
         let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
         
-        if (!lead) {
-          console.warn('⚠️ Collection Due Report - Legacy lead not found for payment:', {
-            payment_lead_id: payment.lead_id,
-            payment_lead_id_type: typeof payment.lead_id,
-            leadIdKey,
-            leadIdNum,
-            available_keys: Array.from(legacyLeadsMap.keys()).slice(0, 5)
-          });
-          return;
-        }
-
         // Get handler - use case_handler_id or due_by_id based on filter selection
         let handlerId: number | null = null;
         let handlerName = '—';
@@ -8146,21 +8374,57 @@ const CollectionDueReport = () => {
         if (filters.employeeType === 'actual_employee_due') {
           // Use due_by_id from payment if "Actual Employee Due" is selected
           handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId === 14 || payment.due_by_id === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy payment due_by_id:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              due_by_id: payment.due_by_id,
+              normalizedHandlerId: handlerId
+            });
+          }
         } else {
           // Use case_handler_id from lead if "Case Handler" is selected (default)
+          // If lead doesn't exist, we can't get case_handler_id, so skip this payment
+          if (!lead) {
+            console.warn('⚠️ Collection Due Report - Legacy lead not found for payment (cannot get case_handler_id):', {
+              payment_lead_id: payment.lead_id,
+              payment_lead_id_type: typeof payment.lead_id,
+              leadIdKey,
+              leadIdNum,
+              available_keys: Array.from(legacyLeadsMap.keys()).slice(0, 5),
+              note: 'Skipping payment because we need case_handler_id from lead and lead cannot be fetched'
+            });
+            return;
+          }
           handlerId = normalizeHandlerId(lead.case_handler_id);
+          if (handlerId === 14 || lead.case_handler_id === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy lead case_handler_id:', {
+              leadId: payment.lead_id,
+              case_handler_id: lead?.case_handler_id,
+              normalizedHandlerId: handlerId
+            });
+          }
         }
+        
+        // Note: handlerId can be null if no handler is assigned - we still want to process the payment
+        // with handlerName set to '—' to show unassigned payments
         
         if (handlerId !== null) {
           handlerName = handlerMap.get(handlerId) || '—';
+          if (handlerId === 14) {
+            console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
+          }
           if (handlerName === '—') {
             // Track missing handler IDs to fetch them
             missingHandlerIds.add(handlerId);
+            if (handlerId === 14) {
+              console.warn('⚠️ DEBUG Employee 14 - Employee 14 handler not found in map, added to missingHandlerIds');
+            }
             console.warn('⚠️ Collection Due Report - Legacy lead handler not found in map, will fetch:', {
               handlerId,
               handlerIdType: typeof handlerId,
               employeeType: filters.employeeType,
-              case_handler_id: lead.case_handler_id,
+              case_handler_id: lead?.case_handler_id,
               due_by_id: payment.due_by_id,
               mapKeys: Array.from(handlerMap.keys()),
               leadId: payment.lead_id
@@ -8205,23 +8469,42 @@ const CollectionDueReport = () => {
           vat = Math.round(value * 0.18 * 100) / 100;
         }
         const amount = value + vat;
+        const orderCode = normalizeOrderCode(payment.order);
 
         payments.push({
           leadId: `legacy_${payment.lead_id}`,
           leadType: 'legacy',
           amount,
+          value, // Store value without VAT
+          currency,
           handlerId,
           handlerName,
           departmentId,
           departmentName,
+          orderCode,
         });
       });
+
+      // After processing all payments, check if we found any new handler IDs that weren't in our initial collection
+      // This can happen if we fetched missing leads that had different handler IDs
+      const handlerIdsFromPayments = new Set(payments.map(p => p.handlerId).filter((id): id is number => id !== null));
+      const missingHandlerIdsFromPayments = Array.from(handlerIdsFromPayments).filter(id => !allHandlerIds.includes(id));
+      
+      if (missingHandlerIdsFromPayments.length > 0) {
+        console.log('🔍 Collection Due Report - Found handler IDs in payments that were not in initial collection:', missingHandlerIdsFromPayments);
+        console.log('🔍 DEBUG Employee 14 - Is employee 14 in missingHandlerIdsFromPayments?', missingHandlerIdsFromPayments.includes(14));
+        // Add these to allHandlerIds so they get fetched
+        missingHandlerIdsFromPayments.forEach(id => allHandlerIds.push(id));
+      }
 
       console.log('✅ Collection Due Report - Total payments processed:', payments.length);
       
       // Log all handler IDs in payments
       const handlerIdsInPayments = payments.map(p => p.handlerId).filter(Boolean);
       console.log('📊 Collection Due Report - Handler IDs in payments:', handlerIdsInPayments);
+      console.log('🔍 DEBUG Employee 14 - Employee 14 in payments handlerIds?', handlerIdsInPayments.includes(14));
+      const paymentsWith14All = payments.filter(p => p.handlerId === 14);
+      console.log('🔍 DEBUG Employee 14 - All payments with handlerId 14:', paymentsWith14All.length, paymentsWith14All);
       console.log('📊 Collection Due Report - Payment entries:', payments.map(p => ({ handlerId: p.handlerId, handlerName: p.handlerName, leadId: p.leadId })));
 
       // Fetch any missing handler IDs that appeared in payments but weren't in our initial map
@@ -8247,39 +8530,95 @@ const CollectionDueReport = () => {
           payments.forEach(payment => {
             if (payment.handlerId !== null && missingHandlerIds.has(payment.handlerId) && payment.handlerName === '—') {
               payment.handlerName = handlerMap.get(payment.handlerId) || '—';
+              if (payment.handlerId === 14) {
+                console.log('✅ DEBUG Employee 14 - Updated payment handler name after fetching missing:', { handlerId: payment.handlerId, handlerName: payment.handlerName });
+              }
               console.log('✅ Collection Due Report - Updated payment handler name:', { handlerId: payment.handlerId, handlerName: payment.handlerName });
             }
           });
         }
       }
 
-      // Filter by category/department/employee if specified
+      // Filter by category/department/employee/order if specified
       let filteredPayments = payments;
       console.log('🔍 Collection Due Report - Before filters, payments:', filteredPayments.length);
+      const paymentsWith14BeforeFilter = filteredPayments.filter(p => p.handlerId === 14);
+      console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 before filtering:', paymentsWith14BeforeFilter.length);
+      
+      // Filter by order if specified
+      if (filters.order && filters.order !== '') {
+        console.log('🔍 Collection Due Report - Filtering by order:', filters.order);
+        filteredPayments = filteredPayments.filter(p => p.orderCode === filters.order);
+        console.log('🔍 Collection Due Report - After order filter:', filteredPayments.length);
+        const paymentsWith14AfterOrder = filteredPayments.filter(p => p.handlerId === 14);
+        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after order filter:', paymentsWith14AfterOrder.length);
+      }
       
       if (filters.category) {
         console.log('🔍 Collection Due Report - Filtering by category:', filters.category);
         filteredPayments = filteredPayments.filter(p => p.departmentId === filters.category);
         console.log('🔍 Collection Due Report - After category filter:', filteredPayments.length);
+        const paymentsWith14AfterCategory = filteredPayments.filter(p => p.handlerId === 14);
+        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after category filter:', paymentsWith14AfterCategory.length);
       }
       if (filters.department) {
         console.log('🔍 Collection Due Report - Filtering by department:', filters.department);
         filteredPayments = filteredPayments.filter(p => p.departmentId === filters.department);
         console.log('🔍 Collection Due Report - After department filter:', filteredPayments.length);
+        const paymentsWith14AfterDept = filteredPayments.filter(p => p.handlerId === 14);
+        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after department filter:', paymentsWith14AfterDept.length);
       }
       if (filters.employee) {
         console.log('🔍 Collection Due Report - Filtering by employee:', filters.employee);
         const empId = Number(filters.employee);
         filteredPayments = filteredPayments.filter(p => p.handlerId === empId);
         console.log('🔍 Collection Due Report - After employee filter:', filteredPayments.length);
+        const paymentsWith14AfterEmployee = filteredPayments.filter(p => p.handlerId === 14);
+        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after employee filter:', paymentsWith14AfterEmployee.length);
       }
       
       console.log('✅ Collection Due Report - Final filtered payments:', filteredPayments.length);
 
+      // Create a map of leadId -> payment value and currency for drawer display (from filtered payments)
+      const paymentValueMapLocal = new Map<string, { value: number; currency: string }>();
+      filteredPayments.forEach(payment => {
+        // For legacy leads, the leadId is stored as "legacy_XXX"
+        const leadIdKey = payment.leadId;
+        const existing = paymentValueMapLocal.get(leadIdKey);
+        if (existing) {
+          // If multiple payments exist for the same lead, sum them
+          paymentValueMapLocal.set(leadIdKey, {
+            value: existing.value + payment.value,
+            currency: payment.currency // Use the currency from the payment
+          });
+        } else {
+          paymentValueMapLocal.set(leadIdKey, {
+            value: payment.value,
+            currency: payment.currency
+          });
+        }
+      });
+      setPaymentValueMap(paymentValueMapLocal);
+
       // Group by employee
       // Cases count uses a Set to ensure each lead is counted only once, even if there are multiple payments for the same lead
       const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      
+      // Debug: Check if any payments have handlerId 14
+      const paymentsWith14 = filteredPayments.filter(p => p.handlerId === 14);
+      console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 in filteredPayments:', paymentsWith14.length, paymentsWith14);
+      
       filteredPayments.forEach(payment => {
+        if (payment.handlerId === 14) {
+          console.log('🔍 DEBUG Employee 14 - Processing payment for employee 14:', {
+            leadId: payment.leadId,
+            handlerId: payment.handlerId,
+            handlerName: payment.handlerName,
+            value: payment.value,
+            amount: payment.amount
+          });
+        }
+        
         const key = payment.handlerId?.toString() || 'unassigned';
         if (!employeeMap.has(key)) {
           employeeMap.set(key, {
@@ -8291,10 +8630,26 @@ const CollectionDueReport = () => {
             applicants: 0,
             total: 0,
           });
+          if (payment.handlerId === 14) {
+            console.log('✅ DEBUG Employee 14 - Created new entry in employeeMap:', {
+              key,
+              handlerId: payment.handlerId,
+              handlerName: payment.handlerName,
+              departmentName: payment.departmentName
+            });
+          }
         }
         const entry = employeeMap.get(key)!;
         entry.cases.add(payment.leadId); // Set automatically prevents duplicate lead IDs
-        entry.total += payment.amount;
+        entry.total += payment.value; // Use value without VAT
+        
+        if (payment.handlerId === 14) {
+          console.log('🔍 DEBUG Employee 14 - Updated entry:', {
+            cases: entry.cases.size,
+            total: entry.total,
+            handlerName: entry.handlerName
+          });
+        }
 
         // Add applicants count only once per lead
         if (!entry.applicantsLeads.has(payment.leadId)) {
@@ -8417,6 +8772,11 @@ const CollectionDueReport = () => {
       // Store maps for drawer access
       setEmployeeMapStore(employeeMap);
       
+      // Debug: Check if employee 14 is in employeeMap
+      const employee14Entry = Array.from(employeeMap.entries()).find(([key, entry]) => entry.handlerId === 14);
+      console.log('🔍 DEBUG Employee 14 - Employee 14 in employeeMap?', employee14Entry ? 'YES' : 'NO', employee14Entry);
+      console.log('🔍 DEBUG Employee 14 - All handlerIds in employeeMap:', Array.from(employeeMap.values()).map(e => e.handlerId));
+      
       const employeeDataArray = Array.from(employeeMap.values()).map(entry => ({
         employee: entry.handlerName,
         department: entry.departmentName,
@@ -8426,6 +8786,11 @@ const CollectionDueReport = () => {
         handlerId: entry.handlerId, // Store handlerId for drawer access
         leadIds: Array.from(entry.cases), // Store leadIds for drawer
       })).sort((a, b) => b.total - a.total);
+
+      // Debug: Check if employee 14 is in employeeDataArray
+      const employee14InArray = employeeDataArray.find(e => e.handlerId === 14);
+      console.log('🔍 DEBUG Employee 14 - Employee 14 in employeeDataArray?', employee14InArray ? 'YES' : 'NO', employee14InArray);
+      console.log('🔍 DEBUG Employee 14 - All handlerIds in employeeDataArray:', employeeDataArray.map(e => e.handlerId));
 
       console.log('✅ Collection Due Report - Employee data array:', employeeDataArray.length, 'employees');
       console.log('📊 Collection Due Report - Employee data:', employeeDataArray);
@@ -8459,7 +8824,7 @@ const CollectionDueReport = () => {
         }
         const entry = departmentMap.get(key)!;
         entry.cases.add(payment.leadId);
-        entry.total += payment.amount;
+        entry.total += payment.value; // Use value without VAT
 
         // Add applicants count only once per lead
         if (!entry.applicantsLeads.has(payment.leadId)) {
@@ -8569,6 +8934,11 @@ const CollectionDueReport = () => {
           }
 
           newLeads?.forEach(lead => {
+            // Get payment value from paymentValueMap instead of lead balance
+            const paymentInfo = paymentValueMap.get(lead.id);
+            const paymentValue = paymentInfo?.value || 0;
+            const paymentCurrency = paymentInfo?.currency || lead.balance_currency || '₪';
+            
             leadsData.push({
               leadId: lead.id,
               leadNumber: lead.lead_number, // For new leads, use lead_number column
@@ -8576,8 +8946,8 @@ const CollectionDueReport = () => {
               categoryId: lead.category_id,
               topic: lead.topic || '—',
               applicants: applicantsCountMap.get(lead.id) || 0,
-              value: lead.balance || 0,
-              currency: lead.balance_currency || '₪',
+              value: paymentValue, // Use payment value instead of lead balance
+              currency: paymentCurrency,
               leadType: 'new',
             });
           });
@@ -8618,6 +8988,12 @@ const CollectionDueReport = () => {
               ? Number(lead.no_of_applicants)
               : 0;
 
+            // Get payment value from paymentValueMap instead of lead total
+            const legacyLeadIdKey = `legacy_${lead.id}`;
+            const paymentInfo = paymentValueMap.get(legacyLeadIdKey);
+            const paymentValue = paymentInfo?.value || 0;
+            const paymentCurrency = paymentInfo?.currency || currency;
+            
             leadsData.push({
               leadId: lead.id,
               leadNumber: lead.id.toString(), // For legacy leads, use id column as lead number
@@ -8625,8 +9001,8 @@ const CollectionDueReport = () => {
               categoryId: lead.category_id,
               topic: lead.topic || '—',
               applicants: applicantsCount,
-              value: lead.total || 0,
-              currency: currency,
+              value: paymentValue, // Use payment value instead of lead total
+              currency: paymentCurrency,
               leadType: 'legacy',
             });
           });

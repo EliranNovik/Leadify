@@ -308,26 +308,35 @@ export const recordLeadStageChange = async ({
                                      error.message?.includes('duplicate key value violates unique constraint');
       
       if (isPrimaryKeyViolation) {
-        // If sequence is out of sync, try to fix it by getting max ID and resetting sequence
-        // Then retry the insert
+        // If sequence is out of sync, try to fix it using the RPC function
+        // Then retry the insert once
         try {
-          const { data: maxIdData } = await supabase
-            .from('leads_leadstage')
-            .select('id')
-            .order('id', { ascending: false })
-            .limit(1)
-            .maybeSingle();
+          console.warn('📊 Sequence out of sync detected, attempting to fix...');
           
-          if (maxIdData?.id) {
-            console.warn('📊 Sequence out of sync. Current max ID:', maxIdData.id);
-            console.warn('💡 Attempting to continue - sequence fix may be needed. Run: SELECT setval(\'leads_leadstage_id_seq\', ' + maxIdData.id + ', false);');
+          // Call the RPC function to fix the sequence
+          const { data: fixResult, error: fixError } = await supabase
+            .rpc('fix_leads_leadstage_sequence');
+          
+          if (fixError) {
+            console.error('❌ Failed to fix sequence via RPC:', fixError);
+          } else {
+            console.log('✅ Sequence fixed successfully, new value:', fixResult);
             
-            // Note: We can't fix the sequence from the client side easily
-            // The database admin needs to run the fix SQL
-            // For now, we'll log the error and continue
+            // Retry the insert once after fixing the sequence
+            const { error: retryError, data: retryData } = await supabase
+              .from('leads_leadstage')
+              .insert(insertPayload)
+              .select('id');
+            
+            if (!retryError && retryData) {
+              console.log('✅ Stage change history recorded successfully after sequence fix');
+              return true; // Success!
+            } else if (retryError) {
+              console.error('❌ Retry insert failed after sequence fix:', retryError);
+            }
           }
-        } catch (diagnosticError) {
-          // Ignore diagnostic errors
+        } catch (fixAttemptError) {
+          console.error('❌ Error attempting to fix sequence:', fixAttemptError);
         }
         
         console.error('❌ Primary key violation on leads_leadstage - sequence may be out of sync:', {

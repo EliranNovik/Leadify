@@ -60,8 +60,20 @@ const cleanHtmlContent = (html: string): string => {
 const processHtmlForEditing = (html: string): string => {
   if (!html) return '';
   
+  // First, convert any existing lines (_____________) in styled spans back to placeholders
+  // This handles cases where the contract was saved with lines instead of placeholders
+  let processed = html.replace(/<span[^>]*style="[^"]*border: 2px solid #10b981[^"]*"[^>]*>_____________<\/span>/g, '{{text}}');
+  
+  // Also handle plain lines that appear in paragraph text (common pattern: ": _____________")
+  // Convert plain _____________ that appear after colons or in form contexts back to placeholders
+  processed = processed.replace(/(:\s*)_____________(\s*)/g, '$1{{text}}$2');
+  
+  // Handle lines that appear as standalone text (without specific context)
+  // Look for patterns like "_____________" that are clearly placeholders (between tags or after spaces)
+  processed = processed.replace(/([>\s])_____________([\s<])/g, '$1{{text}}$2');
+  
   // Replace placeholders with styled input fields and signature pads
-  let processed = html
+  processed = processed
     .replace(/\{\{text\}\}/g, '<input type="text" class="inline-input" style="border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" placeholder="Enter text..." />')
     .replace(/\{\{sig\}\}/g, '<div class="signature-pad" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500;">Click to sign</div>');
   
@@ -362,6 +374,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   // State for client inputs (text fields and signatures)
   const [clientInputs, setClientInputs] = useState<{ [key: string]: string }>({});
 
+  // Ref for the contentEditable div in edit mode
+  const contractEditorRef = useRef<HTMLDivElement>(null);
+
+  // State to prevent double-saving
+  const [isSavingContract, setIsSavingContract] = useState(false);
+
   // Global function for clearing signatures (needed for onclick handlers)
   React.useEffect(() => {
     (window as any).clearSignature = (id: string) => {
@@ -371,44 +389,43 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
 
   // Helper function to execute commands on the contentEditable div
   const executeCommand = (command: string, value?: string) => {
-    const contentDiv = document.querySelector('[contenteditable="true"]');
-    if (contentDiv) {
-      (contentDiv as HTMLElement).focus();
+    if (contractEditorRef.current) {
+      contractEditorRef.current.focus();
       document.execCommand(command, false, value);
     }
   };
 
   // Effect to handle signature pad clicks and input field interactions
   useEffect(() => {
-    if (viewingContract && viewingContract.mode === 'edit') {
+    if (viewingContract && viewingContract.mode === 'edit' && contractEditorRef.current) {
       // Wait for the DOM to be ready
       setTimeout(() => {
-        const contentDiv = document.querySelector('[contenteditable="true"]');
+        const contentDiv = contractEditorRef.current;
         if (contentDiv) {
           // Handle signature pad clicks
           const signaturePads = contentDiv.querySelectorAll('.signature-pad');
           signaturePads.forEach(pad => {
-            pad.addEventListener('click', (e) => {
+            // Remove existing listeners to prevent duplicates
+            const newPad = pad.cloneNode(true) as HTMLElement;
+            pad.parentNode?.replaceChild(newPad, pad);
+            
+            newPad.addEventListener('click', (e) => {
               e.preventDefault();
-              const target = e.target as HTMLElement;
-              if (target.classList.contains('signature-pad')) {
-                // Replace the signature pad with a signature input
-                const signatureInput = document.createElement('input');
-                signatureInput.type = 'text';
-                signatureInput.className = 'signature-input';
-                signatureInput.placeholder = 'Enter signature...';
-                target.parentNode?.replaceChild(signatureInput, target);
-                signatureInput.focus();
-              }
-            });
-          });
-
-          // Handle input field interactions
-          const inputs = contentDiv.querySelectorAll('input.inline-input');
-          inputs.forEach(input => {
-            input.addEventListener('input', (e) => {
-              // Store the value in the input's data attribute
-              (e.target as HTMLInputElement).setAttribute('data-value', (e.target as HTMLInputElement).value);
+              e.stopPropagation();
+              // Replace the signature pad with a signature input
+              const signatureInput = document.createElement('input');
+              signatureInput.type = 'text';
+              signatureInput.className = 'signature-input';
+              signatureInput.placeholder = 'Enter signature...';
+              signatureInput.style.border = '2px solid #3b82f6';
+              signatureInput.style.borderRadius = '6px';
+              signatureInput.style.padding = '4px 8px';
+              signatureInput.style.margin = '0 4px';
+              signatureInput.style.minWidth = '180px';
+              signatureInput.style.background = '#ffffff';
+              signatureInput.style.color = '#374151';
+              newPad.parentNode?.replaceChild(signatureInput, newPad);
+              signatureInput.focus();
             });
           });
         }
@@ -4514,12 +4531,12 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                           </div>
                         </div>
                         <div 
-                          key={`editor-content-${viewingContract?.id}-${Date.now()}`}
                           className="flex-1 prose prose-lg max-w-none p-4 overflow-y-auto"
                           style={{ maxHeight: 'calc(100vh - 300px)' }}
                         >
                           {viewingContract?.contractHtml && (
                             <div 
+                              ref={contractEditorRef}
                               className="prose prose-lg max-w-none"
                               contentEditable={viewingContract.mode === 'edit'}
                               suppressContentEditableWarning={true}
@@ -4613,13 +4630,86 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       const publicUrl = `${window.location.origin}/public-legacy-contract/${legacyContractId}/${publicToken}`;
                       console.log('🔍 Public URL created:', publicUrl);
                       
-                      // Copy to clipboard
-                      await navigator.clipboard.writeText(publicUrl);
-                      toast.success('Share link copied to clipboard!');
+                      // Copy to clipboard - use multiple fallback methods
+                      let copySuccess = false;
+                      
+                      // Method 1: Try modern clipboard API first (works in most modern browsers)
+                      try {
+                        if (navigator.clipboard && navigator.clipboard.writeText) {
+                          await navigator.clipboard.writeText(publicUrl);
+                          copySuccess = true;
+                          toast.success('Share link copied to clipboard!');
+                        }
+                      } catch (clipboardError1) {
+                        console.log('Modern clipboard API failed, trying fallback...', clipboardError1);
+                      }
+                      
+                      // Method 2: Fallback to execCommand if modern API failed
+                      if (!copySuccess) {
+                        try {
+                          const textarea = document.createElement('textarea');
+                          textarea.value = publicUrl;
+                          textarea.style.position = 'fixed';
+                          textarea.style.left = '0';
+                          textarea.style.top = '0';
+                          textarea.style.width = '2em';
+                          textarea.style.height = '2em';
+                          textarea.style.padding = '0';
+                          textarea.style.border = 'none';
+                          textarea.style.outline = 'none';
+                          textarea.style.boxShadow = 'none';
+                          textarea.style.background = 'transparent';
+                          textarea.setAttribute('readonly', '');
+                          document.body.appendChild(textarea);
+                          textarea.focus();
+                          textarea.select();
+                          textarea.setSelectionRange(0, 99999); // For mobile devices
+                          const successful = document.execCommand('copy');
+                          document.body.removeChild(textarea);
+                          
+                          if (successful) {
+                            copySuccess = true;
+                            toast.success('Share link copied to clipboard!');
+                          }
+                        } catch (clipboardError2) {
+                          console.error('❌ Clipboard fallback also failed:', clipboardError2);
+                        }
+                      }
+                      
+                      // Method 3: If both methods failed, show the URL in a way the user can easily copy
+                      if (!copySuccess) {
+                        // Create a temporary input field, show it briefly, and let user copy manually
+                        const tempInput = document.createElement('input');
+                        tempInput.type = 'text';
+                        tempInput.value = publicUrl;
+                        tempInput.style.position = 'fixed';
+                        tempInput.style.top = '50%';
+                        tempInput.style.left = '50%';
+                        tempInput.style.transform = 'translate(-50%, -50%)';
+                        tempInput.style.zIndex = '99999';
+                        tempInput.style.padding = '10px';
+                        tempInput.style.fontSize = '14px';
+                        tempInput.style.border = '2px solid #3b82f6';
+                        tempInput.style.borderRadius = '6px';
+                        tempInput.style.width = '80%';
+                        tempInput.style.maxWidth = '600px';
+                        document.body.appendChild(tempInput);
+                        tempInput.focus();
+                        tempInput.select();
+                        
+                        toast.success('Please copy the link from the input field above', { duration: 5000 });
+                        
+                        // Remove the input after 10 seconds
+                        setTimeout(() => {
+                          if (document.body.contains(tempInput)) {
+                            document.body.removeChild(tempInput);
+                          }
+                        }, 10000);
+                      }
                       
                     } catch (error) {
                       console.error('❌ Error creating share link:', error);
-                      toast.error('Failed to create share link.');
+                      toast.error('Failed to create share link: ' + (error as Error).message);
                     }
                   }}
                 >
@@ -4632,76 +4722,168 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               {viewingContract.mode === 'edit' && (
                   <button
                     className="btn btn-success"
+                    disabled={isSavingContract}
                     onClick={async () => {
+                    if (isSavingContract) {
+                      console.log('⏸️ Save already in progress, ignoring click');
+                      return;
+                    }
+                    
+                    setIsSavingContract(true);
                     try {
                       console.log('🔍 Saving edited legacy contract');
                       
-                      if (!editor) {
-                        alert('Editor not available');
-                        return;
-                      }
-                      
-                      // Get the content from the contentEditable div
-                      const contentDiv = document.querySelector('[contenteditable="true"]');
-                      if (!contentDiv) {
+                      // Get the content from the contentEditable div using ref
+                      if (!contractEditorRef.current) {
                         toast.error('Editor not found');
+                        setIsSavingContract(false);
                         return;
                       }
                       
-                      let htmlContent = contentDiv.innerHTML;
-                      console.log('🔍 Content from editor:', htmlContent);
+                      // Get the current HTML from the editor (includes all user edits)
+                      let htmlContent = contractEditorRef.current.innerHTML;
+                      console.log('🔍 Content from editor (first 200 chars):', htmlContent.substring(0, 200));
                       
-                      // Extract values from input fields and replace them back with placeholders
-                      const inputs = contentDiv.querySelectorAll('input.inline-input');
-                      inputs.forEach((input) => {
-                        const value = (input as HTMLInputElement).value || '_____________';
-                        // Replace the input element with the value
-                        const inputRegex = /<input[^>]*class="inline-input"[^>]*>/g;
-                        htmlContent = htmlContent.replace(inputRegex, value);
+                      // Get all input elements and their values from the original editor
+                      const textInputs = Array.from(contractEditorRef.current.querySelectorAll('input.inline-input'));
+                      const signatureInputs = Array.from(contractEditorRef.current.querySelectorAll('input.signature-input'));
+                      const signaturePads = Array.from(contractEditorRef.current.querySelectorAll('.signature-pad'));
+                      
+                      console.log('🔍 Found inputs:', { textInputs: textInputs.length, signatureInputs: signatureInputs.length, signaturePads: signaturePads.length });
+                      
+                      // Create a temporary container to parse and modify the HTML
+                      const tempContainer = document.createElement('div');
+                      tempContainer.innerHTML = htmlContent;
+                      
+                      // Replace text inputs - match by order
+                      // Important: Always use {{text}} placeholder when saving to preserve editability
+                      const tempTextInputs = Array.from(tempContainer.querySelectorAll('input.inline-input'));
+                      tempTextInputs.forEach((tempInput, index) => {
+                        if (textInputs[index]) {
+                          const value = (textInputs[index] as HTMLInputElement).value.trim();
+                          // Always use {{text}} placeholder when saving, so it can be edited again later
+                          const textNode = document.createTextNode('{{text}}');
+                          tempInput.parentNode?.replaceChild(textNode, tempInput);
+                        }
                       });
                       
-                      // Replace signature pad containers and signature inputs with placeholders
-                      htmlContent = htmlContent.replace(
-                        /<div[^>]*class="signature-pad"[^>]*>.*?<\/div>/gs,
-                        '{{sig}}'
-                      );
-                      htmlContent = htmlContent.replace(
-                        /<input[^>]*class="signature-input"[^>]*>/g,
-                        '{{sig}}'
-                      );
+                      // Replace signature inputs - match by order
+                      const tempSignatureInputs = Array.from(tempContainer.querySelectorAll('input.signature-input'));
+                      tempSignatureInputs.forEach((tempInput, index) => {
+                        if (signatureInputs[index]) {
+                          const value = (signatureInputs[index] as HTMLInputElement).value.trim() || '{{sig}}';
+                          const textNode = document.createTextNode(value);
+                          tempInput.parentNode?.replaceChild(textNode, tempInput);
+                        }
+                      });
                       
-                      console.log('🔍 Processed HTML content:', htmlContent);
+                      // Replace signature pads with placeholder
+                      const tempSignaturePads = tempContainer.querySelectorAll('.signature-pad');
+                      tempSignaturePads.forEach((tempPad) => {
+                        const textNode = document.createTextNode('{{sig}}');
+                        tempPad.parentNode?.replaceChild(textNode, tempPad);
+                      });
+                      
+                      // Get the final processed HTML
+                      htmlContent = tempContainer.innerHTML;
+                      console.log('🔍 Processed HTML content (first 500 chars):', htmlContent.substring(0, 500));
+                      console.log('🔍 Processed HTML length:', htmlContent.length);
                       
                       // Extract the legacy contract ID from the viewingContract.id
                       const legacyContractId = viewingContract.id.replace('legacy_', '');
                       console.log('🔍 Legacy contract ID to update:', legacyContractId);
+                      console.log('🔍 HTML content to save length:', htmlContent.length);
                       
                       // Update the contract_html in lead_leadcontact table
-                      const { error } = await supabase
+                      console.log('🔍 Sending update request to database...');
+                      const { data, error } = await supabase
                         .from('lead_leadcontact')
                         .update({ contract_html: htmlContent })
-                        .eq('id', legacyContractId);
+                        .eq('id', legacyContractId)
+                        .select('id, contract_html, signed_contract_html, main')
+                        .single();
+                      
+                      console.log('🔍 Update response:', { data: data ? 'received' : 'null', error: error ? error.message : 'none' });
                       
                       if (error) {
                         console.error('❌ Error updating legacy contract:', error);
-                        alert('Failed to save contract changes.');
+                        console.error('❌ Error details:', JSON.stringify(error, null, 2));
+                        toast.error('Failed to save contract changes: ' + error.message);
+                        setIsSavingContract(false);
+                        return;
+                      }
+                      
+                      if (!data) {
+                        console.error('❌ No data returned from update');
+                        toast.error('Failed to save contract changes - no data returned.');
+                        setIsSavingContract(false);
+                        return;
+                      }
+                      
+                      if (!data.contract_html) {
+                        console.error('❌ No contract_html in response data');
+                        console.error('❌ Response data:', JSON.stringify(data, null, 2));
+                        toast.error('Failed to save contract changes - no contract_html in response.');
+                        setIsSavingContract(false);
                         return;
                       }
                       
                       console.log('✅ Legacy contract updated successfully');
-                      alert('Contract saved successfully!');
+                      console.log('🔍 Saved HTML (first 500 chars):', data.contract_html.substring(0, 500));
+                      console.log('🔍 Saved HTML length:', data.contract_html.length);
+                      console.log('🔍 Saved data:', { id: data.id, hasSignedContract: !!data.signed_contract_html });
                       
-                      // Close the modal
-                      setViewingContract(null);
+                      const savedHtml = data.contract_html;
                       
-                      // Refresh the contracts data
-                      if (onClientUpdate) {
-                        await onClientUpdate();
-                      }
+                      // Update the contactContracts state immediately to reflect the saved changes
+                      setContactContracts(prev => {
+                        const updated = { ...prev };
+                        // Find which contact has this contract and update it
+                        Object.keys(updated).forEach(contactIdStr => {
+                          const contactId = Number(contactIdStr);
+                          const contract = updated[contactId];
+                          if (contract && contract.id === viewingContract.id) {
+                            const hasSignedContract = data.signed_contract_html && 
+                              data.signed_contract_html.trim() !== '' && 
+                              data.signed_contract_html !== '\\N';
+                            updated[contactId] = {
+                              ...contract,
+                              contractHtml: savedHtml,
+                              signedContractHtml: data.signed_contract_html || contract.signedContractHtml,
+                              status: hasSignedContract ? 'signed' : 'draft',
+                            };
+                            console.log('✅ Updated contactContracts state for contact:', contactId);
+                            console.log('✅ Updated contract HTML length:', savedHtml.length);
+                          }
+                        });
+                        return updated;
+                      });
+                      
+                      toast.success('Contract saved successfully!');
+                      
+                      // Also update the viewingContract state so if the modal stays open, it shows the saved version
+                      setViewingContract(prev => {
+                        if (prev) {
+                          return {
+                            ...prev,
+                            contractHtml: savedHtml,
+                          };
+                        }
+                        return prev;
+                      });
+                      
+                      setIsSavingContract(false);
+                      
+                      // Close the modal after a short delay to show the success message
+                      setTimeout(() => {
+                        setViewingContract(null);
+                      }, 1000);
                       
                     } catch (error) {
                       console.error('❌ Error saving legacy contract:', error);
-                      alert('Failed to save contract changes.');
+                      console.error('❌ Error stack:', (error as Error).stack);
+                      toast.error('Failed to save contract changes: ' + (error as Error).message);
+                      setIsSavingContract(false);
                     }
                   }}
                 >
