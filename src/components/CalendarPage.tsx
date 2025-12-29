@@ -1070,19 +1070,37 @@ const CalendarPage: React.FC = () => {
         // Add legacy meetings from leads_lead table to the current meetings
         // BUT only add those that don't already exist in the meetings table
         setMeetings(prevMeetings => {
-          // Build a Set of existing legacy_lead_ids from meetings table
-          const existingLegacyLeadIdsInMeetings = new Set<string>();
+          // Build a Set of existing meeting IDs to prevent duplicates
+          // Check both numeric IDs (from meetings table) and legacy_ IDs (from leads_lead)
+          const existingMeetingIds = new Set<string | number>();
+          const existingLegacyLeadIds = new Set<string>();
+          
           prevMeetings.forEach(meeting => {
+            // Track all meeting IDs (numeric for meetings table, string for legacy)
+            existingMeetingIds.add(meeting.id);
+            
+            // Track legacy_lead_id for meetings from meetings table
             if (meeting.legacy_lead_id) {
-              existingLegacyLeadIdsInMeetings.add(String(meeting.legacy_lead_id));
+              existingLegacyLeadIds.add(String(meeting.legacy_lead_id));
+            }
+            
+            // Also track if it's already a legacy meeting (format: "legacy_207471")
+            if (typeof meeting.id === 'string' && meeting.id.startsWith('legacy_')) {
+              const legacyLeadId = meeting.id.replace('legacy_', '');
+              existingLegacyLeadIds.add(legacyLeadId);
             }
           });
           
-          // Only add legacy meetings from leads_lead that don't already exist in meetings table
+          // Only add legacy meetings from leads_lead that don't already exist
           const newLegacyMeetings = processedLegacyMeetings.filter((legacyMeeting: any) => {
             // Extract the legacy lead ID from the meeting ID (format: "legacy_207471")
             const legacyLeadId = legacyMeeting.id?.toString().replace('legacy_', '');
-            return !existingLegacyLeadIdsInMeetings.has(legacyLeadId);
+            
+            // Don't add if:
+            // 1. The meeting ID already exists
+            // 2. The legacy_lead_id already exists in meetings table
+            return !existingMeetingIds.has(legacyMeeting.id) && 
+                   !existingLegacyLeadIds.has(legacyLeadId);
           });
           
           // Keep all existing meetings and add only new legacy meetings
@@ -1220,7 +1238,7 @@ const CalendarPage: React.FC = () => {
           .order('meeting_time', { ascending: true });
           
         // Now fetch lead data separately for all meetings to avoid JOIN exclusions
-        let todayMeetingsWithLeads = [];
+        let todayMeetingsWithLeads: any[] = [];
         if (!todayMeetingsError && todayMeetingsData && todayMeetingsData.length > 0) {
           // Collect unique client_ids and legacy_lead_ids
           const clientIds = [...new Set(todayMeetingsData.map(m => m.client_id).filter(Boolean))];
@@ -1400,7 +1418,7 @@ const CalendarPage: React.FC = () => {
           .order('meeting_date', { ascending: false });
           
         // Now fetch lead data separately for all meetings to avoid JOIN exclusions
-        let meetingsWithLeads = [];
+        let meetingsWithLeads: any[] = [];
         if (!meetingsError && meetingsData && meetingsData.length > 0) {
           // Collect unique client_ids and legacy_lead_ids
           const clientIds = [...new Set(meetingsData.map(m => m.client_id).filter(Boolean))];
@@ -1727,8 +1745,22 @@ const CalendarPage: React.FC = () => {
   }, [appliedFromDate, appliedToDate, datesManuallySet]);
 
   useEffect(() => {
-    // Combine regular meetings and staff meetings
-    const allMeetings = [...meetings, ...staffMeetings];
+    // Combine regular meetings and staff meetings, with deduplication by ID
+    const meetingsMap = new Map<string | number, any>();
+    
+    // Add regular meetings first
+    meetings.forEach(meeting => {
+      meetingsMap.set(meeting.id, meeting);
+    });
+    
+    // Add staff meetings (they should have different IDs, but deduplicate anyway)
+    staffMeetings.forEach(meeting => {
+      if (!meetingsMap.has(meeting.id)) {
+        meetingsMap.set(meeting.id, meeting);
+      }
+    });
+    
+    const allMeetings = Array.from(meetingsMap.values());
     let filtered = allMeetings;
 
     if (appliedFromDate && appliedToDate) {
