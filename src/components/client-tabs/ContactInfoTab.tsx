@@ -88,16 +88,22 @@ const processSignedContractHtml = (html: string): string => {
   
   let processed = html;
   
-  // First, handle base64 signature data (data:image/png;base64,...) - do this before replacing placeholders
-  processed = processed.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match) => {
+  // First, handle base64 signature data (data:image/png;base64,...) - convert to img tags
+  // The signed contract HTML contains base64 data URLs as plain text strings
+  // Use the same pattern as PublicLegacyContractView for consistency
+  processed = processed.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match, offset, string) => {
     console.log('🔍 Found base64 signature data, length:', match.length);
-    return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+    // Check if this signature is in a right-aligned context by looking at surrounding HTML
+    const beforeMatch = string.substring(Math.max(0, offset - 200), offset);
+    const isInRightAlignedContext = /ql-align-right|ql-direction-rtl/.test(beforeMatch);
+    const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : '';
+    return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
   });
   
-  // Replace {{text}} placeholders with styled filled text
+  // Replace remaining {{text}} placeholders (if any) with styled lines
   processed = processed.replace(/\{\{text\}\}/g, '<span style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; background-color: #f0fdf4; color: #065f46; font-weight: bold;">_____________</span>');
   
-  // Replace {{sig}} placeholders with signature image display (only if not already replaced by base64)
+  // Replace remaining {{sig}} placeholders (if any) with signature indicator
   processed = processed.replace(/\{\{sig\}\}/g, '<div style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; min-width: 200px; min-height: 80px; display: flex; align-items: center; justify-content: center;"><span style="color: #065f46; font-size: 12px;">✓ Signed</span></div>');
   
   console.log('🔍 Processed HTML result:', processed.substring(0, 500) + '...');
@@ -4384,6 +4390,108 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 max-height: 80px !important;
                 object-fit: contain !important;
               }
+              /* Right-align signatures in right-aligned paragraphs - use more specific selectors */
+              p.ql-align-right .signature-pad,
+              p.ql-align-right .signature-pad-placeholder,
+              p.ql-align-right .signature-pad-container,
+              p.ql-align-right img[alt="Signature"],
+              .ql-align-right .signature-pad,
+              .ql-align-right .signature-pad-placeholder,
+              .ql-align-right .signature-pad-container,
+              .ql-align-right img[alt="Signature"],
+              .ql-direction-rtl .signature-pad,
+              .ql-direction-rtl .signature-pad-placeholder,
+              .ql-direction-rtl .signature-pad-container,
+              .ql-direction-rtl img[alt="Signature"] {
+                text-align: right !important;
+                display: inline-block !important;
+                direction: rtl !important;
+                float: none !important;
+              }
+              /* Ensure signature images in right-aligned contexts are right-aligned */
+              .prose p.ql-align-right img[alt="Signature"],
+              .prose .ql-align-right img[alt="Signature"],
+              .prose .ql-direction-rtl img[alt="Signature"],
+              .prose p.ql-align-right .signature-pad,
+              .prose p.ql-align-right .signature-pad-placeholder,
+              .prose p.ql-align-right .signature-pad-container,
+              .prose .ql-align-right .signature-pad,
+              .prose .ql-align-right .signature-pad-placeholder,
+              .prose .ql-align-right .signature-pad-container {
+                display: inline-block !important;
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Right-align the parent paragraph content when it contains signatures */
+              .prose p.ql-align-right,
+              .prose .ql-align-right {
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Make sure all inline elements in RTL paragraphs align right */
+              .prose p.ql-align-right *,
+              .prose .ql-align-right * {
+                text-align: inherit !important;
+                direction: inherit !important;
+              }
+              /* Override for signature elements specifically */
+              .prose p.ql-align-right .signature-pad,
+              .prose p.ql-align-right .signature-pad-placeholder,
+              .prose p.ql-align-right .signature-pad-container,
+              .prose p.ql-align-right img[alt="Signature"],
+              .prose .ql-align-right .signature-pad,
+              .prose .ql-align-right .signature-pad-placeholder,
+              .prose .ql-align-right .signature-pad-container,
+              .prose .ql-align-right img[alt="Signature"] {
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Line breaks and paragraph spacing for contract content */
+              .prose p {
+                margin-top: 1em !important;
+                margin-bottom: 1em !important;
+                line-height: 1.75 !important;
+              }
+              .prose p:first-child {
+                margin-top: 0 !important;
+              }
+              .prose p:last-child {
+                margin-bottom: 0 !important;
+              }
+              .prose br {
+                display: block !important;
+                content: "" !important;
+                margin-top: 0.5em !important;
+              }
+              .prose p + p {
+                margin-top: 1em !important;
+              }
+              /* Ensure proper spacing for headings */
+              .prose h1, .prose h2, .prose h3, .prose h4, .prose h5, .prose h6 {
+                margin-top: 1.5em !important;
+                margin-bottom: 0.75em !important;
+                line-height: 1.5 !important;
+              }
+              .prose h1:first-child, .prose h2:first-child, .prose h3:first-child,
+              .prose h4:first-child, .prose h5:first-child, .prose h6:first-child {
+                margin-top: 0 !important;
+              }
+              /* Ensure lists have proper spacing */
+              .prose ul, .prose ol {
+                margin-top: 1em !important;
+                margin-bottom: 1em !important;
+                padding-left: 1.5em !important;
+              }
+              .prose li {
+                margin-top: 0.5em !important;
+                margin-bottom: 0.5em !important;
+              }
+              /* Ensure proper spacing for blockquotes */
+              .prose blockquote {
+                margin-top: 1.5em !important;
+                margin-bottom: 1.5em !important;
+                padding-left: 1em !important;
+              }
             `}
           </style>
           <div className="flex flex-col h-full">
@@ -4544,7 +4652,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                                 __html: viewingContract.mode === 'edit' 
                                   ? processHtmlForEditing(viewingContract.contractHtml)
                                   : (viewingContract.status === 'signed' && viewingContract.signedContractHtml
-                                      ? viewingContract.signedContractHtml
+                                      ? processSignedContractHtml(viewingContract.signedContractHtml)
                                       : viewingContract.contractHtml)
                               }} 
                             />
@@ -4553,13 +4661,13 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       </div>
                     </div>
                   ) : (
-                    <div className="bg-gray-50 p-6 rounded-lg h-full overflow-y-auto">
+                    <div className="bg-white p-6 rounded-lg h-full overflow-y-auto">
                       <div className="prose prose-lg max-w-none">
                         <div 
                           className="font-sans text-base leading-relaxed text-gray-800"
                           dangerouslySetInnerHTML={{ 
                             __html: viewingContract.status === 'signed' && viewingContract.signedContractHtml
-                              ? viewingContract.signedContractHtml 
+                              ? processSignedContractHtml(viewingContract.signedContractHtml)
                               : viewingContract.contractHtml || ''
                           }}
                         />
@@ -4894,12 +5002,171 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               <button
                 className="btn btn-primary"
                 onClick={() => {
-                  // Create a blob and download the contract
-                  const htmlContent = viewingContract.status === 'signed' && viewingContract.signedContractHtml 
+                  // Get the raw HTML content
+                  let rawHtmlContent = viewingContract.status === 'signed' && viewingContract.signedContractHtml 
                     ? viewingContract.signedContractHtml 
                     : viewingContract.contractHtml || '';
                   
-                  const blob = new Blob([htmlContent], { type: 'text/html' });
+                  // Process the HTML to ensure signatures are properly displayed
+                  if (viewingContract.status === 'signed' && viewingContract.signedContractHtml) {
+                    rawHtmlContent = processSignedContractHtml(rawHtmlContent);
+                  }
+                  
+                  // Create a complete HTML document with RTL support
+                  const fullHtmlDocument = `<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contract - ${viewingContract.id}</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      direction: rtl;
+      text-align: right;
+      padding: 20px;
+      background: white;
+      color: #333;
+      line-height: 1.6;
+    }
+    /* RTL support for Hebrew text */
+    .ql-align-right, p.ql-align-right {
+      text-align: right !important;
+      direction: rtl !important;
+    }
+    .ql-direction-rtl {
+      direction: rtl !important;
+    }
+    /* Paragraph spacing */
+    p {
+      margin-top: 1em;
+      margin-bottom: 1em;
+      line-height: 1.75;
+    }
+    p:first-child {
+      margin-top: 0;
+    }
+    p:last-child {
+      margin-bottom: 0;
+    }
+    /* Line breaks */
+    br {
+      display: block;
+      content: "";
+      margin-top: 0.5em;
+    }
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.5em;
+      margin-bottom: 0.75em;
+      line-height: 1.5;
+    }
+    h1:first-child, h2:first-child, h3:first-child,
+    h4:first-child, h5:first-child, h6:first-child {
+      margin-top: 0;
+    }
+    /* Lists */
+    ul, ol {
+      margin-top: 1em;
+      margin-bottom: 1em;
+      padding-right: 1.5em;
+      padding-left: 0;
+    }
+    li {
+      margin-top: 0.5em;
+      margin-bottom: 0.5em;
+    }
+    /* Signature images */
+    img[alt="Signature"] {
+      display: inline-block;
+      vertical-align: middle;
+      border: 2px solid #10b981;
+      border-radius: 6px;
+      padding: 4px;
+      margin: 0 4px;
+      background-color: #f0fdf4;
+      max-width: 200px;
+      max-height: 80px;
+      object-fit: contain;
+    }
+    /* Print styles - minimize to fit on max 2 pages */
+    @media print {
+      body {
+        padding: 0;
+        font-size: 11px !important;
+        line-height: 1.4 !important;
+      }
+      @page {
+        margin: 0.8cm;
+      }
+      p {
+        margin-top: 0.5em !important;
+        margin-bottom: 0.5em !important;
+        line-height: 1.4 !important;
+        font-size: 11px !important;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        margin-top: 0.7em !important;
+        margin-bottom: 0.5em !important;
+        line-height: 1.4 !important;
+        font-size: 12px !important;
+      }
+      ul, ol {
+        margin-top: 0.5em !important;
+        margin-bottom: 0.5em !important;
+        padding-right: 1.2em !important;
+      }
+      li {
+        margin-top: 0.3em !important;
+        margin-bottom: 0.3em !important;
+        line-height: 1.4 !important;
+        font-size: 11px !important;
+      }
+      blockquote {
+        margin-top: 0.7em !important;
+        margin-bottom: 0.7em !important;
+        padding-left: 0.6em !important;
+        font-size: 11px !important;
+      }
+      br {
+        margin-top: 0.3em !important;
+      }
+      img[alt="Signature"] {
+        max-width: 160px !important;
+        max-height: 65px !important;
+        padding: 3px !important;
+        margin: 0 3px !important;
+      }
+      /* Preserve text formatting in print */
+      strong, b {
+        font-weight: 700 !important;
+      }
+      em, i {
+        font-style: italic !important;
+      }
+      u {
+        text-decoration: underline !important;
+      }
+      s, strike {
+        text-decoration: line-through !important;
+      }
+      * {
+        font-size: inherit !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  ${rawHtmlContent}
+</body>
+</html>`;
+                  
+                  const blob = new Blob([fullHtmlDocument], { type: 'text/html' });
                   const url = URL.createObjectURL(blob);
                   const a = document.createElement('a');
                   a.href = url;
@@ -4908,10 +5175,194 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                   a.click();
                   document.body.removeChild(a);
                   URL.revokeObjectURL(url);
+                  
+                  toast.success('Contract downloaded successfully!');
                 }}
               >
                 Download Contract
               </button>
+              {viewingContract.status === 'signed' && (
+                <button
+                  className="btn btn-info"
+                  onClick={() => {
+                    // Get the raw HTML content
+                    let rawHtmlContent = viewingContract.signedContractHtml || '';
+                    
+                    // Process the HTML to ensure signatures are properly displayed
+                    rawHtmlContent = processSignedContractHtml(rawHtmlContent);
+                    
+                    // Create a new window with the contract content for printing
+                    const printWindow = window.open('', '_blank');
+                    if (printWindow) {
+                      printWindow.document.write(`<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contract - ${viewingContract.id}</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+    body {
+      font-family: Arial, Helvetica, sans-serif;
+      direction: rtl;
+      text-align: right;
+      padding: 20px;
+      background: white;
+      color: #333;
+      line-height: 1.6;
+    }
+    /* RTL support for Hebrew text */
+    .ql-align-right, p.ql-align-right {
+      text-align: right !important;
+      direction: rtl !important;
+    }
+    .ql-direction-rtl {
+      direction: rtl !important;
+    }
+    /* Paragraph spacing */
+    p {
+      margin-top: 1em;
+      margin-bottom: 1em;
+      line-height: 1.75;
+    }
+    p:first-child {
+      margin-top: 0;
+    }
+    p:last-child {
+      margin-bottom: 0;
+    }
+    /* Line breaks */
+    br {
+      display: block;
+      content: "";
+      margin-top: 0.5em;
+    }
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.5em;
+      margin-bottom: 0.75em;
+      line-height: 1.5;
+    }
+    h1:first-child, h2:first-child, h3:first-child,
+    h4:first-child, h5:first-child, h6:first-child {
+      margin-top: 0;
+    }
+    /* Lists */
+    ul, ol {
+      margin-top: 1em;
+      margin-bottom: 1em;
+      padding-right: 1.5em;
+      padding-left: 0;
+    }
+    li {
+      margin-top: 0.5em;
+      margin-bottom: 0.5em;
+    }
+    /* Signature images */
+    img[alt="Signature"] {
+      display: inline-block;
+      vertical-align: middle;
+      border: 2px solid #10b981;
+      border-radius: 6px;
+      padding: 4px;
+      margin: 0 4px;
+      background-color: #f0fdf4;
+      max-width: 200px;
+      max-height: 80px;
+      object-fit: contain;
+    }
+    /* Print styles - minimize to fit on max 2 pages */
+    @media print {
+      body {
+        padding: 0;
+        font-size: 11px !important;
+        line-height: 1.4 !important;
+      }
+      @page {
+        margin: 0.8cm;
+      }
+      p {
+        margin-top: 0.5em !important;
+        margin-bottom: 0.5em !important;
+        line-height: 1.4 !important;
+        font-size: 11px !important;
+      }
+      h1, h2, h3, h4, h5, h6 {
+        margin-top: 0.7em !important;
+        margin-bottom: 0.5em !important;
+        line-height: 1.4 !important;
+        font-size: 12px !important;
+      }
+      ul, ol {
+        margin-top: 0.5em !important;
+        margin-bottom: 0.5em !important;
+        padding-right: 1.2em !important;
+      }
+      li {
+        margin-top: 0.3em !important;
+        margin-bottom: 0.3em !important;
+        line-height: 1.4 !important;
+        font-size: 11px !important;
+      }
+      blockquote {
+        margin-top: 0.7em !important;
+        margin-bottom: 0.7em !important;
+        padding-left: 0.6em !important;
+        font-size: 11px !important;
+      }
+      br {
+        margin-top: 0.3em !important;
+      }
+      img[alt="Signature"] {
+        max-width: 160px !important;
+        max-height: 65px !important;
+        padding: 3px !important;
+        margin: 0 3px !important;
+      }
+      /* Preserve text formatting in print */
+      strong, b {
+        font-weight: 700 !important;
+      }
+      em, i {
+        font-style: italic !important;
+      }
+      u {
+        text-decoration: underline !important;
+      }
+      s, strike {
+        text-decoration: line-through !important;
+      }
+      * {
+        font-size: inherit !important;
+      }
+    }
+  </style>
+</head>
+<body>
+  ${rawHtmlContent}
+</body>
+</html>`);
+                      printWindow.document.close();
+                      
+                      // Wait for content to load, then print
+                      setTimeout(() => {
+                        printWindow.print();
+                      }, 250);
+                    } else {
+                      toast.error('Please allow pop-ups to print the contract');
+                    }
+                  }}
+                >
+                  <svg className="w-4 h-4 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                  </svg>
+                  Print Contract
+                </button>
+              )}
               <button
                 className="btn btn-ghost"
                 onClick={() => setViewingContract(null)}

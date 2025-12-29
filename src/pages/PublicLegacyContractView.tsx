@@ -165,7 +165,7 @@ const PublicLegacyContractView: React.FC = () => {
       })
       .replace(/\{\{sig\}\}/g, () => {
         const id = `sig-field-${sigCounter++}`;
-        return `<div id="${id}" class="signature-pad-placeholder" data-field-type="signature" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500;">Click to sign</div>`;
+        return `<div id="${id}" class="signature-pad-placeholder" data-field-type="signature" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500; direction: inherit; text-align: inherit;">Click to sign</div>`;
       });
     
     return processed;
@@ -190,7 +190,10 @@ const PublicLegacyContractView: React.FC = () => {
 
         const container = document.createElement('div');
         container.className = 'signature-pad-container';
-        container.style.cssText = 'display: inline-block; vertical-align: middle; margin: 0 4px;';
+        // Check if parent paragraph has right alignment
+        const parentParagraph = placeholder.closest('p.ql-align-right, .ql-align-right');
+        const isRightAligned = parentParagraph !== null;
+        container.style.cssText = `display: inline-block; vertical-align: middle; margin: 0 4px; ${isRightAligned ? 'text-align: right; direction: rtl;' : ''}`;
         container.setAttribute('data-signature-id', id);
 
         const canvasContainer = document.createElement('div');
@@ -312,8 +315,13 @@ const PublicLegacyContractView: React.FC = () => {
     // For signed contracts, first process any base64 signature data
     if (isReadOnly) {
       // Handle base64 signature data (data:image/png;base64,...)
-      htmlContent = htmlContent.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match) => {
-        return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain;" alt="Signature" />`;
+      // We'll process this with context awareness for RTL alignment
+      htmlContent = htmlContent.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match, offset, string) => {
+        // Check if this signature is in a right-aligned context by looking at surrounding HTML
+        const beforeMatch = string.substring(Math.max(0, offset - 200), offset);
+        const isInRightAlignedContext = /ql-align-right|ql-direction-rtl/.test(beforeMatch);
+        const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : '';
+        return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
       });
       
       // For read-only mode, just render the HTML as-is (for signed contracts)
@@ -341,23 +349,77 @@ const PublicLegacyContractView: React.FC = () => {
 
     setIsSubmitting(true);
     try {
-      let htmlContent = contract.contract_html || '';
+      // CRITICAL: Start with the ORIGINAL contract_html which still contains {{text}} placeholders
+      // We'll replace these placeholders with the actual values from the DOM inputs
+      const originalHtml = contract.contract_html || '';
 
       // Get values from all text input fields in the DOM (ordered by appearance)
-      const inputFields = document.querySelectorAll('.contract-content .inline-input');
+      // Use a more specific selector and ensure we're getting from the right container
+      const contractContentEl = document.querySelector('.contract-content');
+      if (!contractContentEl) {
+        toast.error('Could not find contract content');
+        setIsSubmitting(false);
+        return;
+      }
+
+      const inputFields = contractContentEl.querySelectorAll('.inline-input');
+      console.log('🔍 Found input fields in DOM:', inputFields.length);
       const inputValues: string[] = [];
-      inputFields.forEach((input) => {
+      inputFields.forEach((input, index) => {
         const htmlInput = input as HTMLInputElement;
-        inputValues.push(htmlInput.value.trim() || '_____________');
+        const value = htmlInput.value.trim();
+        console.log(`🔍 Input ${index} value: "${value}"`);
+        // Store the actual value entered by the user (or empty string, not the placeholder)
+        inputValues.push(value || '_____________');
       });
 
-      // Replace {{text}} placeholders in order with input values
+      // The original HTML contains _____________ lines, not {{text}} placeholders
+      // We need to convert these lines to placeholders first (same logic as processHtmlForEditing),
+      // then replace placeholders with actual input values
+      
+      // Step 1: Convert _____________ lines back to {{text}} placeholders
+      // (This matches the logic in processHtmlForEditing)
+      let processedHtml = originalHtml;
+      
+      // Convert lines in styled spans back to placeholders
+      processedHtml = processedHtml.replace(/<span[^>]*style="[^"]*border[^"]*"[^>]*>_____________<\/span>/gi, '{{text}}');
+      
+      // Convert plain lines that appear after colons or other text (common pattern: ": _____________")
+      processedHtml = processedHtml.replace(/([:\s>])(_____________)([\s<])/g, '$1{{text}}$3');
+      
+      // Handle lines that might be inside paragraph tags directly: <p>_____________</p>
+      processedHtml = processedHtml.replace(/(<p[^>]*>)([^<]*)_____________([^<]*)(<\/p>)/g, '$1$2{{text}}$3$4');
+      
+      // Also handle lines that appear as standalone text nodes between tags
+      processedHtml = processedHtml.replace(/(>)([^<]*?)_____________([^<]*?)(<)/g, '$1$2{{text}}$3$4');
+      
+      // Catch any remaining lines that weren't matched by the above patterns
+      const remainingLines = (processedHtml.match(/_____________/g) || []).length;
+      if (remainingLines > 0) {
+        console.log(`🔍 Converting ${remainingLines} remaining lines to {{text}} placeholders`);
+        processedHtml = processedHtml.replace(/_____________/g, '{{text}}');
+      }
+      
+      const placeholderCount = (processedHtml.match(/\{\{text\}\}/g) || []).length;
+      console.log(`🔍 Converted lines to ${placeholderCount} {{text}} placeholders`);
+      console.log(`🔍 Have ${inputValues.length} input values to use`);
+      
+      // Step 2: Replace {{text}} placeholders with actual input values
       let textPlaceholderIndex = 0;
-      htmlContent = htmlContent.replace(/\{\{text\}\}/g, () => {
-        const value = inputValues[textPlaceholderIndex] || '_____________';
+      let htmlContent = processedHtml.replace(/\{\{text\}\}/g, () => {
+        if (textPlaceholderIndex >= inputValues.length) {
+          console.warn(`⚠️ More {{text}} placeholders than text inputs! Placeholder ${textPlaceholderIndex} will use default`);
+          textPlaceholderIndex++;
+          return '_____________';
+        }
+        const value = inputValues[textPlaceholderIndex];
+        console.log(`🔍 Replacing {{text}} placeholder ${textPlaceholderIndex} with: "${value}"`);
         textPlaceholderIndex++;
-        return value;
+        return value; // This is the actual user input value
       });
+      
+      console.log(`🔍 Replaced ${textPlaceholderIndex} {{text}} placeholders with text values`);
+      console.log('🔍 HTML content after text replacement (first 500 chars):', htmlContent.substring(0, 500));
 
       // Get signature data from canvas elements (ordered by appearance)
       const signatureContainers = document.querySelectorAll('.contract-content .signature-pad-container');
@@ -627,12 +689,87 @@ const PublicLegacyContractView: React.FC = () => {
                 background: #ef4444 !important;
                 color: white !important;
               }
+              /* Right-align signatures in right-aligned paragraphs - use more specific selectors */
+              .contract-content p.ql-align-right .signature-pad-placeholder,
+              .contract-content p.ql-align-right .signature-pad-container,
+              .contract-content p.ql-align-right img[alt="Signature"],
+              .contract-content .ql-align-right .signature-pad-placeholder,
+              .contract-content .ql-align-right .signature-pad-container,
+              .contract-content .ql-align-right img[alt="Signature"],
+              .contract-content .ql-direction-rtl .signature-pad-placeholder,
+              .contract-content .ql-direction-rtl .signature-pad-container,
+              .contract-content .ql-direction-rtl img[alt="Signature"] {
+                text-align: right !important;
+                display: inline-block !important;
+                direction: rtl !important;
+                float: none !important;
+              }
+              /* Ensure signature images in right-aligned contexts are right-aligned */
+              .contract-content p.ql-align-right img[alt="Signature"],
+              .contract-content .ql-align-right img[alt="Signature"],
+              .contract-content .ql-direction-rtl img[alt="Signature"] {
+                display: inline-block !important;
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Right-align the parent paragraph content when it contains signatures */
+              .contract-content p.ql-align-right,
+              .contract-content .ql-align-right {
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Make sure all inline elements in RTL paragraphs align right */
+              .contract-content p.ql-align-right *,
+              .contract-content .ql-align-right * {
+                text-align: inherit !important;
+                direction: inherit !important;
+              }
+              /* Override for signature elements specifically */
+              .contract-content p.ql-align-right .signature-pad-placeholder,
+              .contract-content p.ql-align-right .signature-pad-container,
+              .contract-content p.ql-align-right img[alt="Signature"],
+              .contract-content .ql-align-right .signature-pad-placeholder,
+              .contract-content .ql-align-right .signature-pad-container,
+              .contract-content .ql-align-right img[alt="Signature"] {
+                text-align: right !important;
+                direction: rtl !important;
+              }
               /* General paragraph styling */
               .contract-content p {
                 margin-bottom: 1em;
               }
-              .contract-content strong {
-                font-weight: 700;
+              /* Text formatting - preserve bold and other formatting */
+              .contract-content strong,
+              .contract-content b {
+                font-weight: 700 !important;
+              }
+              .contract-content em,
+              .contract-content i {
+                font-style: italic !important;
+              }
+              .contract-content u {
+                text-decoration: underline !important;
+              }
+              .contract-content s,
+              .contract-content strike {
+                text-decoration: line-through !important;
+              }
+              /* Ensure formatting is preserved in all contexts */
+              .contract-content p strong,
+              .contract-content p b,
+              .contract-content .ql-align-right strong,
+              .contract-content .ql-align-right b,
+              .contract-content .ql-direction-rtl strong,
+              .contract-content .ql-direction-rtl b {
+                font-weight: 700 !important;
+              }
+              .contract-content p em,
+              .contract-content p i,
+              .contract-content .ql-align-right em,
+              .contract-content .ql-align-right i,
+              .contract-content .ql-direction-rtl em,
+              .contract-content .ql-direction-rtl i {
+                font-style: italic !important;
               }
             `}
           </style>
