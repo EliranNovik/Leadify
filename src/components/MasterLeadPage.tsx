@@ -16,6 +16,7 @@ import {
 } from '@heroicons/react/24/outline';
 import { createPortal } from 'react-dom';
 import { toast } from 'react-hot-toast';
+import { getFrontendBaseUrl } from '../lib/api';
 
 // Helper function to process HTML for editing with consistent styling
 const processHtmlForEditing = (html: string): string => {
@@ -1778,8 +1779,8 @@ const MasterLeadPage: React.FC = () => {
                       }
                     }
                     
-                    // Create the public URL
-                    const publicUrl = `${window.location.origin}/public-legacy-contract/${legacyContractId}/${publicToken}`;
+                    // Create the public URL - always use production domain
+                    const publicUrl = `${getFrontendBaseUrl()}/public-legacy-contract/${legacyContractId}/${publicToken}`;
                     console.log('🔍 Public URL created:', publicUrl);
                     
                     // Copy to clipboard

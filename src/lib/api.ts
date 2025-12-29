@@ -15,3 +15,10 @@ export const apiBaseUrl = getApiBaseUrl();
 export const buildApiUrl = (endpoint: string): string => {
   return `${apiBaseUrl}${endpoint}`;
 };
+
+// Frontend base URL - always use production domain for public links
+// Public contract links need to work regardless of where they're generated from
+export const getFrontendBaseUrl = (): string => {
+  // Always use production domain for public contract links
+  return 'https://rainmakerqueen.org';
+};

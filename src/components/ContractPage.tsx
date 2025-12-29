@@ -20,6 +20,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { PlusIcon, MinusIcon } from '@heroicons/react/24/solid';
 // @ts-ignore - html2pdf.js doesn't have TypeScript definitions
 import html2pdf from 'html2pdf.js';
+import { getFrontendBaseUrl } from '../lib/api';
 
 function fillAllPlaceholders(text: string, customPricing: any, client: any, contract?: any) {
   if (!text) return text;
@@ -3411,7 +3412,8 @@ const ContractPage: React.FC = () => {
       await supabase.from('contracts').update({ public_token: publicToken }).eq('id', contract.id);
       setContract((prev: any) => ({ ...prev, public_token: publicToken }));
     }
-    const publicUrl = `${window.location.origin}/public-contract/${contract.id}/${publicToken}`;
+    // Always use production domain for public contract links
+    const publicUrl = `${getFrontendBaseUrl()}/public-contract/${contract.id}/${publicToken}`;
     await navigator.clipboard.writeText(publicUrl);
     alert('Link copied!');
   };

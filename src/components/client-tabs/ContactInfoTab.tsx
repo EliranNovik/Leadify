@@ -19,6 +19,7 @@ import { TextStyle } from '@tiptap/extension-text-style';
 import { FontFamily } from '@tiptap/extension-font-family';
 import { FontSize } from '@tiptap/extension-font-size';
 import CallOptionsModal from '../CallOptionsModal';
+import { getFrontendBaseUrl } from '../../lib/api';
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -4734,8 +4735,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         }
                       }
                       
-                      // Create the public URL
-                      const publicUrl = `${window.location.origin}/public-legacy-contract/${legacyContractId}/${publicToken}`;
+                      // Create the public URL - always use production domain
+                      const publicUrl = `${getFrontendBaseUrl()}/public-legacy-contract/${legacyContractId}/${publicToken}`;
                       console.log('🔍 Public URL created:', publicUrl);
                       
                       // Copy to clipboard - use multiple fallback methods
