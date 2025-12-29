@@ -82,6 +82,7 @@ import {
 import toast from 'react-hot-toast';
 import LeadSummaryDrawer from './LeadSummaryDrawer';
 import { generateProformaName } from '../lib/proforma';
+import TimePicker from './TimePicker';
 import ClientInformationBox from './ClientInformationBox';
 import ProgressFollowupBox from './ProgressFollowupBox';
 import SendPriceOfferModal from './SendPriceOfferModal';
@@ -1054,7 +1055,7 @@ const Clients: React.FC<ClientsProps> = ({
   // - 'another_meeting' for follow-up meetings
   const [scheduleStageTarget, setScheduleStageTarget] = useState<'meeting_scheduled' | 'another_meeting'>('meeting_scheduled');
   // Toggle for notifying client via email when scheduling a meeting
-  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(true);
+  const [notifyClientOnSchedule, setNotifyClientOnSchedule] = useState(false);
   const [selectedStage, setSelectedStage] = useState<string | null>(null);
   const [meetingFormData, setMeetingFormData] = useState({
     date: '',
@@ -1077,8 +1078,6 @@ const Clients: React.FC<ClientsProps> = ({
     Array<{ id: string | number; name: string; default_link?: string | null }>
   >([]);
   const [meetingCountsByTime, setMeetingCountsByTime] = useState<Record<string, number>>({});
-  const [showTimeDropdown, setShowTimeDropdown] = useState(false);
-  const timeDropdownRef = useRef<HTMLDivElement>(null);
   const [showManagerDropdown, setShowManagerDropdown] = useState(false);
   const managerDropdownRef = useRef<HTMLDivElement>(null);
   const [managerSearchTerm, setManagerSearchTerm] = useState('');
@@ -1590,10 +1589,8 @@ const Clients: React.FC<ClientsProps> = ({
   const [meetingToDelete, setMeetingToDelete] = useState<number | null>(null);
   const [rescheduleOption, setRescheduleOption] = useState<'cancel' | 'reschedule'>('cancel');
   // Toggle for notifying client via email when rescheduling a meeting
-  const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(true);
+  const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
-  const [showRescheduleTimeDropdown, setShowRescheduleTimeDropdown] = useState(false);
-  const rescheduleTimeDropdownRef = useRef<HTMLDivElement>(null);
   const [rescheduleMeetingCountsByTime, setRescheduleMeetingCountsByTime] = useState<Record<string, number>>({});
   
   // State for sticky header on scroll
@@ -2432,22 +2429,6 @@ useEffect(() => {
     fetchRescheduleMeetingCounts();
   }, [rescheduleFormData.date]);
 
-  // Close reschedule time dropdown when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (rescheduleTimeDropdownRef.current && !rescheduleTimeDropdownRef.current.contains(event.target as Node)) {
-        setShowRescheduleTimeDropdown(false);
-      }
-    };
-
-    if (showRescheduleTimeDropdown) {
-      document.addEventListener('mousedown', handleClickOutside);
-    }
-
-    return () => {
-      document.removeEventListener('mousedown', handleClickOutside);
-    };
-  }, [showRescheduleTimeDropdown]);
 
   // Handle scroll detection for sticky header
   useEffect(() => {
@@ -3450,12 +3431,9 @@ useEffect(() => {
     fetchMeetingCounts();
   }, [meetingFormData.date]);
 
-  // Close time dropdown when clicking outside
+  // Close manager and helper dropdowns when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
-      if (timeDropdownRef.current && !timeDropdownRef.current.contains(event.target as Node)) {
-        setShowTimeDropdown(false);
-      }
       if (managerDropdownRef.current && !managerDropdownRef.current.contains(event.target as Node)) {
         setShowManagerDropdown(false);
       }
@@ -3464,14 +3442,14 @@ useEffect(() => {
       }
     };
 
-    if (showTimeDropdown || showManagerDropdown || showHelperDropdown) {
+    if (showManagerDropdown || showHelperDropdown) {
       document.addEventListener('mousedown', handleClickOutside);
     }
 
     return () => {
       document.removeEventListener('mousedown', handleClickOutside);
     };
-  }, [showTimeDropdown, showManagerDropdown, showHelperDropdown]);
+  }, [showManagerDropdown, showHelperDropdown]);
 
   // Handle tab switching from URL
   useEffect(() => {
@@ -4142,7 +4120,7 @@ useEffect(() => {
       meeting_total: '',
     });
     setMeetingType('regular');
-    setNotifyClientOnSchedule(true); // Reset to default
+    setNotifyClientOnSchedule(false); // Reset to default
   };
 
   // Function to test calendar access permissions
@@ -4378,28 +4356,36 @@ useEffect(() => {
         const start = new Date(year, month - 1, day, hours, minutes);
         const end = new Date(start.getTime() + 30 * 60000); // 30 min meeting
 
-        // Test calendar access first
+        // Test calendar access first (skip for legacy leads with potential_client calendar type)
+        const isLegacyLeadForCalendar = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
         const calendarEmail = meetingFormData.calendar === 'active_client' 
           ? 'shared-newclients@lawoffice.org.il' 
           : 'shared-potentialclients@lawoffice.org.il';
         
-        console.log('🔍 Testing calendar access for:', calendarEmail);
-        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+        // Skip calendar access check for legacy leads when using potential_client calendar
+        const shouldSkipCalendarCheck = isLegacyLeadForCalendar && meetingFormData.calendar !== 'active_client';
         
-        if (!hasAccess) {
-          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
-            duration: 5000,
-            position: 'top-right',
-            style: {
-              background: '#ef4444',
-              color: '#fff',
-              fontWeight: '500',
-              maxWidth: '500px',
-            },
-            icon: '🔒',
-          });
-          setIsCreatingMeeting(false);
-          return;
+        if (!shouldSkipCalendarCheck) {
+          console.log('🔍 Testing calendar access for:', calendarEmail);
+          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+          
+          if (!hasAccess) {
+            toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
+              duration: 5000,
+              position: 'top-right',
+              style: {
+                background: '#ef4444',
+                color: '#fff',
+                fontWeight: '500',
+                maxWidth: '500px',
+              },
+              icon: '🔒',
+            });
+            setIsCreatingMeeting(false);
+            return;
+          }
+        } else {
+          console.log('⏭️ Skipping calendar access check for legacy lead with potential_client calendar');
         }
 
         // Create calendar event with client name, category, and lead number in subject
@@ -7376,9 +7362,9 @@ useEffect(() => {
       }
 
       // 5. Show toast and close drawer
-      toast.success('Meeting canceled and client notified.');
+      toast.success(notifyClientOnReschedule ? 'Meeting canceled and client notified.' : 'Meeting canceled.');
       setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(true); // Reset to default
+      setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
@@ -8437,9 +8423,9 @@ useEffect(() => {
       }
 
       // 5. Show toast and close drawer
-      toast.success('Meeting rescheduled and client notified.');
+      toast.success(notifyClientOnReschedule ? 'Meeting rescheduled and client notified.' : 'Meeting rescheduled.');
       setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(true); // Reset to default
+      setNotifyClientOnReschedule(false); // Reset to default
       setMeetingToDelete(null);
       setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
       setRescheduleOption('cancel');
@@ -13315,47 +13301,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div>
 
               {/* Time */}
-              <div className="relative" ref={timeDropdownRef}>
-                <label className="block font-semibold mb-1">Time</label>
-                <div
-                  className="input input-bordered w-full cursor-pointer flex items-center justify-between"
-                  onClick={() => setShowTimeDropdown(!showTimeDropdown)}
-                >
-                  <span>{meetingFormData.time}</span>
-                  <ChevronDownIcon className="w-4 h-4" />
-                </div>
-                {showTimeDropdown && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                    {Array.from({ length: 32 }, (_, i) => {
-                      const hour = Math.floor(i / 2) + 8; // Start from 8:00
-                      const minute = i % 2 === 0 ? '00' : '30';
-                      const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                      const count = meetingCountsByTime[timeOption] || 0;
-                      // Determine badge color based on count
-                      const badgeClass = count === 0 
-                        ? 'badge badge-ghost' 
-                        : count <= 2 
-                        ? 'badge badge-success' 
-                        : count <= 5 
-                        ? 'badge badge-warning' 
-                        : 'badge badge-error';
-                      return (
-                        <div
-                          key={timeOption}
-                          className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
-                          onClick={() => {
-                            setMeetingFormData(prev => ({ ...prev, time: timeOption }));
-                            setShowTimeDropdown(false);
-                          }}
-                        >
-                          <span>{timeOption}</span>
-                          <span className={badgeClass}>{count}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
+              <TimePicker
+                value={meetingFormData.time}
+                onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
+                meetingCounts={meetingCountsByTime}
+                label="Time"
+              />
 
               {/* Manager (Optional) */}
               <div className="relative" ref={managerDropdownRef}>
@@ -15375,11 +15326,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             className="fixed inset-0 bg-black/30"
             onClick={() => {
               setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(true); // Reset to default
+      setNotifyClientOnReschedule(false); // Reset to default
               setMeetingToDelete(null);
               setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
               setRescheduleOption('cancel');
-              setNotifyClientOnReschedule(true); // Reset to default
+              setNotifyClientOnReschedule(false); // Reset to default
             }}
           />
           <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
@@ -15390,11 +15341,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(true); // Reset to default
+      setNotifyClientOnReschedule(false); // Reset to default
                   setMeetingToDelete(null);
                   setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                   setRescheduleOption('cancel');
-                  setNotifyClientOnReschedule(true); // Reset to default
+                  setNotifyClientOnReschedule(false); // Reset to default
                 }}
               >
                 <XMarkIcon className="w-6 h-6" />
@@ -15546,47 +15497,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
 
                 {/* Time */}
-                <div className="relative" ref={rescheduleTimeDropdownRef}>
-                  <label className="block font-semibold mb-1">New Time</label>
-                  <div
-                    className="input input-bordered w-full cursor-pointer flex items-center justify-between"
-                    onClick={() => setShowRescheduleTimeDropdown(!showRescheduleTimeDropdown)}
-                  >
-                    <span>{rescheduleFormData.time}</span>
-                    <ChevronDownIcon className="w-4 h-4" />
-                  </div>
-                  {showRescheduleTimeDropdown && (
-                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                      {Array.from({ length: 32 }, (_, i) => {
-                        const hour = Math.floor(i / 2) + 8; // Start from 8:00
-                        const minute = i % 2 === 0 ? '00' : '30';
-                        const timeOption = `${hour.toString().padStart(2, '0')}:${minute}`;
-                        const count = rescheduleMeetingCountsByTime[timeOption] || 0;
-                        // Determine badge color based on count
-                        const badgeClass = count === 0 
-                          ? 'badge badge-ghost' 
-                          : count <= 2 
-                          ? 'badge badge-success' 
-                          : count <= 5 
-                          ? 'badge badge-warning' 
-                          : 'badge badge-error';
-                        return (
-                          <div
-                            key={timeOption}
-                            className="px-4 py-2 cursor-pointer hover:bg-gray-100 flex items-center justify-between"
-                            onClick={() => {
-                              setRescheduleFormData((prev: any) => ({ ...prev, time: timeOption }));
-                              setShowRescheduleTimeDropdown(false);
-                            }}
-                          >
-                            <span>{timeOption}</span>
-                            <span className={badgeClass}>{count}</span>
-                          </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+                <TimePicker
+                  value={rescheduleFormData.time}
+                  onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
+                  meetingCounts={rescheduleMeetingCountsByTime}
+                  label="New Time"
+                />
 
                 {/* Manager (Optional) */}
                 <div>
@@ -15679,7 +15595,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   className="btn btn-ghost"
                   onClick={() => {
                     setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(true); // Reset to default
+      setNotifyClientOnReschedule(false); // Reset to default
                     setMeetingToDelete(null);
                     setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                     setRescheduleOption('cancel');

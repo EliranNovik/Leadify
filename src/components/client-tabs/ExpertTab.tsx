@@ -661,11 +661,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Placeholder for document count and link
   const documentLink = client.onedrive_folder_link || '#';
-  const hasDocumentLink = !!client.onedrive_folder_link;
   
   // Get docs_url for legacy leads
   const [docsUrl, setDocsUrl] = useState<string>('');
   const hasDocsUrl = !!docsUrl;
+  
+  // Check if this is a legacy lead (used elsewhere in the component)
+  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
   
   // Expert name state
   const [expertName, setExpertName] = useState<string>(client.expert || 'Not assigned');
@@ -1311,9 +1313,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const selectedSectionLabel = sections.find(s => s.value === selectedSection)?.label.split(' - ')[1] || '';
   const selectedEligibilityLabel = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value)?.label || '';
   
-  // Check if this is a legacy lead
-  const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-  
   const statusDisplay = eligibilityStatus.value === 'not_feasible'
     ? selectedEligibilityLabel || 'No feasibility'
     : (isLegacyLead 
@@ -1432,19 +1431,14 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               
               <button
                 onClick={() => setIsDocumentModalOpen(true)}
-                className={`btn btn-outline bg-white shadow-sm w-full ${!hasDocumentLink ? 'btn-disabled' : ''}`}
+                className="btn btn-outline bg-white shadow-sm w-full"
                 style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
                 onMouseEnter={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.backgroundColor = '#f3f0ff';
-                  }
+                  e.currentTarget.style.backgroundColor = '#f3f0ff';
                 }}
                 onMouseLeave={(e) => {
-                  if (!e.currentTarget.disabled) {
-                    e.currentTarget.style.backgroundColor = 'white';
-                  }
+                  e.currentTarget.style.backgroundColor = 'white';
                 }}
-                disabled={!hasDocumentLink}
               >
                 <FolderIcon className="w-5 h-5" />
                 Documents
