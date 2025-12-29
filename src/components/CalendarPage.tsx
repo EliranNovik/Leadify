@@ -1067,12 +1067,26 @@ const CalendarPage: React.FC = () => {
           return meeting;
         });
 
-        // Add legacy meetings to the current meetings
+        // Add legacy meetings from leads_lead table to the current meetings
+        // BUT only add those that don't already exist in the meetings table
         setMeetings(prevMeetings => {
-          const filteredMeetings = prevMeetings.filter(meeting => 
-            !(meeting.lead?.lead_type === 'legacy' && meeting.meeting_date >= fromDate && meeting.meeting_date <= toDate)
-          );
-          const allMeetings = [...filteredMeetings, ...processedLegacyMeetings];
+          // Build a Set of existing legacy_lead_ids from meetings table
+          const existingLegacyLeadIdsInMeetings = new Set<string>();
+          prevMeetings.forEach(meeting => {
+            if (meeting.legacy_lead_id) {
+              existingLegacyLeadIdsInMeetings.add(String(meeting.legacy_lead_id));
+            }
+          });
+          
+          // Only add legacy meetings from leads_lead that don't already exist in meetings table
+          const newLegacyMeetings = processedLegacyMeetings.filter((legacyMeeting: any) => {
+            // Extract the legacy lead ID from the meeting ID (format: "legacy_207471")
+            const legacyLeadId = legacyMeeting.id?.toString().replace('legacy_', '');
+            return !existingLegacyLeadIdsInMeetings.has(legacyLeadId);
+          });
+          
+          // Keep all existing meetings and add only new legacy meetings
+          const allMeetings = [...prevMeetings, ...newLegacyMeetings];
           return allMeetings;
         });
       }
@@ -1191,48 +1205,113 @@ const CalendarPage: React.FC = () => {
         const today = new Date().toISOString().split('T')[0];
         console.log('🔍 CalendarPage: Starting fetchMeetingsAndStaff for date:', today);
         
-        // Load today's meetings with department JOINs - include legacy_lead join for meetings with legacy_lead_id
-        console.log('🔍 Executing JOIN query for meetings on date:', today);
+        // Load today's meetings - fetch meetings first without JOINs to include all meetings
+        // Then fetch lead data separately to avoid excluding meetings with missing legacy_lead_id
+        console.log('🔍 Executing query for meetings on date:', today);
         const { data: todayMeetingsData, error: todayMeetingsError } = await supabase
         .from('meetings')
         .select(`
           id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-          attendance_probability, complexity, car_number, calendar_type,
-          lead:leads!client_id(
-            id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
-            expert, probability, phone, email, number_of_applicants_meeting,
-            meeting_confirmation, meeting_confirmation_by, eligibility_status,
-            misc_category!category_id(
-              id, name, parent_id,
-              misc_maincategory!parent_id(
-                id, name, department_id,
-                tenant_departement!department_id(id, name)
-              )
-            )
-          ),
-          legacy_lead:leads_lead!legacy_lead_id(
-            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-            total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-            meeting_location_id, meeting_confirmation, meeting_confirmation_by,
-            misc_category!category_id(
-              id, name, parent_id,
-              misc_maincategory!parent_id(
-                id, name, department_id,
-                tenant_departement!department_id(id, name)
-              )
-            )
-          )
+          attendance_probability, complexity, car_number, calendar_type
         `)
           .eq('meeting_date', today)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_time', { ascending: true });
           
-        console.log('🔍 JOIN query result:', { 
+        // Now fetch lead data separately for all meetings to avoid JOIN exclusions
+        let todayMeetingsWithLeads = [];
+        if (!todayMeetingsError && todayMeetingsData && todayMeetingsData.length > 0) {
+          // Collect unique client_ids and legacy_lead_ids
+          const clientIds = [...new Set(todayMeetingsData.map(m => m.client_id).filter(Boolean))];
+          const legacyLeadIds = [...new Set(todayMeetingsData.map(m => m.legacy_lead_id).filter(Boolean))];
+          
+          // Fetch new leads data
+          let newLeadsMap = new Map();
+          if (clientIds.length > 0) {
+            const { data: newLeadsData } = await supabase
+              .from('leads')
+              .select(`
+                id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
+                expert, probability, phone, email, number_of_applicants_meeting,
+                meeting_confirmation, meeting_confirmation_by, eligibility_status,
+                misc_category!category_id(
+                  id, name, parent_id,
+                  misc_maincategory!parent_id(
+                    id, name, department_id,
+                    tenant_departement!department_id(id, name)
+                  )
+                )
+              `)
+              .in('id', clientIds);
+            
+            if (newLeadsData) {
+              newLeadsData.forEach(lead => {
+                newLeadsMap.set(lead.id, lead);
+              });
+            }
+          }
+          
+          // Fetch legacy leads data
+          let legacyLeadsMap = new Map();
+          if (legacyLeadIds.length > 0) {
+            // Convert to numbers for the query (legacy_lead_id is bigint in DB)
+            const numericLegacyLeadIds = legacyLeadIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id).filter(id => !isNaN(id));
+            
+            const { data: legacyLeadsData } = await supabase
+              .from('leads_lead')
+              .select(`
+                id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+                total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+                meeting_location_id, meeting_confirmation, meeting_confirmation_by,
+                misc_category!category_id(
+                  id, name, parent_id,
+                  misc_maincategory!parent_id(
+                    id, name, department_id,
+                    tenant_departement!department_id(id, name)
+                  )
+                )
+              `)
+              .in('id', numericLegacyLeadIds);
+            
+            if (legacyLeadsData) {
+              legacyLeadsData.forEach(lead => {
+                // Store both as number and as the original ID format for lookup
+                legacyLeadsMap.set(lead.id, lead);
+                legacyLeadsMap.set(String(lead.id), lead);
+              });
+            }
+          }
+          
+          // Combine meetings with their lead data
+          todayMeetingsWithLeads = todayMeetingsData.map(meeting => {
+            // Try both number and string lookup for legacy_lead_id
+            const legacyLead = meeting.legacy_lead_id 
+              ? (legacyLeadsMap.get(meeting.legacy_lead_id) || legacyLeadsMap.get(String(meeting.legacy_lead_id)) || legacyLeadsMap.get(Number(meeting.legacy_lead_id)) || null)
+              : null;
+              
+            return {
+              ...meeting,
+              lead: meeting.client_id ? newLeadsMap.get(meeting.client_id) : null,
+              legacy_lead: legacyLead
+            };
+          });
+        }
+          
+        // Debug: Check if meeting ID 33 is in the results
+        const meeting33 = todayMeetingsData?.find((m: any) => m.id === 33);
+        console.log('🔍 Meetings query result:', { 
           dataCount: todayMeetingsData?.length, 
           error: todayMeetingsError,
-          sampleData: todayMeetingsData?.slice(0, 2)
+          meetingsWithLeadsCount: todayMeetingsWithLeads?.length,
+          sampleData: todayMeetingsWithLeads?.slice(0, 2),
+          meeting33Found: !!meeting33,
+          meeting33Data: meeting33
         });
+        
+        // Debug: Check meeting 33 in meetingsWithLeads
+        const meeting33WithLead = todayMeetingsWithLeads?.find((m: any) => m.id === 33);
+        console.log('🔍 Meeting 33 with leads:', meeting33WithLead);
         
 
         // DISABLED: Today's legacy loading removed to prevent timeouts
@@ -1242,7 +1321,7 @@ const CalendarPage: React.FC = () => {
         // Process today's meetings immediately - SIMPLIFIED FOR SPEED
         if (!todayMeetingsError) {
           // Debug: Log raw meeting data to understand JOIN issues
-          console.log('🔍 Raw meetings from database:', todayMeetingsData?.map((m: any) => ({
+          console.log('🔍 Raw meetings from database:', todayMeetingsWithLeads?.map((m: any) => ({
             id: m.id,
             calendar_type: m.calendar_type,
             legacy_lead_id: m.legacy_lead_id,
@@ -1258,7 +1337,7 @@ const CalendarPage: React.FC = () => {
           const startTime = performance.now();
           
           // Quick processing for today's meetings with department data
-          const todayProcessedMeetings = (todayMeetingsData || []).map((meeting: any) => ({
+          const todayProcessedMeetings = (todayMeetingsWithLeads || []).map((meeting: any) => ({
             ...meeting,
             meeting_confirmation: getMeetingConfirmationState(meeting),
             // Map location ID to location name using universal function
@@ -1308,41 +1387,110 @@ const CalendarPage: React.FC = () => {
         // Now load all other meetings in the background - OPTIMIZED
         setIsBackgroundLoading(true);
         
-        // Load all regular meetings with department JOINs - include legacy_lead join for meetings with legacy_lead_id
+        // Load all regular meetings - fetch meetings first without JOINs to include all meetings
+        // Then fetch lead data separately to avoid excluding meetings with missing legacy_lead_id
         const { data: meetingsData, error: meetingsError } = await supabase
         .from('meetings')
         .select(`
           id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
           meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-          attendance_probability, complexity, car_number, calendar_type,
-          lead:leads!client_id(
-            id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
-            balance, balance_currency, expert_notes, expert, probability, phone, email, 
-            meeting_confirmation, meeting_confirmation_by, eligibility_status,
-            manual_interactions, number_of_applicants_meeting, meeting_collection_id,
-            misc_category!category_id(
-              id, name, parent_id,
-              misc_maincategory!parent_id(
-                id, name, department_id,
-                tenant_departement!department_id(id, name)
-              )
-            )
-          ),
-          legacy_lead:leads_lead!legacy_lead_id(
-            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-            total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
-            meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
-            misc_category!category_id(
-              id, name, parent_id,
-              misc_maincategory!parent_id(
-                id, name, department_id,
-                tenant_departement!department_id(id, name)
-              )
-            )
-          )
+          attendance_probability, complexity, car_number, calendar_type
         `)
           .or('status.is.null,status.neq.canceled')
           .order('meeting_date', { ascending: false });
+          
+        // Now fetch lead data separately for all meetings to avoid JOIN exclusions
+        let meetingsWithLeads = [];
+        if (!meetingsError && meetingsData && meetingsData.length > 0) {
+          // Collect unique client_ids and legacy_lead_ids
+          const clientIds = [...new Set(meetingsData.map(m => m.client_id).filter(Boolean))];
+          const legacyLeadIds = [...new Set(meetingsData.map(m => m.legacy_lead_id).filter(Boolean))];
+          
+          // Fetch new leads data
+          let newLeadsMap = new Map();
+          if (clientIds.length > 0) {
+            const { data: newLeadsData } = await supabase
+              .from('leads')
+              .select(`
+                id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
+                balance, balance_currency, expert_notes, expert, probability, phone, email, 
+                meeting_confirmation, meeting_confirmation_by, eligibility_status,
+                manual_interactions, number_of_applicants_meeting, meeting_collection_id,
+                misc_category!category_id(
+                  id, name, parent_id,
+                  misc_maincategory!parent_id(
+                    id, name, department_id,
+                    tenant_departement!department_id(id, name)
+                  )
+                )
+              `)
+              .in('id', clientIds);
+            
+            if (newLeadsData) {
+              newLeadsData.forEach(lead => {
+                newLeadsMap.set(lead.id, lead);
+              });
+            }
+          }
+          
+          // Fetch legacy leads data
+          let legacyLeadsMap = new Map();
+          if (legacyLeadIds.length > 0) {
+            // Convert to numbers for the query (legacy_lead_id is bigint in DB)
+            const numericLegacyLeadIds = legacyLeadIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id).filter(id => !isNaN(id));
+            
+            const { data: legacyLeadsData } = await supabase
+              .from('leads_lead')
+              .select(`
+                id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+                total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+                meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
+                misc_category!category_id(
+                  id, name, parent_id,
+                  misc_maincategory!parent_id(
+                    id, name, department_id,
+                    tenant_departement!department_id(id, name)
+                  )
+                )
+              `)
+              .in('id', numericLegacyLeadIds);
+            
+            if (legacyLeadsData) {
+              legacyLeadsData.forEach(lead => {
+                // Store both as number and as the original ID format for lookup
+                legacyLeadsMap.set(lead.id, lead);
+                legacyLeadsMap.set(String(lead.id), lead);
+              });
+            }
+          }
+          
+          // Combine meetings with their lead data
+          meetingsWithLeads = meetingsData.map(meeting => {
+            // Try both number and string lookup for legacy_lead_id
+            const legacyLead = meeting.legacy_lead_id 
+              ? (legacyLeadsMap.get(meeting.legacy_lead_id) || legacyLeadsMap.get(String(meeting.legacy_lead_id)) || legacyLeadsMap.get(Number(meeting.legacy_lead_id)) || null)
+              : null;
+              
+            return {
+              ...meeting,
+              lead: meeting.client_id ? newLeadsMap.get(meeting.client_id) : null,
+              legacy_lead: legacyLead
+            };
+          });
+          
+          // Debug: Check if meeting ID 33 is in the results
+          const meeting33 = meetingsData.find((m: any) => m.id === 33);
+          const meeting33WithLead = meetingsWithLeads.find((m: any) => m.id === 33);
+          console.log('🔍 Background meetings - Meeting 33:', {
+            foundInRawData: !!meeting33,
+            foundInWithLeads: !!meeting33WithLead,
+            meeting33Raw: meeting33,
+            meeting33WithLead: meeting33WithLead,
+            legacyLeadId: meeting33?.legacy_lead_id,
+            clientId: meeting33?.client_id,
+            legacyLeadInMap: meeting33?.legacy_lead_id ? legacyLeadsMap.has(meeting33.legacy_lead_id) : false
+          });
+        }
 
         // DISABLED: Background legacy loading removed to prevent timeouts
 
@@ -1355,7 +1503,7 @@ const CalendarPage: React.FC = () => {
           console.error('Error fetching all meetings:', meetingsError);
         } else {
           // Process regular meetings only - NO LEGACY PROCESSING to prevent duplicates
-          const processedMeetings = (meetingsData || [])
+          const processedMeetings = (meetingsWithLeads || [])
             .filter((meeting: any) => {
               // Filter out meetings with invalid or null dates
               if (!meeting.meeting_date) {

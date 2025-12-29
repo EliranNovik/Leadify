@@ -50,6 +50,7 @@ const SCHEDULER_STAGE_TARGETS = [
   'Scheduler assigned',
   'Handler assigned',
   'Handler started',
+  'Communication started', // Add Communication started to scheduler stage targets
   'Success',
 ];
 const FALLBACK_SCHEDULER_STAGE_IDS = [0, 10, 11, 15];
@@ -855,6 +856,12 @@ const SchedulerToolPage: React.FC = () => {
       if (!stageIdsToUse.length) {
         stageIdsToUse = [...FALLBACK_SCHEDULER_STAGE_IDS];
       }
+      
+      // Ensure stage 15 (Communication started) is always included if it's in fallback
+      // This is important because it might not match through name resolution
+      if (FALLBACK_SCHEDULER_STAGE_IDS.includes(15) && !stageIdsToUse.includes(15)) {
+        stageIdsToUse.push(15);
+      }
 
       // Fetch new leads with scheduler assigned to current user (by name) and specific stages
       let newLeadsQueryBuilder = supabase
@@ -909,37 +916,6 @@ const SchedulerToolPage: React.FC = () => {
 
 
       // Fetch legacy leads with scheduler assigned to current user and specific stages
-      
-      // Special logging for employee_id 54
-      if (userData.employee_id === '54' || userData.employee_id === 54) {
-        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Fetching legacy leads', {
-          employee_id: userData.employee_id,
-          employee_idType: typeof userData.employee_id,
-          employee_idAsString: String(userData.employee_id),
-          employee_idAsNumber: Number(userData.employee_id)
-        });
-        
-        // Check if there are ANY legacy leads with meeting_scheduler_id = 54
-        const { count: totalWithSchedulerId54, error: schedulerIdError } = await supabase
-          .from('leads_lead')
-          .select('*', { count: 'exact', head: true })
-          .eq('meeting_scheduler_id', 54);
-        
-        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Total legacy leads with meeting_scheduler_id = 54:', {
-          count: totalWithSchedulerId54,
-          error: schedulerIdError
-        });
-        
-        // Get sample leads with meeting_scheduler_id = 54
-        const { data: sampleLeadsWithId54 } = await supabase
-          .from('leads_lead')
-          .select('id, name, stage, eligibile, meeting_scheduler_id')
-          .eq('meeting_scheduler_id', 54)
-          .limit(10);
-        
-        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Sample legacy leads with meeting_scheduler_id = 54:', sampleLeadsWithId54);
-      }
-
       const { data: legacyLeads, error: legacyError } = await supabase
         .from('leads_lead')
         .select(`
@@ -971,20 +947,6 @@ const SchedulerToolPage: React.FC = () => {
       if (legacyError) {
         console.error('❌ Error fetching legacy leads:', legacyError);
         throw legacyError;
-      }
-      
-      // Special logging for employee_id 54
-      if (userData.employee_id === '54' || userData.employee_id === 54) {
-        console.log('🔍 EMPLOYEE_ID_54 DEBUG - Legacy leads fetched:', {
-          count: legacyLeads?.length || 0,
-          sampleLeads: legacyLeads?.slice(0, 5).map(l => ({
-            id: l.id,
-            name: l.name,
-            stage: l.stage,
-            eligibile: l.eligibile,
-            meeting_scheduler_id: l.meeting_scheduler_id
-          }))
-        });
       }
 
 

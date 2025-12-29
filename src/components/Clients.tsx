@@ -1018,6 +1018,8 @@ const Clients: React.FC<ClientsProps> = ({
   const [isStagesOpen, setIsStagesOpen] = useState(false);
   const [isActionsOpen, setIsActionsOpen] = useState(false);
   const [isBalanceModalOpen, setIsBalanceModalOpen] = useState(false);
+  // Track the last route to detect route changes and force refetch
+  const lastRouteRef = useRef<string>('');
   // Default to collapsed on mobile, expanded on desktop
   const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
   const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
@@ -2839,8 +2841,16 @@ useEffect(() => {
       return;
     }
     
-    // If we already have a selectedClient that matches the current route, don't refetch
-    if (selectedClient && lead_number) {
+    // Check if route has changed
+    const currentRoute = location.pathname;
+    const routeChanged = lastRouteRef.current !== currentRoute;
+    
+    // If route changed, always refetch to ensure fresh data and reset all state
+    if (routeChanged) {
+      lastRouteRef.current = currentRoute;
+      // Clear selectedClient immediately to reset all child components
+      setSelectedClient(null);
+    } else if (selectedClient && lead_number) {
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
       const currentClientId = isLegacy 
         ? selectedClient.id?.toString().replace('legacy_', '')
@@ -2865,10 +2875,8 @@ useEffect(() => {
     
     let isMounted = true;
     const fetchEssentialData = async () => {
-      // Only set loading if we don't already have the client loaded
-      if (!selectedClient || (selectedClient && !isMounted)) {
-        setLocalLoading(true);
-      }
+      // Always set loading when fetching new data
+      setLocalLoading(true);
       if (lead_number) {
         // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
@@ -3181,7 +3189,7 @@ useEffect(() => {
       isMounted = false;
       // Don't set loading to false here - it should only be set in the async function
     };
-  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded]); // Removed selectedClient?.id to prevent infinite loop - the guard at the beginning handles checking if client is already loaded
+  }, [lead_number, fullLeadNumber, requestedLeadNumber, buildClientRoute, droppedStageId, userManuallyExpanded, location.pathname]); // Added location.pathname to ensure refetch on route change
   // Background loading for non-essential data (runs after essential data is loaded)
   useEffect(() => {
     const loadBackgroundData = async () => {
@@ -12982,8 +12990,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             key={`${activeTab}-${interactionCount}`}
             className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
           >
-                          {ActiveComponent && (
+                          {ActiveComponent && selectedClient && (
                             <ActiveComponent
+                              key={`${activeTab}-${selectedClient.id}`}
                               client={selectedClient}
                               onClientUpdate={onClientUpdate}
                               interactionsCache={interactionsCacheForLead}
@@ -14267,8 +14276,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               setSelectedContractId(null);
             }}
           />
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50">
+            {/* Fixed Header */}
+            <div className="flex items-center justify-between p-8 pb-6 border-b border-base-300">
               <h3 className="text-2xl font-bold">Create Sub-Lead</h3>
               <button
                 className="btn btn-ghost btn-sm"
@@ -14283,7 +14293,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
+            {/* Scrollable Content Area */}
+            <div className="flex-1 overflow-y-auto p-8 pt-6">
+              <div className="flex flex-col gap-4">
               {subLeadStep === 'initial' && (
                 <>
                   <button
@@ -14462,12 +14474,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     placeholder="Enter special notes"
                     rows={4}
                   />
-                  <button 
-                    className="btn btn-primary mt-4" 
-                    onClick={() => setSubLeadStep('newContactDetails')}
-                  >
-                    Next: Contact Details
-                  </button>
                 </>
               )}
               {subLeadStep === 'newContactDetails' && (
@@ -14562,13 +14568,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       </option>
                     ))}
                   </select>
-                  <button 
-                    className="btn btn-primary mt-4" 
-                    onClick={handleSaveSubLead} 
-                    disabled={isSavingSubLead}
-                  >
-                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
-                  </button>
                 </>
               )}
               {subLeadStep === 'sameContract' && (
@@ -14659,13 +14658,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     placeholder="Enter special notes"
                     rows={4}
                   />
-                  <button 
-                    className="btn btn-primary mt-4" 
-                    onClick={handleSaveSubLead} 
-                    disabled={isSavingSubLead}
-                  >
-                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
-                  </button>
                 </>
               )}
               {subLeadStep === 'newProcedure' && (
@@ -14758,13 +14750,6 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     placeholder="Enter special notes"
                     rows={4}
                   />
-                  <button 
-                    className="btn btn-primary mt-4" 
-                    onClick={handleSaveSubLead} 
-                    disabled={isSavingSubLead}
-                  >
-                    {isSavingSubLead ? 'Creating...' : 'Create Sub-Lead'}
-                  </button>
                 </>
               )}
               {subLeadStep === 'details' && (
@@ -14801,12 +14786,35 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
                   <label className="block font-semibold mb-1">Potential Value</label>
                   <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
-                  <button className="btn btn-primary mt-4" onClick={handleSaveSubLead} disabled={isSavingSubLead}>
-                    {isSavingSubLead ? 'Saving...' : 'Save Sub-Lead'}
-                  </button>
                 </>
               )}
+              </div>
             </div>
+            {/* Fixed Footer with Action Button */}
+            {subLeadStep === 'newContact' && (
+              <div className="border-t border-base-300 p-4 bg-base-100">
+                <button 
+                  className="btn btn-primary w-full" 
+                  onClick={() => setSubLeadStep('newContactDetails')}
+                >
+                  Next: Contact Details
+                </button>
+              </div>
+            )}
+            {(subLeadStep === 'newContactDetails' || subLeadStep === 'sameContract' || subLeadStep === 'newProcedure' || subLeadStep === 'details') && (
+              <div className="border-t border-base-300 p-4 bg-base-100">
+                <button 
+                  className="btn btn-primary w-full" 
+                  onClick={handleSaveSubLead} 
+                  disabled={isSavingSubLead}
+                >
+                  {isSavingSubLead 
+                    ? (subLeadStep === 'details' ? 'Saving...' : 'Creating...') 
+                    : (subLeadStep === 'details' ? 'Save Sub-Lead' : 'Create Sub-Lead')
+                  }
+                </button>
+              </div>
+            )}
           </div>
         </div>
       )}
