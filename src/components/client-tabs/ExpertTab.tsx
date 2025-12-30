@@ -18,6 +18,7 @@ import {
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
 import DocumentModal from '../DocumentModal';
+import { toast } from 'react-hot-toast';
 
 interface UploadedFile {
   name: string;
@@ -85,11 +86,15 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       
       if (isLegacyLead) {
         // For legacy leads, save to leads_lead table using the actual integer ID
-        const legacyId = client.id.toString().replace('legacy_', '');
-        await supabase
-          .from('leads_lead')
-          .update({ expert_notes: cleanedNotes })
-          .eq('id', legacyId);
+        const legacyIdStr = client.id.toString().replace('legacy_', '');
+        const legacyId = parseInt(legacyIdStr, 10);
+        
+        if (!isNaN(legacyId)) {
+          await supabase
+            .from('leads_lead')
+            .update({ expert_notes: cleanedNotes })
+            .eq('id', legacyId);
+        }
       } else {
         // For new leads, save to leads table
         await supabase
@@ -205,11 +210,15 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             setExpertNotes(updatedNotes);
             
             // Save to database
-            const legacyId = client.id.toString().replace('legacy_', '');
-            await supabase
-              .from('leads_lead')
-              .update({ expert_notes: updatedNotes })
-              .eq('id', legacyId);
+            const legacyIdStr = client.id.toString().replace('legacy_', '');
+            const legacyId = parseInt(legacyIdStr, 10);
+            
+            if (!isNaN(legacyId)) {
+              await supabase
+                .from('leads_lead')
+                .update({ expert_notes: updatedNotes })
+                .eq('id', legacyId);
+            }
           }
         }
         
@@ -542,6 +551,57 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchAssignedExpert();
   }, [client.id, client.lead_type, client.expert]);
 
+  // Fetch notes from database on component mount and when client.id changes
+  const fetchNotesFromDatabase = async () => {
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    
+    if (isLegacyLead) {
+      const legacyIdStr = client.id.toString().replace('legacy_', '');
+      const legacyId = parseInt(legacyIdStr, 10);
+      
+      if (!isNaN(legacyId)) {
+        try {
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('expert_notes, handler_notes')
+            .eq('id', legacyId)
+            .single();
+          
+          if (!error && data) {
+            if (data.expert_notes && Array.isArray(data.expert_notes)) {
+              setExpertNotes(data.expert_notes);
+            }
+            if (data.handler_notes && Array.isArray(data.handler_notes)) {
+              setHandlerNotes(data.handler_notes);
+            }
+          }
+        } catch (error) {
+          console.error('Error fetching notes from database:', error);
+        }
+      }
+    } else {
+      // For new leads, fetch from leads table
+      try {
+        const { data, error } = await supabase
+          .from('leads')
+          .select('expert_notes, handler_notes')
+          .eq('id', client.id)
+          .single();
+        
+        if (!error && data) {
+          if (data.expert_notes && Array.isArray(data.expert_notes)) {
+            setExpertNotes(data.expert_notes);
+          }
+          if (data.handler_notes && Array.isArray(data.handler_notes)) {
+            setHandlerNotes(data.handler_notes);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching notes from database (new leads):', error);
+      }
+    }
+  };
+
   // Fetch legacy expert data on component mount
   useEffect(() => {
     fetchLegacyExpertData();
@@ -550,7 +610,19 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchDocsUrl();
     fetchAssignedExpert();
     fetchLegacyEligibilityData();
+    fetchNotesFromDatabase(); // Fetch notes directly from database
   }, [client.id]);
+
+  // Sync notes when client data changes (e.g., after refresh)
+  // Only update if the client data is different from current state to avoid overwriting unsaved changes
+  useEffect(() => {
+    if (client.expert_notes && JSON.stringify(client.expert_notes) !== JSON.stringify(expertNotes)) {
+      setExpertNotes(client.expert_notes);
+    }
+    if (client.handler_notes && JSON.stringify(client.handler_notes) !== JSON.stringify(handlerNotes)) {
+      setHandlerNotes(client.handler_notes);
+    }
+  }, [client.expert_notes, client.handler_notes]);
 
   // Section & eligibility
   const [selectedSection, setSelectedSection] = useState(client.section_eligibility || '');
@@ -892,62 +964,131 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
-      const legacyId = client.id.toString().replace('legacy_', '');
+      const legacyIdStr = client.id.toString().replace('legacy_', '');
+      const legacyId = parseInt(legacyIdStr, 10);
+      
+      if (isNaN(legacyId)) {
+        console.error('Invalid legacy ID:', legacyIdStr);
+        throw new Error('Invalid legacy ID');
+      }
       
       try {
+        console.log('🔍 Saving expert notes for legacy lead:', { legacyId, notesCount: notes.length, notes });
+        
         // First, try to update with tracking columns
-        const { error: updateError } = await supabase
+        const { data, error: updateError } = await supabase
           .from('leads_lead')
           .update({ 
             expert_notes: notes,
             expert_notes_last_edited_by: currentUser,
             expert_notes_last_edited_at: new Date().toISOString()
           })
-          .eq('id', legacyId);
+          .eq('id', legacyId)
+          .select('expert_notes')
+          .single();
         
         if (updateError) {
-          console.error('Error updating expert notes with tracking:', updateError);
+          console.error('❌ Error updating expert notes with tracking:', updateError);
           
           // Fallback: try without tracking columns
-          const { error: fallbackError } = await supabase
+          const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads_lead')
             .update({ expert_notes: notes })
-            .eq('id', legacyId);
+            .eq('id', legacyId)
+            .select('expert_notes')
+            .single();
           
           if (fallbackError) {
-            console.error('Error updating expert notes (fallback):', fallbackError);
+            console.error('❌ Error updating expert notes (fallback):', fallbackError);
             throw fallbackError;
+          }
+          
+          console.log('✅ Expert notes updated (fallback, no tracking):', fallbackData);
+          
+          // Update local state with what was saved
+          if (fallbackData?.expert_notes) {
+            setExpertNotes(fallbackData.expert_notes);
+          }
+        } else {
+          console.log('✅ Expert notes updated (with tracking):', data);
+          
+          // Update local state with what was saved
+          if (data?.expert_notes) {
+            setExpertNotes(data.expert_notes);
+          }
+        }
+        
+        // Fetch the saved data to ensure it's persisted (separate query)
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('leads_lead')
+          .select('expert_notes')
+          .eq('id', legacyId)
+          .single();
+        
+        if (verifyError) {
+          console.error('❌ Error verifying expert notes save:', verifyError);
+          // Don't throw - the update might have succeeded even if verification fails
+          console.warn('⚠️ Could not verify save, but update may have succeeded');
+        } else if (verifyData) {
+          console.log('✅ Expert notes verified from database:', verifyData.expert_notes);
+          // Update local state with verified data
+          if (verifyData.expert_notes) {
+            setExpertNotes(verifyData.expert_notes);
           }
         }
       } catch (error) {
         console.error('Error in handleSaveExpertNotes:', error);
         throw error;
       }
+      
+      // Refresh client data to ensure notes are synced
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+      
+      // Also fetch notes directly from database to ensure we have the latest
+      await fetchNotesFromDatabase();
     } else {
       // For new leads, save to leads table with tracking
       try {
         // First, try to update with tracking columns
-        const { error: updateError } = await supabase
+        const { data, error: updateError } = await supabase
           .from('leads')
           .update({ 
             expert_notes: notes,
             expert_notes_last_edited_by: currentUser,
             expert_notes_last_edited_at: new Date().toISOString()
           })
-          .eq('id', client.id);
+          .eq('id', client.id)
+          .select('expert_notes')
+          .single();
         
         if (updateError) {
           console.error('Error updating expert notes with tracking (new leads):', updateError);
           
           // Fallback: try without tracking columns
-          const { error: fallbackError } = await supabase
+          const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads')
             .update({ expert_notes: notes })
-            .eq('id', client.id);
+            .eq('id', client.id)
+            .select('expert_notes')
+            .single();
           
           if (fallbackError) {
             console.error('Error updating expert notes (fallback - new leads):', fallbackError);
             throw fallbackError;
+          }
+          
+          // Verify the data was saved
+          if (!fallbackData || JSON.stringify(fallbackData.expert_notes) !== JSON.stringify(notes)) {
+            console.error('Expert notes were not saved correctly (new leads)');
+            throw new Error('Failed to save expert notes');
+          }
+        } else {
+          // Verify the data was saved
+          if (!data || JSON.stringify(data.expert_notes) !== JSON.stringify(notes)) {
+            console.error('Expert notes were not saved correctly (new leads)');
+            throw new Error('Failed to save expert notes');
           }
         }
       } catch (error) {
@@ -956,7 +1097,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     }
     
-    if (onClientUpdate) await onClientUpdate();
+    // Refresh client data to ensure notes are synced
+    if (onClientUpdate) {
+      await onClientUpdate();
+    }
   };
 
   // Save handler notes to DB
@@ -969,62 +1113,131 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     
     if (isLegacyLead) {
       // For legacy leads, save to leads_lead table using the actual integer ID
-      const legacyId = client.id.toString().replace('legacy_', '');
+      const legacyIdStr = client.id.toString().replace('legacy_', '');
+      const legacyId = parseInt(legacyIdStr, 10);
+      
+      if (isNaN(legacyId)) {
+        console.error('Invalid legacy ID:', legacyIdStr);
+        throw new Error('Invalid legacy ID');
+      }
       
       try {
+        console.log('🔍 Saving handler notes for legacy lead:', { legacyId, notesCount: notes.length, notes });
+        
         // First, try to update with tracking columns
-        const { error: updateError } = await supabase
+        const { data, error: updateError } = await supabase
           .from('leads_lead')
           .update({ 
             handler_notes: notes,
             handler_notes_last_edited_by: currentUser,
             handler_notes_last_edited_at: new Date().toISOString()
           })
-          .eq('id', legacyId);
+          .eq('id', legacyId)
+          .select('handler_notes')
+          .single();
         
         if (updateError) {
-          console.error('Error updating handler notes with tracking:', updateError);
+          console.error('❌ Error updating handler notes with tracking:', updateError);
           
           // Fallback: try without tracking columns
-          const { error: fallbackError } = await supabase
+          const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads_lead')
             .update({ handler_notes: notes })
-            .eq('id', legacyId);
+            .eq('id', legacyId)
+            .select('handler_notes')
+            .single();
           
           if (fallbackError) {
-            console.error('Error updating handler notes (fallback):', fallbackError);
+            console.error('❌ Error updating handler notes (fallback):', fallbackError);
             throw fallbackError;
+          }
+          
+          console.log('✅ Handler notes updated (fallback, no tracking):', fallbackData);
+          
+          // Update local state with what was saved
+          if (fallbackData?.handler_notes) {
+            setHandlerNotes(fallbackData.handler_notes);
+          }
+        } else {
+          console.log('✅ Handler notes updated (with tracking):', data);
+          
+          // Update local state with what was saved
+          if (data?.handler_notes) {
+            setHandlerNotes(data.handler_notes);
+          }
+        }
+        
+        // Fetch the saved data to ensure it's persisted (separate query)
+        const { data: verifyData, error: verifyError } = await supabase
+          .from('leads_lead')
+          .select('handler_notes')
+          .eq('id', legacyId)
+          .single();
+        
+        if (verifyError) {
+          console.error('❌ Error verifying handler notes save:', verifyError);
+          // Don't throw - the update might have succeeded even if verification fails
+          console.warn('⚠️ Could not verify save, but update may have succeeded');
+        } else if (verifyData) {
+          console.log('✅ Handler notes verified from database:', verifyData.handler_notes);
+          // Update local state with verified data
+          if (verifyData.handler_notes) {
+            setHandlerNotes(verifyData.handler_notes);
           }
         }
       } catch (error) {
         console.error('Error in handleSaveHandlerNotes:', error);
         throw error;
       }
+      
+      // Refresh client data to ensure notes are synced
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+      
+      // Also fetch notes directly from database to ensure we have the latest
+      await fetchNotesFromDatabase();
     } else {
       // For new leads, save to leads table with tracking
       try {
         // First, try to update with tracking columns
-        const { error: updateError } = await supabase
+        const { data, error: updateError } = await supabase
           .from('leads')
           .update({ 
             handler_notes: notes,
             handler_notes_last_edited_by: currentUser,
             handler_notes_last_edited_at: new Date().toISOString()
           })
-          .eq('id', client.id);
+          .eq('id', client.id)
+          .select('handler_notes')
+          .single();
         
         if (updateError) {
           console.error('Error updating handler notes with tracking (new leads):', updateError);
           
           // Fallback: try without tracking columns
-          const { error: fallbackError } = await supabase
+          const { data: fallbackData, error: fallbackError } = await supabase
             .from('leads')
             .update({ handler_notes: notes })
-            .eq('id', client.id);
+            .eq('id', client.id)
+            .select('handler_notes')
+            .single();
           
           if (fallbackError) {
             console.error('Error updating handler notes (fallback - new leads):', fallbackError);
             throw fallbackError;
+          }
+          
+          // Verify the data was saved
+          if (!fallbackData || JSON.stringify(fallbackData.handler_notes) !== JSON.stringify(notes)) {
+            console.error('Handler notes were not saved correctly (new leads)');
+            throw new Error('Failed to save handler notes');
+          }
+        } else {
+          // Verify the data was saved
+          if (!data || JSON.stringify(data.handler_notes) !== JSON.stringify(notes)) {
+            console.error('Handler notes were not saved correctly (new leads)');
+            throw new Error('Failed to save handler notes');
           }
         }
       } catch (error) {
@@ -1033,36 +1246,45 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     }
     
-    if (onClientUpdate) await onClientUpdate();
+    // Refresh client data to ensure notes are synced
+    if (onClientUpdate) {
+      await onClientUpdate();
+    }
   };
 
   // Expert Notes logic
   const handleSaveExpertNote = async () => {
-    let updatedNotes;
-    const cleanedContent = formatNoteText(newExpertNoteContent);
-    const currentUser = await getCurrentUserName();
-    const currentTime = new Date().toLocaleString();
-    
-    if (editingExpertNoteId) {
-      updatedNotes = expertNotes.map(note => 
-        note.id === editingExpertNoteId 
-          ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
-          : note
-      );
-      setEditingExpertNoteId(null);
-    } else {
-      const newNote: Note = {
-        id: Date.now().toString(),
-        content: cleanedContent,
-        timestamp: currentTime,
-        edited_by: currentUser,
-        edited_at: currentTime
-      };
-      updatedNotes = [...expertNotes, newNote];
-      setIsAddingExpertNote(false);
+    try {
+      let updatedNotes;
+      const cleanedContent = formatNoteText(newExpertNoteContent);
+      const currentUser = await getCurrentUserName();
+      const currentTime = new Date().toLocaleString();
+      
+      if (editingExpertNoteId) {
+        updatedNotes = expertNotes.map(note => 
+          note.id === editingExpertNoteId 
+            ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
+            : note
+        );
+        setEditingExpertNoteId(null);
+      } else {
+        const newNote: Note = {
+          id: Date.now().toString(),
+          content: cleanedContent,
+          timestamp: currentTime,
+          edited_by: currentUser,
+          edited_at: currentTime
+        };
+        updatedNotes = [...expertNotes, newNote];
+        setIsAddingExpertNote(false);
+      }
+      setNewExpertNoteContent('');
+      await handleSaveExpertNotes(updatedNotes);
+      toast.success('Expert note saved successfully');
+    } catch (error) {
+      console.error('Error saving expert note:', error);
+      toast.error('Failed to save expert note');
     }
-    setNewExpertNoteContent('');
-    await handleSaveExpertNotes(updatedNotes);
   };
 
   const handleEditExpertNote = (note: Note) => {
@@ -1078,31 +1300,37 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
   // Handler Notes logic
   const handleSaveHandlerNote = async () => {
-    let updatedNotes;
-    const cleanedContent = formatNoteText(newHandlerNoteContent);
-    const currentUser = await getCurrentUserName();
-    const currentTime = new Date().toLocaleString();
-    
-    if (editingHandlerNoteId) {
-      updatedNotes = handlerNotes.map(note => 
-        note.id === editingHandlerNoteId 
-          ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
-          : note
-      );
-      setEditingHandlerNoteId(null);
-    } else {
-      const newNote: Note = {
-        id: Date.now().toString(),
-        content: cleanedContent,
-        timestamp: currentTime,
-        edited_by: currentUser,
-        edited_at: currentTime
-      };
-      updatedNotes = [...handlerNotes, newNote];
-      setIsAddingHandlerNote(false);
+    try {
+      let updatedNotes;
+      const cleanedContent = formatNoteText(newHandlerNoteContent);
+      const currentUser = await getCurrentUserName();
+      const currentTime = new Date().toLocaleString();
+      
+      if (editingHandlerNoteId) {
+        updatedNotes = handlerNotes.map(note => 
+          note.id === editingHandlerNoteId 
+            ? { ...note, content: cleanedContent, edited_by: currentUser, edited_at: currentTime }
+            : note
+        );
+        setEditingHandlerNoteId(null);
+      } else {
+        const newNote: Note = {
+          id: Date.now().toString(),
+          content: cleanedContent,
+          timestamp: currentTime,
+          edited_by: currentUser,
+          edited_at: currentTime
+        };
+        updatedNotes = [...handlerNotes, newNote];
+        setIsAddingHandlerNote(false);
+      }
+      setNewHandlerNoteContent('');
+      await handleSaveHandlerNotes(updatedNotes);
+      toast.success('Handler note saved successfully');
+    } catch (error) {
+      console.error('Error saving handler note:', error);
+      toast.error('Failed to save handler note');
     }
-    setNewHandlerNoteContent('');
-    await handleSaveHandlerNotes(updatedNotes);
   };
 
   const handleEditHandlerNote = (note: Note) => {

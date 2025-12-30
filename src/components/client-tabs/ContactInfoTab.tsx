@@ -276,7 +276,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
   });
 
 
-  const [contactContracts, setContactContracts] = useState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string } | null }>({});
+  const [contactContracts, setContactContracts] = useState<{ [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null }>({});
   const [contractTemplates, setContractTemplates] = useState<ContractTemplate[]>([]);
   const [viewingContract, setViewingContract] = useState<{ id: string; mode: 'view' | 'edit'; contractHtml?: string; signedContractHtml?: string; status?: string; public_token?: string } | null>(null);
 
@@ -600,7 +600,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           const legacyId = client.id.toString().replace('legacy_', '');
           console.log('🔍 Legacy ID:', legacyId);
           
-          // Fetch legacy contracts from lead_leadcontact table
+          // Fetch legacy contracts from lead_leadcontact table (include public_token)
           const { data: legacyContracts, error: legacyError } = await supabase
             .from('lead_leadcontact')
             .select(`
@@ -609,6 +609,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               lead_id,
               contract_html,
               signed_contract_html,
+              public_token,
               main
             `)
             .eq('lead_id', legacyId);
@@ -671,7 +672,8 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       signed_at: hasSignedContract ? new Date().toISOString() : undefined,
                       isLegacy: true,
                       contractHtml: legacyContract.contract_html,
-                      signedContractHtml: legacyContract.signed_contract_html
+                      signedContractHtml: legacyContract.signed_contract_html,
+                      public_token: legacyContract.public_token
                     };
                     
                     console.log('🔍 Added legacy contract to main contact:', contactContractsMap[mainContact.id]);
@@ -3043,15 +3045,36 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     try {
       console.log('handleDeleteContract called with contractId:', contractId);
       
-      // Delete the contract from the database
-      const { error } = await supabase
-        .from('contracts')
-        .delete()
-        .eq('id', contractId);
+      // Check if this is a legacy contract
+      const isLegacyContract = contractId.startsWith('legacy_');
+      
+      if (isLegacyContract) {
+        // For legacy contracts, update lead_leadcontact to clear contract fields
+        const legacyContractId = contractId.replace('legacy_', '');
+        console.log('Deleting legacy contract, legacyContractId:', legacyContractId);
+        
+        const { error } = await supabase
+          .from('lead_leadcontact')
+          .update({
+            contract_html: null,
+            signed_contract_html: null
+          })
+          .eq('id', legacyContractId);
 
-      if (error) throw error;
+        if (error) throw error;
 
-      console.log('Contract deleted successfully');
+        console.log('Legacy contract deleted successfully');
+      } else {
+        // For new contracts, delete from contracts table
+        const { error } = await supabase
+          .from('contracts')
+          .delete()
+          .eq('id', contractId);
+
+        if (error) throw error;
+
+        console.log('Contract deleted successfully');
+      }
 
       // Update the local state to remove the contract
       setContactContracts(prev => {
@@ -3065,11 +3088,16 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
         return updated;
       });
 
-      alert('Contract deleted successfully');
+      toast.success('Contract deleted successfully');
+      
+      // Refresh client data
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
 
     } catch (error) {
       console.error('Error deleting contract:', error);
-      alert('Failed to delete contract. Please try again.');
+      toast.error('Failed to delete contract. Please try again.');
     }
   };
 
@@ -3137,8 +3165,26 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       
       console.log('🔍 Found contract data:', contractData);
       
-      if (contractData && contractData.isLegacy) {
+        if (contractData && contractData.isLegacy) {
         console.log('🔍 Setting up legacy contract modal');
+        
+        // Use public_token from contractData if available, otherwise fetch from database
+        let publicToken = (contractData as any).public_token;
+        
+        // If not in contractData, fetch from database
+        if (!publicToken) {
+          const { data: contractWithToken, error: tokenError } = await supabase
+            .from('lead_leadcontact')
+            .select('public_token')
+            .eq('id', legacyContractId)
+            .maybeSingle();
+          
+          if (tokenError) {
+            console.error('Error fetching public_token:', tokenError);
+          } else {
+            publicToken = contractWithToken?.public_token || undefined;
+          }
+        }
         
         // Determine if contract is signed or draft
         const hasSignedContract = contractData.signedContractHtml && 
@@ -3146,7 +3192,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           contractData.signedContractHtml !== '\\N';
         const hasDraftContract = contractData.contractHtml && contractData.contractHtml.trim() !== '';
         
-        console.log('🔍 Contract status check:', { hasSignedContract, hasDraftContract });
+        console.log('🔍 Contract status check:', { hasSignedContract, hasDraftContract, publicToken });
         
         if (hasSignedContract || hasDraftContract) {
           // Set the contract data for viewing in modal
@@ -3158,10 +3204,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
             mode: hasSignedContract ? 'view' : 'edit', // If signed, view only; if draft, editable
             contractHtml: contractContent,
             signedContractHtml: contractData.signedContractHtml,
-            status: hasSignedContract ? 'signed' : 'draft'
+            status: hasSignedContract ? 'signed' : 'draft',
+            public_token: publicToken
           });
           
-          console.log('🔍 Set viewingContract with mode:', hasSignedContract ? 'view' : 'edit', 'and status:', hasSignedContract ? 'signed' : 'draft');
+          console.log('🔍 Set viewingContract with mode:', hasSignedContract ? 'view' : 'edit', 'and status:', hasSignedContract ? 'signed' : 'draft', 'and public_token:', publicToken);
           return;
         } else {
           console.log('🔍 No contract content found');
@@ -4712,47 +4759,46 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       const legacyContractId = viewingContract.id.replace('legacy_', '');
                       console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
                       
-                      let publicToken = viewingContract.public_token;
+                      // Always fetch the token from database first (to get the latest value, even if state has it)
+                      console.log('🔍 Fetching public token from database');
+                      const { data: contractData, error: fetchError } = await supabase
+                        .from('lead_leadcontact')
+                        .select('public_token')
+                        .eq('id', legacyContractId)
+                        .maybeSingle();
                       
-                      // For signed contracts, always fetch the actual token from database
-                      if (viewingContract.status === 'signed') {
-                        console.log('🔍 Fetching actual public token from database for signed contract');
-                        const { data, error } = await supabase
-                          .from('lead_leadcontact')
-                          .select('public_token')
-                          .eq('id', legacyContractId)
-                          .single();
-                        
-                        if (error) {
-                          console.error('❌ Error fetching public token:', error);
-                          toast.error('Failed to get share link.');
-                          return;
-                        }
-                        
-                        publicToken = data?.public_token;
-                        if (!publicToken) {
-                          toast.error('No share link found for this contract.');
-                          return;
-                        }
-                        
-                        console.log('🔍 Found existing public token:', publicToken);
+                      if (fetchError && fetchError.code !== 'PGRST116') {
+                        console.error('❌ Error fetching public token:', fetchError);
+                        toast.error('Failed to get share link.');
+                        return;
                       }
                       
-                      // For draft contracts, generate a new token if it doesn't exist
-                      if (viewingContract.status === 'draft' && !publicToken) {
+                      let publicToken = contractData?.public_token;
+                      
+                      // If no token exists in database, generate a new one (for both draft and signed contracts)
+                      if (!publicToken) {
                         publicToken = crypto.randomUUID();
-                        console.log('🔍 Generated new public token for draft contract:', publicToken);
+                        console.log('🔍 Generated new public token:', publicToken);
                         
                         // Update the contract with the public token
-                        const { error } = await supabase
+                        const { error: updateError } = await supabase
                           .from('lead_leadcontact')
                           .update({ public_token: publicToken })
                           .eq('id', legacyContractId);
                         
-                        if (error) {
-                          console.error('❌ Error updating legacy contract with public token:', error);
+                        if (updateError) {
+                          console.error('❌ Error updating legacy contract with public token:', updateError);
                           toast.error('Failed to create share link.');
                           return;
+                        }
+                        
+                        // Update the state with the new token so subsequent clicks use the same token
+                        setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
+                      } else {
+                        console.log('🔍 Found existing public token:', publicToken);
+                        // Update state to ensure it's in sync
+                        if (!viewingContract.public_token || viewingContract.public_token !== publicToken) {
+                          setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
                         }
                       }
                       

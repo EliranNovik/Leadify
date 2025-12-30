@@ -2147,20 +2147,51 @@ const Dashboard: React.FC = () => {
         const selectedMonthIndex = months.indexOf(selectedMonth);
         const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
         const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-        // Fetch only important departments from tenant_departement
-        const { data: allDepartments, error: departmentsError } = await supabase
+        // IMPORTANT: Also include merged target departments (4, 5, 6) even if not marked important
+        // These are the target departments for merging: 2 (Austria/Germany), 4 (Commercial & Civil), 5, 6
+        const mergedTargetDeptIds = [2, 4, 5, 6]; // Target departments for merging
+        const salesDeptIdsToExclude = [12, 14, 15, 20]; // Sales departments that should be merged (exclude from display)
+        
+        // Fetch important departments AND merged target departments
+        const { data: importantDepartments, error: importantError } = await supabase
           .from('tenant_departement')
           .select('id, name, min_income, important')
           .eq('important', 't')
           .order('id');
         
-        if (departmentsError) {
-          throw departmentsError;
+        if (importantError) {
+          throw importantError;
         }
         
-        // Extract department IDs and create target mapping
-        const departmentIds = allDepartments?.map(dept => dept.id) || [];
-        const departmentTargets = allDepartments || [];
+        // Fetch merged target departments (in case they're not in the important list)
+        const { data: mergedTargetDepts, error: mergedError } = await supabase
+          .from('tenant_departement')
+          .select('id, name, min_income, important')
+          .in('id', mergedTargetDeptIds)
+          .order('id');
+        
+        if (mergedError) {
+          console.error('Error fetching merged target departments:', mergedError);
+        }
+        
+        // Combine both lists, avoiding duplicates, and EXCLUDE sales departments from display
+        const departmentMap = new Map<number, any>();
+        (importantDepartments || []).forEach(dept => {
+          // Exclude sales departments that should be merged (they'll be merged during processing)
+          if (!salesDeptIdsToExclude.includes(dept.id)) {
+            departmentMap.set(dept.id, dept);
+          }
+        });
+        (mergedTargetDepts || []).forEach(dept => {
+          // Exclude sales departments that should be merged
+          if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) {
+            departmentMap.set(dept.id, dept);
+          }
+        });
+        
+        // Convert map to arrays
+        const departmentTargets = Array.from(departmentMap.values());
+        const departmentIds = departmentTargets.map(dept => dept.id);
         // Log which departments are important
         const importantDepts = departmentTargets.filter(dept => dept.important === 't');
         // Debug: Log each department with its index
@@ -3040,7 +3071,7 @@ const Dashboard: React.FC = () => {
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
       
-      // Fetch only important departments (same as agreement data)
+      // Fetch only important departments (matching CollectionDueReport - no merging, no exclusions)
       const { data: allDepartments, error: departmentsError } = await supabase
         .from('tenant_departement')
         .select('id, name, min_income, important')
@@ -3054,9 +3085,10 @@ const Dashboard: React.FC = () => {
       // Extract department IDs and create target mapping
       const departmentIds = allDepartments?.map(dept => dept.id) || [];
       const departmentTargets = allDepartments || [];
+      
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
-      departmentTargets?.forEach(dept => {
+      departmentTargets.forEach(dept => {
         targetMap[dept.id] = parseFloat(dept.min_income || '0');
       });
       
@@ -3102,9 +3134,10 @@ const Dashboard: React.FC = () => {
       };
       
       // Fetch new payment plans - only unpaid ones that are ready to pay (same as CollectionDueReport)
+      // Note: CollectionDueReport filters by ready_to_pay=true AND paid=false
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true...');
+      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true and paid=false (matching CollectionDueReport)...');
       let newPaymentsQuery = supabase
         .from('payment_plans')
         .select(`
@@ -3119,7 +3152,7 @@ const Dashboard: React.FC = () => {
           paid
         `)
         .eq('ready_to_pay', true)
-        .eq('paid', false) // Only unpaid payments
+        .eq('paid', false) // Match CollectionDueReport exactly - only unpaid payments
         .not('due_date', 'is', null)
         .is('cancel_date', null);
       
@@ -3141,11 +3174,10 @@ const Dashboard: React.FC = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow (same as CollectionDueReport)
-      // Note: CollectionDueReport does NOT filter by ready_to_pay for legacy payments
-      // It only filters by cancel_date IS NULL, actual_date IS NULL (unpaid), and date range
+      // Note: CollectionDueReport filters by cancel_date IS NULL, actual_date IS NULL (unpaid), and date range
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching legacy payment plans...');
+      console.log('🔍 Invoiced Data - Fetching legacy payment plans with actual_date IS NULL (unpaid, matching CollectionDueReport)...');
       let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
         .select(`
@@ -3164,7 +3196,7 @@ const Dashboard: React.FC = () => {
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
         .is('cancel_date', null) // Exclude cancelled payments (only fetch if cancel_date IS NULL)
-        .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
+        .is('actual_date', null); // Match CollectionDueReport exactly - only unpaid payments (actual_date IS NULL means not paid)
       
       const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
       if (legacyError) {
@@ -3195,7 +3227,7 @@ const Dashboard: React.FC = () => {
       console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
       console.log('📊 Invoiced Data - Unique legacy lead IDs:', legacyLeadIds.length);
       
-      // Fetch lead metadata with category and department info
+      // Fetch lead metadata with handler info (to get employee department, matching CollectionDueReport)
       let newLeadsMap = new Map();
       if (newLeadIds.length > 0) {
         console.log('🔍 Invoiced Data - Fetching new leads metadata...');
@@ -3203,21 +3235,7 @@ const Dashboard: React.FC = () => {
           .from('leads')
           .select(`
             id,
-            category_id,
-            misc_category!category_id(
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id(
-                id,
-                name,
-                department_id,
-                tenant_departement!department_id(
-                  id,
-                  name
-                )
-              )
-            )
+            handler
           `)
           .in('id', newLeadIds);
 
@@ -3240,21 +3258,7 @@ const Dashboard: React.FC = () => {
           .from('leads_lead')
           .select(`
             id,
-            category_id,
-            misc_category!category_id(
-              id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id(
-                id,
-                name,
-                department_id,
-                tenant_departement!department_id(
-                  id,
-                  name
-                )
-              )
-            )
+            case_handler_id
           `)
           .in('id', legacyLeadIds);
 
@@ -3282,7 +3286,116 @@ const Dashboard: React.FC = () => {
         selectedMonthName
       });
       
-      // Process payments and group by department
+      // Fetch handler information and map to departments (EXACTLY matching CollectionDueReport)
+      // Collect handler names from new leads and handler IDs from legacy leads
+      const allHandlerNames = new Set<string>();
+      const allHandlerIds = new Set<number>();
+      
+      // Collect handler names from new leads
+      newLeadsMap.forEach((lead: any) => {
+        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+          allHandlerNames.add(lead.handler.trim());
+        }
+      });
+      
+      // Collect handler IDs from legacy leads
+      legacyLeadsMap.forEach((lead: any) => {
+        const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+        if (handlerId !== null && !Number.isNaN(handlerId)) {
+          allHandlerIds.add(handlerId);
+        }
+      });
+      
+      // Fetch employees by display_name for new leads
+      const handlerNameToIdMap = new Map<string, number>();
+      const handlerMap = new Map<number, string>(); // handlerId -> display_name
+      
+      if (allHandlerNames.size > 0) {
+        const handlerNamesArray = Array.from(allHandlerNames);
+        const { data: handlerDataByName, error: handlerErrorByName } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('display_name', handlerNamesArray);
+        
+        if (!handlerErrorByName && handlerDataByName) {
+          handlerDataByName.forEach(emp => {
+            const empId = Number(emp.id);
+            const displayName = emp.display_name?.trim();
+            if (!Number.isNaN(empId) && displayName) {
+              handlerNameToIdMap.set(displayName, empId);
+              handlerMap.set(empId, displayName);
+            }
+          });
+        }
+      }
+      
+      // Fetch employees by ID for legacy leads
+      const uniqueHandlerIds = Array.from(new Set(allHandlerIds));
+      if (uniqueHandlerIds.length > 0) {
+        const { data: handlerDataById, error: handlerErrorById } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name')
+          .in('id', uniqueHandlerIds);
+        
+        if (!handlerErrorById && handlerDataById) {
+          handlerDataById.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              const displayName = emp.display_name?.trim() || `Employee #${emp.id}`;
+              handlerMap.set(empId, displayName);
+            }
+          });
+        }
+      }
+      
+      // Fetch department information from tenants_employee for all handlers (EXACTLY matching CollectionDueReport)
+      const handlerIdsWithDepartments = Array.from(new Set([
+        ...Array.from(handlerNameToIdMap.values()),
+        ...Array.from(allHandlerIds)
+      ]));
+      
+      const handlerIdToDepartmentNameMap = new Map<number, string>(); // handlerId -> departmentName (string)
+      
+      if (handlerIdsWithDepartments.length > 0) {
+        const { data: employeeDepartmentData, error: employeeDepartmentError } = await supabase
+          .from('tenants_employee')
+          .select(`
+            id,
+            display_name,
+            department_id,
+            tenant_departement!department_id (
+              id,
+              name
+            )
+          `)
+          .in('id', handlerIdsWithDepartments);
+        
+        if (!employeeDepartmentError && employeeDepartmentData) {
+          employeeDepartmentData.forEach(emp => {
+            const empId = Number(emp.id);
+            if (!Number.isNaN(empId)) {
+              const department = emp.tenant_departement;
+              if (department) {
+                const dept = Array.isArray(department) ? department[0] : department;
+                const departmentName = dept?.name || '—';
+                handlerIdToDepartmentNameMap.set(empId, departmentName);
+              } else {
+                handlerIdToDepartmentNameMap.set(empId, '—');
+              }
+            }
+          });
+        }
+      }
+      
+      // Create a map from department name to department ID (for matching with departmentIds)
+      const departmentNameToIdMap = new Map<string, number>();
+      departmentTargets.forEach(dept => {
+        departmentNameToIdMap.set(dept.name, dept.id);
+      });
+      
+      // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
+      // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
+      // Multiple payment rows per lead are all counted and summed
       // Process new payments
       let newPaymentsProcessed = 0;
       let newPaymentsSkipped = 0;
@@ -3293,21 +3406,32 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Get department from category -> main category -> department
-        const category = lead.misc_category;
-        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
-        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
-        const departmentId = department?.id || null;
-
-        if (!departmentId || !departmentIds.includes(departmentId)) return;
-
-        const value = Number(payment.value || 0);
-        let vat = Number(payment.value_vat || 0);
-        if (!vat && (payment.currency || '₪') === '₪') {
-          vat = Math.round(value * 0.18 * 100) / 100;
+        // Get handlerId from lead's handler field (EXACTLY matching CollectionDueReport)
+        let handlerId: number | null = null;
+        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
+          handlerId = handlerNameToIdMap.get(lead.handler.trim()) || null;
         }
-        const amount = value + vat;
-        const amountInNIS = convertToNIS(amount, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
+        
+        // Get department NAME from employee's department (EXACTLY matching CollectionDueReport - uses department NAME, not ID)
+        const employeeDepartmentName = handlerId !== null 
+          ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
+          : '—';
+        
+        // Convert department name to ID for matching with departmentIds
+        const departmentId = departmentNameToIdMap.get(employeeDepartmentName) || null;
+
+        // Only include payments that have a department in our department list (or '—' which we'll skip)
+        if (!departmentId || !departmentIds.includes(departmentId)) {
+          newPaymentsSkipped++;
+          return;
+        }
+        
+        newPaymentsProcessed++;
+
+        // Exclude VAT - use value only (without VAT), same as CollectionDueReport
+        const value = Number(payment.value || 0);
+        // Don't calculate VAT - we exclude it from invoiced data
+        const amountInNIS = convertToNIS(value, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
 
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
         if (!dueDate) return;
@@ -3345,6 +3469,8 @@ const Dashboard: React.FC = () => {
       });
 
       // Process legacy payments
+      // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
+      // Multiple payment rows per lead are all counted and summed
       let legacyPaymentsProcessed = 0;
       let legacyPaymentsSkipped = 0;
       filteredLegacyPayments.forEach(payment => {
@@ -3357,17 +3483,27 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Get department from category -> main category -> department
-        const category = lead.misc_category;
-        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
-        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
-        const departmentId = department?.id || null;
+        // Get handlerId from lead's case_handler_id (EXACTLY matching CollectionDueReport)
+        const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+        
+        // Get department NAME from employee's department (EXACTLY matching CollectionDueReport - uses department NAME, not ID)
+        const employeeDepartmentName = handlerId !== null && !Number.isNaN(handlerId)
+          ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
+          : '—';
+        
+        // Convert department name to ID for matching with departmentIds
+        const departmentId = departmentNameToIdMap.get(employeeDepartmentName) || null;
 
-        if (!departmentId || !departmentIds.includes(departmentId)) return;
+        // Only include payments that have a department in our department list (or '—' which we'll skip)
+        if (!departmentId || !departmentIds.includes(departmentId)) {
+          legacyPaymentsSkipped++;
+          return;
+        }
+        
+        legacyPaymentsProcessed++;
 
-        // Use value_base for legacy payments as specified in CollectionDueReport
+        // Use value_base for legacy payments as specified in CollectionDueReport - exclude VAT
         const value = Number(payment.value_base || 0);
-        let vat = Number(payment.vat_value || 0);
         
         // Get currency from accounting_currencies relation
         const accountingCurrency: any = payment.accounting_currencies 
@@ -3384,12 +3520,8 @@ const Dashboard: React.FC = () => {
           currencyId = payment.currency_id;
         }
         
-        // Calculate VAT if not provided and currency is NIS
-        if (!vat && (currencyId === 1)) {
-          vat = Math.round(value * 0.18 * 100) / 100;
-        }
-        const amount = value + vat;
-        const amountInNIS = convertToNIS(amount, currencyId);
+        // Exclude VAT - use value_base only (without VAT), same as CollectionDueReport
+        const amountInNIS = convertToNIS(value, currencyId);
 
         // Use due_date for date filtering (same as CollectionDueReport)
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
@@ -3419,6 +3551,8 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
+        
+        legacyPaymentsProcessed++; // Track processed payments
       });
       
       console.log('📊 Invoiced Data - Legacy payments processing:', {

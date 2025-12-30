@@ -1772,47 +1772,46 @@ const MasterLeadPage: React.FC = () => {
                     const legacyContractId = viewingContract.id.replace('legacy_', '');
                     console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
                     
-                    let publicToken = viewingContract.public_token;
+                    // Always fetch the token from database first (to get the latest value, even if state has it)
+                    console.log('🔍 Fetching public token from database');
+                    const { data: contractData, error: fetchError } = await supabase
+                      .from('lead_leadcontact')
+                      .select('public_token')
+                      .eq('id', legacyContractId)
+                      .maybeSingle();
                     
-                    // For signed contracts, always fetch the actual token from database
-                    if (viewingContract.status === 'signed') {
-                      console.log('🔍 Fetching actual public token from database for signed contract');
-                      const { data, error } = await supabase
-                        .from('lead_leadcontact')
-                        .select('public_token')
-                        .eq('id', legacyContractId)
-                        .single();
-                      
-                      if (error) {
-                        console.error('❌ Error fetching public token:', error);
-                        toast.error('Failed to get share link.');
-                        return;
-                      }
-                      
-                      publicToken = data?.public_token;
-                      if (!publicToken) {
-                        toast.error('No share link found for this contract.');
-                        return;
-                      }
-                      
-                      console.log('🔍 Found existing public token:', publicToken);
+                    if (fetchError && fetchError.code !== 'PGRST116') {
+                      console.error('❌ Error fetching public token:', fetchError);
+                      toast.error('Failed to get share link.');
+                      return;
                     }
                     
-                    // For draft contracts, generate a new token if it doesn't exist
-                    if (viewingContract.status === 'draft' && !publicToken) {
+                    let publicToken = contractData?.public_token;
+                    
+                    // If no token exists in database, generate a new one (for both draft and signed contracts)
+                    if (!publicToken) {
                       publicToken = crypto.randomUUID();
-                      console.log('🔍 Generated new public token for draft contract:', publicToken);
+                      console.log('🔍 Generated new public token:', publicToken);
                       
                       // Update the contract with the public token
-                      const { error } = await supabase
+                      const { error: updateError } = await supabase
                         .from('lead_leadcontact')
                         .update({ public_token: publicToken })
                         .eq('id', legacyContractId);
                       
-                      if (error) {
-                        console.error('❌ Error updating legacy contract with public token:', error);
+                      if (updateError) {
+                        console.error('❌ Error updating legacy contract with public token:', updateError);
                         toast.error('Failed to create share link.');
                         return;
+                      }
+                      
+                      // Update the state with the new token so subsequent clicks use the same token
+                      setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
+                    } else {
+                      console.log('🔍 Found existing public token:', publicToken);
+                      // Update state to ensure it's in sync
+                      if (!viewingContract.public_token || viewingContract.public_token !== publicToken) {
+                        setViewingContract(prev => prev ? { ...prev, public_token: publicToken } : null);
                       }
                     }
                     

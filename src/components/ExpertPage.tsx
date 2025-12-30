@@ -745,12 +745,14 @@ const ExpertPage: React.FC = () => {
               )
             )
           `)
-          .eq('expert_examination', 0) // Only fetch leads where expert_examination is 0
+          .or('expert_examination.eq.0,expert_examination.is.null') // Only fetch leads where expert_examination is 0 or null (not yet examined)
           .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
-          .gte('meeting_date', '2025-01-01') // Only fetch leads with meeting dates from 2025 onwards
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
           .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
+        
+        // Note: We don't filter by meeting_date here because legacy leads might have meetings
+        // stored in the meetings table instead. We'll filter after fetching meetings from both sources.
 
         // Filter legacy leads by expert_id if we have the employee ID
         if (currentUserEmployeeId) {
@@ -763,6 +765,30 @@ const ExpertPage: React.FC = () => {
         if (legacyLeadsError) {
           console.error('Error fetching legacy leads:', legacyLeadsError);
           throw legacyLeadsError;
+        }
+
+        // Fetch meetings from meetings table for legacy leads (fetch all meetings, we'll filter later)
+        const legacyLeadIds = legacyLeadsData?.map(lead => lead.id) || [];
+        let legacyMeetingsMap: Record<number, any[]> = {};
+        
+        if (legacyLeadIds.length > 0) {
+          const { data: legacyMeetingsData, error: meetingsError } = await supabase
+            .from('meetings')
+            .select('legacy_lead_id, meeting_date')
+            .in('legacy_lead_id', legacyLeadIds);
+          
+          if (!meetingsError && legacyMeetingsData) {
+            legacyMeetingsData.forEach(meeting => {
+              if (meeting.legacy_lead_id && meeting.meeting_date) {
+                if (!legacyMeetingsMap[meeting.legacy_lead_id]) {
+                  legacyMeetingsMap[meeting.legacy_lead_id] = [];
+                }
+                legacyMeetingsMap[meeting.legacy_lead_id].push({ meeting_date: meeting.meeting_date });
+              }
+            });
+          } else if (meetingsError) {
+            console.error('Error fetching meetings for legacy leads:', meetingsError);
+          }
         }
 
         // Fetch employee names for legacy leads to display properly
@@ -884,6 +910,13 @@ const ExpertPage: React.FC = () => {
             const combinedDateTime = meetingTime ? `${meetingDate} ${meetingTime}` : meetingDate;
             legacyMeetings.push({ meeting_date: combinedDateTime });
           }
+          
+          // Also check if there are meetings in the meetings table for this legacy lead
+          // This handles cases where meeting_date might be null but meetings exist in the meetings table
+          if (legacyMeetingsMap[lead.id] && legacyMeetingsMap[lead.id].length > 0) {
+            // Merge meetings from meetings table with existing meetings
+            legacyMeetings.push(...legacyMeetingsMap[lead.id]);
+          }
 
           // Get category name for legacy leads (they use category_id)
           let categoryName = 'N/A';
@@ -930,14 +963,45 @@ const ExpertPage: React.FC = () => {
           };
         });
 
+        // Filter legacy leads: include those with meetings from 2025+ OR those with meetings in the meetings table
+        // This ensures we show legacy leads that have meetings in the meetings table even if meeting_date in leads_lead is before 2025
+        const filteredLegacyLeads = processedLegacyLeads.filter(lead => {
+          if (!lead.meetings || lead.meetings.length === 0) return false;
+          
+          // Extract numeric ID for looking up in legacyMeetingsMap
+          const numericId = typeof lead.id === 'string' ? parseInt(lead.id.replace('legacy_', '')) : lead.id;
+          
+          // Check if lead has meetings in the meetings table (this takes priority)
+          const hasMeetingsInMeetingsTable = numericId && legacyMeetingsMap[numericId] && legacyMeetingsMap[numericId].length > 0;
+          
+          // Check if lead has meetings from 2025+ in either source
+          const hasMeetingIn2025OrLater = lead.meetings.some(meeting => {
+            if (!meeting.meeting_date) return false;
+            try {
+              const meetingDateStr = typeof meeting.meeting_date === 'string' 
+                ? meeting.meeting_date.split(' ')[0]
+                : meeting.meeting_date;
+              const meetingDate = new Date(meetingDateStr);
+              if (isNaN(meetingDate.getTime())) return false;
+              return meetingDate.getFullYear() >= 2025;
+            } catch (error) {
+              return false;
+            }
+          });
+          
+          // Include if has meetings in meetings table OR has meetings from 2025+
+          return hasMeetingsInMeetingsTable || hasMeetingIn2025OrLater;
+        });
+
         // Combine and sort all leads by creation date
-        const allLeads = [...processedNewLeads, ...processedLegacyLeads].sort((a, b) => 
+        const allLeads = [...processedNewLeads, ...filteredLegacyLeads].sort((a, b) => 
           new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
         );
 
         console.log('ExpertPage leads fetch:', { 
           newLeads: processedNewLeads.length, 
           legacyLeads: processedLegacyLeads.length,
+          filteredLegacyLeads: filteredLegacyLeads.length,
           totalLeads: allLeads.length,
           currentUserFullName,
           currentUserEmployeeId,
