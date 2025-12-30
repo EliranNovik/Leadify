@@ -1015,6 +1015,42 @@ const resolveLegacyLanguage = (lead: any) => {
       }
 
       console.log(`✅ Fetched ${allStage60Records?.length || 0} stage 60 records`);
+      console.log(`🔍 Date filter: startIso=${startIso}, endIso=${endIso}`);
+      
+      // DEBUG: Check for specific lead ID 209614
+      const debugLeadId: number = 209614;
+      const debugRecords = (allStage60Records || []).filter(r => r.lead_id === debugLeadId);
+      if (debugRecords.length > 0) {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found ${debugRecords.length} stage 60 records:`, debugRecords.map(r => ({
+          id: r.id,
+          lead_id: r.lead_id,
+          date: r.date,
+          cdate: r.cdate,
+          stage: r.stage,
+          dateInRange: startIso && endIso ? (r.date >= startIso && r.date < endIso) : 'N/A'
+        })));
+      } else {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: No stage 60 records found in filtered results`);
+        // Check if it exists without date filter
+        const { data: allRecordsForLead, error: debugError } = await supabase
+          .from('leads_leadstage')
+          .select('id, lead_id, date, cdate, stage')
+          .eq('stage', 60)
+          .eq('lead_id', debugLeadId);
+        if (!debugError && allRecordsForLead && allRecordsForLead.length > 0) {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: Found ${allRecordsForLead.length} stage 60 records WITHOUT date filter:`, allRecordsForLead.map(r => ({
+            id: r.id,
+            lead_id: r.lead_id,
+            date: r.date,
+            cdate: r.cdate,
+            stage: r.stage,
+            dateInRange: startIso && endIso ? (r.date >= startIso && r.date < endIso) : 'N/A',
+            cdateInRange: startIso && endIso ? (r.cdate >= startIso && r.cdate < endIso) : 'N/A'
+          })));
+        } else {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: No stage 60 records found at all`);
+        }
+      }
 
       // Separate legacy and new leads, and track sign dates (use date from stage 60 record)
       const legacyLeadIdsSet = new Set<number>();
@@ -1111,6 +1147,14 @@ const resolveLegacyLanguage = (lead: any) => {
       // Fetch legacy leads data (only active leads: status = 0)
       let legacyLeadsData: any[] = [];
       const allLegacyLeadIds = Array.from(legacyLeadIdsSet);
+      
+      // DEBUG: Check if lead 209614 is in the set (debugLeadId already declared above)
+      if (allLegacyLeadIds.includes(debugLeadId)) {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found in legacyLeadIdsSet`);
+      } else {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in legacyLeadIdsSet. Set contains:`, Array.from(legacyLeadIdsSet).slice(0, 10));
+      }
+      
       if (allLegacyLeadIds.length > 0) {
         const { data: legacyLeadsResponse, error: legacyLeadsError } = await supabase
           .from('leads_lead')
@@ -1119,6 +1163,7 @@ const resolveLegacyLanguage = (lead: any) => {
               id,
               lead_number,
               manual_id,
+              master_id,
               name,
               stage,
               cdate,
@@ -1134,6 +1179,7 @@ const resolveLegacyLanguage = (lead: any) => {
               category,
               category_id,
               language_id,
+              status,
               accounting_currencies!leads_lead_currency_id_fkey (
                 id,
                 iso_code,
@@ -1154,7 +1200,7 @@ const resolveLegacyLanguage = (lead: any) => {
             `
           )
           .in('id', allLegacyLeadIds)
-          .eq('status', 0); // Only active leads (status 0 = active, status 10 = inactive)
+          .or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
 
         if (legacyLeadsError) {
           console.error('Failed to load legacy leads:', legacyLeadsError);
@@ -1163,6 +1209,85 @@ const resolveLegacyLanguage = (lead: any) => {
 
         legacyLeadsData = legacyLeadsResponse || [];
         console.log(`✅ Loaded ${legacyLeadsData.length} legacy leads`);
+        
+        // Calculate sublead suffixes for legacy leads with master_id
+        // Collect all unique master_ids from the fetched leads
+        const uniqueMasterIds = new Set<number>();
+        legacyLeadsData.forEach(lead => {
+          if (lead.master_id && String(lead.master_id).trim() !== '') {
+            uniqueMasterIds.add(Number(lead.master_id));
+          }
+        });
+        
+        // Query all subleads for each master_id to calculate correct suffixes
+        const leadSuffixMap = new Map<number, number>(); // lead.id -> suffix
+        if (uniqueMasterIds.size > 0) {
+          const masterIdArray = Array.from(uniqueMasterIds);
+          for (const masterId of masterIdArray) {
+            const { data: allSubLeads } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', masterId)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+            
+            if (allSubLeads && allSubLeads.length > 0) {
+              allSubLeads.forEach((subLead, index) => {
+                // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                leadSuffixMap.set(subLead.id, index + 2);
+              });
+            }
+          }
+        }
+        
+        // Helper function to format legacy lead number (same logic as Clients.tsx)
+        const formatLegacyLeadNumber = (lead: any): string => {
+          const masterId = lead.master_id;
+          const leadId = String(lead.id);
+          
+          // If master_id is null/empty, it's a master lead - return just the ID
+          if (!masterId || String(masterId).trim() === '') {
+            return leadId;
+          }
+          
+          // If master_id exists, it's a sub-lead - use calculated suffix
+          const suffix = leadSuffixMap.get(lead.id);
+          if (suffix !== undefined) {
+            return `${masterId}/${suffix}`;
+          }
+          
+          // Fallback if suffix not found (shouldn't happen, but just in case)
+          return `${masterId}/?`;
+        };
+        
+        // Store the formatted lead number for use in mapping
+        (legacyLeadsData as any[]).forEach((lead: any) => {
+          (lead as any)._formattedLeadNumber = formatLegacyLeadNumber(lead);
+        });
+        
+        // DEBUG: Check if lead 209614 is in the fetched results
+        const debugLead = legacyLeadsData.find((l: any) => l.id === debugLeadId);
+        if (debugLead) {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: Found in legacyLeadsData:`, {
+            id: debugLead.id,
+            name: debugLead.name,
+            status: debugLead.status,
+            stage: debugLead.stage
+          });
+        } else {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in legacyLeadsData (might be inactive or filtered out)`);
+          // Check if it exists with different status
+          const { data: debugLeadCheck, error: debugCheckError } = await supabase
+            .from('leads_lead')
+            .select('id, name, status, stage')
+            .eq('id', debugLeadId)
+            .maybeSingle();
+          if (!debugCheckError && debugLeadCheck) {
+            console.log(`🔍 DEBUG Lead ${debugLeadId}: Exists in database with status=${debugLeadCheck.status}, stage=${debugLeadCheck.stage}`);
+          } else {
+            console.log(`🔍 DEBUG Lead ${debugLeadId}: Does not exist in database or error:`, debugCheckError);
+          }
+        }
       }
 
       const filteredNewLeads = (newLeads || [])
@@ -1253,15 +1378,14 @@ const resolveLegacyLanguage = (lead: any) => {
               ? lead.case_handler_id
               : lead.meeting_lawyer_id ?? null;
 
-          const legacyLeadNumber =
-            lead.lead_number ||
-            lead.manual_id ||
-            `${lead.id}`;
+          // Format lead number with sublead suffix if applicable (same logic as Clients.tsx)
+          const formattedLeadNumber = (lead as any)._formattedLeadNumber || String(lead.id);
+          const legacyLeadNumber = formattedLeadNumber;
 
           return {
             id: `legacy-${lead.id}`,
             leadType: 'legacy',
-            leadNumber: String(legacyLeadNumber),
+            leadNumber: legacyLeadNumber,
             leadIdentifier: String(lead.id),
             leadName: lead.name || 'Unnamed Lead',
             createdDate: lead.cdate || null,

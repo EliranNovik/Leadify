@@ -2493,7 +2493,8 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', leadIds);
+            .in('id', leadIds)
+            .or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
           
           if (leadsError) {
             throw leadsError;
@@ -2682,7 +2683,8 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', monthLeadIds);
+            .in('id', monthLeadIds)
+            .or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
           
           if (monthLeadsError) {
             throw monthLeadsError;
