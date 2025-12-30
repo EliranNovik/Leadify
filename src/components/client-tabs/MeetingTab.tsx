@@ -2284,12 +2284,16 @@ const formatEmailBody = async (
           ? 'shared-newclients@lawoffice.org.il' 
           : 'shared-potentialclients@lawoffice.org.il';
         
-        const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-        
-        if (!hasAccess) {
-          toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`);
-          setIsSchedulingMeeting(false);
-          return;
+        try {
+          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+          if (!hasAccess) {
+            // Show warning but continue - calendar creation will be attempted and will fail gracefully
+            toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`);
+          }
+        } catch (accessError) {
+          // If access check fails, show warning but continue
+          console.warn('⚠️ Calendar access check failed:', accessError);
+          toast.error(`Calendar access check failed. Meeting will still be created without calendar sync.`);
         }
 
         const categoryName = client.category || 'No Category';
@@ -2316,9 +2320,10 @@ const formatEmailBody = async (
         } catch (calendarError) {
           console.error('Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
-          toast.error(`Failed to create calendar event: ${errorMessage}`);
-          setIsSchedulingMeeting(false);
-          return;
+          // Show warning but continue with meeting creation
+          toast.error(`Calendar sync failed: ${errorMessage}. Meeting will still be created.`);
+          // Continue without calendar event - meeting will be created without Teams URL
+          teamsMeetingUrl = '';
         }
       } else if (selectedLocation?.default_link) {
         teamsMeetingUrl = selectedLocation.default_link;
@@ -2889,9 +2894,10 @@ const formatEmailBody = async (
         } catch (calendarError) {
           console.error('Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
-          toast.error(`Failed to create calendar event: ${errorMessage}`);
-          setIsReschedulingMeeting(false);
-          return;
+          // Show warning but continue with meeting creation
+          toast.error(`Calendar sync failed: ${errorMessage}. Meeting will still be created.`);
+          // Continue without calendar event - meeting will be created without Teams URL
+          teamsMeetingUrl = '';
         }
       } else if (selectedLocation?.default_link) {
         teamsMeetingUrl = selectedLocation.default_link;

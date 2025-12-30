@@ -197,12 +197,14 @@ const PublicLegacyContractView: React.FC = () => {
         container.setAttribute('data-signature-id', id);
 
         const canvasContainer = document.createElement('div');
-        canvasContainer.style.cssText = 'border: 2px dashed #3b82f6; border-radius: 6px; background-color: #f8fafc; width: 200px; height: 80px; position: relative;';
+        // Make canvas container responsive for mobile - use max-width instead of fixed width
+        canvasContainer.style.cssText = 'border: 2px dashed #3b82f6; border-radius: 6px; background-color: #f8fafc; width: 100%; max-width: 200px; min-width: 150px; height: 80px; position: relative;';
 
         const canvas = document.createElement('canvas');
+        // Initial dimensions - will be resized based on actual container size
         canvas.width = 200;
         canvas.height = 80;
-        canvas.style.cssText = 'display: block; width: 100%; height: 100%; cursor: crosshair;';
+        canvas.style.cssText = 'display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none;';
 
         canvasContainer.appendChild(canvas);
         
@@ -233,29 +235,55 @@ const PublicLegacyContractView: React.FC = () => {
           if (!ctx) return;
           
           // Set canvas size to match its displayed size (now that it's in DOM)
+          // Use devicePixelRatio for crisp rendering on high-DPI displays
           const rect = canvas.getBoundingClientRect();
-          canvas.width = rect.width;
-          canvas.height = rect.height;
+          const dpr = window.devicePixelRatio || 1;
+          const displayWidth = Math.max(1, Math.floor(rect.width));
+          const displayHeight = Math.max(1, Math.floor(rect.height));
           
-          // Set drawing style
+          // Set actual canvas size accounting for device pixel ratio (backing store resolution)
+          canvas.width = displayWidth * dpr;
+          canvas.height = displayHeight * dpr;
+          
+          // Set the CSS size to the display size (logical pixels) - keep it responsive
+          // Don't set explicit pixel sizes to maintain responsiveness
+          canvas.style.width = '100%';
+          canvas.style.height = '100%';
+          
+          // Scale the context to account for device pixel ratio (do this BEFORE setting styles)
+          ctx.scale(dpr, dpr);
+          
+          // Set drawing style (after scaling) - use logical pixel values
           ctx.strokeStyle = '#3b82f6';
-          ctx.lineWidth = 2;
+          ctx.lineWidth = 2; // This will be 2 logical pixels, rendered as 2*dpr physical pixels
           ctx.lineCap = 'round';
           ctx.lineJoin = 'round';
 
           const getPoint = (e: any): { x: number; y: number } => {
             const rect = canvas.getBoundingClientRect();
+            
             // Check for touch events (use type checking that works in browsers)
             if (e.touches && e.touches.length > 0) {
-              return {
-                x: e.touches[0].clientX - rect.left,
-                y: e.touches[0].clientY - rect.top
-              };
-            } else if (e.clientX !== undefined) {
+              // For touch events, use the first touch point
+              const touch = e.touches[0] || e.changedTouches?.[0];
+              if (touch) {
+                return {
+                  x: touch.clientX - rect.left,
+                  y: touch.clientY - rect.top
+                };
+              }
+            } else if (e.clientX !== undefined && e.clientY !== undefined) {
               // Mouse event
               return {
                 x: e.clientX - rect.left,
                 y: e.clientY - rect.top
+              };
+            } else if (e.changedTouches && e.changedTouches.length > 0) {
+              // Handle touchend/touchcancel events
+              const touch = e.changedTouches[0];
+              return {
+                x: touch.clientX - rect.left,
+                y: touch.clientY - rect.top
               };
             }
             return { x: 0, y: 0 };
@@ -274,13 +302,16 @@ const PublicLegacyContractView: React.FC = () => {
           const draw = (e: any) => {
             if (!isDrawing) return;
             e.preventDefault();
+            e.stopPropagation(); // Prevent scrolling on mobile
             const point = getPoint(e);
-            ctx.beginPath();
-            ctx.moveTo(lastX, lastY);
-            ctx.lineTo(point.x, point.y);
-            ctx.stroke();
-            lastX = point.x;
-            lastY = point.y;
+            if (point.x > 0 || point.y > 0) { // Only draw if we have valid coordinates
+              ctx.beginPath();
+              ctx.moveTo(lastX, lastY);
+              ctx.lineTo(point.x, point.y);
+              ctx.stroke();
+              lastX = point.x;
+              lastY = point.y;
+            }
           };
 
           const stopDrawing = (e: any) => {
@@ -619,7 +650,22 @@ const PublicLegacyContractView: React.FC = () => {
                 font-family: inherit;
                 line-height: 1.75;
               }
-              /* RTL support for Hebrew text */
+              /* Auto-detect and right-align Hebrew text */
+              .contract-content p,
+              .contract-content h1,
+              .contract-content h2,
+              .contract-content h3,
+              .contract-content h4,
+              .contract-content h5,
+              .contract-content h6,
+              .contract-content div,
+              .contract-content li,
+              .contract-content span {
+                unicode-bidi: plaintext;
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* RTL support for Hebrew text - explicit classes */
               .contract-content .ql-align-right,
               .contract-content .ql-direction-rtl,
               .contract-content p.ql-align-right {
@@ -660,7 +706,9 @@ const PublicLegacyContractView: React.FC = () => {
                 border-radius: 6px !important;
                 padding: 12px !important;
                 margin: 0 4px !important;
-                min-width: 180px !important;
+                width: 100% !important;
+                max-width: 200px !important;
+                min-width: 150px !important;
                 min-height: 50px !important;
                 background: #f8fafc !important;
                 cursor: pointer !important;
@@ -673,6 +721,50 @@ const PublicLegacyContractView: React.FC = () => {
                 display: inline-block !important;
                 vertical-align: middle !important;
                 margin: 0 4px !important;
+                width: 100% !important;
+                max-width: 200px !important;
+                min-width: 150px !important;
+              }
+              /* Mobile responsive adjustments */
+              @media (max-width: 640px) {
+                .contract-content {
+                  font-size: 0.875rem !important; /* 14px */
+                  line-height: 1.6 !important;
+                }
+                .contract-content p,
+                .contract-content li,
+                .contract-content span {
+                  font-size: 0.875rem !important; /* 14px */
+                }
+                .contract-content h1 {
+                  font-size: 1.5rem !important; /* 24px */
+                }
+                .contract-content h2 {
+                  font-size: 1.25rem !important; /* 20px */
+                }
+                .contract-content h3 {
+                  font-size: 1.125rem !important; /* 18px */
+                }
+                .contract-content h4,
+                .contract-content h5,
+                .contract-content h6 {
+                  font-size: 1rem !important; /* 16px */
+                }
+                .contract-content .inline-input {
+                  font-size: 0.8125rem !important; /* 13px */
+                  padding: 3px 6px !important;
+                  min-width: 120px !important;
+                }
+                .contract-content .signature-pad-placeholder,
+                .contract-content .signature-pad-container {
+                  max-width: 100% !important;
+                  min-width: 120px !important;
+                  font-size: 0.75rem !important; /* 12px */
+                }
+                .contract-content .signature-pad-container button {
+                  font-size: 0.6875rem !important; /* 11px */
+                  padding: 2px 6px !important;
+                }
               }
               .contract-content .signature-pad-container button {
                 display: block !important;

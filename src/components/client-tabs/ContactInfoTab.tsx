@@ -635,7 +635,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
           
           if (mounted) {
             // Group contracts by contact_id for legacy leads
-            const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string } | null } = {};
+            const contactContractsMap: { [id: number]: { id: string; name: string; status: string; signed_at?: string; isLegacy?: boolean; contractHtml?: string; signedContractHtml?: string; public_token?: string } | null } = {};
             
             // Initialize all contacts with no contract
             contacts.forEach(contact => {
@@ -4428,7 +4428,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 line-height: 1.5 !important;
                 height: auto !important;
               }
-              /* Right alignment for Hebrew text */
+              /* Auto-detect and right-align Hebrew text */
+              .prose p,
+              .prose h1,
+              .prose h2,
+              .prose h3,
+              .prose h4,
+              .prose h5,
+              .prose h6,
+              .prose div,
+              .prose li,
+              .prose span {
+                unicode-bidi: plaintext;
+                text-align: right !important;
+                direction: rtl !important;
+              }
+              /* Right alignment for Hebrew text - explicit classes */
               .ql-align-right {
                 text-align: right !important;
               }
@@ -4760,11 +4775,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       console.log('🔍 Legacy contract ID for sharing:', legacyContractId);
                       
                       // Always fetch the token from database first (to get the latest value, even if state has it)
-                      console.log('🔍 Fetching public token from database');
+                      // Convert legacyContractId to number for the database query (lead_leadcontact.id is bigint)
+                      const contractIdNum = parseInt(legacyContractId, 10);
+                      if (isNaN(contractIdNum)) {
+                        console.error('❌ Invalid contract ID:', legacyContractId);
+                        toast.error('Invalid contract ID');
+                        return;
+                      }
+                      
+                      console.log('🔍 Fetching public token from database with contractId:', contractIdNum);
                       const { data: contractData, error: fetchError } = await supabase
                         .from('lead_leadcontact')
                         .select('public_token')
-                        .eq('id', legacyContractId)
+                        .eq('id', contractIdNum)
                         .maybeSingle();
                       
                       if (fetchError && fetchError.code !== 'PGRST116') {
@@ -4780,11 +4803,11 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                         publicToken = crypto.randomUUID();
                         console.log('🔍 Generated new public token:', publicToken);
                         
-                        // Update the contract with the public token
+                        // Update the contract with the public token (use contractIdNum from above)
                         const { error: updateError } = await supabase
                           .from('lead_leadcontact')
                           .update({ public_token: publicToken })
-                          .eq('id', legacyContractId);
+                          .eq('id', contractIdNum);
                         
                         if (updateError) {
                           console.error('❌ Error updating legacy contract with public token:', updateError);

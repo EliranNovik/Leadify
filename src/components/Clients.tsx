@@ -4088,7 +4088,14 @@ useEffect(() => {
           }}
           onClick={() => {
             if (isSuperuser) {
-              setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
+              // If current stage is "Communication started", open Update Lead drawer instead of dropdown
+              if (areStagesEquivalent(stageName, 'Communication started')) {
+                setShowUpdateDrawer(true);
+                setStageDropdownAnchor(null);
+                (document.activeElement as HTMLElement)?.blur();
+              } else {
+                setStageDropdownAnchor(prev => (prev === anchor ? null : anchor));
+              }
             }
           }}
           disabled={!isSuperuser}
@@ -4367,22 +4374,35 @@ useEffect(() => {
         
         if (!shouldSkipCalendarCheck) {
           console.log('🔍 Testing calendar access for:', calendarEmail);
-          const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
-          
-          if (!hasAccess) {
-            toast.error(`Cannot access calendar ${calendarEmail}. Please check permissions or contact your administrator.`, {
+          try {
+            const hasAccess = await testCalendarAccess(accessToken, calendarEmail);
+            if (!hasAccess) {
+              // Show warning but continue - calendar creation will be attempted and will fail gracefully
+              toast.error(`Cannot access calendar ${calendarEmail}. Meeting will still be created without calendar sync.`, {
+                duration: 5000,
+                position: 'top-right',
+                style: {
+                  background: '#f59e0b',
+                  color: '#fff',
+                  fontWeight: '500',
+                  maxWidth: '500px',
+                },
+                icon: '🔒',
+              });
+            }
+          } catch (accessError) {
+            // If access check fails, show warning but continue
+            console.warn('⚠️ Calendar access check failed:', accessError);
+            toast.error(`Calendar access check failed. Meeting will still be created without calendar sync.`, {
               duration: 5000,
               position: 'top-right',
               style: {
-                background: '#ef4444',
+                background: '#f59e0b',
                 color: '#fff',
                 fontWeight: '500',
                 maxWidth: '500px',
               },
-              icon: '🔒',
             });
-            setIsCreatingMeeting(false);
-            return;
           }
         } else {
           console.log('⏭️ Skipping calendar access check for legacy lead with potential_client calendar');
@@ -4423,18 +4443,19 @@ useEffect(() => {
         } catch (calendarError) {
           console.error('❌ Calendar creation failed:', calendarError);
           const errorMessage = calendarError instanceof Error ? calendarError.message : String(calendarError);
-          toast.error(`Failed to create calendar event: ${errorMessage}`, {
-            duration: 6000,
+          // Show warning but continue with meeting creation
+          toast.error(`Calendar sync failed: ${errorMessage}. Meeting will still be created.`, {
+            duration: 5000,
             position: 'top-right',
             style: {
-              background: '#ef4444',
+              background: '#f59e0b',
               color: '#fff',
               fontWeight: '500',
               maxWidth: '500px',
             },
           });
-          setIsCreatingMeeting(false);
-          return;
+          // Continue without calendar event - meeting will be created without Teams URL
+          teamsMeetingUrl = '';
         }
       } else if (selectedLocation?.default_link) {
         // For non-Teams online locations, use the default_link from tenants_meetinglocation
@@ -13553,61 +13574,66 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             onClick={() => setShowUpdateDrawer(false)}
           />
           {/* Drawer */}
-          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl p-8 flex flex-col animate-slideInRight z-50">
-            <div className="flex items-center justify-between mb-6">
+          <div className="ml-auto w-full max-w-md bg-base-100 h-full shadow-2xl flex flex-col animate-slideInRight z-50" style={{ paddingBottom: 'env(safe-area-inset-bottom, 0)' }}>
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 pb-4 flex-shrink-0 border-b border-base-300">
               <h3 className="text-2xl font-bold">Update Lead</h3>
               <button className="btn btn-ghost btn-sm" onClick={() => setShowUpdateDrawer(false)}>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            <div className="flex flex-col gap-4 flex-1">
-              <div>
-                <label htmlFor="meeting-notes" className="block font-semibold mb-1">Meeting scheduling notes:</label>
-                <textarea
-                  id="meeting-notes"
-                  name="meeting-notes"
-                  className="textarea textarea-bordered w-full min-h-[120px]"
-                  value={meetingNotes}
-                  onChange={e => setMeetingNotes(e.target.value)}
-                />
+            {/* Scrollable Content */}
+            <div className="flex-1 overflow-y-auto p-6 pt-4">
+              <div className="flex flex-col gap-4">
+                <div>
+                  <label htmlFor="meeting-notes" className="block font-semibold mb-1">Meeting scheduling notes:</label>
+                  <textarea
+                    id="meeting-notes"
+                    name="meeting-notes"
+                    className="textarea textarea-bordered w-full min-h-[120px]"
+                    value={meetingNotes}
+                    onChange={e => setMeetingNotes(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Next followup:</label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={nextFollowup}
+                    onChange={e => setNextFollowup(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label htmlFor="followup-notes" className="block font-semibold mb-1">Followup:</label>
+                  <textarea
+                    id="followup-notes"
+                    name="followup-notes"
+                    className="textarea textarea-bordered w-full min-h-[120px]"
+                    value={followup}
+                    onChange={e => setFollowup(e.target.value)}
+                  />
+                </div>
+                <div>
+                  <label className="block font-semibold mb-1">Potential applicants:</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={potentialApplicants}
+                    onChange={e => setPotentialApplicants(e.target.value)}
+                  />
+                </div>
               </div>
-              <div>
-                <label className="block font-semibold mb-1">Next followup:</label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={nextFollowup}
-                  onChange={e => setNextFollowup(e.target.value)}
-                />
-              </div>
-              <div>
-                <label htmlFor="followup-notes" className="block font-semibold mb-1">Followup:</label>
-                <textarea
-                  id="followup-notes"
-                  name="followup-notes"
-                  className="textarea textarea-bordered w-full min-h-[120px]"
-                  value={followup}
-                  onChange={e => setFollowup(e.target.value)}
-                />
-              </div>
-              <div>
-                <label className="block font-semibold mb-1">Potential applicants:</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={potentialApplicants}
-                  onChange={e => setPotentialApplicants(e.target.value)}
-                />
-              </div>
-              <div className="pt-4">
-                <button
-                  className="btn btn-primary w-full text-lg font-semibold"
-                  onClick={handleSaveUpdateDrawer}
-                  disabled={isSavingUpdate}
-                >
-                  {isSavingUpdate ? 'Saving...' : 'Save'}
-                </button>
-              </div>
+            </div>
+            {/* Fixed Save Button */}
+            <div className="p-6 pt-4 border-t border-base-300 flex-shrink-0 bg-base-100" style={{ paddingBottom: 'max(1.5rem, env(safe-area-inset-bottom, 0))' }}>
+              <button
+                className="btn btn-primary w-full text-lg font-semibold"
+                onClick={handleSaveUpdateDrawer}
+                disabled={isSavingUpdate}
+              >
+                {isSavingUpdate ? 'Saving...' : 'Save'}
+              </button>
             </div>
           </div>
         </div>
