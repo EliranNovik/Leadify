@@ -2148,9 +2148,12 @@ const Dashboard: React.FC = () => {
         const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
         const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
         // IMPORTANT: Also include merged target departments (4, 5, 6) even if not marked important
-        // These are the target departments for merging: 2 (Austria/Germany), 4 (Commercial & Civil), 5, 6
+        // These are the target departments for merging: 2 (Austria/Germany), 4, 5, 6
+        // NOTE: Department 4 might be "Commercial & Civil" but we want to use department 20 instead
         const mergedTargetDeptIds = [2, 4, 5, 6]; // Target departments for merging
-        const salesDeptIdsToExclude = [12, 14, 15, 20]; // Sales departments that should be merged (exclude from display)
+        // Note: Department 20 should be displayed and renamed to "Commercial & Civil"
+        // Exclude department 4 if it's "Commercial & Civil" to avoid duplicate (we'll use department 20 instead)
+        const salesDeptIdsToExclude = [12, 14, 15]; // Sales departments that should be merged (exclude from display) - removed 20
         
         // Fetch important departments AND merged target departments
         const { data: importantDepartments, error: importantError } = await supabase
@@ -2175,22 +2178,52 @@ const Dashboard: React.FC = () => {
         }
         
         // Combine both lists, avoiding duplicates, and EXCLUDE sales departments from display
+        // NOTE: Department 20 (Commercial & Civil) should NOT be excluded
         const departmentMap = new Map<number, any>();
         (importantDepartments || []).forEach(dept => {
           // Exclude sales departments that should be merged (they'll be merged during processing)
+          // But keep department 20 (Commercial & Civil)
           if (!salesDeptIdsToExclude.includes(dept.id)) {
             departmentMap.set(dept.id, dept);
           }
         });
         (mergedTargetDepts || []).forEach(dept => {
           // Exclude sales departments that should be merged
+          // But keep department 20 (Commercial & Civil)
           if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) {
             departmentMap.set(dept.id, dept);
           }
         });
         
-        // Convert map to arrays
-        const departmentTargets = Array.from(departmentMap.values());
+        // Convert map to arrays and fix department name for ID 20
+        let departmentTargets = Array.from(departmentMap.values());
+        
+        // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
+        // Also exclude any other department named "Commercial & Civil" if department 20 exists
+        departmentTargets = departmentTargets.filter(dept => {
+          // Always keep department 20 (we'll rename it)
+          if (dept.id === 20) return true;
+          // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
+          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
+            return false;
+          }
+          // If department 20 exists, exclude any other department named "Commercial & Civil"
+          if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
+            return false;
+          }
+          return true;
+        });
+        
+        // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
+        departmentTargets = departmentTargets.map(dept => {
+          if (dept.id === 20) {
+            return { ...dept, name: 'Commercial & Civil' };
+          }
+          return dept;
+        });
+        
+        // Sort by ID to ensure consistent order
+        departmentTargets.sort((a, b) => a.id - b.id);
         const departmentIds = departmentTargets.map(dept => dept.id);
         // Log which departments are important
         const importantDepts = departmentTargets.filter(dept => dept.important === 't');
@@ -2247,13 +2280,18 @@ const Dashboard: React.FC = () => {
         // Fix timezone issue: Use UTC to avoid timezone conversion problems
         const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
         const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
+        // Calculate end of month here so we can use it for effectiveLast30dEnd
+        const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
+        const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
         
         // Check if we're at the end of the month (last 3 days)
         const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
         const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
         
-        // If we're at the end of the month, Last 30d should cover the entire month
+        // If we're at the end of the month, Last 30d should cover the entire month (same as month view)
+        // Use startOfMonthStr as the start date, and endOfMonthStr as the end date (not todayStr)
         const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
+        const effectiveLast30dEnd = isEndOfMonth ? endOfMonthStr : todayStr;
         // For date comparison, we need to extract just the date part from the record date
         const extractDateFromRecord = (recordDate: string) => {
           // Handle both ISO string format and date-only format
@@ -2263,21 +2301,21 @@ const Dashboard: React.FC = () => {
           return recordDate;
         };
         // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
-        // Fetch data for Today and Last 30d (always current date range)
+        // Fetch data for Today and Last 30d (use effectiveThirtyDaysAgo so it matches month data at end of month)
         // Fetch legacy leads stage records with timeout protection
         let stageRecords: any[] = [];
         let stageError: any = null;
         
         try {
-          // Query legacy leads - use cdate for filtering as it's more reliable for recent records
-          // cdate is set when the record is created, so it accurately reflects when the stage change occurred
+          // Query legacy leads - use date for filtering
+          // Use effectiveThirtyDaysAgo instead of thirtyDaysAgoStr so Last 30d matches month data at end of month
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, lead_id')
             .eq('stage', 60)
             .not('lead_id', 'is', null) // Legacy leads only
-            .gte('cdate', thirtyDaysAgoStr)
-            .lte('cdate', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
+            .gte('date', effectiveThirtyDaysAgo)
+            .lte('date', new Date(new Date(effectiveLast30dEnd).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2304,14 +2342,15 @@ const Dashboard: React.FC = () => {
         let contractsError: any = null;
         
         try {
+          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
           const queryPromise = supabase
             .from('contracts')
             .select('id, client_id, signed_at, total_amount')
             .not('client_id', 'is', null)
             .not('signed_at', 'is', null)
             .eq('status', 'signed')
-            .gte('signed_at', thirtyDaysAgoStr)
-            .lt('signed_at', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
+            .gte('signed_at', effectiveThirtyDaysAgo)
+            .lt('signed_at', new Date(new Date(effectiveLast30dEnd).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2338,13 +2377,14 @@ const Dashboard: React.FC = () => {
         let newLeadStageError: any = null;
         
         try {
+          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, newlead_id')
             .eq('stage', 60)
             .not('newlead_id', 'is', null) // New leads only
-            .gte('cdate', thirtyDaysAgoStr)
-            .lte('cdate', todayStr)
+            .gte('date', effectiveThirtyDaysAgo)
+            .lte('date', effectiveLast30dEnd)
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2371,12 +2411,13 @@ const Dashboard: React.FC = () => {
         let dateSignedError: any = null;
         
         try {
+          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
           const queryPromise = supabase
             .from('leads')
             .select('id, date_signed')
             .not('date_signed', 'is', null)
-            .gte('date_signed', thirtyDaysAgoStr)
-            .lte('date_signed', todayStr)
+            .gte('date_signed', effectiveThirtyDaysAgo)
+            .lte('date_signed', effectiveLast30dEnd)
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2461,8 +2502,8 @@ const Dashboard: React.FC = () => {
           const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
           const legacyRecords = stageRecords.map(stageRecord => {
             const lead = leadsMap.get(stageRecord.lead_id);
-            // Use cdate if date is null, otherwise use date (cdate is more reliable for recent records)
-            const recordDate = stageRecord.cdate || stageRecord.date;
+            // Use date as the sign date (preferred) or cdate as fallback
+            const recordDate = stageRecord.date || stageRecord.cdate;
             return {
               ...stageRecord,
               date: recordDate,
@@ -2503,11 +2544,12 @@ const Dashboard: React.FC = () => {
           if (!record.newlead_id) return;
           const lead = newLeadsMap.get(String(record.newlead_id));
           if (!lead) return;
+          // Use date as the sign date (preferred) or cdate as fallback
           const recordDate = (record.date || record.cdate || '').split('T')[0];
           agreementRecords.push({
             id: `newstage-${record.id}`,
             date: recordDate,
-            cdate: record.cdate || record.date,
+            cdate: record.date || record.cdate,
             lead_id: null,
             newlead_id: String(record.newlead_id),
             leads_lead: lead,
@@ -2541,7 +2583,7 @@ const Dashboard: React.FC = () => {
         }
         
         // Fetch data for selected month (separate query)
-        const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
+        // endOfMonthStr is already calculated above, reuse it
         
         // Fetch legacy leads stage records for month
         const { data: monthStageRecords, error: monthStageError } = await supabase
@@ -2572,8 +2614,8 @@ const Dashboard: React.FC = () => {
           .select('id, date, cdate, newlead_id')
           .eq('stage', 60)
           .not('newlead_id', 'is', null) // New leads only
-          .gte('cdate', startOfMonthStr)
-          .lte('cdate', endOfMonthStr);
+          .gte('date', startOfMonthStr)
+          .lte('date', endOfMonthStr);
         
         if (monthNewLeadStageError) {
         }
@@ -2649,6 +2691,7 @@ const Dashboard: React.FC = () => {
           const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
           const monthLegacyRecords = monthStageRecords.map(stageRecord => {
             const lead = monthLeadsMap.get(stageRecord.lead_id);
+            // Use date as the sign date (preferred) or cdate as fallback
             const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
             return {
               ...stageRecord,
@@ -2688,11 +2731,12 @@ const Dashboard: React.FC = () => {
           if (!record.newlead_id) return;
           const lead = monthNewLeadsMap.get(String(record.newlead_id));
           if (!lead) return;
+          // Use date as the sign date (preferred) or cdate as fallback
           const recordDate = (record.date || record.cdate || '').split('T')[0];
           monthAgreementRecords.push({
             id: `month-newstage-${record.id}`,
             date: recordDate,
-            cdate: record.cdate || record.date,
+            cdate: record.date || record.cdate,
             lead_id: null,
             newlead_id: String(record.newlead_id),
             leads_lead: lead,
@@ -2745,11 +2789,32 @@ const Dashboard: React.FC = () => {
             
             // For new leads, amount might be in balance, proposal_total, or total (from contracts)
             // For legacy leads, amount is in total
+            // EXCLUDE VAT: Use base amounts only (same as invoiced table)
             let amount = 0;
             if (record.isNewLead) {
-              amount = parseFloat(lead.total) || parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              // For new leads, prefer balance or proposal_total (should be without VAT)
+              // If using contract.total_amount, it might include VAT - need to exclude it
+              // Since contracts.total_amount may include VAT, use balance or proposal_total if available
+              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              // If we only have contract.total_amount (stored in lead.total), assume it includes VAT for Israeli clients
+              // and calculate base amount (divide by 1.18)
+              if (amount === 0 && lead.total) {
+                const contractAmount = parseFloat(lead.total) || 0;
+                // Check if currency is NIS (currency_id = 1) - VAT applies to Israeli clients
+                if (lead.currency_id === 1 && contractAmount > 0) {
+                  amount = contractAmount / 1.18; // Exclude VAT (divide by 1.18)
+                } else {
+                  amount = contractAmount; // Non-Israeli, no VAT
+                }
+              }
             } else {
-              amount = parseFloat(lead.total) || 0;
+              // For legacy leads, total might include VAT - exclude it for Israeli currency
+              const legacyTotal = parseFloat(lead.total) || 0;
+              if (lead.currency_id === 1 && legacyTotal > 0) {
+                amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
+              } else {
+                amount = legacyTotal; // Non-Israeli, no VAT
+              }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
@@ -2784,7 +2849,8 @@ const Dashboard: React.FC = () => {
               }
               
               // Check if it's in last 30 days (or entire month if at end of month)
-              if (recordDateOnly >= effectiveThirtyDaysAgo) {
+              // Use effectiveLast30dEnd instead of just checking >= effectiveThirtyDaysAgo
+              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= effectiveLast30dEnd) {
                 newAgreementData["Last 30d"][deptIndex].count++;
                 newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
                 newAgreementData["Last 30d"][0].count++; // General
@@ -2822,11 +2888,32 @@ const Dashboard: React.FC = () => {
             
             // For new leads, amount might be in balance, proposal_total, or total (from contracts)
             // For legacy leads, amount is in total
+            // EXCLUDE VAT: Use base amounts only (same as invoiced table)
             let amount = 0;
             if (record.isNewLead) {
-              amount = parseFloat(lead.total) || parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              // For new leads, prefer balance or proposal_total (should be without VAT)
+              // If using contract.total_amount, it might include VAT - need to exclude it
+              // Since contracts.total_amount may include VAT, use balance or proposal_total if available
+              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              // If we only have contract.total_amount (stored in lead.total), assume it includes VAT for Israeli clients
+              // and calculate base amount (divide by 1.18)
+              if (amount === 0 && lead.total) {
+                const contractAmount = parseFloat(lead.total) || 0;
+                // Check if currency is NIS (currency_id = 1) - VAT applies to Israeli clients
+                if (lead.currency_id === 1 && contractAmount > 0) {
+                  amount = contractAmount / 1.18; // Exclude VAT (divide by 1.18)
+                } else {
+                  amount = contractAmount; // Non-Israeli, no VAT
+                }
+              }
             } else {
-              amount = parseFloat(lead.total) || 0;
+              // For legacy leads, total might include VAT - exclude it for Israeli currency
+              const legacyTotal = parseFloat(lead.total) || 0;
+              if (lead.currency_id === 1 && legacyTotal > 0) {
+                amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
+              } else {
+                amount = legacyTotal; // Non-Israeli, no VAT
+              }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
@@ -3072,6 +3159,7 @@ const Dashboard: React.FC = () => {
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
       
       // Fetch only important departments (matching CollectionDueReport - no merging, no exclusions)
+      // Also explicitly include department 20 (Commercial & Civil) even if not marked important
       const { data: allDepartments, error: departmentsError } = await supabase
         .from('tenant_departement')
         .select('id, name, min_income, important')
@@ -3083,8 +3171,31 @@ const Dashboard: React.FC = () => {
       }
       
       // Extract department IDs and create target mapping
-      const departmentIds = allDepartments?.map(dept => dept.id) || [];
-      const departmentTargets = allDepartments || [];
+      // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
+      // Also exclude any other department named "Commercial & Civil" if department 20 exists
+      let departmentTargets = (allDepartments || []).filter(dept => {
+        // Always keep department 20 (we'll rename it)
+        if (dept.id === 20) return true;
+        // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
+        if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
+          return false;
+        }
+        // If department 20 exists, exclude any other department named "Commercial & Civil"
+        const hasDept20 = (allDepartments || []).some(d => d.id === 20);
+        if (hasDept20 && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
+          return false;
+        }
+        return true;
+      });
+      
+      // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
+      departmentTargets = departmentTargets.map(dept => {
+        if (dept.id === 20) {
+          return { ...dept, name: 'Commercial & Civil' };
+        }
+        return dept;
+      });
+      const departmentIds = departmentTargets.map(dept => dept.id);
       
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
@@ -3173,12 +3284,14 @@ const Dashboard: React.FC = () => {
         });
       }
       
-      // Fetch legacy payment plans from finances_paymentplanrow (same as CollectionDueReport)
-      // Note: CollectionDueReport filters by cancel_date IS NULL, actual_date IS NULL (unpaid), and date range
+      // Fetch legacy payment plans from finances_paymentplanrow
+      // Logic: First fetch where ready_to_pay = TRUE, then additionally fetch where ready_to_pay = FALSE AND date_due in range
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching legacy payment plans with actual_date IS NULL (unpaid, matching CollectionDueReport)...');
-      let legacyPaymentsQuery = supabase
+      console.log('🔍 Invoiced Data - Fetching legacy payment plans (ready_to_pay=TRUE OR ready_to_pay=FALSE with date_due)...');
+      
+      // First, fetch payments where ready_to_pay = TRUE (regardless of date_due)
+      let legacyPaymentsReadyQuery = supabase
         .from('finances_paymentplanrow')
         .select(`
           id,
@@ -3195,19 +3308,60 @@ const Dashboard: React.FC = () => {
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null) // Exclude cancelled payments (only fetch if cancel_date IS NULL)
-        .is('actual_date', null); // Match CollectionDueReport exactly - only unpaid payments (actual_date IS NULL means not paid)
+        .is('cancel_date', null) // Exclude cancelled payments
+        .eq('ready_to_pay', true); // ready_to_pay = TRUE
       
-      const { data: legacyPayments, error: legacyError } = await legacyPaymentsQuery;
-      if (legacyError) {
-        console.error('❌ Invoiced Data - Error fetching legacy payments:', legacyError);
-        throw legacyError;
+      const { data: legacyPaymentsReady, error: legacyReadyError } = await legacyPaymentsReadyQuery;
+      if (legacyReadyError) {
+        console.error('❌ Invoiced Data - Error fetching legacy payments (ready_to_pay=TRUE):', legacyReadyError);
+        throw legacyReadyError;
       }
-      console.log('✅ Invoiced Data - Fetched legacy payments:', legacyPayments?.length || 0);
+      console.log('✅ Invoiced Data - Fetched legacy payments (ready_to_pay=TRUE):', legacyPaymentsReady?.length || 0);
       
-      // Note: CollectionDueReport does NOT filter by ready_to_pay for legacy payments
-      // So we use all legacy payments without filtering by ready_to_pay
-      const filteredLegacyPayments = legacyPayments || [];
+      // Second, fetch payments where ready_to_pay = FALSE AND date_due is in range
+      // Calculate date range for "additional" fetch (use a wide range to cover all periods we need)
+      const wideFromDate = '2020-01-01T00:00:00'; // Wide range to cover all periods
+      const wideToDate = '2030-12-31T23:59:59';
+      
+      let legacyPaymentsNotReadyQuery = supabase
+        .from('finances_paymentplanrow')
+        .select(`
+          id,
+          lead_id,
+          value,
+          value_base,
+          vat_value,
+          currency_id,
+          due_date,
+          date,
+          cancel_date,
+          ready_to_pay,
+          actual_date,
+          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+        `)
+        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
+       
+        .is('actual_date', null) // Only unpaid payments
+        .eq('ready_to_pay', false) // ready_to_pay = FALSE
+        .gte('due_date', wideFromDate) // AND date_due in range
+        .lte('due_date', wideToDate);
+      
+      const { data: legacyPaymentsNotReady, error: legacyNotReadyError } = await legacyPaymentsNotReadyQuery;
+      if (legacyNotReadyError) {
+        console.error('❌ Invoiced Data - Error fetching legacy payments (ready_to_pay=FALSE with date_due):', legacyNotReadyError);
+        throw legacyNotReadyError;
+      }
+      console.log('✅ Invoiced Data - Fetched legacy payments (ready_to_pay=FALSE with date_due):', legacyPaymentsNotReady?.length || 0);
+      
+      // Combine both sets of payments, removing duplicates by id
+      const legacyPaymentsReadySet = new Set((legacyPaymentsReady || []).map(p => p.id));
+      const allLegacyPayments = [
+        ...(legacyPaymentsReady || []),
+        ...(legacyPaymentsNotReady || []).filter(p => !legacyPaymentsReadySet.has(p.id))
+      ];
+      
+      console.log('✅ Invoiced Data - Total unique legacy payments:', allLegacyPayments.length);
+      const filteredLegacyPayments = allLegacyPayments;
       
       if (filteredLegacyPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample legacy payment:', {
@@ -3377,7 +3531,11 @@ const Dashboard: React.FC = () => {
               const department = emp.tenant_departement;
               if (department) {
                 const dept = Array.isArray(department) ? department[0] : department;
-                const departmentName = dept?.name || '—';
+                // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
+                let departmentName = dept?.name || '—';
+                if (dept?.id === 20) {
+                  departmentName = 'Commercial & Civil';
+                }
                 handlerIdToDepartmentNameMap.set(empId, departmentName);
               } else {
                 handlerIdToDepartmentNameMap.set(empId, '—');
@@ -3392,6 +3550,62 @@ const Dashboard: React.FC = () => {
       departmentTargets.forEach(dept => {
         departmentNameToIdMap.set(dept.name, dept.id);
       });
+      // CRITICAL: Also map "Commercial - Sales" to department 20's ID (for employees who still have the old name)
+      const dept20 = departmentTargets.find(d => d.id === 20);
+      if (dept20) {
+        departmentNameToIdMap.set('Commercial - Sales', 20);
+        departmentNameToIdMap.set('Commercial & Civil', 20); // Ensure both names map to the same ID
+      }
+      
+      // Function to normalize department names by removing " - Sales" suffix for consolidation
+      // This ensures "Austria and Germany" and "Austria and Germany - Sales" map to the same department
+      const normalizeDepartmentName = (deptName: string): string => {
+        if (!deptName || deptName === '—') return deptName;
+        // Remove " - Sales" suffix if present
+        const baseName = deptName.replace(/ - Sales$/, '').trim();
+        return baseName;
+      };
+      
+      // Create a map from normalized name to primary department ID (the one WITHOUT " - Sales" suffix)
+      // First pass: identify primary departments (those without " - Sales" suffix)
+      const normalizedNameToPrimaryIdMap = new Map<string, number>();
+      departmentTargets.forEach(dept => {
+        const normalizedName = normalizeDepartmentName(dept.name);
+        // If this is the primary department (no " - Sales" suffix), use it as the primary ID
+        if (dept.name === normalizedName) {
+          // This is a primary department - use it as the target ID
+          if (!normalizedNameToPrimaryIdMap.has(normalizedName)) {
+            normalizedNameToPrimaryIdMap.set(normalizedName, dept.id);
+          }
+        }
+      });
+      // Second pass: for departments with " - Sales" suffix, map to their primary department
+      departmentTargets.forEach(dept => {
+        const normalizedName = normalizeDepartmentName(dept.name);
+        const primaryId = normalizedNameToPrimaryIdMap.get(normalizedName);
+        if (primaryId && dept.name !== normalizedName) {
+          // This is a " - Sales" variant - it should map to the primary ID
+          // But we still want to keep the original mapping too for exact matches
+        }
+      });
+      
+      // Create a map from any department name (including variants) to the consolidated department ID
+      const allDepartmentNamesToIdMap = new Map<string, number>();
+      departmentTargets.forEach(dept => {
+        const normalizedName = normalizeDepartmentName(dept.name);
+        const primaryId = normalizedNameToPrimaryIdMap.get(normalizedName);
+        const targetId = primaryId || dept.id; // Use primary ID if available, otherwise use the department's own ID
+        
+        // Map the original name to the target ID
+        allDepartmentNamesToIdMap.set(dept.name, targetId);
+        // Map the normalized name to the target ID (will overwrite with primary ID if it exists)
+        allDepartmentNamesToIdMap.set(normalizedName, targetId);
+      });
+      // Also map "Commercial - Sales" variants
+      if (dept20) {
+        allDepartmentNamesToIdMap.set('Commercial - Sales', 20);
+        allDepartmentNamesToIdMap.set('Commercial & Civil', 20);
+      }
       
       // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
       // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
@@ -3417,8 +3631,11 @@ const Dashboard: React.FC = () => {
           ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
           : '—';
         
-        // Convert department name to ID for matching with departmentIds
-        const departmentId = departmentNameToIdMap.get(employeeDepartmentName) || null;
+        // Normalize the department name (remove " - Sales" suffix) and map to consolidated department ID
+        const normalizedDeptName = normalizeDepartmentName(employeeDepartmentName);
+        const departmentId = allDepartmentNamesToIdMap.get(employeeDepartmentName) || 
+                            allDepartmentNamesToIdMap.get(normalizedDeptName) || 
+                            null;
 
         // Only include payments that have a department in our department list (or '—' which we'll skip)
         if (!departmentId || !departmentIds.includes(departmentId)) {
@@ -3491,8 +3708,11 @@ const Dashboard: React.FC = () => {
           ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
           : '—';
         
-        // Convert department name to ID for matching with departmentIds
-        const departmentId = departmentNameToIdMap.get(employeeDepartmentName) || null;
+        // Normalize the department name (remove " - Sales" suffix) and map to consolidated department ID
+        const normalizedDeptName = normalizeDepartmentName(employeeDepartmentName);
+        const departmentId = allDepartmentNamesToIdMap.get(employeeDepartmentName) || 
+                            allDepartmentNamesToIdMap.get(normalizedDeptName) || 
+                            null;
 
         // Only include payments that have a department in our department list (or '—' which we'll skip)
         if (!departmentId || !departmentIds.includes(departmentId)) {

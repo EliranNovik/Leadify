@@ -992,189 +992,75 @@ const resolveLegacyLanguage = (lead: any) => {
       const languageFilter = filters.language;
       const { startIso, endIso } = computeDateBounds(fromDate, toDate);
 
-      // Fetch signed new leads
-      let newLeadsContractsQuery = supabase
-        .from('contracts')
-        .select(
-          `
-            id,
-            client_id,
-            legacy_id,
-            signed_at,
-            total_amount
-          `
-        )
-        .not('client_id', 'is', null)
-        .not('signed_at', 'is', null)
-        .eq('status', 'signed');
+      // Fetch ALL stage 60 records from leads_leadstage filtered by date
+      // This is the authoritative source for signed agreements
+      let stage60Query = supabase
+        .from('leads_leadstage')
+        .select('id, lead_id, newlead_id, stage, cdate, date')
+        .eq('stage', 60); // Stage 60 = Client signed agreement
 
-      if (startIso) newLeadsContractsQuery = newLeadsContractsQuery.gte('signed_at', startIso);
-      if (endIso) newLeadsContractsQuery = newLeadsContractsQuery.lt('signed_at', endIso);
-
-      const stageMatchesSigned = (stageValue: any) => {
-        if (stageValue === null || stageValue === undefined) return false;
-        const raw = stageValue.toString().trim();
-        if (!raw) return false;
-
-        const normalizedRaw = normalizeString(raw);
-        if (SIGNED_STAGE_TOKENS.has(normalizedRaw)) return true;
-
-        const numericStage = Number(raw);
-        if (!Number.isNaN(numericStage) && numericStage === 60) return true;
-
-        const mappedStageName =
-          stageMap?.[raw] ??
-          stageMap?.[String(numericStage)] ??
-          stageNameLookup.get(normalizedRaw);
-
-        if (mappedStageName) {
-          const normalizedMapped = normalizeString(mappedStageName);
-          if (SIGNED_STAGE_TOKENS.has(normalizedMapped)) return true;
-          if (areStagesEquivalent(mappedStageName, 'Client signed agreement')) return true;
-        }
-
-        if (areStagesEquivalent(raw, 'Client signed agreement')) return true;
-
-        return false;
-      };
-
-      const { data: contractRows, error: contractsError } = await newLeadsContractsQuery;
-      if (contractsError) {
-        console.error('Failed to load contract signatures:', contractsError);
-        throw contractsError;
+      // Filter by date column (not cdate)
+      if (startIso) {
+        stage60Query = stage60Query.gte('date', startIso);
+      }
+      if (endIso) {
+        stage60Query = stage60Query.lt('date', endIso);
       }
 
-      const newLeadContracts = new Map<string, { signedAt: string; totalAmount: number | null }>();
-      const legacyContracts = new Map<number, { signedAt: string; totalAmount: number | null }>();
+      const { data: allStage60Records, error: stage60Error } = await stage60Query;
+      
+      if (stage60Error) {
+        console.error('Failed to load stage 60 records:', stage60Error);
+        throw stage60Error;
+      }
 
-      (contractRows || []).forEach(row => {
-        if (!row?.signed_at) return;
-        const signedAt = row.signed_at as string;
-        const totalAmount = row.total_amount ?? null;
+      console.log(`✅ Fetched ${allStage60Records?.length || 0} stage 60 records`);
 
-        if (row.client_id) {
-          const clientId = row.client_id.toString();
-          const existing = newLeadContracts.get(clientId);
-          if (!existing || new Date(signedAt).getTime() > new Date(existing.signedAt).getTime()) {
-            newLeadContracts.set(clientId, { signedAt, totalAmount });
+      // Separate legacy and new leads, and track sign dates (use date from stage 60 record)
+      const legacyLeadIdsSet = new Set<number>();
+      const newLeadIdsSet = new Set<string>();
+      const legacyStageDates = new Map<number, string>(); // lead_id -> date from stage 60
+      const newLeadStageDates = new Map<string, string>(); // newlead_id -> date from stage 60
+
+      (allStage60Records || []).forEach(record => {
+        // Legacy leads: use lead_id
+        if (record.lead_id !== null && record.lead_id !== undefined) {
+          const legacyId = Number(record.lead_id);
+          if (Number.isFinite(legacyId)) {
+            legacyLeadIdsSet.add(legacyId);
+            // Use date as the sign date (preferred) or cdate as fallback
+            const signDate = record.date || record.cdate || null;
+            if (signDate) {
+              const existing = legacyStageDates.get(legacyId);
+              // Keep the most recent date if there are multiple stage 60 entries
+              if (!existing || new Date(signDate).getTime() > new Date(existing).getTime()) {
+                legacyStageDates.set(legacyId, signDate);
+              }
+            }
           }
         }
 
-        if (row.legacy_id !== null && row.legacy_id !== undefined) {
-          const legacyId = Number(row.legacy_id);
-          if (Number.isFinite(legacyId)) {
-            const existing = legacyContracts.get(legacyId);
-            if (!existing || new Date(signedAt).getTime() > new Date(existing.signedAt).getTime()) {
-              legacyContracts.set(legacyId, { signedAt, totalAmount });
+        // New leads: use newlead_id
+        if (record.newlead_id !== null && record.newlead_id !== undefined) {
+          const newLeadId = record.newlead_id.toString();
+          newLeadIdsSet.add(newLeadId);
+          // Use date as the sign date (preferred) or cdate as fallback
+          const signDate = record.date || record.cdate || null;
+          if (signDate) {
+            const existing = newLeadStageDates.get(newLeadId);
+            // Keep the most recent date if there are multiple stage 60 entries
+            if (!existing || new Date(signDate).getTime() > new Date(existing).getTime()) {
+              newLeadStageDates.set(newLeadId, signDate);
             }
           }
         }
       });
 
-      // Fetch stage changes for new leads (leads_leadstage table)
-      // For new leads, use newlead_id (UUID) and filter for stage 60 (client signed agreement)
-      const newLeadStageDates = new Map<string, string>();
-      try {
-        const stageColumns = 'id, newlead_id, stage, cdate, date';
-        // Query all stage 60 records for new leads, then filter by date client-side
-        const { data: newLeadStageResponse, error: newLeadStageError } = await supabase
-          .from('leads_leadstage')
-          .select(stageColumns)
-          .not('newlead_id', 'is', null) // Only new leads (not legacy)
-          .eq('stage', 60); // Stage 60 = Client signed agreement
+      console.log(`✅ Found ${legacyLeadIdsSet.size} legacy leads and ${newLeadIdsSet.size} new leads with stage 60`);
 
-        if (newLeadStageError) {
-          console.warn('Error fetching new lead stage history:', newLeadStageError);
-          // Continue without stage data - not critical
-        } else {
-          (newLeadStageResponse || [])
-            .filter(record => record?.newlead_id) // Filter for new leads only
-            .filter(record => {
-              // Filter by date range client-side
-              const timestamp = record.date || record.cdate || null;
-              if (!timestamp) return false;
-              const recordTime = new Date(timestamp).getTime();
-              if (Number.isNaN(recordTime)) return false;
-              if (startIso) {
-                const startTime = new Date(startIso).getTime();
-                if (recordTime < startTime) return false;
-              }
-              if (endIso) {
-                const endTime = new Date(endIso).getTime();
-                if (recordTime >= endTime) return false;
-              }
-              return true;
-            })
-            .forEach(record => {
-              const leadId = record.newlead_id?.toString?.();
-              if (!leadId) return;
-              // Use date or cdate as timestamp
-              const timestamp = record.date || record.cdate || null;
-              if (!timestamp) return;
-              const existingTimestamp = newLeadStageDates.get(leadId);
-              const nextTime = new Date(timestamp).getTime();
-              if (!existingTimestamp) {
-                newLeadStageDates.set(leadId, timestamp);
-                return;
-              }
-              const existingTime = new Date(existingTimestamp).getTime();
-              if (Number.isNaN(existingTime) || (!Number.isNaN(nextTime) && nextTime > existingTime)) {
-                newLeadStageDates.set(leadId, timestamp);
-              }
-            });
-        }
-      } catch (stageError) {
-        console.error('Failed to load new lead stage history:', stageError);
-      }
-
-      // Also fetch leads with date_signed in the date range (second factor)
-      const newLeadsWithDateSigned = new Map<string, string>();
-      try {
-        let dateSignedQuery = supabase
-          .from('leads')
-          .select('id, date_signed')
-          .not('date_signed', 'is', null);
-
-        if (startIso) {
-          dateSignedQuery = dateSignedQuery.gte('date_signed', startIso);
-        }
-        if (endIso) {
-          dateSignedQuery = dateSignedQuery.lt('date_signed', endIso);
-        }
-
-        const { data: dateSignedData, error: dateSignedError } = await dateSignedQuery;
-
-        if (dateSignedError) {
-          console.warn('Error fetching leads with date_signed:', dateSignedError);
-        } else {
-          (dateSignedData || []).forEach(lead => {
-            if (lead?.id && lead?.date_signed) {
-              const leadId = lead.id.toString();
-              const existingTimestamp = newLeadsWithDateSigned.get(leadId);
-              const signedTime = new Date(lead.date_signed).getTime();
-              if (!existingTimestamp) {
-                newLeadsWithDateSigned.set(leadId, lead.date_signed);
-              } else {
-                const existingTime = new Date(existingTimestamp).getTime();
-                if (Number.isNaN(existingTime) || (!Number.isNaN(signedTime) && signedTime > existingTime)) {
-                  newLeadsWithDateSigned.set(leadId, lead.date_signed);
-                }
-              }
-            }
-          });
-        }
-      } catch (dateSignedError) {
-        console.error('Failed to load leads with date_signed:', dateSignedError);
-      }
-
-      // Combine both sources: contracts, stage 60 records, and date_signed
-      const combinedNewLeadIdSet = new Set<string>();
-      newLeadContracts.forEach((_info, clientId) => combinedNewLeadIdSet.add(clientId));
-      newLeadStageDates.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
-      newLeadsWithDateSigned.forEach((_timestamp, leadId) => combinedNewLeadIdSet.add(leadId));
-
+      // Fetch new leads data (only active leads: unactivated_at IS NULL)
       let newLeads: any[] = [];
-      const allNewLeadIds = Array.from(combinedNewLeadIdSet).filter(Boolean);
+      const allNewLeadIds = Array.from(newLeadIdsSet).filter(Boolean);
       if (allNewLeadIds.length > 0) {
         const { data: newLeadsResponse, error: newLeadsError } = await supabase
           .from('leads')
@@ -1210,152 +1096,74 @@ const resolveLegacyLanguage = (lead: any) => {
               )
             `
           )
-          .in('id', allNewLeadIds);
+          .in('id', allNewLeadIds)
+          .is('unactivated_at', null); // Only active leads
 
         if (newLeadsError) {
-          console.error('Failed to load signed leads:', newLeadsError);
+          console.error('Failed to load new leads:', newLeadsError);
           throw newLeadsError;
         }
 
         newLeads = newLeadsResponse || [];
+        console.log(`✅ Loaded ${newLeads.length} new leads`);
       }
 
-      let legacyStageRecords: any[] = [];
+      // Fetch legacy leads data (only active leads: status = 0)
       let legacyLeadsData: any[] = [];
-      {
-        let legacyStageQuery = supabase
-          .from('leads_leadstage')
-          .select('id, lead_id, stage, date, cdate, creator_id');
-
-        if (startIso) {
-          legacyStageQuery = legacyStageQuery.gte('cdate', startIso);
-        }
-        if (endIso) {
-          legacyStageQuery = legacyStageQuery.lt('cdate', endIso);
-        }
-
-        const { data: stageData, error: stageError } = await legacyStageQuery;
-
-        if (stageError) {
-          console.error('Failed to load legacy lead stages:', stageError);
-          throw stageError;
-        }
-
-        legacyStageRecords = (stageData || [])
-          .filter(record => stageMatchesSigned(record.stage))
-          .filter(record => record.lead_id !== null && record.lead_id !== undefined);
-
-        const legacyLeadIdsSet = new Set<number>();
-        legacyStageRecords.forEach(record => {
-          const id = Number(record.lead_id);
-          if (Number.isFinite(id)) legacyLeadIdsSet.add(id);
-        });
-        legacyContracts.forEach((_, legacyId) => {
-          if (Number.isFinite(legacyId)) legacyLeadIdsSet.add(legacyId);
-        });
-
-        if (legacyLeadIdsSet.size > 0) {
-          const { data: legacyLeadsResponse, error: legacyLeadsError } = await supabase
-            .from('leads_lead')
-            .select(
-              `
+      const allLegacyLeadIds = Array.from(legacyLeadIdsSet);
+      if (allLegacyLeadIds.length > 0) {
+        const { data: legacyLeadsResponse, error: legacyLeadsError } = await supabase
+          .from('leads_lead')
+          .select(
+            `
+              id,
+              lead_number,
+              manual_id,
+              name,
+              stage,
+              cdate,
+              case_handler_id,
+              closer_id,
+              expert_id,
+              meeting_scheduler_id,
+              meeting_manager_id,
+              meeting_lawyer_id,
+              total,
+              currency_id,
+              meeting_total_currency_id,
+              category,
+              category_id,
+              language_id,
+              accounting_currencies!leads_lead_currency_id_fkey (
                 id,
-                lead_number,
-                manual_id,
+                iso_code,
+                name
+              ),
+              misc_category!category_id (
+                id,
                 name,
-                stage,
-                cdate,
-                case_handler_id,
-                closer_id,
-                expert_id,
-                meeting_scheduler_id,
-                meeting_manager_id,
-                meeting_lawyer_id,
-                total,
-                currency_id,
-                meeting_total_currency_id,
-                category,
-                category_id,
-                language_id,
-                accounting_currencies!leads_lead_currency_id_fkey (
-                  id,
-                  iso_code,
-                  name
-                ),
-                misc_category!category_id (
-                  id,
-                  name,
-                  misc_maincategory!parent_id (
-                    id,
-                    name
-                  )
-                ),
-                misc_language!leads_lead_language_id_fkey (
+                misc_maincategory!parent_id (
                   id,
                   name
                 )
-              `
-            )
-            .in('id', Array.from(legacyLeadIdsSet));
+              ),
+              misc_language!leads_lead_language_id_fkey (
+                id,
+                name
+              )
+            `
+          )
+          .in('id', allLegacyLeadIds)
+          .eq('status', 0); // Only active leads (status 0 = active, status 10 = inactive)
 
-          if (legacyLeadsError) {
-            console.error('Failed to load legacy signed leads:', legacyLeadsError);
-            throw legacyLeadsError;
-          }
-
-          legacyLeadsData = legacyLeadsResponse || [];
+        if (legacyLeadsError) {
+          console.error('Failed to load legacy leads:', legacyLeadsError);
+          throw legacyLeadsError;
         }
+
+        legacyLeadsData = legacyLeadsResponse || [];
+        console.log(`✅ Loaded ${legacyLeadsData.length} legacy leads`);
       }
-
-      const stageRecordsByLead = new Map<number, { cdate: string | null; date: string | null }>();
-      legacyStageRecords.forEach(record => {
-        const leadId = Number(record.lead_id);
-        if (!Number.isFinite(leadId)) return;
-
-            let recordDateValue: string | null = null;
-            if (record.cdate) {
-              recordDateValue = record.cdate;
-            } else if (record.date) {
-              const synthetic = toStartOfDayIso(record.date);
-              recordDateValue = synthetic;
-            }
-        if (!recordDateValue) return;
-
-        const existing = stageRecordsByLead.get(leadId);
-        if (!existing) {
-          stageRecordsByLead.set(leadId, {
-            cdate: record.cdate ?? null,
-            date: record.date ?? null,
-          });
-        } else {
-          const existingDateValue = existing.date || existing.cdate;
-          if (!existingDateValue || new Date(recordDateValue).getTime() > new Date(existingDateValue).getTime()) {
-            stageRecordsByLead.set(leadId, {
-              cdate: record.cdate ?? null,
-              date: record.date ?? null,
-            });
-          }
-        }
-      });
-
-      legacyContracts.forEach((info, legacyId) => {
-        if (!Number.isFinite(legacyId) || !info.signedAt) return;
-        const existing = stageRecordsByLead.get(legacyId);
-        if (!existing) {
-          stageRecordsByLead.set(legacyId, {
-            cdate: info.signedAt,
-            date: info.signedAt,
-          });
-        } else {
-          const existingDateValue = existing.date || existing.cdate;
-          if (!existingDateValue || new Date(info.signedAt).getTime() > new Date(existingDateValue).getTime()) {
-            stageRecordsByLead.set(legacyId, {
-              cdate: info.signedAt,
-              date: info.signedAt,
-            });
-          }
-        }
-      });
 
       const filteredNewLeads = (newLeads || [])
         .filter(lead => matchesEmployeeFilterNewLead(lead, employeeFilterName))
@@ -1365,19 +1173,15 @@ const resolveLegacyLanguage = (lead: any) => {
       const newLeadRows: SignedLeadRow[] = filteredNewLeads.map(lead => {
         const balanceAmount = parseNumericAmount(lead.balance);
         const proposalAmount = parseNumericAmount(lead.proposal_total);
-        const contractInfo = newLeadContracts.get(String(lead.id));
-        const contractAmount = parseNumericAmount(contractInfo?.totalAmount ?? 0);
-        const resolvedAmount = balanceAmount || proposalAmount || contractAmount || 0;
+        const resolvedAmount = balanceAmount || proposalAmount || 0;
         const currencyMeta = buildCurrencyMeta(
           lead.currency_id,
           lead.proposal_currency,
           lead.balance_currency
         );
         const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
-        // Get sign date from multiple sources: contract, stage 60 record, or date_signed
-        const stageDate = newLeadStageDates.get(String(lead.id));
-        const dateSignedValue = newLeadsWithDateSigned.get(String(lead.id));
-        const signDate = contractInfo?.signedAt || stageDate || dateSignedValue || lead.date_signed || null;
+        // Get sign date from stage 60 record (date)
+        const signDate = newLeadStageDates.get(String(lead.id)) || lead.date_signed || null;
 
         const schedulerDisplay = resolveEmployeeDisplayValue(lead.scheduler);
         const managerDisplay = resolveEmployeeDisplayValue(lead.manager);
@@ -1425,12 +1229,10 @@ const resolveLegacyLanguage = (lead: any) => {
           return matchesLanguageFilter(languageName);
         })
         .map(lead => {
-          const stageEntry = stageRecordsByLead.get(Number(lead.id));
-          const contractInfo = legacyContracts.get(Number(lead.id));
-          const contractAmount = parseNumericAmount(contractInfo?.totalAmount ?? 0);
           const amountRaw = parseNumericAmount(lead.total);
-          const resolvedAmount = amountRaw || contractAmount || 0;
-          const signDate = contractInfo?.signedAt || stageEntry?.date || stageEntry?.cdate || lead.cdate || null;
+          const resolvedAmount = amountRaw || 0;
+          // Get sign date from stage 60 record (date)
+          const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
           const currencyMeta = buildCurrencyMeta(
             lead.currency_id,
             lead.meeting_total_currency_id,
@@ -1483,12 +1285,27 @@ const resolveLegacyLanguage = (lead: any) => {
           };
         });
 
-      const combinedRows = [...newLeadRows, ...legacyLeadRows].sort((a, b) => {
+      // Combine rows and ensure no duplicates (by lead identifier)
+      const combinedRowsMap = new Map<string, SignedLeadRow>();
+      
+      // Add new lead rows (use id as key to prevent duplicates)
+      newLeadRows.forEach(row => {
+        combinedRowsMap.set(row.id, row);
+      });
+      
+      // Add legacy lead rows (use id as key to prevent duplicates)
+      legacyLeadRows.forEach(row => {
+        combinedRowsMap.set(row.id, row);
+      });
+      
+      // Convert map to array and sort by sign date (newest first)
+      const combinedRows = Array.from(combinedRowsMap.values()).sort((a, b) => {
         const aTime = a.signDate ? new Date(a.signDate).getTime() : 0;
         const bTime = b.signDate ? new Date(b.signDate).getTime() : 0;
         return bTime - aTime;
       });
 
+      console.log(`✅ Final result: ${combinedRows.length} unique signed leads (${newLeadRows.length} new + ${legacyLeadRows.length} legacy)`);
       setRows(combinedRows);
     } catch (error: any) {
       console.error('Failed to build Signed Sales Report:', error);
