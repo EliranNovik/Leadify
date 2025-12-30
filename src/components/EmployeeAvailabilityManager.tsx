@@ -546,12 +546,26 @@ const EmployeeAvailabilityManager: React.FC = () => {
             
             <div className="mb-4 p-3 bg-primary/10 rounded-lg">
               <div className="text-sm font-medium">{selectedEmployee.display_name}</div>
-              <div className="text-xs text-base-content/70">
-                {selectedDate.toLocaleDateString()}
-              </div>
             </div>
             
             <div className="space-y-4">
+              <div>
+                <label className="label">
+                  <span className="label-text text-sm">Date</span>
+                </label>
+                <input
+                  type="date"
+                  className="input input-bordered w-full"
+                  value={selectedDate ? selectedDate.toISOString().split('T')[0] : ''}
+                  onChange={(e) => {
+                    const newDate = e.target.value ? new Date(e.target.value) : null;
+                    if (newDate) {
+                      setSelectedDate(newDate);
+                    }
+                  }}
+                />
+              </div>
+              
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="label">
