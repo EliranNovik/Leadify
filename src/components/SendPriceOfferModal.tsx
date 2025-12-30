@@ -952,35 +952,12 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         },
       });
 
-      let parsedTotal: number | null = null;
-      if (total !== null && total !== undefined && String(total).trim() !== '') {
-        const numericTotal = Number(total);
-        parsedTotal = Number.isNaN(numericTotal) ? null : numericTotal;
-      }
-
-      let stageId = await resolveStageId('Mtng sum+Agreement sent');
-      if (stageId === null) {
-        stageId = 50;
-      }
-
-      await updateLeadStageWithHistory({
-        lead: client,
-        stage: stageId,
-        additionalFields: {
-          proposal_text: body,
-          proposal_total: parsedTotal,
-          proposal_currency: currency,
-          closer: closerName,
-          balance: parsedTotal,
-          balance_currency: currency,
-        },
-      });
-
-      // Optimistic insert to emails table to ensure email appears immediately
-      // The backend will also save it later, but this ensures it shows up right away
+      // Prepare email record for optimistic insert (do this AFTER sending email, but BEFORE stage update)
+      // This ensures email is saved even if stage update fails
       const now = new Date();
       const recipientListForLog = [...finalToRecipients, ...finalCcRecipients].join(', ');
-      const messageId = `offer_${client?.id}_${now.getTime()}`;
+      // Use a unique message_id that includes timestamp to allow multiple offers
+      const messageId = `offer_${isLegacyLead ? `legacy_${legacyId}` : client?.id}_${now.getTime()}`;
       
       // Strip HTML from body_preview (body is already plain text, but htmlBody might have HTML)
       // Use plain text body for preview (first 500 chars), or strip HTML from htmlBody if needed
@@ -989,6 +966,8 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       const emailRecord: Record<string, any> = {
         message_id: messageId,
         thread_id: null,
+        // Don't set user_id - it has a foreign key constraint and the backend will set it correctly
+        // user_id: userId,
         sender_name: closerName,
         sender_email: authUser.email || null,
         recipient_list: recipientListForLog,
@@ -1011,11 +990,16 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
         emailRecord.legacy_id = null;
       }
 
-      // Optimistic insert to ensure email appears immediately
+      // Optimistic insert - save email immediately so it appears even if stage update fails
       try {
-        const { error: dbError } = await supabase.from('emails').upsert([emailRecord], { onConflict: 'message_id' });
+        const { error: dbError } = await supabase.from('emails').insert([emailRecord]);
         if (dbError) {
-          console.warn('Optimistic email insert failed (backend will save it later):', dbError);
+          // If it's a duplicate key error, try to update instead
+          if (dbError.code === '23505' || dbError.message?.includes('duplicate key')) {
+            console.warn('Email with message_id already exists, skipping optimistic insert (backend will save it):', dbError);
+          } else {
+            console.warn('Optimistic email insert failed (backend will save it later):', dbError);
+          }
           // Don't throw - backend will save it later
         } else {
           console.log('✅ Email saved optimistically:', messageId);
@@ -1023,6 +1007,88 @@ const SendPriceOfferModal: React.FC<SendPriceOfferModalProps> = ({
       } catch (dbError) {
         console.warn('Exception in optimistic email insert (backend will save it later):', dbError);
         // Don't throw - backend will save it later
+      }
+
+      let parsedTotal: number | null = null;
+      if (total !== null && total !== undefined && String(total).trim() !== '') {
+        const numericTotal = Number(total);
+        parsedTotal = Number.isNaN(numericTotal) ? null : numericTotal;
+      }
+
+      let stageId = await resolveStageId('Mtng sum+Agreement sent');
+      if (stageId === null) {
+        stageId = 50;
+      }
+
+      // Helper function to convert currency symbol to currency_id for legacy leads
+      const currencyNameToId = (currencyName: string): number | null => {
+        switch (currencyName) {
+          case '₪': return 1; // NIS
+          case '€': return 2; // EUR  
+          case '$': return 3; // USD
+          case '£': return 4; // GBP
+          default: return 1; // Default to NIS
+        }
+      };
+
+      // Build additionalFields based on lead type
+      let additionalFields: Record<string, any> = {};
+
+      // For legacy leads, only include fields that exist in leads_lead table
+      if (isLegacyLead) {
+        additionalFields = {
+          proposal: body, // Store proposal text in 'proposal' column (not 'proposal_text')
+          total: parsedTotal ? String(parsedTotal) : null, // Use 'total' instead of 'balance', convert to string
+          currency_id: currencyNameToId(currency), // Use 'currency_id' instead of 'balance_currency', convert to ID
+        };
+        console.log('💾 Saving proposal for legacy lead:', {
+          legacyId,
+          proposal: body.substring(0, 100) + '...',
+          total: parsedTotal,
+          currency_id: currencyNameToId(currency),
+          additionalFields,
+        });
+      } else {
+        // For new leads, include all proposal and balance fields
+        additionalFields = {
+          proposal_text: body,
+          proposal_total: parsedTotal,
+          proposal_currency: currency,
+          closer: closerName,
+          balance: parsedTotal,
+          balance_currency: currency,
+        };
+      }
+
+      // Try to update stage, but don't fail if this fails (email is already saved)
+      try {
+        await updateLeadStageWithHistory({
+          lead: client,
+          stage: stageId,
+          additionalFields,
+        });
+        
+        // For legacy leads, also verify the proposal was saved
+        if (isLegacyLead && !Number.isNaN(legacyId)) {
+          const { data: verifyData, error: verifyError } = await supabase
+            .from('leads_lead')
+            .select('proposal, total, currency_id')
+            .eq('id', legacyId)
+            .maybeSingle();
+          
+          if (verifyError) {
+            console.error('❌ Error verifying proposal save:', verifyError);
+          } else {
+            console.log('✅ Verified proposal saved:', {
+              proposal: verifyData?.proposal ? verifyData.proposal.substring(0, 100) + '...' : null,
+              total: verifyData?.total,
+              currency_id: verifyData?.currency_id,
+            });
+          }
+        }
+      } catch (stageError) {
+        console.error('❌ Error updating lead stage (but email was saved):', stageError);
+        // Don't throw - email is already saved, stage update can be retried
       }
       // Stage evaluation is handled automatically by database triggers
 

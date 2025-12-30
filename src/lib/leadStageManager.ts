@@ -501,19 +501,47 @@ export const updateLeadStageWithHistory = async ({
     stage,
     leadId: lead.id,
     isLegacy: lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_'),
+    updatePayload: {
+      ...updatePayload,
+      // Truncate long text fields for logging
+      proposal: updatePayload.proposal ? (typeof updatePayload.proposal === 'string' ? updatePayload.proposal.substring(0, 100) + '...' : updatePayload.proposal) : undefined,
+      proposal_text: updatePayload.proposal_text ? (typeof updatePayload.proposal_text === 'string' ? updatePayload.proposal_text.substring(0, 100) + '...' : updatePayload.proposal_text) : undefined,
+    },
   });
 
-  const { error } = await supabase
+  const { error, data } = await supabase
     .from(tableName)
     .update(updatePayload)
-    .eq('id', recordId);
+    .eq('id', recordId)
+    .select();
 
   if (error) {
-    console.error('❌ Error updating lead stage:', { error, tableName, recordId, updatePayload });
+    console.error('❌ Error updating lead stage:', { 
+      error, 
+      tableName, 
+      recordId, 
+      updatePayload: {
+        ...updatePayload,
+        // Truncate long text fields for logging
+        proposal: updatePayload.proposal ? (typeof updatePayload.proposal === 'string' ? updatePayload.proposal.substring(0, 100) + '...' : updatePayload.proposal) : undefined,
+        proposal_text: updatePayload.proposal_text ? (typeof updatePayload.proposal_text === 'string' ? updatePayload.proposal_text.substring(0, 100) + '...' : updatePayload.proposal_text) : undefined,
+      },
+    });
     throw error;
   }
 
-  console.log('✅ Lead stage updated successfully, now recording stage change history...');
+  console.log('✅ Lead stage updated successfully:', {
+    tableName,
+    recordId,
+    updatedFields: Object.keys(updatePayload),
+    returnedData: data?.[0] ? {
+      id: data[0].id,
+      stage: data[0].stage,
+      proposal: data[0].proposal ? (typeof data[0].proposal === 'string' ? data[0].proposal.substring(0, 100) + '...' : data[0].proposal) : undefined,
+      proposal_text: data[0].proposal_text ? (typeof data[0].proposal_text === 'string' ? data[0].proposal_text.substring(0, 100) + '...' : data[0].proposal_text) : undefined,
+    } : null,
+  });
+  console.log('📝 Now recording stage change history...');
   
   try {
     const recordSuccess = await recordLeadStageChange({ lead, stage, actor: stageActor, timestamp: effectiveTimestamp });

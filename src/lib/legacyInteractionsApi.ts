@@ -83,11 +83,13 @@ const transformLegacyInteraction = (
       kind = 'email';
       break;
     case 'EMPTY':
-      // For EMPTY kind, check description for METHOD:sms marker to distinguish SMS from notes
-      // Format: "METHOD:sms|observation text"
+      // For EMPTY kind, check description for METHOD: marker to distinguish interaction types
+      // Format: "METHOD:sms|observation text" or "METHOD:office|observation text"
       const description = interaction.description || '';
       if (description.startsWith('METHOD:sms|')) {
         kind = 'sms';
+      } else if (description.startsWith('METHOD:office|')) {
+        kind = 'office';
       } else {
         kind = 'note';
       }
@@ -177,12 +179,12 @@ const transformLegacyInteraction = (
     kind,
     length,
     content,
-    observation: cleanLegacyText((interaction.description || '').replace(/^METHOD:sms\|/, '')), // Remove METHOD:sms| prefix from observation
+    observation: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from observation
     editable: false, // Legacy interactions from leads_leadinteractions are not editable by default
     // However, manual interactions saved to leads_leadinteractions should be marked differently
     // We'll handle this in the filter logic instead
     status: interactionStatus,
-    subject: cleanLegacyText((interaction.description || '').replace(/^METHOD:sms\|/, '')), // Remove METHOD:sms| prefix from subject
+    subject: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from subject
     recipient_name: recipientName, // Set recipient_name for "To:" display
   };
 };

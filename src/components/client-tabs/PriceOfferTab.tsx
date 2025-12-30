@@ -14,7 +14,7 @@ interface PriceOfferHistoryEntry {
   isFallback: boolean;
 }
 
-const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
+const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Use values from client, fallback to defaults if missing
   const proposalTotal = client?.proposal_total;
   const currency = client?.proposal_currency ?? 'NIS';
@@ -181,8 +181,9 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
           };
         });
 
-        // For legacy leads, also fetch proposal from leads_lead table
-        if (isLegacyLead) {
+        // For legacy leads, also fetch proposal from leads_lead table as a fallback
+        // (only if no emails were found, since emails table is the primary source for multiple offers)
+        if (isLegacyLead && entries.length === 0) {
           const legacyId = Number.parseInt(String(client.id).replace('legacy_', ''), 10);
           if (!Number.isNaN(legacyId)) {
             const { data: legacyLeadData, error: legacyError } = await supabase
@@ -194,24 +195,16 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
             if (!legacyError && legacyLeadData?.proposal && legacyLeadData.proposal.trim()) {
               const legacyProposal = legacyLeadData.proposal.trim();
               
-              // Check if this proposal is already in the entries (from emails)
-              const alreadyExists = entries.some(entry => {
-                const entryBody = entry.body.trim();
-                return entryBody === legacyProposal || entryBody.includes(legacyProposal) || legacyProposal.includes(entryBody);
+              // Only add as fallback if no emails exist
+              entries.unshift({
+                id: 'legacy_proposal',
+                messageId: null,
+                senderName: closerDisplayName,
+                senderEmail: null,
+                sentAt: null, // No date available from leads_lead.proposal
+                body: legacyProposal,
+                isFallback: true,
               });
-
-              // If not already in entries, add it as a separate entry
-              if (!alreadyExists) {
-                entries.unshift({
-                  id: 'legacy_proposal',
-                  messageId: null,
-                  senderName: closerDisplayName,
-                  senderEmail: null,
-                  sentAt: null, // No date available from leads_lead.proposal
-                  body: legacyProposal,
-                  isFallback: false,
-                });
-              }
             }
           }
         }
@@ -233,7 +226,7 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client }) => {
     };
 
     fetchHistory();
-  }, [client?.id, isLegacyLead, closerDisplayName, proposal]);
+  }, [client?.id, isLegacyLead, closerDisplayName, proposal, client?.last_stage_changed_at]);
 
   const linkifyLine = (line: string, lineIndex: number): React.ReactNode => {
     const urlRegex = /(https?:\/\/[^\s]+)/gi;

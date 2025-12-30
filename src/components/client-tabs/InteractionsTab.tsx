@@ -3434,12 +3434,10 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             body_preview: e.body_preview || null,
           }));
           
-          // Hydrate in background (don't wait for it)
+          // Hydrate in background (don't wait for it, and don't trigger refetch to avoid infinite loops)
+          // The state updates from hydrateEmailBodies will cause a re-render if needed
           setTimeout(() => {
-            hydrateEmailBodies(emailsToHydrate).then(() => {
-              // After hydration, refetch interactions to include newly hydrated emails
-              fetchInteractions({ bypassCache: true });
-            }).catch(err => {
+            hydrateEmailBodies(emailsToHydrate).catch(err => {
               console.error('Error hydrating email bodies in interactions list:', err);
             });
           }, 100);
@@ -4168,6 +4166,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     if (!userId) return;
 
     const requiresHydration = messages.filter(message => {
+      // Skip "offer_" prefixed message IDs (optimistic price offer inserts - body already stored)
+      if (message.id && message.id.startsWith('offer_')) {
+        return false;
+      }
+      
       // Skip optimistic IDs (temporary IDs that don't exist in the backend)
       if (message.id && message.id.startsWith('optimistic_')) {
         console.log(`📧 Skipping optimistic email ID: ${message.id}`);
@@ -4234,16 +4237,31 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               preview: previewHtml,
             };
 
-            // Update both body_html and body_preview in database
-            await supabase
-              .from('emails')
-              .update({ 
-                body_html: rawContent, 
-                body_preview: rawContent 
-              })
-              .eq('message_id', message.id);
+            // Skip database update for "offer_" emails (they're already stored correctly)
+            // Also skip if we don't have permission (403 errors) - the backend will handle updates
+            if (!message.id.startsWith('offer_')) {
+              try {
+                await supabase
+                  .from('emails')
+                  .update({ 
+                    body_html: rawContent, 
+                    body_preview: rawContent 
+                  })
+                  .eq('message_id', message.id);
+              } catch (dbErr: any) {
+                // Silently fail - backend will handle updates, and we don't want to spam errors
+                if (dbErr?.code !== 'PGRST116') { // PGRST116 is "no rows updated", which is fine
+                  console.warn('Could not update email body in database (backend will handle it):', dbErr);
+                }
+              }
+            }
           } catch (err) {
-            console.error('Unexpected error hydrating email body', err);
+            // Only log if it's not a network/CORS error (those are expected if backend is down)
+            if (err instanceof TypeError && err.message.includes('fetch')) {
+              // Network error - backend might be down, skip logging to avoid spam
+            } else {
+              console.error('Unexpected error hydrating email body', err);
+            }
           }
         })
       );
@@ -5259,6 +5277,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           'call_log': 'c', // Backwards compatibility: map call_log to 'c' as well
           'whatsapp': 'w', // WhatsApp interactions use 'w' kind
           'sms': 'EMPTY', // SMS interactions use 'EMPTY' kind (same as notes)
+          'office': 'EMPTY', // Office interactions use 'EMPTY' kind (same as notes)
           'note': 'EMPTY',
           'meeting': 'EMPTY',
         };
@@ -5271,8 +5290,40 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         const minutes = newContact.length ? parseInt(newContact.length.replace(/[^0-9]/g, ''), 10) || null : null;
 
         // Format date and time for database
-        const interactionDate = newContact.date || now.toISOString().split('T')[0];
-        const interactionTime = newContact.time || now.toTimeString().split(' ')[0].substring(0, 5);
+        // Convert date from "DD.MM.YY" format to ISO format (YYYY-MM-DD)
+        let interactionDate: string;
+        if (newContact.date) {
+          // Parse DD.MM.YY format
+          const dateParts = newContact.date.split('.');
+          if (dateParts.length === 3) {
+            const day = dateParts[0].padStart(2, '0');
+            const month = dateParts[1].padStart(2, '0');
+            const year = dateParts[2].length === 2 ? `20${dateParts[2]}` : dateParts[2];
+            interactionDate = `${year}-${month}-${day}`;
+          } else {
+            // If parsing fails, use current date
+            interactionDate = now.toISOString().split('T')[0];
+          }
+        } else {
+          interactionDate = now.toISOString().split('T')[0];
+        }
+        
+        // Format time (convert from HH:MM to HH:MM:SS format for database)
+        let interactionTime: string;
+        if (newContact.time) {
+          // If time is in HH:MM format, append :00 for seconds
+          if (newContact.time.match(/^\d{2}:\d{2}$/)) {
+            interactionTime = `${newContact.time}:00`;
+          } else if (newContact.time.match(/^\d{2}:\d{2}:\d{2}$/)) {
+            // Already in HH:MM:SS format
+            interactionTime = newContact.time;
+          } else {
+            // Invalid format, use current time
+            interactionTime = now.toTimeString().split(' ')[0];
+          }
+        } else {
+          interactionTime = now.toTimeString().split(' ')[0]; // HH:MM:SS format
+        }
 
         // Get the next available ID for leads_leadinteractions
         const { data: maxIdData, error: maxIdError } = await supabase
@@ -5288,44 +5339,76 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
         const nextId = maxIdData?.id ? maxIdData.id + 1 : 1;
 
-        // Prepare description - if SMS, prefix with METHOD:sms| to preserve the kind when fetching
+        // Prepare description - prefix with METHOD: to preserve the kind when fetching
+        // Format: "METHOD:office|observation text" or "METHOD:sms|observation text"
         let descriptionValue = newContact.observation || null;
-        if (normalizedMethod === 'sms' && descriptionValue) {
-          descriptionValue = `METHOD:sms|${descriptionValue}`;
-        } else if (normalizedMethod === 'sms' && !descriptionValue) {
-          descriptionValue = 'METHOD:sms|';
+        if (normalizedMethod === 'sms') {
+          descriptionValue = descriptionValue ? `METHOD:sms|${descriptionValue}` : 'METHOD:sms|';
+        } else if (normalizedMethod === 'office') {
+          descriptionValue = descriptionValue ? `METHOD:office|${descriptionValue}` : 'METHOD:office|';
         }
         
         // Insert into leads_leadinteractions table
-        const { error: insertError } = await supabase
+        const insertPayload = {
+          id: nextId,
+          cdate: now.toISOString(),
+          udate: now.toISOString(),
+          kind: dbKind,
+          date: interactionDate,
+          time: interactionTime,
+          minutes: minutes,
+          content: newContact.content || '',
+          creator_id: employeeId ? String(employeeId) : null,
+          lead_id: numericLegacyId,
+          direction: dbDirection,
+          description: descriptionValue,
+          employee_id: employeeId ? String(employeeId) : null,
+        };
+        
+        console.log('💾 Inserting legacy interaction:', {
+          method: normalizedMethod,
+          dbKind,
+          payload: insertPayload,
+        });
+
+        const { error: insertError, data: insertData } = await supabase
           .from('leads_leadinteractions')
-          .insert({
-            id: nextId,
-            cdate: now.toISOString(),
-            udate: now.toISOString(),
-            kind: dbKind,
-            date: interactionDate,
-            time: interactionTime,
-            minutes: minutes,
-            content: newContact.content || '',
-            creator_id: employeeId ? String(employeeId) : null,
-            lead_id: numericLegacyId,
-            direction: dbDirection,
-            description: descriptionValue,
-            employee_id: employeeId ? String(employeeId) : null,
-          });
+          .insert(insertPayload)
+          .select();
 
         if (insertError) {
-          console.error('Error inserting legacy interaction:', insertError);
+          console.error('❌ Error inserting legacy interaction:', {
+            error: insertError,
+            code: insertError.code,
+            message: insertError.message,
+            details: insertError.details,
+            hint: insertError.hint,
+            method: normalizedMethod,
+            dbKind,
+            payload: insertPayload,
+          });
           throw insertError;
         }
+        
+        // Verify that the insert actually succeeded by checking insertData
+        if (!insertData || insertData.length === 0) {
+          console.error('❌ Insert returned no data - interaction may not have been saved:', {
+            method: normalizedMethod,
+            dbKind,
+            payload: insertPayload,
+          });
+          throw new Error('Insert returned no data - interaction may not have been saved');
+        }
+        
         console.log('✅ Legacy interaction saved successfully:', { 
           id: nextId, 
           kind: dbKind, 
           lead_id: numericLegacyId,
-          method: normalizedMethod 
+          method: normalizedMethod,
+          insertedData: insertData,
         });
         // Stage evaluation is handled automatically by database triggers
+        // NOTE: Manual email interactions should NOT be saved to emails table - only to leads_leadinteractions
       } else {
         // For new leads, save to manual_interactions JSONB column
         const existingInteractions = client.manual_interactions || [];
@@ -5351,8 +5434,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Stage evaluation is handled automatically by database triggers
       }
       
+      // Only show success toast if we actually saved
+      // For legacy leads, insertData is verified above (throws if empty)
+      // For new leads, updateError is checked and throws if failed
+      // NOTE: Manual email interactions are saved to leads_leadinteractions (legacy) or manual_interactions (new)
+      // They should NOT be saved to the emails table - only real synced emails from Outlook go there
       toast.success('Interaction saved!');
-      if (onClientUpdate) await onClientUpdate(); // Silently refresh data
+      
+      // Force refresh of interactions to show the newly saved interaction
+      if (onClientUpdate) {
+        await onClientUpdate(); // Refresh client data
+      }
+      // Also trigger a direct fetch to ensure the interaction appears immediately
+      await fetchInteractions({ bypassCache: true });
 
     } catch (error) {
       toast.error('Save failed. Reverting changes.');

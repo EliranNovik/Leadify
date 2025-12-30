@@ -1422,6 +1422,31 @@ class GraphMailboxSyncService {
     const header = await this.getEmailById(userId, emailId);
     if (!header) throw new Error('Email not found');
 
+    // Check if this is an "offer_" message ID (optimistic price offer insert)
+    const isOfferEmail = header.message_id && header.message_id.startsWith('offer_');
+    
+    if (isOfferEmail) {
+      // For "offer_" emails, check body_html first, then body_preview
+      if (header.body_html && header.body_html.trim() !== '') {
+        console.log(`✅ Returning body_html for offer email: ${header.message_id.substring(0, 30)}...`);
+        return header.body_html;
+      }
+      
+      if (header.body_preview && header.body_preview.trim() !== '') {
+        console.log(`✅ Returning body_preview for offer email: ${header.message_id.substring(0, 30)}...`);
+        return header.body_preview;
+      }
+      
+      console.warn(`⚠️ No body_html or body_preview found for offer email: ${header.message_id}`);
+      throw new Error('Email body not available for price offer email');
+    }
+
+    // For regular emails, first check if body_html is already in the header
+    if (header.body_html && header.body_html.trim() !== '') {
+      return header.body_html;
+    }
+
+    // Second, check the email_bodies table
     const { data, error } = await supabase
       .from(EMAIL_BODIES_TABLE)
       .select('body_html')
@@ -1429,10 +1454,11 @@ class GraphMailboxSyncService {
       .limit(1);
     if (error) throw new Error(error.message || 'Failed to load email body');
 
-    if (data && data.length) {
+    if (data && data.length && data[0].body_html && data[0].body_html.trim() !== '') {
       return data[0].body_html;
     }
 
+    // Third, try to fetch from Graph API
     const html = await this.fetchAndCacheBody(userId, header);
     return html;
   }
