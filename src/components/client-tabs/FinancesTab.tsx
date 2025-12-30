@@ -97,6 +97,41 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     return '₪';
   };
 
+  // Helper to convert numeric order back to descriptive text (used for both legacy and new leads)
+  // Must be defined before fetchPaymentPlans which uses it
+  const getOrderText = (orderNumber: number | string | null | undefined): string => {
+    // Handle string input (for new leads that might already be text)
+    if (typeof orderNumber === 'string') {
+      // If it's already a descriptive string, return it as-is
+      const lowerStr = orderNumber.toLowerCase();
+      if (lowerStr.includes('first') || lowerStr.includes('intermediate') || lowerStr.includes('final') || lowerStr.includes('single') || lowerStr.includes('expense')) {
+        return orderNumber;
+      }
+      // Try to parse as number
+      const num = parseInt(orderNumber, 10);
+      if (!isNaN(num)) {
+        orderNumber = num;
+      } else {
+        return orderNumber; // Return as-is if can't parse
+      }
+    }
+    
+    // Handle numeric input
+    if (typeof orderNumber === 'number') {
+      switch (orderNumber) {
+        case 1: return 'First Payment';
+        case 5: return 'Intermediate Payment';
+        case 9: return 'Final Payment';
+        case 90: return 'Single Payment';
+        case 99: return 'Expense (no VAT)';
+        default: return 'First Payment'; // Default fallback
+      }
+    }
+    
+    // Default fallback for null/undefined
+    return 'First Payment';
+  };
+
   // Add state for stages dropdown and drawer
   const [showStagesDrawer, setShowStagesDrawer] = useState(false);
   const [autoPlanData, setAutoPlanData] = useState({
@@ -169,6 +204,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Add paid state for each payment row
   const [paidMap, setPaidMap] = useState<{ [id: string]: boolean }>({});
   const [editingValueVatId, setEditingValueVatId] = useState<string | number | null>(null);
+  const [editPaymentIncludeVat, setEditPaymentIncludeVat] = useState<boolean>(true); // Track if VAT should be included for the payment being edited
 
   // Handler to generate and copy payment link
   const handleGeneratePaymentLink = async (payment: PaymentPlan) => {
@@ -770,18 +806,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             
             payments = processedPayments.map(processed => {
               const { plan, value, valueVat, currency, paymentTotal } = processed;
-              
-              // Map numeric order to text for display
-              const getOrderText = (orderNumber: number): string => {
-                switch (orderNumber) {
-                  case 1: return 'First Payment';
-                  case 5: return 'Intermediate Payment';
-                  case 9: return 'Final Payment';
-                  case 90: return 'Single Payment';
-                  case 99: return 'Expense (no VAT)';
-                  default: return 'First Payment'; // Default fallback
-                }
-              };
 
               // Always auto-calculate percentage based on payment amount vs total
               const calculatedDuePercent = totalAmount > 0 ? Math.round((paymentTotal / totalAmount) * 100).toString() + '%' : '0%';
@@ -851,7 +875,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 value,
                 valueVat,
                 client: plan.client_name,
-                order: plan.payment_order,
+                order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment'),
                 proforma: plan.proforma || null,
                 notes: plan.notes || '',
                 paid: plan.paid || false,
@@ -1177,7 +1201,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               client: client.name || 'Legacy Client',
-              order: plan.order ? `Payment ${plan.order}` : 'Payment',
+              order: plan.order ? getOrderText(plan.order) : 'First Payment',
               proforma: null,
               notes: plan.notes || '',
               paid: plan.actual_date ? true : false,
@@ -1231,7 +1255,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               value,
               valueVat,
               client: plan.client_name,
-              order: plan.payment_order,
+              order: typeof plan.payment_order === 'number' ? getOrderText(plan.payment_order) : (plan.payment_order || 'First Payment'),
               proforma: plan.proforma || null,
               notes: plan.notes || '',
               paid: plan.paid || false,
@@ -1626,11 +1650,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setEditingPaymentId(row.id);
     // Preserve the original values instead of recalculating
     setEditPaymentData({ ...row });
+    // Set VAT checkbox based on whether VAT value exists and is > 0
+    setEditPaymentIncludeVat((row.valueVat || 0) > 0);
   };
 
   const handleCancelEditPayment = () => {
     setEditingPaymentId(null);
     setEditPaymentData({});
+    setEditPaymentIncludeVat(true); // Reset to default
   };
 
   const handleSaveEditPayment = async () => {
@@ -2165,18 +2192,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         };
 
-        // Map numeric values back to payment order strings for display
-        const getOrderText = (orderNumber: number): string => {
-          switch (orderNumber) {
-            case 1: return 'First Payment';
-            case 5: return 'Intermediate Payment';
-            case 9: return 'Final Payment';
-            case 90: return 'Single Payment';
-            case 99: return 'Expense (no VAT)';
-            default: return 'First Payment'; // Default fallback
-          }
-        };
-
         // Generate a unique numeric ID for the new payment
         const paymentId = Date.now() + Math.floor(Math.random() * 1000000);
         
@@ -2301,6 +2316,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         };
 
         const legacyPayments = [];
+        const today = new Date();
 
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
@@ -2317,18 +2333,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Convert to numeric for database storage
           const orderValue = getOrderNumber(orderText);
 
+          // Calculate due date: 3 months apart for each payment (i * 3 months from today)
+          const dueDate = new Date(today);
+          dueDate.setMonth(dueDate.getMonth() + (i * 3));
+          const dueDateStr = dueDate.toISOString().split('T')[0];
+
           legacyPayments.push({
             cdate: new Date().toISOString().split('T')[0], // Current date
             udate: new Date().toISOString().split('T')[0], // Current date
-            date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            date: dueDateStr,
             value,
-            vat_value:
-              autoPlanData.includeVat && autoPlanData.currency === '₪'
-                ? Math.round(value * 0.18 * 100) / 100
-                : 0,
+            vat_value: autoPlanData.includeVat
+              ? Math.round(value * 0.18 * 100) / 100
+              : 0,
             lead_id: legacyId, // Convert to number (bigint)
             notes: '',
-            due_date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            due_date: dueDateStr,
             due_percent: `${paymentPercent}%`, // Store the due percentage as text with % sign
             order: orderValue, // Convert text order to numeric for database
             currency_id: currencyId,
@@ -2345,20 +2365,25 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         // For new leads, save to payment_plans table
         const payments = [];
+        const today = new Date();
 
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
           const value = (totalAmount * paymentPercent) / 100;
 
+          // Calculate due date: 3 months apart for each payment (i * 3 months from today)
+          const dueDate = new Date(today);
+          dueDate.setMonth(dueDate.getMonth() + (i * 3));
+          const dueDateStr = dueDate.toISOString().split('T')[0];
+
           payments.push({
             lead_id: client?.id,
             due_percent: paymentPercent,
-            due_date: i === 0 ? new Date().toISOString().split('T')[0] : null,
+            due_date: dueDateStr,
             value,
-            value_vat:
-              autoPlanData.includeVat && autoPlanData.currency === '₪'
-                ? Math.round(value * 0.18 * 100) / 100
-                : 0,
+            value_vat: autoPlanData.includeVat
+              ? Math.round(value * 0.18 * 100) / 100
+              : 0,
             client_name: client?.name || 'Main Contact',
             payment_order:
               i === 0
@@ -2767,7 +2792,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           checked={autoPlanData.includeVat}
                           onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
                         />
-                        <span className="label-text font-medium">Include VAT (18% for NIS)</span>
+                        <span className="label-text font-medium">Include VAT (18%)</span>
                       </label>
                     </div>
                     <button
@@ -2991,18 +3016,6 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (currency === 'EUR' || currency === '€') return '€';
     // If it's already a symbol, return as-is
     return currency;
-  };
-
-  // Helper to convert numeric order back to descriptive text
-  const getOrderText = (orderNumber: number): string => {
-    switch (orderNumber) {
-      case 1: return 'First Payment';
-      case 5: return 'Intermediate Payment';
-      case 9: return 'Final Payment';
-      case 90: return 'Single Payment';
-      case 99: return 'Expense (no VAT)';
-      default: return `Payment ${orderNumber}`;
-    }
   };
 
   // Sort payments by due date (or fallback to original order if no due dates)
@@ -3464,8 +3477,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         onChange={(e) => {
           const newValue = Number(e.target.value) || 0;
           const currency = editPaymentData.currency || p.currency || '₪';
-          // Automatically recalculate VAT: 18% for ₪, 0 for others
-          const newValueVat = currency === '₪' ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+          // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
+          const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
           setEditPaymentData((d: any) => ({ 
             ...d, 
             value: newValue,
@@ -3474,11 +3487,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }));
         }}
       />
-      <span className='text-gray-500 font-bold'>+
+                      <span className='text-gray-500 font-bold'>+
         <input
           type="number"
           className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-          value={editPaymentData.valueVat}
+          value={editPaymentData.valueVat || 0}
           readOnly={editingValueVatId !== p.id}
           onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
           title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
@@ -3493,6 +3506,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           <PencilIcon className="w-4 h-4 text-blue-600" />
         </button>
       )}
+      <label className="label cursor-pointer gap-2 ml-2">
+        <input
+          type="checkbox"
+          className="checkbox checkbox-sm checkbox-primary"
+          checked={editPaymentIncludeVat}
+          onChange={(e) => {
+            const includeVat = e.target.checked;
+            setEditPaymentIncludeVat(includeVat);
+            const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
+            setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
+          }}
+        />
+        <span className="label-text text-xs">VAT</span>
+      </label>
     </div>
   ) : (
     <span className="text-sm font-bold text-gray-900">
@@ -3990,8 +4017,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               onChange={(e) => {
                                                 const newValue = Number(e.target.value) || 0;
                                                 const currency = editPaymentData.currency || p.currency || '₪';
-                                                // Automatically recalculate VAT: 18% for ₪, 0 for others
-                                                const newValueVat = currency === '₪' ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+                                                // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
+                                                const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
                                                 setEditPaymentData((d: any) => ({ 
                                                   ...d, 
                                                   value: newValue,
@@ -4004,7 +4031,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <input
                                               type="number"
                                               className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                              value={editPaymentData.valueVat}
+                                              value={editPaymentData.valueVat || 0}
                                               readOnly={editingValueVatId !== p.id}
                                               onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
                                               title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
@@ -4018,6 +4045,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 <PencilIcon className="w-4 h-4 text-blue-600" />
                                               </button>
                                             )}
+                                            <label className="label cursor-pointer gap-2 ml-2">
+                                              <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm checkbox-primary"
+                                                checked={editPaymentIncludeVat}
+                                                onChange={(e) => {
+                                                  const includeVat = e.target.checked;
+                                                  setEditPaymentIncludeVat(includeVat);
+                                                  const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
+                                                  setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
+                                                }}
+                                              />
+                                              <span className="label-text text-xs">VAT</span>
+                                            </label>
                                           </div>
                                         </div>
                                         <div className="flex items-center justify-between py-3">
@@ -4122,7 +4163,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
-                                            <span className="text-sm font-bold text-gray-900">{p.id === dueDatePaymentId ? (p.dueDate ? (new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : '') : '') : ''}</span>
+                                            <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
@@ -4916,7 +4957,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         checked={autoPlanData.includeVat}
                         onChange={(e) => setAutoPlanData(prev => ({ ...prev, includeVat: e.target.checked }))}
                       />
-                      <span className="label-text font-medium">Include VAT (18% for NIS)</span>
+                      <span className="label-text font-medium">Include VAT (18%)</span>
                     </label>
                   </div>
                   <button

@@ -8934,10 +8934,6 @@ useEffect(() => {
   const [subLeads, setSubLeads] = useState<any[]>([]);
   const [isMasterLead, setIsMasterLead] = useState(false);
   
-  // Add persistent state for sub-lead detection
-  const [persistentIsSubLead, setPersistentIsSubLead] = useState<boolean | null>(null);
-  const [persistentMasterLeadNumber, setPersistentMasterLeadNumber] = useState<string | null>(null);
-
   // After extracting fullLeadNumber
   // Check if this is a sub-lead by looking at the lead_number in the database
   // Logic: If database lead_number contains '/', then it's a sub-lead
@@ -8947,48 +8943,6 @@ useEffect(() => {
   const masterLeadNumber = isSubLead
     ? clientLeadNumber.split('/')[0]
     : selectedClient?.master_id || null;
-  
-  // Persist sub-lead detection when first detected
-  useEffect(() => {
-    if (isSubLead && masterLeadNumber && persistentIsSubLead === null) {
-      console.log('🔍 Persisting sub-lead detection:', { isSubLead, masterLeadNumber });
-      setPersistentIsSubLead(true);
-      setPersistentMasterLeadNumber(masterLeadNumber);
-      console.log('🔍 Persistent state set:', { persistentIsSubLead: true, persistentMasterLeadNumber: masterLeadNumber });
-    }
-  }, [isSubLead, masterLeadNumber, persistentIsSubLead]);
-
-  // Reset persistent state only when the URL changes (different client)
-  useEffect(() => {
-    setPersistentIsSubLead(null);
-    setPersistentMasterLeadNumber(null);
-  }, [fullLeadNumber]); // Reset when URL changes, not when client data refreshes
-
-  // Debug logging for master lead detection - only log when values actually change
-  useEffect(() => {
-    console.log('🔍 Master lead detection:', {
-      routeIdentifier: fullLeadNumber,
-      isSubLead,
-      masterLeadNumber,
-      persistentIsSubLead,
-      persistentMasterLeadNumber,
-      selectedClientId: selectedClient?.id,
-      selectedClientLeadNumber: selectedClient?.lead_number,
-      selectedClientManualId: selectedClient?.manual_id,
-      masterId: selectedClient?.master_id,
-      hasSlash: !!clientLeadNumber && clientLeadNumber.includes('/'),
-      hasMasterId: !!(selectedClient && selectedClient.master_id),
-      selectedClientData: selectedClient ? {
-        id: selectedClient.id,
-        lead_number: selectedClient.lead_number,
-        master_id: selectedClient.master_id,
-        manual_id: selectedClient.manual_id
-      } : null,
-      explanation: clientLeadNumber && clientLeadNumber.includes('/')
-        ? `Lead number "${clientLeadNumber}" contains "/" → Sub-lead detected`
-        : 'No sub-lead detected'
-    });
-  }, [fullLeadNumber, isSubLead, masterLeadNumber, persistentIsSubLead, persistentMasterLeadNumber, selectedClient?.id, selectedClient?.lead_number, selectedClient?.manual_id, selectedClient?.master_id, clientLeadNumber]);
 
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
@@ -11292,9 +11246,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       <div className="md:hidden px-4 pt-4 pb-3">
         <div className="flex flex-col gap-4">
           {/* Sub-lead notice for mobile */}
-          {(isSubLead || persistentIsSubLead) && (masterLeadNumber || persistentMasterLeadNumber) && (
+          {isSubLead && masterLeadNumber && (
             <div className="text-sm text-gray-500 mb-2">
-              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber || persistentMasterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber || persistentMasterLeadNumber}</a>
+              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
             </div>
           )}
           
@@ -11429,12 +11383,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     let shouldShowVAT = false;
                     
                     if (isLegacyLead) {
-                      // Legacy leads: calculate VAT based on currency
+                      // Legacy leads: calculate VAT for all currencies
                       const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                      if (currency === '₪' || currency === 'ILS') {
-                        vatAmount = totalAmount * 0.18;
-                        shouldShowVAT = true; // Always show for legacy Israeli currency
-                      }
+                      vatAmount = totalAmount * 0.18;
+                      shouldShowVAT = true; // Always show for legacy leads
                     } else {
                       // New leads: check 'vat' column (text type)
                       // Default to showing VAT (since database default is TRUE)
@@ -11453,14 +11405,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       
                       // Only calculate VAT if we should show it
                       if (shouldShowVAT) {
-                        // Use vat_value from database if available, otherwise calculate
+                        // Use vat_value from database if available, otherwise calculate for all currencies
                         if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
                           vatAmount = Number(selectedClient.vat_value);
                         } else {
                           const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                          if (currency === '₪' || currency === 'ILS') {
-                            vatAmount = totalAmount * 0.18;
-                          }
+                          vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
                         }
                       }
                     }
@@ -12074,9 +12024,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         {/* Modern CRM Header */}
         <div className="px-8 py-6">
           {/* Sub-lead notice at the top */}
-          {(isSubLead || persistentIsSubLead) && (masterLeadNumber || persistentMasterLeadNumber) && (
+          {isSubLead && masterLeadNumber && (
             <div className="text-sm text-gray-500 mb-2">
-              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber || persistentMasterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber || persistentMasterLeadNumber}</a>
+              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
             </div>
           )}
           {/* Master lead notice */}
@@ -12175,12 +12125,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         let shouldShowVAT = false;
                         
                         if (isLegacyLead) {
-                          // Legacy leads: calculate VAT based on currency
+                          // Legacy leads: calculate VAT for all currencies
                           const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                          if (currency === '₪' || currency === 'ILS') {
-                            vatAmount = totalAmount * 0.18;
-                            shouldShowVAT = true; // Always show for legacy Israeli currency
-                          }
+                          vatAmount = totalAmount * 0.18;
+                          shouldShowVAT = true; // Always show for legacy leads
                         } else {
                           // New leads: check 'vat' column (text type)
                           // Default to showing VAT (since database default is TRUE)
@@ -12199,14 +12147,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           
                           // Only calculate VAT if we should show it
                           if (shouldShowVAT) {
-                            // Use vat_value from database if available, otherwise calculate
+                            // Use vat_value from database if available, otherwise calculate for all currencies
                             if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
                               vatAmount = Number(selectedClient.vat_value);
                             } else {
                               const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                              if (currency === '₪' || currency === 'ILS') {
-                                vatAmount = totalAmount * 0.18;
-                              }
+                              vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
                             }
                           }
                         }

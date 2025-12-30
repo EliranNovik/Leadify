@@ -88,7 +88,18 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     // For legacy leads, use 'description' field instead of 'facts'
     const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
     
-    if (!facts) return [];
+    console.log('🔍 DEBUG getFacts() called:', {
+      isLegacy,
+      clientId: client?.id,
+      facts,
+      'client.description': client?.description,
+      'getFieldValue result': facts
+    });
+    
+    if (!facts) {
+      console.log('🔍 DEBUG getFacts() - returning empty array (facts is falsy)');
+      return [];
+    }
     
     try {
       // Try to parse as JSON first
@@ -104,18 +115,23 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             return { key, value: processedValue };
           });
         
+        console.log('🔍 DEBUG getFacts() - returning parsed JSON:', nonNullFacts);
         return nonNullFacts;
       }
       
       // If it's not an object, treat as plain text
       // Convert "n/" to line break
       const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
-      return [{ key: 'facts', value: processedFacts }];
+      const result = [{ key: 'facts', value: processedFacts }];
+      console.log('🔍 DEBUG getFacts() - returning plain text (JSON was not object):', result);
+      return result;
     } catch (error) {
       // If JSON parsing fails, treat as plain text
       // Convert "n/" to line break
       const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
-      return [{ key: 'facts', value: processedFacts }];
+      const result = [{ key: 'facts', value: processedFacts }];
+      console.log('🔍 DEBUG getFacts() - returning plain text (JSON parse failed):', result, 'error:', error);
+      return result;
     }
   };
 
@@ -946,22 +962,50 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const idField = isLegacy ? 'id' : 'id';
-                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
                       
-                      const { error } = await supabase
-                        .from(tableName)
-                        .update({
-                          special_notes: formatNoteText(editedSpecialNotes),
-                          special_notes_last_edited_by: userName,
-                          special_notes_last_edited_at: new Date().toISOString(),
-                        })
-                        .eq(idField, clientId);
-                      
-                      if (error) throw error;
-                      
-                      setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
-                      setIsEditingSpecialNotes(false);
+                      if (isLegacy) {
+                        // For legacy leads, convert ID to integer
+                        const legacyIdStr = client.id.toString().replace('legacy_', '');
+                        const legacyId = parseInt(legacyIdStr, 10);
+                        
+                        if (isNaN(legacyId)) {
+                          console.error('Invalid legacy ID:', legacyIdStr);
+                          throw new Error('Invalid legacy ID');
+                        }
+                        
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            special_notes: formatNoteText(editedSpecialNotes),
+                            special_notes_last_edited_by: userName,
+                            special_notes_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', legacyId)
+                          .select('special_notes')
+                          .single();
+                        
+                        if (error) throw error;
+                        
+                        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
+                        setIsEditingSpecialNotes(false);
+                      } else {
+                        // For new leads, use UUID directly
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            special_notes: formatNoteText(editedSpecialNotes),
+                            special_notes_last_edited_by: userName,
+                            special_notes_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', client.id)
+                          .select('special_notes')
+                          .single();
+                        
+                        if (error) throw error;
+                        
+                        setSpecialNotes(formatNoteText(editedSpecialNotes).split('\n').filter(note => note.trim() !== ''));
+                        setIsEditingSpecialNotes(false);
+                      }
                       
                       // Refresh client data in parent component
                       if (onClientUpdate) {
@@ -1024,22 +1068,50 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const idField = isLegacy ? 'id' : 'id';
-                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
                       
-                      const { error } = await supabase
-                        .from(tableName)
-                        .update({
-                          [isLegacy ? 'notes' : 'general_notes']: formatNoteText(editedGeneralNotes),
-                          [isLegacy ? 'notes_last_edited_by' : 'general_notes_last_edited_by']: userName,
-                          [isLegacy ? 'notes_last_edited_at' : 'general_notes_last_edited_at']: new Date().toISOString(),
-                        })
-                        .eq(idField, clientId);
-                      
-                      if (error) throw error;
-                      
-                      setGeneralNotes(formatNoteText(editedGeneralNotes));
-                      setIsEditingGeneralNotes(false);
+                      if (isLegacy) {
+                        // For legacy leads, convert ID to integer
+                        const legacyIdStr = client.id.toString().replace('legacy_', '');
+                        const legacyId = parseInt(legacyIdStr, 10);
+                        
+                        if (isNaN(legacyId)) {
+                          console.error('Invalid legacy ID:', legacyIdStr);
+                          throw new Error('Invalid legacy ID');
+                        }
+                        
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            notes: formatNoteText(editedGeneralNotes),
+                            notes_last_edited_by: userName,
+                            notes_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', legacyId)
+                          .select('notes')
+                          .single();
+                        
+                        if (error) throw error;
+                        
+                        setGeneralNotes(formatNoteText(editedGeneralNotes));
+                        setIsEditingGeneralNotes(false);
+                      } else {
+                        // For new leads, use UUID directly
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            general_notes: formatNoteText(editedGeneralNotes),
+                            general_notes_last_edited_by: userName,
+                            general_notes_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', client.id)
+                          .select('general_notes')
+                          .single();
+                        
+                        if (error) throw error;
+                        
+                        setGeneralNotes(formatNoteText(editedGeneralNotes));
+                        setIsEditingGeneralNotes(false);
+                      }
                       
                       // Refresh client data in parent component
                       if (onClientUpdate) {
@@ -1114,49 +1186,104 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                     try {
                       const userName = currentUserName;
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
-                      const idField = isLegacy ? 'id' : 'id';
-                      const clientId = isLegacy ? client.id.toString().replace('legacy_', '') : client.id;
+                      const formattedFacts = formatNoteText(editedFacts);
                       
-                      const { error } = await supabase
-                        .from(tableName)
-                        .update({
-                          [isLegacy ? 'description' : 'facts']: formatNoteText(editedFacts),
-                          [isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by']: userName,
-                          [isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at']: new Date().toISOString(),
-                        })
-                        .eq(idField, clientId);
+                      console.log('🔍 DEBUG SAVE FACTS START:', {
+                        isLegacy,
+                        clientId: client.id,
+                        editedFacts,
+                        formattedFacts,
+                        tableName
+                      });
                       
-                      if (error) throw error;
+                      if (isLegacy) {
+                        // For legacy leads, convert ID to integer
+                        const legacyIdStr = client.id.toString().replace('legacy_', '');
+                        const legacyId = parseInt(legacyIdStr, 10);
+                        
+                        if (isNaN(legacyId)) {
+                          console.error('Invalid legacy ID:', legacyIdStr);
+                          throw new Error('Invalid legacy ID');
+                        }
+                        
+                        console.log('🔍 DEBUG SAVE - Updating description column:', {
+                          legacyId,
+                          description: formattedFacts
+                        });
+                        
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            description: formattedFacts,
+                            description_last_edited_by: userName,
+                            description_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', legacyId)
+                          .select('description')
+                          .single();
+                        
+                        if (error) {
+                          console.error('❌ DEBUG SAVE - Database error:', error);
+                          throw error;
+                        }
+                        
+                        console.log('✅ DEBUG SAVE - Database returned:', {
+                          data,
+                          description: data?.description
+                        });
+                        
+                        // Verify by fetching again
+                        const { data: verifyData, error: verifyError } = await supabase
+                          .from(tableName)
+                          .select('description')
+                          .eq('id', legacyId)
+                          .single();
+                        
+                        console.log('🔍 DEBUG SAVE - Verification fetch:', {
+                          verifyData,
+                          verifyError,
+                          description: verifyData?.description
+                        });
+                      } else {
+                        // For new leads, use UUID directly
+                        const { data, error } = await supabase
+                          .from(tableName)
+                          .update({
+                            facts: formattedFacts,
+                            facts_last_edited_by: userName,
+                            facts_last_edited_at: new Date().toISOString(),
+                          })
+                          .eq('id', client.id)
+                          .select('facts')
+                          .single();
+                        
+                        if (error) throw error;
+                      }
                       
                       // Process edited facts: convert "n/" to line breaks, then parse
-                      // Only parse as key-value pairs if the line contains a colon and has content after it
-                      const processedFacts = formatNoteText(editedFacts).replace(/n\//g, '\n');
-                      setFactsOfCase(processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
+                      const processedFacts = formattedFacts.replace(/n\//g, '\n');
+                      const factsArray = processedFacts.split('\n').filter(fact => fact.trim() !== '').map(line => {
                         const trimmedLine = line.trim();
-                        // Only split by colon if there's actual content after the colon
-                        // Check if there's a colon and text after it (not just a colon at the end)
                         const colonIndex = trimmedLine.indexOf(':');
                         if (colonIndex > 0 && colonIndex < trimmedLine.length - 1) {
-                          // Has colon with content after it - treat as key-value pair
                           const key = trimmedLine.substring(0, colonIndex).trim();
                           const value = trimmedLine.substring(colonIndex + 1).trim();
-                          return {
-                            key: key || 'facts',
-                            value: value
-                          };
+                          return { key: key || 'facts', value: value };
                         } else {
-                          // No colon or colon at end - treat entire line as value
-                          return {
-                            key: 'facts',
-                            value: trimmedLine
-                          };
+                          return { key: 'facts', value: trimmedLine };
                         }
-                      }));
+                      });
+                      
+                      console.log('🔍 DEBUG SAVE - Setting state to:', factsArray);
+                      setFactsOfCase(factsArray);
                       setIsEditingFacts(false);
+                      
+                      console.log('🔍 DEBUG SAVE - Before onClientUpdate, current client.description:', client?.description);
                       
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
+                        console.log('🔍 DEBUG SAVE - After onClientUpdate, client.description should be updated');
                       }
                     } catch (error) {
                       console.error('Error updating facts:', error);
@@ -1181,23 +1308,32 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
               ) : (
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
-                    {factsOfCase.length > 0 ? (
-                      <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
-                        {factsOfCase.map((fact, index) => {
-                          // Convert "n/" to line break in display
-                          const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : fact.value;
-                          // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
-                          const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
-                          if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
-                            return `${fact.key}: ${displayValue}`;
-                          } else {
-                            return displayValue;
-                          }
-                        }).join('\n')}
-                      </p>
-                    ) : (
-                      <span className="text-gray-500">No case facts added</span>
-                    )}
+                    {(() => {
+                      console.log('🔍 DEBUG RENDER - factsOfCase state:', factsOfCase, 'length:', factsOfCase?.length);
+                      console.log('🔍 DEBUG RENDER - client.description:', client?.description);
+                      console.log('🔍 DEBUG RENDER - isEditingFacts:', isEditingFacts);
+                      
+                      if (factsOfCase.length > 0) {
+                        return (
+                          <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
+                            {factsOfCase.map((fact, index) => {
+                              // Convert "n/" to line break in display
+                              const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : fact.value;
+                              // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
+                              const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
+                              if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
+                                return `${fact.key}: ${displayValue}`;
+                              } else {
+                                return displayValue;
+                              }
+                            }).join('\n')}
+                          </p>
+                        );
+                      } else {
+                        console.log('🔍 DEBUG RENDER - Showing "No case facts added"');
+                        return <span className="text-gray-500">No case facts added</span>;
+                      }
+                    })()}
                   </div>
                   {(getFieldValue(client, isLegacy ? 'description_last_edited_by' : 'facts_last_edited_by') || getFieldValue(client, isLegacy ? 'description_last_edited_at' : 'facts_last_edited_at')) && (
                     <div className="text-xs text-gray-400 flex justify-between">

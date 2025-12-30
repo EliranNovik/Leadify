@@ -305,12 +305,8 @@ const loadPayments = async () => {
           if (row.orderCode !== filters.order) return false;
         }
         
-        // Due date filter
-        if (filters.due === 'due_only' && row.dueDate) {
-          const due = new Date(row.dueDate).getTime();
-          const limit = filters.toDate ? new Date(filters.toDate).getTime() : new Date().getTime();
-          if (due > limit) return false;
-        }
+        // Due date filter is now handled in the database queries above
+        // No client-side filtering needed
         
         return true;
       });
@@ -700,13 +696,24 @@ export default CollectionFinancesReport;
 async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   let query = supabase
     .from('payment_plans')
-    .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date');
+    .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
 
+  // If "due date included" is selected, filter by sent to finance criteria
+  if (filters.due === 'due_only') {
+    query = query
+      .eq('ready_to_pay', true) // Sent to finance
+      .eq('paid', false) // Only unpaid payments
+      .not('due_date', 'is', null); // Must have due_date
+  }
+
+  // Always filter by due_date for date range
   if (filters.fromDate) {
-    query = query.gte('due_date', filters.fromDate);
+    const fromDateTime = `${filters.fromDate}T00:00:00`;
+    query = query.gte('due_date', fromDateTime);
   }
   if (filters.toDate) {
-    query = query.lte('due_date', filters.toDate);
+    const toDateTime = `${filters.toDate}T23:59:59`;
+    query = query.lte('due_date', toDateTime);
   }
 
   const { data, error } = await query;
@@ -716,7 +723,13 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   const leadIds = Array.from(new Set(activePlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, false);
 
-  return activePlans.map((plan: any) => {
+  return activePlans
+    .filter((plan: any) => {
+      // Filter out payments for inactive leads (leads that weren't in leadMeta)
+      const key = plan.lead_id?.toString?.() || '';
+      return leadMeta.has(key);
+    })
+    .map((plan: any) => {
     const key = plan.lead_id?.toString?.() || '';
     const meta = leadMeta.get(key) || null;
     const value = Number(plan.value || 0);
@@ -759,24 +772,57 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, value, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, value, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
+  // Always filter by 'date' column for date range
   if (filters.fromDate) {
-    query = query.gte('date', filters.fromDate);
+    const fromDateTime = `${filters.fromDate}T00:00:00`;
+    query = query.gte('date', fromDateTime);
   }
   if (filters.toDate) {
-    query = query.lte('date', filters.toDate);
+    const toDateTime = `${filters.toDate}T23:59:59`;
+    query = query.lte('date', toDateTime);
+  }
+
+  // For legacy, also filter by due_date when "due date included" is selected (for date range)
+  if (filters.due === 'due_only') {
+    if (filters.fromDate) {
+      const fromDateTime = `${filters.fromDate}T00:00:00`;
+      query = query.gte('due_date', fromDateTime);
+    }
+    if (filters.toDate) {
+      const toDateTime = `${filters.toDate}T23:59:59`;
+      query = query.lte('due_date', toDateTime);
+    }
   }
 
   const { data, error } = await query;
   if (error) throw error;
 
-  const activePlans = (data || []).filter((plan: any) => !plan.cancel_date);
+  let activePlans = (data || []).filter((plan: any) => !plan.cancel_date);
+  
+  // If "due date included" is selected, filter by ready_to_pay = true OR (ready_to_pay = false AND due_date exists in finances_paymentplanrow)
+  if (filters.due === 'due_only') {
+    activePlans = activePlans.filter((plan: any) => {
+      const isReadyToPay = plan.ready_to_pay === true || plan.ready_to_pay === 'true' || plan.ready_to_pay === 1;
+      const hasDueDate = plan.due_date !== null && plan.due_date !== undefined;
+      
+      // Include if: ready_to_pay = true OR (ready_to_pay = false AND due_date exists)
+      return isReadyToPay || (!isReadyToPay && hasDueDate);
+    });
+  }
+  
   const leadIds = Array.from(new Set(activePlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, true);
 
-  return activePlans.map((plan: any) => {
+  return activePlans
+    .filter((plan: any) => {
+      // Filter out payments for inactive leads (leads that weren't in leadMeta)
+      const key = plan.lead_id?.toString?.() || '';
+      return leadMeta.has(key);
+    })
+    .map((plan: any) => {
     const key = plan.lead_id?.toString?.() || '';
     const meta = leadMeta.get(key) || null;
     const value = Number(plan.value || 0);
@@ -907,7 +953,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     const { data, error } = await supabase
       .from('leads_lead')
       .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id')
-      .in('id', numericIds);
+      .in('id', numericIds)
+      .eq('status', 0); // Only active leads (status 0 = active, status 10 = inactive)
     if (error) throw error;
     const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
     const legacyHandlerIds = (data || [])
@@ -939,7 +986,8 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
   const { data, error } = await supabase
     .from('leads')
     .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category')
-    .in('id', normalizedIds);
+    .in('id', normalizedIds)
+    .is('unactivated_at', null); // Only active leads (unactivated_at IS NULL means active)
   if (error) throw error;
   const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
   const handlerIds = (data || [])

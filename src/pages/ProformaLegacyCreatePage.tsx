@@ -364,7 +364,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       }
 
       // Create proforma using the function we created in SQL
-      const { data, error } = await supabase.rpc('create_proforma_with_rows', {
+      let { data, error } = await supabase.rpc('create_proforma_with_rows', {
         p_lead_id: parseInt(leadId!),
         p_total: totalWithVat,
         p_total_base: totalBase,
@@ -379,11 +379,56 @@ const ProformaLegacyCreatePage: React.FC = () => {
         p_rows: rowsData // Pass array directly, Supabase converts to jsonb
       });
 
-      if (error) throw error;
+      // If we get a duplicate key error (sequence out of sync), try to fix it and retry
+      if (error && error.code === '23505') {
+        console.log('🔧 Duplicate key error detected - fixing sequences and retrying...');
+        
+        // Fix both sequences (proformainvoice and proformainvoicerow)
+        const { error: fixError } = await supabase.rpc('fix_proformainvoice_sequence');
+        if (fixError) {
+          console.error('❌ Error fixing sequences:', fixError);
+          throw new Error('Failed to fix sequences. Please run the fix script manually.');
+        }
+        
+        console.log('✅ Sequences fixed, retrying proforma creation...');
+        
+        // Retry creating the proforma (with a small delay to ensure sequences are updated)
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        const retryResult = await supabase.rpc('create_proforma_with_rows', {
+          p_lead_id: parseInt(leadId!),
+          p_total: totalWithVat,
+          p_total_base: totalBase,
+          p_vat_value: vat,
+          p_notes: notes,
+          p_sub_total: totalBase,
+          p_add_vat: proformaData.addVat ? 't' : 'f',
+          p_currency_id: currencyId,
+          p_client_id: null,
+          p_bank_account_id: null,
+          p_ppr_id: proformaData.pprId ? parseInt(proformaData.pprId) : null,
+          p_rows: rowsData
+        });
+        
+        if (retryResult.error) {
+          // If it still fails after fixing, it might be a different issue
+          console.error('❌ Error after sequence fix:', retryResult.error);
+          throw retryResult.error;
+        }
+        
+        data = retryResult.data;
+        console.log('✅ Proforma created successfully after sequence fix');
+      } else if (error) {
+        throw error;
+      }
 
+      // Set saving to false BEFORE navigation to prevent hooks error
       setIsSaving(false);
       toast.success('Proforma created and saved successfully!');
-      navigate(-1);
+      // Use setTimeout to ensure state update completes before navigation
+      setTimeout(() => {
+        navigate(-1);
+      }, 0);
     } catch (error) {
       console.error('Error saving proforma:', error);
       toast.error('Failed to save proforma. Please try again.');
