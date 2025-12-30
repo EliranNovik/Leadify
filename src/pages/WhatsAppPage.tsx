@@ -4152,10 +4152,8 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                   
                   let leadIdentifier: string | null = null;
                   
-                  // For contacts, use lead_id if available (it contains the actual lead ID)
-                  if (selectedClient.isContact && selectedClient.lead_id) {
-                    leadIdentifier = String(selectedClient.lead_id);
-                  } else if (isLegacy) {
+                  // For contacts, use the same logic as regular leads - use lead_number for new leads, not lead_id (UUID)
+                  if (isLegacy) {
                     // For legacy leads, extract the numeric ID
                     const clientId = selectedClient.id?.toString();
                     if (clientId) {
@@ -4563,9 +4561,11 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                       {selectedClient && (
                         <button
                           onClick={() => {
+                            // Get the correct lead identifier based on lead type
                             const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
                             let leadIdentifier: string | null = null;
                             
+                            // For contacts and regular leads, use lead_number for new leads, not lead_id (UUID)
                             if (isLegacyLead) {
                               const clientId = selectedClient.id.toString().replace('legacy_', '');
                               if (clientId && clientId !== 'null' && clientId !== 'undefined') {

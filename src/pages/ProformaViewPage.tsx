@@ -96,11 +96,6 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
         </div>
       </div>
     </div>
-    {proforma.notes && (
-      <div style={{ marginTop: 24, padding: 16, background: '#fefce8', borderRadius: 12, borderLeft: '4px solid #facc15', color: '#404040', fontStyle: 'italic', fontFamily: 'Inter, Arial, sans-serif' }}>
-        <span style={{ fontWeight: 600 }}>Notes:</span> {proforma.notes}
-      </div>
-    )}
   </div>
 ));
 
@@ -457,12 +452,6 @@ const ProformaViewPage: React.FC = () => {
             </div>
           </div>
         </div>
-        {/* Notes */}
-        {proforma.notes && (
-          <div className="mt-6 p-4 bg-yellow-50 rounded-lg border-l-4 border-yellow-400 text-gray-700 italic">
-            <span className="font-semibold">Notes:</span> {proforma.notes}
-          </div>
-        )}
         {/* Created by at bottom left inside the card */}
         {/* Removed created by from print area as requested */}
       </div>

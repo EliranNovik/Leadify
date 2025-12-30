@@ -814,6 +814,7 @@ const Dashboard: React.FC = () => {
             helper,
             teams_meeting_url,
             meeting_brief,
+            legacy_lead_id,
             lead:leads!client_id(
               id, name, lead_number, manager, topic, expert, stage, scheduler, helper, closer, handler, balance, balance_currency
             ),
@@ -823,6 +824,70 @@ const Dashboard: React.FC = () => {
           `)
           .eq('meeting_date', todayStr)
           .or('status.is.null,status.neq.canceled,status.neq.cancelled');
+        
+        // Fetch legacy leads directly from leads_lead table that have meetings today
+        // Get IDs of legacy leads that are already in meetings table to exclude them
+        const existingLegacyLeadIds = new Set<string>();
+        if (meetings) {
+          meetings.forEach((m: any) => {
+            if (m.legacy_lead_id) {
+              existingLegacyLeadIds.add(String(m.legacy_lead_id));
+            }
+          });
+        }
+        
+        let directLegacyMeetings: any[] = [];
+        try {
+          const { data: legacyLeadsData, error: legacyError } = await supabase
+            .from('leads_lead')
+            .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
+            .eq('meeting_date', todayStr)
+            .not('meeting_date', 'is', null)
+            .not('name', 'is', null)
+            .limit(500);
+          
+          if (!legacyError && legacyLeadsData) {
+            // Filter out legacy leads that already exist in meetings table
+            const newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
+              return !existingLegacyLeadIds.has(String(legacyLead.id));
+            });
+            
+            // Transform legacy leads to match meeting structure
+            directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
+              id: `legacy_${legacyLead.id}`,
+              meeting_date: legacyLead.meeting_date,
+              meeting_time: legacyLead.meeting_time || '09:00',
+              meeting_location: 'Teams', // Will be mapped properly later via meetingLocationLinks or location ID lookup
+              meeting_manager: legacyLead.meeting_manager_id,
+              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              meeting_amount: parseFloat(legacyLead.total || '0'),
+              expert: legacyLead.expert_id,
+              helper: legacyLead.meeting_lawyer_id,
+              teams_meeting_url: null,
+              meeting_brief: null,
+              legacy_lead: {
+                id: legacyLead.id,
+                name: legacyLead.name,
+                stage: legacyLead.stage,
+                expert_id: legacyLead.expert_id,
+                meeting_manager_id: legacyLead.meeting_manager_id,
+                meeting_lawyer_id: legacyLead.meeting_lawyer_id,
+                meeting_scheduler_id: legacyLead.meeting_scheduler_id,
+                category: legacyLead.category,
+                category_id: legacyLead.category_id,
+                total: parseFloat(legacyLead.total || '0'),
+                currency_id: legacyLead.meeting_total_currency_id,
+                expert_examination: legacyLead.expert_examination
+              },
+              lead: null
+            }));
+          }
+        } catch (legacyErr) {
+          console.error('Error fetching legacy leads directly:', legacyErr);
+          // Continue even if legacy fetch fails
+        }
         
         // Fetch staff meetings from outlook_teams_meetings where user is in attendees
         let staffMeetings: any[] = [];
@@ -849,10 +914,13 @@ const Dashboard: React.FC = () => {
           }
         }
           
-        if (!error && meetings) {
+        // Combine meetings from meetings table with direct legacy meetings (if fetched)
+        const allMeetingsDataForProcessing = error ? directLegacyMeetings : [...(meetings || []), ...directLegacyMeetings];
+        
+        if (!error || directLegacyMeetings.length > 0) {
           // Fetch employee names for ID mapping
           const employeeIds = new Set<string>();
-          meetings.forEach((meeting: any) => {
+          allMeetingsDataForProcessing.forEach((meeting: any) => {
             const addValidId = (id: any) => {
               if (id && id !== '---' && id !== '' && id !== null && id !== undefined) {
                 employeeIds.add(id.toString());
@@ -977,7 +1045,7 @@ const Dashboard: React.FC = () => {
           };
           
           // Filter meetings by user role
-          const filteredMeetings = (meetings || []).filter(userMatchesRole);
+          const filteredMeetings = allMeetingsDataForProcessing.filter(userMatchesRole);
           
           // Process the meetings to combine lead data from both tables
           const processedMeetings = filteredMeetings.map((meeting: any) => {
@@ -1103,9 +1171,9 @@ const Dashboard: React.FC = () => {
 
             return {
               id: meeting.id,
-              lead: meeting.lead?.lead_number || 'N/A',
-              name: meeting.lead?.name || 'Unknown',
-              topic: meeting.lead?.topic || 'Consultation',
+              lead: meeting.lead?.lead_number || meeting.legacy_lead?.id?.toString() || 'N/A',
+              name: meeting.legacy_lead?.name || meeting.lead?.name || 'Unknown',
+              topic: meeting.lead?.topic || meeting.legacy_lead?.category || 'Consultation',
               expert: expertName,
               scheduler: schedulerName,
               helper: helperName,

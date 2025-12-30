@@ -720,8 +720,8 @@ class OneComSyncService {
   }
 
   /**
-   * Map destination phone number to lead_id (using WhatsApp-style comprehensive matching)
-   * Checks both main lead phone numbers and contacts for new and legacy leads
+   * Map destination phone number to lead_id (using comprehensive matching)
+   * Checks both main lead phone numbers, lead_number, and contacts for new and legacy leads
    * @param {string} destination - Destination phone number from 1com
    * @returns {Promise<{leadId: number|null, clientId: string|null}>}
    */
@@ -731,36 +731,56 @@ class OneComSyncService {
     }
 
     try {
-      // Normalize the phone number and create variations (same as WhatsApp implementation)
-      const incomingNormalized = this.normalizePhone(destination);
-      const incomingVariations = [
-        incomingNormalized,
-        incomingNormalized.replace(/^972/, ''), // Remove country code
-        incomingNormalized.replace(/^00972/, ''), // Remove 00972 prefix
-        incomingNormalized.replace(/^0/, ''), // Remove leading 0
-        `972${incomingNormalized.replace(/^972/, '')}`, // Add country code
-        `0${incomingNormalized.replace(/^0/, '')}`, // Add leading 0
-        incomingNormalized.replace(/^972/, '0'), // Replace 972 with 0
-        incomingNormalized.replace(/^0/, '972'), // Replace 0 with 972
-      ].filter(Boolean);
+      // Use the better normalizePhoneNumber function that handles country codes properly
+      const incomingNormalized = this.normalizePhoneNumber(destination);
+      
+      // Create comprehensive set of normalized variations for matching
+      const normalizedSet = new Set();
+      
+      // Add the primary normalized version
+      if (incomingNormalized) {
+        normalizedSet.add(incomingNormalized);
+        
+        // Add variations for matching
+        // Without leading 0 (Israeli format)
+        if (incomingNormalized.startsWith('0') && incomingNormalized.length > 1) {
+          normalizedSet.add(incomingNormalized.substring(1));
+        }
+        // With leading 0 (if doesn't have it)
+        if (!incomingNormalized.startsWith('0') && incomingNormalized.length === 9) {
+          normalizedSet.add('0' + incomingNormalized);
+        }
+        // With country code 972
+        if (incomingNormalized.startsWith('0')) {
+          normalizedSet.add('972' + incomingNormalized.substring(1));
+        } else {
+          normalizedSet.add('972' + incomingNormalized);
+        }
+        // Last 9, 8, 7, 5 digits for partial matching
+        if (incomingNormalized.length >= 9) normalizedSet.add(incomingNormalized.slice(-9));
+        if (incomingNormalized.length >= 8) normalizedSet.add(incomingNormalized.slice(-8));
+        if (incomingNormalized.length >= 7) normalizedSet.add(incomingNormalized.slice(-7));
+        if (incomingNormalized.length >= 5) normalizedSet.add(incomingNormalized.slice(-5));
+      }
+      
+      // Also add raw destination and simple digit-only version
+      normalizedSet.add(destination.replace(/\D/g, ''));
+      
+      // Create raw search values for .in() queries (keep original formats)
+      const rawSearchValues = [destination];
+      if (incomingNormalized) {
+        rawSearchValues.push(incomingNormalized);
+        if (incomingNormalized.startsWith('0')) {
+          rawSearchValues.push(incomingNormalized.substring(1));
+          rawSearchValues.push('972' + incomingNormalized.substring(1));
+        }
+      }
+      const uniqueRawSearchValues = Array.from(new Set(rawSearchValues.filter(Boolean)));
 
-      const normalizedSet = new Set(
-        incomingVariations
-          .map(v => this.normalizePhone(v))
-          .filter(Boolean)
-      );
-      normalizedSet.add(incomingNormalized);
+      console.log(`🔍 Mapping destination "${destination}" -> normalized: "${incomingNormalized}", ${normalizedSet.size} variations`);
 
-      const rawSearchValues = Array.from(new Set(
-        incomingVariations
-          .concat([destination])
-          .filter(Boolean)
-      ));
-
-      console.log(`🔍 Mapping destination "${destination}" -> normalized: "${incomingNormalized}", variations: ${incomingVariations.length}`);
-
-      if (incomingNormalized.length < 8) {
-        console.log(`❌ Destination too short for phone matching (need 8+ digits): ${incomingNormalized}`);
+      if (!incomingNormalized || incomingNormalized.length < 5) {
+        console.log(`❌ Destination too short for phone matching (need 5+ digits): ${incomingNormalized || 'empty'}`);
         return { leadId: null, clientId: null };
       }
 
@@ -787,122 +807,247 @@ class OneComSyncService {
         });
       };
 
-      // STEP 1: Try exact matches in contacts using .in() queries (fastest)
-      if (rawSearchValues.length > 0) {
-        const { data: phoneMatches } = await supabase
-          .from('leads_contact')
-          .select(contactSelectColumns)
-          .in('phone', rawSearchValues);
-        if (phoneMatches) addContacts(phoneMatches);
-
-        const { data: mobileMatches } = await supabase
-          .from('leads_contact')
-          .select(contactSelectColumns)
-          .in('mobile', rawSearchValues);
-        if (mobileMatches) addContacts(mobileMatches);
-      }
-
       // Store direct lead matches for fallback if no contacts found
       let directNewLeadMatch = null;
       let directLegacyLeadMatch = null;
 
-      // STEP 2: If no exact matches found, try partial matching using last 8 digits (same as WhatsApp)
-      const last8Digits = incomingNormalized.length >= 8 ? incomingNormalized.slice(-8) : null;
-      
-      if (!contactCandidatesMap.size && last8Digits) {
-        console.log(`📞 No exact contact matches, trying partial matching with last 8 digits: ${last8Digits}`);
+      // Helper function to check if a phone number matches (with multiple strategies)
+      const phoneMatches = (dbPhone, searchNormalized) => {
+        if (!dbPhone || !searchNormalized) return false;
+        const dbNormalized = this.normalizePhoneNumber(dbPhone);
+        if (!dbNormalized) return false;
         
-        // Search in leads_contact table with last 8 digits (includes additional_phones)
-        const { data: contactPartialMatches } = await supabase
+        // Try exact match first
+        if (dbNormalized === searchNormalized) return true;
+        
+        // Try variations (without/with leading 0, with country code)
+        const dbVariations = [
+          dbNormalized,
+          dbNormalized.startsWith('0') ? dbNormalized.substring(1) : '0' + dbNormalized,
+          dbNormalized.startsWith('0') ? '972' + dbNormalized.substring(1) : dbNormalized,
+          dbNormalized.startsWith('972') ? '0' + dbNormalized.substring(3) : dbNormalized,
+        ];
+        if (dbVariations.includes(searchNormalized)) return true;
+        
+        // Try partial matches (last 9, 8, 7, 5 digits)
+        if (searchNormalized.length >= 9 && dbNormalized.length >= 9) {
+          if (dbNormalized.slice(-9) === searchNormalized.slice(-9)) return true;
+        }
+        if (searchNormalized.length >= 8 && dbNormalized.length >= 8) {
+          if (dbNormalized.slice(-8) === searchNormalized.slice(-8)) return true;
+        }
+        if (searchNormalized.length >= 7 && dbNormalized.length >= 7) {
+          if (dbNormalized.slice(-7) === searchNormalized.slice(-7)) return true;
+        }
+        if (searchNormalized.length >= 5 && dbNormalized.length >= 5) {
+          if (dbNormalized.slice(-5) === searchNormalized.slice(-5)) return true;
+        }
+        
+        return false;
+      };
+
+      // STEP 1: Try exact matches in contacts using .in() queries (fastest)
+      if (uniqueRawSearchValues.length > 0) {
+        const { data: phoneMatchesData } = await supabase
           .from('leads_contact')
           .select(contactSelectColumns)
-          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
-        if (contactPartialMatches) addContacts(contactPartialMatches);
-        
-        // Also search via lead_leadcontact junction table to find leads associated with matching contacts
-        const { data: matchingContactsByLast8 } = await supabase
+          .in('phone', uniqueRawSearchValues);
+        if (phoneMatchesData) addContacts(phoneMatchesData);
+
+        const { data: mobileMatchesData } = await supabase
           .from('leads_contact')
-          .select('id')
-          .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`);
-        
-        if (matchingContactsByLast8 && matchingContactsByLast8.length > 0) {
-          const matchingContactIds = matchingContactsByLast8.map(c => c.id);
-          
-          // Find all leads (new and legacy) linked to these contacts via lead_leadcontact
-          const { data: linkedLeadsViaContacts } = await supabase
-            .from('lead_leadcontact')
-            .select('newlead_id, lead_id')
-            .in('contact_id', matchingContactIds);
-          
-          if (linkedLeadsViaContacts && linkedLeadsViaContacts.length > 0) {
-            // Get unique new lead IDs
-            const newLeadIds = [...new Set(linkedLeadsViaContacts
-              .filter(ll => ll.newlead_id)
-              .map(ll => ll.newlead_id)
-            )];
-            
-            // Get unique legacy lead IDs
-            const legacyLeadIds = [...new Set(linkedLeadsViaContacts
-              .filter(ll => ll.lead_id)
-              .map(ll => ll.lead_id)
-            )];
-            
-            // Fetch the actual new leads
-            if (newLeadIds.length > 0) {
-              const { data: newLeadsFromContacts } = await supabase
-                .from('leads')
-                .select('id, name, phone, mobile')
-                .in('id', newLeadIds)
-                .limit(1);
-              
-              if (newLeadsFromContacts && newLeadsFromContacts.length > 0 && !directNewLeadMatch) {
-                directNewLeadMatch = newLeadsFromContacts[0];
-              }
-            }
-            
-            // Fetch the actual legacy leads
-            if (legacyLeadIds.length > 0) {
-              const { data: legacyLeadsFromContacts } = await supabase
-                .from('leads_lead')
-                .select('id, name, phone, mobile')
-                .in('id', legacyLeadIds)
-                .limit(1);
-              
-              if (legacyLeadsFromContacts && legacyLeadsFromContacts.length > 0 && !directLegacyLeadMatch) {
-                directLegacyLeadMatch = legacyLeadsFromContacts[0];
-              }
-            }
-          }
-        }
-        
-        // Also search directly in leads table (new leads) for phone and mobile columns
-        if (!directNewLeadMatch) {
-          const { data: newLeadsMatches } = await supabase
+          .select(contactSelectColumns)
+          .in('mobile', uniqueRawSearchValues);
+        if (mobileMatchesData) addContacts(mobileMatchesData);
+      }
+
+      // STEP 1.5: Try direct matching against new leads (phone, mobile, lead_number) - only if no contacts found yet
+      // Use targeted queries first, then fall back to broader search if needed
+      if (!directNewLeadMatch && !contactCandidatesMap.size) {
+        // First try exact matches using .in() queries (faster)
+        if (uniqueRawSearchValues.length > 0) {
+          const { data: exactPhoneMatches } = await supabase
             .from('leads')
-            .select('id, name, phone, mobile')
-            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%`)
-            .limit(1);
+            .select('id, name, phone, mobile, lead_number')
+            .in('phone', uniqueRawSearchValues)
+            .limit(10);
+          if (exactPhoneMatches && exactPhoneMatches.length > 0) {
+            directNewLeadMatch = exactPhoneMatches[0];
+            console.log(`✅ DIRECT NEW LEAD match (exact phone): destination "${destination}" -> new lead "${directNewLeadMatch.name}" (ID: ${directNewLeadMatch.id})`);
+          }
           
-          if (newLeadsMatches && newLeadsMatches.length > 0) {
-            directNewLeadMatch = newLeadsMatches[0];
+          if (!directNewLeadMatch) {
+            const { data: exactMobileMatches } = await supabase
+              .from('leads')
+              .select('id, name, phone, mobile, lead_number')
+              .in('mobile', uniqueRawSearchValues)
+              .limit(10);
+            if (exactMobileMatches && exactMobileMatches.length > 0) {
+              directNewLeadMatch = exactMobileMatches[0];
+              console.log(`✅ DIRECT NEW LEAD match (exact mobile): destination "${destination}" -> new lead "${directNewLeadMatch.name}" (ID: ${directNewLeadMatch.id})`);
+            }
+          }
+          
+          // Also try matching against lead_number (only for values that look like phone numbers)
+          if (!directNewLeadMatch) {
+            const phoneLikeValues = uniqueRawSearchValues.filter(v => {
+              const digitsOnly = v.replace(/\D/g, '');
+              return digitsOnly.length >= 5;
+            });
+            if (phoneLikeValues.length > 0) {
+              const { data: exactLeadNumberMatches } = await supabase
+                .from('leads')
+                .select('id, name, phone, mobile, lead_number')
+                .in('lead_number', phoneLikeValues)
+                .limit(10);
+              if (exactLeadNumberMatches && exactLeadNumberMatches.length > 0) {
+                // Verify it's actually a phone number match
+                for (const lead of exactLeadNumberMatches) {
+                  if (lead.lead_number) {
+                    const leadNumberNormalized = this.normalizePhoneNumber(lead.lead_number);
+                    if (leadNumberNormalized && phoneMatches(leadNumberNormalized, incomingNormalized)) {
+                      directNewLeadMatch = lead;
+                      console.log(`✅ DIRECT NEW LEAD match (exact lead_number): destination "${destination}" -> new lead "${lead.name}" (ID: ${lead.id}) via lead_number: ${lead.lead_number}`);
+                      break;
+                    }
+                  }
+                }
+              }
+            }
           }
         }
         
-        // Also search directly in leads_lead table (legacy leads) for phone and mobile columns
-        if (!directLegacyLeadMatch) {
-          const { data: legacyLeadsMatches } = await supabase
-            .from('leads_lead')
-            .select('id, name, phone, mobile, additional_phones')
-            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`)
-            .limit(1);
+        // If no exact match, try partial matching with last digits (more targeted than fetching all leads)
+        if (!directNewLeadMatch && incomingNormalized.length >= 8) {
+          const last8Digits = incomingNormalized.slice(-8);
+          const { data: partialMatches } = await supabase
+            .from('leads')
+            .select('id, name, phone, mobile, lead_number')
+            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,lead_number.ilike.%${last8Digits}%`)
+            .limit(50);
           
-          if (legacyLeadsMatches && legacyLeadsMatches.length > 0) {
-            directLegacyLeadMatch = legacyLeadsMatches[0];
+          if (partialMatches) {
+            for (const lead of partialMatches) {
+              // Verify match using phoneMatches helper
+              if ((lead.phone && phoneMatches(lead.phone, incomingNormalized)) ||
+                  (lead.mobile && phoneMatches(lead.mobile, incomingNormalized))) {
+                directNewLeadMatch = lead;
+                console.log(`✅ DIRECT NEW LEAD match (partial): destination "${destination}" -> new lead "${lead.name}" (ID: ${lead.id})`);
+                break;
+              }
+              // Check lead_number - only if it looks like a phone number (mostly digits, 5+ chars)
+              if (lead.lead_number) {
+                const leadNumberDigits = lead.lead_number.replace(/\D/g, '');
+                if (leadNumberDigits.length >= 5) {
+                  const leadNumberNormalized = this.normalizePhoneNumber(lead.lead_number);
+                  if (leadNumberNormalized && phoneMatches(leadNumberNormalized, incomingNormalized)) {
+                    directNewLeadMatch = lead;
+                    console.log(`✅ DIRECT NEW LEAD match (lead_number): destination "${destination}" -> new lead "${lead.name}" (ID: ${lead.id}) via lead_number: ${lead.lead_number}`);
+                    break;
+                  }
+                }
+              }
+            }
           }
         }
       }
 
-      // STEP 3: Process contact candidates (same logic as WhatsApp)
+      // STEP 1.6: Try direct matching against legacy leads (phone, mobile, lead_number which is the ID)
+      if (!directLegacyLeadMatch && !contactCandidatesMap.size) {
+        // First try exact matches using .in() queries (faster)
+        if (uniqueRawSearchValues.length > 0) {
+          const { data: exactLegacyPhoneMatches } = await supabase
+            .from('leads_lead')
+            .select('id, name, phone, mobile, additional_phones')
+            .in('phone', uniqueRawSearchValues)
+            .limit(10);
+          if (exactLegacyPhoneMatches && exactLegacyPhoneMatches.length > 0) {
+            directLegacyLeadMatch = exactLegacyPhoneMatches[0];
+            console.log(`✅ DIRECT LEGACY LEAD match (exact phone): destination "${destination}" -> legacy lead "${directLegacyLeadMatch.name}" (ID: ${directLegacyLeadMatch.id})`);
+          }
+          
+          if (!directLegacyLeadMatch) {
+            const { data: exactLegacyMobileMatches } = await supabase
+              .from('leads_lead')
+              .select('id, name, phone, mobile, additional_phones')
+              .in('mobile', uniqueRawSearchValues)
+              .limit(10);
+            if (exactLegacyMobileMatches && exactLegacyMobileMatches.length > 0) {
+              directLegacyLeadMatch = exactLegacyMobileMatches[0];
+              console.log(`✅ DIRECT LEGACY LEAD match (exact mobile): destination "${destination}" -> legacy lead "${directLegacyLeadMatch.name}" (ID: ${directLegacyLeadMatch.id})`);
+            }
+          }
+        }
+        
+        // If no exact match, try partial matching with last digits
+        if (!directLegacyLeadMatch && incomingNormalized.length >= 8) {
+          const last8Digits = incomingNormalized.slice(-8);
+          const { data: partialLegacyMatches } = await supabase
+            .from('leads_lead')
+            .select('id, name, phone, mobile, additional_phones')
+            .or(`phone.ilike.%${last8Digits}%,mobile.ilike.%${last8Digits}%,additional_phones.ilike.%${last8Digits}%`)
+            .limit(50);
+          
+          if (partialLegacyMatches) {
+            for (const lead of partialLegacyMatches) {
+              // Verify match using phoneMatches helper
+              if ((lead.phone && phoneMatches(lead.phone, incomingNormalized)) ||
+                  (lead.mobile && phoneMatches(lead.mobile, incomingNormalized))) {
+                directLegacyLeadMatch = lead;
+                console.log(`✅ DIRECT LEGACY LEAD match (partial): destination "${destination}" -> legacy lead "${lead.name}" (ID: ${lead.id})`);
+                break;
+              }
+              // Check additional_phones
+              if (lead.additional_phones) {
+                const additionalPhones = this.parseAdditionalPhones(lead.additional_phones);
+                if (additionalPhones.some(ap => phoneMatches(ap, incomingNormalized))) {
+                  directLegacyLeadMatch = lead;
+                  console.log(`✅ DIRECT LEGACY LEAD match (additional_phone): destination "${destination}" -> legacy lead "${lead.name}" (ID: ${lead.id})`);
+                  break;
+                }
+              }
+              // Check ID (lead_number for legacy leads)
+              if (lead.id) {
+                const leadIdStr = String(lead.id);
+                const leadIdNormalized = this.normalizePhoneNumber(leadIdStr);
+                if (leadIdNormalized && phoneMatches(leadIdNormalized, incomingNormalized)) {
+                  directLegacyLeadMatch = lead;
+                  console.log(`✅ DIRECT LEGACY LEAD match (ID): destination "${destination}" -> legacy lead "${lead.name}" (ID: ${lead.id})`);
+                  break;
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // STEP 2: If no exact matches found, try partial matching using multiple digit lengths
+      if (!contactCandidatesMap.size) {
+        console.log(`📞 No exact contact matches, trying partial matching with last 9/8/7/5 digits`);
+        
+        // Try multiple partial match strategies (last 9, 8, 7, 5 digits)
+        const partialLengths = [];
+        if (incomingNormalized.length >= 9) partialLengths.push(9);
+        if (incomingNormalized.length >= 8) partialLengths.push(8);
+        if (incomingNormalized.length >= 7) partialLengths.push(7);
+        if (incomingNormalized.length >= 5) partialLengths.push(5);
+        
+        for (const length of partialLengths) {
+          const lastDigits = incomingNormalized.slice(-length);
+          const { data: contactPartialMatches } = await supabase
+            .from('leads_contact')
+            .select(contactSelectColumns)
+            .or(`phone.ilike.%${lastDigits}%,mobile.ilike.%${lastDigits}%,additional_phones.ilike.%${lastDigits}%`)
+            .limit(100);
+          if (contactPartialMatches && contactPartialMatches.length > 0) {
+            addContacts(contactPartialMatches);
+            console.log(`📞 Found ${contactPartialMatches.length} contact(s) with last ${length} digits match: ${lastDigits}`);
+            break; // Stop after first successful partial match
+          }
+        }
+      }
+
+      // STEP 3: Process contact candidates with better normalization using phoneMatches helper
       const candidates = Array.from(contactCandidatesMap.values());
       for (const contact of candidates) {
         const contactPhones = [
@@ -911,11 +1056,9 @@ class OneComSyncService {
           ...this.parseAdditionalPhones(contact.additional_phones || '')
         ].filter(Boolean);
 
-        const contactNormalizedPhones = contactPhones
-          .map(p => this.normalizePhone(p))
-          .filter(Boolean);
-
-        const hasMatch = contactNormalizedPhones.some(number => normalizedSet.has(number));
+        // Check if any contact phone matches the incoming phone using phoneMatches helper
+        const hasMatch = contactPhones.some(contactPhone => phoneMatches(contactPhone, incomingNormalized));
+        
         if (!hasMatch) continue;
 
         const preferredLink = this.pickPreferredLeadLink(contact.lead_leadcontact || []);
@@ -969,20 +1112,16 @@ class OneComSyncService {
         }
       }
 
-      // STEP 4: If no contacts found but we found leads directly, return the first matching lead
-      if (!contactCandidatesMap.size) {
-        if (directNewLeadMatch) {
-          console.log(`✅ DIRECT NEW LEAD match: destination "${destination}" -> new lead "${directNewLeadMatch.name}" (ID: ${directNewLeadMatch.id})`);
-          return { leadId: null, clientId: directNewLeadMatch.id };
-        }
-        
-        if (directLegacyLeadMatch) {
-          console.log(`✅ DIRECT LEGACY LEAD match: destination "${destination}" -> legacy lead "${directLegacyLeadMatch.name}" (ID: ${directLegacyLeadMatch.id})`);
-          return { leadId: directLegacyLeadMatch.id, clientId: null };
-        }
+      // STEP 4: Return direct lead matches (prioritize new leads)
+      if (directNewLeadMatch) {
+        return { leadId: null, clientId: directNewLeadMatch.id };
+      }
+      
+      if (directLegacyLeadMatch) {
+        return { leadId: directLegacyLeadMatch.id, clientId: null };
       }
 
-      console.log(`❌ No lead mapping found for destination "${destination}"`);
+      console.log(`❌ No lead mapping found for destination "${destination}" (normalized: "${incomingNormalized}")`);
       return { leadId: null, clientId: null };
     } catch (error) {
       console.error(`Error mapping destination "${destination}":`, error);

@@ -304,6 +304,7 @@ const Meetings: React.FC = () => {
               balance_currency,
               eligibility_status
             ),
+            legacy_lead_id,
             legacy_lead:leads_lead!legacy_lead_id (
               id,
               name,
@@ -333,10 +334,78 @@ const Meetings: React.FC = () => {
           throw new Error('No meetings data received');
         }
 
+        // Fetch legacy leads directly from leads_lead table that have meetings today or tomorrow
+        // Get IDs of legacy leads that are already in meetings table to exclude them
+        const existingLegacyLeadIds = new Set<string>();
+        meetings.forEach((m: any) => {
+          if (m.legacy_lead_id) {
+            existingLegacyLeadIds.add(String(m.legacy_lead_id));
+          }
+        });
+        
+        let directLegacyMeetings: any[] = [];
+        try {
+          const { data: legacyLeadsData, error: legacyError } = await supabase
+            .from('leads_lead')
+            .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, meeting_scheduler_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
+            .in('meeting_date', [todayStr, tomorrowStr])
+            .not('meeting_date', 'is', null)
+            .not('name', 'is', null)
+            .limit(500);
+          
+          if (!legacyError && legacyLeadsData) {
+            // Filter out legacy leads that already exist in meetings table
+            const newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
+              return !existingLegacyLeadIds.has(String(legacyLead.id));
+            });
+            
+            // Transform legacy leads to match meeting structure
+            directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
+              id: `legacy_${legacyLead.id}`,
+              meeting_date: legacyLead.meeting_date,
+              meeting_time: legacyLead.meeting_time || '09:00',
+              meeting_location: 'Teams', // Default, can be improved with location lookup
+              meeting_manager: legacyLead.meeting_manager_id,
+              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
+                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
+                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              meeting_amount: parseFloat(legacyLead.total || '0'),
+              expert: legacyLead.expert_id,
+              helper: legacyLead.meeting_lawyer_id,
+              teams_meeting_url: null,
+              meeting_brief: null,
+              legacy_lead_id: legacyLead.id,
+              legacy_lead: {
+                id: legacyLead.id,
+                name: legacyLead.name,
+                stage: legacyLead.stage,
+                expert_id: legacyLead.expert_id,
+                meeting_manager_id: legacyLead.meeting_manager_id,
+                meeting_lawyer_id: legacyLead.meeting_lawyer_id,
+                meeting_scheduler_id: legacyLead.meeting_scheduler_id,
+                category: legacyLead.category,
+                category_id: legacyLead.category_id,
+                total: parseFloat(legacyLead.total || '0'),
+                currency_id: legacyLead.meeting_total_currency_id,
+                closer_id: null,
+                case_handler_id: null,
+                expert_examination: legacyLead.expert_examination
+              },
+              lead: null
+            }));
+          }
+        } catch (legacyErr) {
+          console.error('Error fetching legacy leads directly:', legacyErr);
+          // Continue even if legacy fetch fails
+        }
+        
+        // Combine meetings from meetings table with direct legacy meetings
+        const allMeetingsData = [...meetings, ...directLegacyMeetings];
+
         // Fetch employee names for ID mapping
         // Only collect numeric IDs for database query (string names are already display names)
         const employeeIds = new Set<number>();
-        meetings.forEach(meeting => {
+        allMeetingsData.forEach(meeting => {
           // Helper function to add valid numeric IDs only
           const addValidNumericId = (id: any) => {
             if (id != null && id !== '' && id !== '---' && id !== undefined) {
@@ -401,7 +470,7 @@ const Meetings: React.FC = () => {
         }
 
         // Fetch category names for legacy leads
-        const categoryIds = meetings
+        const categoryIds = allMeetingsData
           .filter(m => m.legacy_lead?.category_id)
           .map(m => m.legacy_lead!.category_id!)
           .filter(Boolean);
@@ -422,7 +491,7 @@ const Meetings: React.FC = () => {
         }
 
         // Fetch currency information for legacy leads
-        const currencyIds = meetings
+        const currencyIds = allMeetingsData
           .filter(m => m.legacy_lead?.currency_id)
           .map(m => m.legacy_lead!.currency_id!)
           .filter(Boolean);
@@ -512,7 +581,7 @@ const Meetings: React.FC = () => {
         };
         
         // Filter meetings by user role
-        const filteredMeetings = meetings.filter(userMatchesRole);
+        const filteredMeetings = allMeetingsData.filter(userMatchesRole);
         
         // Transform and filter meetings
         const transformedMeetings = filteredMeetings.map(meeting => {
@@ -543,7 +612,7 @@ const Meetings: React.FC = () => {
           
           return {
             id: meeting.id,
-            lead: leadData?.lead_number || 'N/A',
+            lead: leadData?.lead_number || meeting.legacy_lead?.id?.toString() || 'N/A',
             info: leadData?.stage ? getStageName(leadData.stage.toString()) : '', // Transform stage ID to name
             expert: (() => {
               // For legacy leads, use expert_id from the lead data
@@ -644,7 +713,7 @@ const Meetings: React.FC = () => {
                 return meeting.expert ? employeeNameMap[meeting.expert] || meeting.expert : '';
               })()
             ].filter(Boolean), // Remove any null/undefined/empty values
-            name: leadData?.name || 'Unknown',
+            name: meeting.legacy_lead?.name || leadData?.name || 'Unknown',
             topic: leadData?.topic || 'Consultation',
             link: meeting.teams_meeting_url,
             manager: (() => {

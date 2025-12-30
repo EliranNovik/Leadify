@@ -53,7 +53,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
-  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('boxes');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   
   // Initialize all contacts as collapsed by default
@@ -2269,7 +2269,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       
       if (isLegacyLead) {
         // For legacy leads, save to finances_paymentplanrow table
-        const legacyId = client?.id?.toString().replace('legacy_', '');
+        const legacyIdStr = client?.id?.toString().replace('legacy_', '');
+        const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
+        
+        if (!legacyId || isNaN(legacyId)) {
+          throw new Error('Invalid legacy lead ID');
+        }
         
         // Determine currency_id based on the payment currency
         let currencyId = 1; // Default to NIS
@@ -2284,18 +2289,33 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           }
         }
 
+        // Helper function to convert text order to numeric (same as new leads logic)
+        const getOrderNumber = (orderString: string): number => {
+          switch (orderString) {
+            case 'First Payment': return 1;
+            case 'Intermediate Payment': return 5;
+            case 'Final Payment': return 9;
+            case 'Single Payment': return 90;
+            default: return 5; // Default to intermediate
+          }
+        };
+
         const legacyPayments = [];
 
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
           const value = (totalAmount * paymentPercent) / 100;
-          // Determine order based on position: first = 1, intermediate = 5, final = 9
-          let orderValue = 5; // Default to intermediate
+          // Determine order text based on position (same as new leads)
+          let orderText: string;
           if (i === 0) {
-            orderValue = 1; // First payment
+            orderText = 'First Payment';
           } else if (i === autoPlanData.numberOfPayments - 1) {
-            orderValue = 9; // Final payment
+            orderText = 'Final Payment';
+          } else {
+            orderText = 'Intermediate Payment';
           }
+          // Convert to numeric for database storage
+          const orderValue = getOrderNumber(orderText);
 
           legacyPayments.push({
             cdate: new Date().toISOString().split('T')[0], // Current date
@@ -2306,11 +2326,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               autoPlanData.includeVat && autoPlanData.currency === '₪'
                 ? Math.round(value * 0.18 * 100) / 100
                 : 0,
-            lead_id: legacyId,
+            lead_id: legacyId, // Convert to number (bigint)
             notes: '',
             due_date: i === 0 ? new Date().toISOString().split('T')[0] : null,
             due_percent: `${paymentPercent}%`, // Store the due percentage as text with % sign
-            order: orderValue, // Use proper numeric order values
+            order: orderValue, // Convert text order to numeric for database
             currency_id: currencyId,
             client_id: null, // Will be null for legacy leads
           });
@@ -3439,10 +3459,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     <div className="flex items-center gap-2">
       <input
         type="number"
-        className={`input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+        className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
         value={editPaymentData.value}
-        readOnly={editingValueVatId !== p.id}
-        onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, value: e.target.value })) : undefined}
+        onChange={(e) => {
+          const newValue = Number(e.target.value) || 0;
+          const currency = editPaymentData.currency || p.currency || '₪';
+          // Automatically recalculate VAT: 18% for ₪, 0 for others
+          const newValueVat = currency === '₪' ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+          setEditPaymentData((d: any) => ({ 
+            ...d, 
+            value: newValue,
+            valueVat: newValueVat,
+            currency: currency // Explicitly preserve currency
+          }));
+        }}
       />
       <span className='text-gray-500 font-bold'>+
         <input
@@ -3451,14 +3481,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           value={editPaymentData.valueVat}
           readOnly={editingValueVatId !== p.id}
           onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+          title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
         />
       </span>
       {editingValueVatId === p.id ? (
-        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing Value/VAT">
+        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
           <CheckIcon className="w-4 h-4 text-green-600" />
         </button>
       ) : (
-        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Edit Value/VAT">
+        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
           <PencilIcon className="w-4 h-4 text-blue-600" />
         </button>
       )}
@@ -3490,7 +3521,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.order}</td>
+                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                          {editingPaymentId === p.id ? (
+                                            <select 
+                                              className="select select-bordered w-full max-w-[200px]"
+                                              value={editPaymentData.order || 'Intermediate Payment'}
+                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
+                                            >
+                                              <option value="First Payment">First Payment</option>
+                                              <option value="Intermediate Payment">Intermediate Payment</option>
+                                              <option value="Final Payment">Final Payment</option>
+                                              <option value="Single Payment">Single Payment</option>
+                                              <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                            </select>
+                                          ) : (
+                                            p.order
+                                          )}
+                                        </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {p.isLegacy ? (
                                             // For legacy leads, show proforma if available
@@ -3551,7 +3598,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             </button>
                                           )}
                                         </td>
-                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">{p.notes}</td>
+                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                          {editingPaymentId === p.id ? (
+                                            <input 
+                                              className="input input-bordered w-full max-w-[200px] text-right" 
+                                              value={editPaymentData.notes || ''} 
+                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} 
+                                              placeholder="Notes" 
+                                            />
+                                          ) : (
+                                            p.notes
+                                          )}
+                                        </td>
                                         <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
                                           {p.id ? (
                                             editingPaymentId === p.id ? (
@@ -3927,17 +3985,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex items-center gap-2">
                                             <input
                                               type="number"
-                                              className={`input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                              className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
                                               value={editPaymentData.value}
+                                              onChange={(e) => {
+                                                const newValue = Number(e.target.value) || 0;
+                                                const currency = editPaymentData.currency || p.currency || '₪';
+                                                // Automatically recalculate VAT: 18% for ₪, 0 for others
+                                                const newValueVat = currency === '₪' ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+                                                setEditPaymentData((d: any) => ({ 
+                                                  ...d, 
+                                                  value: newValue,
+                                                  valueVat: newValueVat,
+                                                  currency: currency // Explicitly preserve currency
+                                                }));
+                                              }}
+                                            />
+                                            <span className='text-gray-500 font-bold'>+</span>
+                                            <input
+                                              type="number"
+                                              className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                              value={editPaymentData.valueVat}
                                               readOnly={editingValueVatId !== p.id}
-                                              onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, value: e.target.value })) : undefined}
+                                              onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                              title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
                                             />
                                             {editingValueVatId === p.id ? (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing Value">
+                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
                                                 <CheckIcon className="w-4 h-4 text-green-600" />
                                               </button>
                                             ) : (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Edit Value">
+                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
                                                 <PencilIcon className="w-4 h-4 text-blue-600" />
                                               </button>
                                             )}
@@ -3948,8 +4025,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex items-center gap-2">
                                             <input
                                               type="number"
-                                              className={`input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                              value={editPaymentData.value + editPaymentData.valueVat}
+                                              className="input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows bg-gray-100 text-gray-500 cursor-not-allowed"
+                                              value={Number(editPaymentData.value || 0) + Number(editPaymentData.valueVat || 0)}
                                               readOnly={true}
                                             />
                                             <span className="text-xs text-gray-500">(auto)</span>
@@ -3961,11 +4038,39 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         </div>
                                         <div className="flex items-center justify-between py-3">
                                           <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                                          <input className="input input-bordered w-48 text-right" value={editPaymentData.order} onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))} />
+                                          <select 
+                                            className="select select-bordered w-48"
+                                            value={editPaymentData.order || 'Intermediate Payment'}
+                                            onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
+                                          >
+                                            <option value="First Payment">First Payment</option>
+                                            <option value="Intermediate Payment">Intermediate Payment</option>
+                                            <option value="Final Payment">Final Payment</option>
+                                            <option value="Single Payment">Single Payment</option>
+                                            <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                          </select>
                                         </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Notes</span>
-                                          <input className="input input-bordered w-48 text-right" value={editPaymentData.notes} onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} />
+                                        <div className="flex flex-col py-3">
+                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Notes</span>
+                                          <textarea 
+                                            className="textarea textarea-bordered w-full resize-none overflow-hidden" 
+                                            value={editPaymentData.notes || ''} 
+                                            onChange={(e) => {
+                                              const target = e.target as HTMLTextAreaElement;
+                                              setEditPaymentData((d: any) => ({ ...d, notes: target.value }));
+                                              // Auto-expand textarea
+                                              target.style.height = 'auto';
+                                              target.style.height = target.scrollHeight + 'px';
+                                            }}
+                                            onFocus={(e) => {
+                                              // Initialize height on focus
+                                              const target = e.target as HTMLTextAreaElement;
+                                              target.style.height = 'auto';
+                                              target.style.height = target.scrollHeight + 'px';
+                                            }}
+                                            rows={1}
+                                            style={{ minHeight: '2.5rem' }}
+                                          />
                                         </div>
                                         <div className="flex gap-2 justify-end pt-4">
                                           <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
@@ -4024,6 +4129,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             <span className="text-sm font-bold text-gray-900">
                                               {getCurrencySymbol(p.currency)}
                                               {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
                                             </span>
                                           </div>
                                           <div className="flex items-center justify-between py-3">

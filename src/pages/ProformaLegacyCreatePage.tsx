@@ -304,6 +304,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
     try {
       // Generate proforma name
       const proformaName = await generateProformaName();
+      
       // Calculate totals
       const total = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
       const totalBase = total;
@@ -315,7 +316,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
       }
       const totalWithVat = total + vat;
 
-      // Prepare rows data
+      // Prepare rows data - pass as array, Supabase will convert to jsonb
       const rowsData = proformaData.rows.map((row: any) => ({
         description: row.description,
         qty: Number(row.qty),
@@ -323,30 +324,69 @@ const ProformaLegacyCreatePage: React.FC = () => {
         total: Number(row.total)
       }));
 
+      // Get currency_id from payment plan or lead
+      let currencyId = 1; // Default to Israeli Shekel
+      if (proformaData.pprId) {
+        // Fetch currency_id from payment plan row
+        const { data: pprData } = await supabase
+          .from('finances_paymentplanrow')
+          .select('currency_id')
+          .eq('id', proformaData.pprId)
+          .single();
+        if (pprData?.currency_id) {
+          currencyId = Number(pprData.currency_id);
+        }
+      } else {
+        // Fallback to lead currency_id
+        if (lead?.currency_id) {
+          currencyId = Number(lead.currency_id);
+        }
+      }
+
+      // Map currency symbol to ID if needed (fallback)
+      if (proformaData.currency) {
+        const currencySymbol = proformaData.currency;
+        if (currencySymbol === '₪' || currencySymbol === 'NIS' || currencySymbol === 'ILS') {
+          currencyId = 1;
+        } else if (currencySymbol === '$' || currencySymbol === 'USD') {
+          currencyId = 3;
+        } else if (currencySymbol === '€' || currencySymbol === 'EUR') {
+          currencyId = 2;
+        } else if (currencySymbol === '£' || currencySymbol === 'GBP') {
+          currencyId = 4;
+        }
+      }
+
+      // Include proforma name in notes if it exists
+      let notes = proformaData.notes || '';
+      if (proformaName) {
+        notes = notes ? `${proformaName}\n${notes}` : proformaName;
+      }
+
       // Create proforma using the function we created in SQL
       const { data, error } = await supabase.rpc('create_proforma_with_rows', {
         p_lead_id: parseInt(leadId!),
         p_total: totalWithVat,
         p_total_base: totalBase,
         p_vat_value: vat,
-        p_notes: proformaData.notes,
+        p_notes: notes,
         p_sub_total: totalBase,
         p_add_vat: proformaData.addVat ? 't' : 'f',
-        p_currency_id: 1, // Default to Israeli Shekel
+        p_currency_id: currencyId,
         p_client_id: null,
         p_bank_account_id: null,
         p_ppr_id: proformaData.pprId ? parseInt(proformaData.pprId) : null,
-        p_rows: JSON.stringify(rowsData)
+        p_rows: rowsData // Pass array directly, Supabase converts to jsonb
       });
 
       if (error) throw error;
 
+      setIsSaving(false);
       toast.success('Proforma created and saved successfully!');
       navigate(-1);
     } catch (error) {
       console.error('Error saving proforma:', error);
       toast.error('Failed to save proforma. Please try again.');
-    } finally {
       setIsSaving(false);
     }
   };

@@ -6089,7 +6089,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                           </div>
                         
                           {/* Content section - hide content for database calls, but show for manual calls */}
-                          {row.content && (row.kind !== 'call' || row.editable) && (
+                          {row.content && ((row.kind !== 'call' && row.kind !== 'call_log') || row.editable) && (
                             <TruncatedContent
                               content={row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')}
                               maxCharacters={500}

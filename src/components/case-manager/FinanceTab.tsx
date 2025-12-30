@@ -51,7 +51,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
   const [contracts, setContracts] = useState<any[]>([]);
   const [contacts, setContacts] = useState<any[]>([]);
   const [loading, setLoading] = useState(false);
-  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
+  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('boxes');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
@@ -915,10 +915,20 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                         <div className="flex items-center gap-2">
                                           <input
                                             type="number"
-                                            className={`input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                            className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
                                             value={editPaymentData.value}
-                                            readOnly={editingValueVatId !== p.id}
-                                            onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, value: e.target.value })) : undefined}
+                                            onChange={(e) => {
+                                              const newValue = Number(e.target.value) || 0;
+                                              const currency = editPaymentData.currency || p.currency || '₪';
+                                              // Automatically recalculate VAT: 18% for ₪, 0 for others
+                                              const newValueVat = currency === '₪' ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+                                              setEditPaymentData((d: any) => ({ 
+                                                ...d, 
+                                                value: newValue,
+                                                valueVat: newValueVat,
+                                                currency: currency // Explicitly preserve currency
+                                              }));
+                                            }}
                                           />
                                           <span className='text-gray-500 font-bold'>+
                                             <input
@@ -927,14 +937,15 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                               value={editPaymentData.valueVat}
                                               readOnly={editingValueVatId !== p.id}
                                               onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                              title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
                                             />
                                           </span>
                                           {editingValueVatId === p.id ? (
-                                            <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing Value/VAT">
+                                            <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
                                               <CheckIcon className="w-4 h-4 text-green-600" />
                                             </button>
                                           ) : (
-                                            <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Edit Value/VAT">
+                                            <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
                                               <PencilIcon className="w-4 h-4 text-blue-600" />
                                             </button>
                                           )}
