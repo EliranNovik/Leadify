@@ -66,7 +66,8 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     currency: '₪',
     numberOfPayments: 3,
     firstPaymentPercent: 50,
-    includeVat: true
+    includeVat: true,
+    contact: '' // Contact name for the auto plan
   });
   const [creatingProforma, setCreatingProforma] = useState<string | null>(null);
   const [showPaidDateModal, setShowPaidDateModal] = useState(false);
@@ -187,23 +188,62 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
           setContracts(contractData);
         }
 
-        // Fetch contacts (only for new leads)
-        const { data: leadData, error: leadError } = await supabase
-          .from('leads')
-          .select('additional_contacts')
-          .eq('id', leadId)
-          .single();
-        
-        if (!leadError && leadData?.additional_contacts) {
-          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
-            id: index + 1,
-            ...contact
-          }));
-          setContacts(contactsWithIds);
-        } else {
+        // Fetch contacts for new leads - use same tables as legacy leads
+        // Fetch from lead_leadcontact and leads_contact tables (using newlead_id for new leads)
+        try {
+          console.log('🔍 Fetching contacts for new lead with leadId:', leadId);
+          const { data: leadContacts, error: leadContactsError } = await supabase
+            .from('lead_leadcontact')
+            .select(`
+              id,
+              main,
+              contact_id,
+              newlead_id,
+              leads_contact!inner(
+                id,
+                name,
+                email,
+                phone,
+                mobile
+              )
+            `)
+            .eq('newlead_id', leadId);
+          
+          console.log('🔍 leadContacts query result:', { leadContacts, leadContactsError, leadId });
+          
+          if (leadContactsError) {
+            console.error('❌ Error fetching new lead contacts:', leadContactsError);
+            setContacts([]);
+          } else if (leadContacts && leadContacts.length > 0) {
+            console.log('✅ Found', leadContacts.length, 'contacts for new lead');
+            // Transform contacts to include the contact data
+            const contactsWithData = leadContacts.map((leadContact: any) => {
+              const contactData = Array.isArray(leadContact.leads_contact) 
+                ? leadContact.leads_contact[0] 
+                : leadContact.leads_contact;
+              
+              return {
+                id: contactData?.id || leadContact.contact_id,
+                name: contactData?.name || '',
+                email: contactData?.email || '',
+                phone: contactData?.phone || '',
+                mobile: contactData?.mobile || '',
+                isMain: leadContact.main === 'true' || leadContact.main === true,
+              };
+            });
+            
+            console.log('✅ Processed contacts:', contactsWithData);
+            setContacts(contactsWithData);
+          } else {
+            console.warn('⚠️ No contacts found for new lead, leadId:', leadId);
+            setContacts([]);
+          }
+        } catch (error) {
+          console.error('❌ Error fetching new lead contacts:', error);
           setContacts([]);
         }
       } else {
+        // For legacy leads - leave as is, don't touch
         setContracts([]);
         setContacts([]);
       }
@@ -222,6 +262,20 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
       fetchFinanceData(currentCase.id);
     }
   }, [currentCase?.id]);
+
+  // Initialize contact in autoPlanData when contacts are loaded
+  useEffect(() => {
+    if (contacts && contacts.length > 0 && !autoPlanData.contact) {
+      // Find the main contact or use the first contact
+      const mainContact = contacts.find(c => c.isMain) || contacts[0];
+      if (mainContact?.name) {
+        setAutoPlanData(prev => ({ ...prev, contact: mainContact.name }));
+      }
+    } else if (currentCase?.name && !autoPlanData.contact && contacts.length === 0) {
+      // Fallback: use currentCase name if no contacts loaded yet
+      setAutoPlanData(prev => ({ ...prev, contact: currentCase.name }));
+    }
+  }, [contacts, currentCase?.name]);
 
   const getCurrencySymbol = (currency: string | undefined) => {
     if (!currency) return '₪';
@@ -527,6 +581,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
           client_name: editPaymentData.client,
           payment_order: editPaymentData.order,
           notes: editPaymentData.notes,
+          currency: editPaymentData.currency || '₪',
         })
         .eq('id', editPaymentData.id);
       if (error) throw error;
@@ -589,12 +644,54 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     }
   };
 
-  const handleAddNewPayment = (contactName: string) => {
-    setAddingPaymentContact(contactName);
+  // Helper function to get all available contacts for dropdown
+  // Contacts are already fetched from lead_leadcontact and leads_contact tables for both legacy and new leads
+  const getAllAvailableContacts = (): Array<{ name: string; isMain: boolean; id?: number | string }> => {
+    const allContacts: Array<{ name: string; isMain: boolean; id?: number | string }> = [];
+    
+    console.log('🔍 getAllAvailableContacts called:', { 
+      contactsLength: contacts?.length || 0, 
+      contacts: contacts,
+      currentCaseName: currentCase?.name,
+      isLegacyLead 
+    });
+    
+    // Use the contacts from the contacts state (which are fetched from lead_leadcontact and leads_contact tables)
+    // This works for both legacy and new leads since we're using the same tables
+    if (contacts && contacts.length > 0) {
+      contacts.forEach(contact => {
+        if (contact.name) {
+          allContacts.push({ 
+            name: contact.name, 
+            isMain: contact.isMain || false, 
+            id: contact.id 
+          });
+        }
+      });
+      console.log('✅ getAllAvailableContacts: Returning', allContacts.length, 'contacts from state');
+    } else if (currentCase?.name) {
+      // Fallback: if no contacts found in database, at least include the main client name
+      allContacts.push({ 
+        name: currentCase.name, 
+        isMain: true, 
+        id: currentCase.id 
+      });
+      console.log('⚠️ getAllAvailableContacts: No contacts in state, using fallback:', currentCase.name);
+    } else {
+      console.warn('⚠️ getAllAvailableContacts: No contacts and no currentCase name');
+    }
+    
+    return allContacts;
+  };
+
+  const handleAddNewPayment = (contactName?: string) => {
+    // If no contact name provided, use the first contact (main client) or empty string
+    const defaultContact = contactName || (contacts.length > 0 ? contacts[0].name : '') || (currentCase?.name || '');
+    setAddingPaymentContact(defaultContact);
     setNewPaymentData({
       dueDate: '',
       value: '',
-      client: contactName,
+      client: defaultContact,
       notes: '',
       currency: '₪',
       paid: false,
@@ -618,6 +715,9 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     try {
       const currentUserName = await getCurrentUserName();
       
+      // Ensure client_name is set - use the selected contact from dropdown
+      const clientName = newPaymentData.client || addingPaymentContact || currentCase?.name || '';
+      
       const paymentData = {
         lead_id: currentCase?.id,
         due_percent: Number(100),
@@ -625,7 +725,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
         due_date: newPaymentData.dueDate,
         value: Number(newPaymentData.value),
         value_vat: Number(newPaymentData.valueVat || 0),
-        client_name: newPaymentData.client,
+        client_name: clientName, // Save the selected contact name
         payment_order: 'One-time Payment',
         currency: newPaymentData.currency || '₪',
         created_by: currentUserName,
@@ -862,6 +962,19 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                     {/* Table or Box view for this contact */}
                     {!collapsedContacts[contactName] && (
                       <div className="mt-4 sm:mt-6">
+                        {/* Add Payment Button - Only for new leads */}
+                        {!isLegacyLead && !addingPaymentContact && (
+                          <div className="mb-4">
+                            <button
+                              className="btn btn-sm btn-primary bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none shadow-sm"
+                              onClick={() => handleAddNewPayment(contactName)}
+                            >
+                              <PlusIcon className="w-4 h-4" />
+                              Add Payment for {contactName}
+                            </button>
+                          </div>
+                        )}
+                        
                         {viewMode === 'table' ? (
                           <div className="bg-white rounded-xl p-2 sm:p-4 border border-gray-200 overflow-x-auto">
                             <table className="min-w-full rounded-xl overflow-hidden">
@@ -870,12 +983,111 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-bold text-sm sm:text-lg">%</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Due Date</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Value + VAT</th>
+                                  {!isLegacyLead && <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Contact</th>}
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Total</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Status</th>
                                   <th className="text-center px-2 sm:px-4 py-2 sm:py-3 font-semibold text-xs sm:text-sm">Actions</th>
                                 </tr>
                               </thead>
-                                                              <tbody>
+                              <tbody>
+                                  {/* Add New Payment Row - Only show if addingPaymentContact matches this contact and it's a new lead */}
+                                  {!isLegacyLead && addingPaymentContact === contactName && (
+                                    <tr className="border-b border-gray-100 bg-blue-50">
+                                      <td className="align-middle text-center px-2 sm:px-4 py-2 sm:py-3 whitespace-nowrap">
+                                        <span className="text-sm font-bold">100%</span>
+                                      </td>
+                                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <input
+                                          type="date"
+                                          className="input input-bordered w-48 text-sm"
+                                          value={newPaymentData.dueDate || ''}
+                                          onChange={e => setNewPaymentData({ ...newPaymentData, dueDate: e.target.value })}
+                                          required
+                                        />
+                                      </td>
+                                      <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <div className="flex items-center gap-2 justify-center">
+                                          <select
+                                            className="select select-bordered select-sm w-20"
+                                            value={newPaymentData.currency || '₪'}
+                                            onChange={e => {
+                                              const currency = e.target.value;
+                                              const value = Number(newPaymentData.value || 0);
+                                              const valueVat = currency === '₪' ? Math.round(value * 0.18 * 100) / 100 : 0;
+                                              setNewPaymentData({ ...newPaymentData, currency, valueVat });
+                                            }}
+                                          >
+                                            <option value="₪">₪</option>
+                                            <option value="€">€</option>
+                                            <option value="$">$</option>
+                                            <option value="£">£</option>
+                                          </select>
+                                          <input
+                                            type="number"
+                                            className="input input-bordered input-sm w-32 text-right font-bold"
+                                            placeholder="Value"
+                                            value={newPaymentData.value || ''}
+                                            onChange={e => {
+                                              const value = Number(e.target.value) || 0;
+                                              const currency = newPaymentData.currency || '₪';
+                                              const valueVat = currency === '₪' ? Math.round(value * 0.18 * 100) / 100 : 0;
+                                              setNewPaymentData({ ...newPaymentData, value: e.target.value, valueVat });
+                                            }}
+                                            required
+                                          />
+                                          <span className='text-gray-500 font-bold'>+
+                                            <input
+                                              type="number"
+                                              className="input input-bordered input-sm w-20 text-right font-bold"
+                                              placeholder="VAT"
+                                              value={newPaymentData.valueVat || ''}
+                                              onChange={e => setNewPaymentData({ ...newPaymentData, valueVat: e.target.value })}
+                                            />
+                                          </span>
+                                        </div>
+                                      </td>
+                                      {!isLegacyLead && (
+                                        <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                          <select
+                                            className="select select-bordered select-sm w-full max-w-xs"
+                                            value={newPaymentData.client || contactName}
+                                            onChange={e => setNewPaymentData({ ...newPaymentData, client: e.target.value })}
+                                          >
+                                            {contacts.map((contact: any) => (
+                                              <option key={contact.id} value={contact.name}>
+                                                {contact.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        </td>
+                                      )}
+                                      <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        <span className="text-sm font-bold text-gray-900">
+                                          {newPaymentData.currency || '₪'}
+                                          {(Number(newPaymentData.value || 0) + Number(newPaymentData.valueVat || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </span>
+                                      </td>
+                                      <td className="align-middle text-center px-2 sm:px-4 py-2 sm:py-3 whitespace-nowrap">
+                                        <span className="badge badge-sm bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-none shadow-sm">Pending</span>
+                                      </td>
+                                      <td className="flex gap-1 sm:gap-2 justify-end align-middle min-w-[80px] px-2 sm:px-4 py-2 sm:py-3">
+                                        <button
+                                          className="btn btn-xs btn-success bg-gradient-to-tr from-green-500 to-green-600 text-white border-none shadow-sm"
+                                          onClick={handleSaveNewPayment}
+                                          disabled={isSavingPaymentRow}
+                                        >
+                                          <CheckIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                                        </button>
+                                        <button
+                                          className="btn btn-xs btn-ghost text-red-500 hover:bg-red-50 border-none"
+                                          onClick={handleCancelNewPayment}
+                                          title="Cancel"
+                                        >
+                                          <XMarkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                                        </button>
+                                      </td>
+                                    </tr>
+                                  )}
                                   {(payments as any[]).map((p) => (
                                     <tr key={p.id} className="border-b border-gray-100 hover:bg-gray-50">
                                       <td className="font-bold text-sm sm:text-lg align-middle text-center px-2 sm:px-4 py-2 sm:py-3 whitespace-nowrap">
@@ -913,6 +1125,21 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                     <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                       {editingPaymentId === p.id ? (
                                         <div className="flex items-center gap-2">
+                                          <select
+                                            className="select select-bordered select-sm w-20"
+                                            value={editPaymentData.currency || p.currency || '₪'}
+                                            onChange={e => {
+                                              const currency = e.target.value;
+                                              const value = Number(editPaymentData.value || 0);
+                                              const valueVat = currency === '₪' ? Math.round(value * 0.18 * 100) / 100 : 0;
+                                              setEditPaymentData({ ...editPaymentData, currency, valueVat });
+                                            }}
+                                          >
+                                            <option value="₪">₪</option>
+                                            <option value="€">€</option>
+                                            <option value="$">$</option>
+                                            <option value="£">£</option>
+                                          </select>
                                           <input
                                             type="number"
                                             className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
@@ -958,6 +1185,25 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
                                         </span>
                                       )}
                                     </td>
+                                    {!isLegacyLead && (
+                                      <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                        {editingPaymentId === p.id ? (
+                                          <select
+                                            className="select select-bordered select-sm w-full max-w-xs"
+                                            value={editPaymentData.client || p.client}
+                                            onChange={e => setEditPaymentData({ ...editPaymentData, client: e.target.value })}
+                                          >
+                                            {contacts.map((contact: any) => (
+                                              <option key={contact.id} value={contact.name}>
+                                                {contact.name}
+                                              </option>
+                                            ))}
+                                          </select>
+                                        ) : (
+                                          <span className="text-sm font-medium">{p.client}</span>
+                                        )}
+                                      </td>
+                                    )}
                                     <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                       <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                     </td>

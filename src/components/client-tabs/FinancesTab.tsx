@@ -762,38 +762,63 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
     }
     
+    // For new leads, fetch contacts from lead_leadcontact and leads_contact tables using newlead_id
     try {
-      // First check if we have additional_contacts in the client object
-      if (client.additional_contacts && Array.isArray(client.additional_contacts)) {
-        const contactsWithIds = client.additional_contacts.map((contact: any, index: number) => ({
-          id: index + 1, // Use index + 1 as ID to match contact_id
-          ...contact
-        }));
-        setContacts(contactsWithIds);
-        return contactsWithIds;
-      } else {
-        // If not, fetch from database
-        const { data: leadData, error } = await supabase
-          .from('leads')
-          .select('additional_contacts')
-          .eq('id', client.id)
-          .single();
+      console.log('🔍 fetchContacts: Fetching contacts for new lead with leadId:', client.id);
+      
+      const { data: leadContacts, error: leadContactsError } = await supabase
+        .from('lead_leadcontact')
+        .select(`
+          id,
+          main,
+          contact_id,
+          newlead_id,
+          leads_contact!inner(
+            id,
+            name,
+            email,
+            phone,
+            mobile
+          )
+        `)
+        .eq('newlead_id', client.id);
+      
+      console.log('🔍 leadContacts query result:', { leadContacts, leadContactsError, leadId: client.id });
+      
+      if (leadContactsError) {
+        console.error('Error fetching new lead contacts:', leadContactsError);
+        setContacts([]);
+        return [];
+      }
+      
+      if (leadContacts && leadContacts.length > 0) {
+        // Transform contacts to include the contact data
+        const contactsWithData = leadContacts.map((leadContact: any) => {
+          const contactData = Array.isArray(leadContact.leads_contact) 
+            ? leadContact.leads_contact[0] 
+            : leadContact.leads_contact;
+          
+          return {
+            id: contactData?.id || leadContact.contact_id,
+            name: contactData?.name || '',
+            email: contactData?.email || '',
+            phone: contactData?.phone || '',
+            mobile: contactData?.mobile || '',
+            isMain: leadContact.main === 'true' || leadContact.main === true,
+          };
+        });
         
-        if (!error && leadData?.additional_contacts) {
-          // Transform additional_contacts to include IDs
-          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
-            id: index + 1, // Use index + 1 as ID to match contact_id
-            ...contact
-          }));
-          setContacts(contactsWithIds);
-          return contactsWithIds;
-        } else {
-          setContacts([]);
-          return [];
-        }
+        console.log('✅ Processed contacts:', contactsWithData);
+        console.log('✅ Setting contacts state with', contactsWithData.length, 'contacts');
+        setContacts(contactsWithData);
+        return contactsWithData;
+      } else {
+        console.warn('⚠️ No contacts found for new lead, leadId:', client.id);
+        setContacts([]);
+        return [];
       }
     } catch (error) {
-      console.error('Error fetching contacts:', error);
+      console.error('Error fetching new lead contacts:', error);
       setContacts([]);
       return [];
     }
@@ -1022,16 +1047,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
           } else {
             // Transform regular data to match the finance plan structure
-            // First, process all payments to calculate totals with consistent VAT logic
+            // First, process all payments - use vat_value directly from database (no auto-calculation)
             const processedPayments = data.map(plan => {
               const value = Number(plan.value);
-              let valueVat = Number(plan.value_vat || 0);
+              // Use the actual vat_value from the database (numeric column)
+              const valueVat = Number(plan.value_vat || 0);
               const currency = plan.currency || '₪';
               
-              // For NIS currency, calculate VAT if not set
-              if (currency === '₪' && (!valueVat || valueVat === 0)) {
-                valueVat = Math.round(value * 0.18 * 100) / 100;
-              }
+              // Do NOT auto-calculate VAT - use the value from the database
+              // This allows VAT to be 0 when checkbox is unchecked
               
               const paymentTotal = value + valueVat;
               
@@ -1301,6 +1325,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
     // This prevents payment plans from being incorrectly labeled with main client name
     // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
+    const clientIdKey = client.id.toString();
+    const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && contacts.length > 0;
     let currentContacts = contacts;
     if (!contactsAlreadyLoaded) {
       currentContacts = await fetchContacts();
@@ -1938,6 +1964,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const allContacts: Array<{ name: string; isMain: boolean; id?: number }> = [];
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     
+    console.log('🔍 getAllAvailableContacts called:', { 
+      contactsLength: contacts?.length || 0, 
+      contacts: contacts,
+      currentClientName: client?.name,
+      isLegacyLead 
+    });
+    
     if (isLegacyLead) {
       // For legacy leads, include contacts from the contacts array
       // The main contact's ID is the legacy lead ID (numeric)
@@ -1958,27 +1991,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         });
       }
     } else {
-      // For new leads, add main contact
-      if (client?.name) {
-        allContacts.push({ name: client.name, isMain: true });
-      }
-      
-      // Add additional contacts
+      // For new leads, use contacts from the contacts state (which are fetched from lead_leadcontact and leads_contact tables)
+      // This works the same way as legacy leads since we're using the same tables
       if (contacts && contacts.length > 0) {
         contacts.forEach(contact => {
-          if (contact.name && contact.name !== client?.name) {
-            allContacts.push({ name: contact.name, isMain: false, id: contact.id });
+          if (contact.name) {
+            allContacts.push({ 
+              name: contact.name, 
+              isMain: contact.isMain || false, 
+              id: contact.id 
+            });
           }
         });
-      }
-      
-      // Also check client.additional_contacts if contacts array is empty
-      if (allContacts.length === 1 && client?.additional_contacts && Array.isArray(client.additional_contacts)) {
-        client.additional_contacts.forEach((contact: any, index: number) => {
-          if (contact?.name && contact.name !== client?.name) {
-            allContacts.push({ name: contact.name, isMain: false, id: index + 1 });
-          }
+        console.log('✅ getAllAvailableContacts: Returning', allContacts.length, 'contacts from state');
+      } else if (client?.name) {
+        // Fallback: if no contacts found in database, at least include the main client name
+        // Note: client.id is a string (UUID) for new leads, but id in contacts should be number
+        // So we don't set id here for new leads fallback
+        allContacts.push({ 
+          name: client.name, 
+          isMain: true
         });
+        console.log('⚠️ getAllAvailableContacts: No contacts in state, using fallback:', client.name);
+      } else {
+        console.warn('⚠️ getAllAvailableContacts: No contacts and no currentClient name');
       }
     }
     
@@ -2020,10 +2056,41 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         clientName: normalizedClientName,
         availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
       });
+      return null;
+    } else {
+      // For new leads, also find the contact ID from the contacts array
+      const normalizedContactName = contactName.trim();
+      const normalizedClientName = (client?.name || '').trim();
+      
+      // Check if it's the main contact (for new leads, main contact might not have a separate contact_id)
+      // But we can check if the contact name matches the client name
+      if (normalizedContactName === normalizedClientName) {
+        // For main contact in new leads, we might not have a separate contact_id
+        // Return null for now - we'll use client_name for new leads
+        // But if there's a contact_id available, we should use it
+        // Check if there's a contact with isMain=true and has an id
+        const mainContact = contacts.find(c => c.isMain === true);
+        if (mainContact?.id) {
+          return typeof mainContact.id === 'number' ? mainContact.id : parseInt(String(mainContact.id), 10);
+        }
+        return null;
+      }
+      
+      // For additional contacts, find the contact ID
+      const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
+      if (contact?.id) {
+        const contactId = typeof contact.id === 'number' ? contact.id : parseInt(String(contact.id), 10);
+        console.log('🔍 getClientIdForContact: New lead contact found', { contactName: normalizedContactName, contactId, allContacts: contacts.map(c => ({ name: c.name, id: c.id })) });
+        return contactId;
+      }
+      
+      console.warn('🔍 getClientIdForContact: New lead contact not found', { 
+        contactName: normalizedContactName, 
+        clientName: normalizedClientName,
+        availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
+      });
+      return null;
     }
-    
-    // For new leads, client_id is not used in payment_plans table
-    return null;
   };
   
   // Helper function to get contact name from client_id for legacy payments
@@ -2157,10 +2224,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // Track changes for each field
       const changes = [];
       
+      // Helper function to extract numeric value from duePercent (may be "100%" or 100)
+      const parseDuePercent = (value: any): number => {
+        if (typeof value === 'string') {
+          // Remove % sign and parse
+          const numStr = value.replace('%', '').trim();
+          const num = parseFloat(numStr);
+          return isNaN(num) ? 0 : num;
+        }
+        return typeof value === 'number' ? value : 0;
+      };
+      
       // Convert both original and edit values to numbers for proper comparison
       // Handle different field names for legacy vs new payments
-      const originalDuePercent = Number(isLegacyPayment ? originalPayment.due_percent : originalPayment.due_percent);
-      const editDuePercent = Number(editPaymentData.duePercent);
+      const originalDuePercent = parseDuePercent(isLegacyPayment ? originalPayment.due_percent : originalPayment.due_percent);
+      const editDuePercent = parseDuePercent(editPaymentData.duePercent);
       const originalValue = Number(originalPayment.value);
       const editValue = Number(editPaymentData.value);
       const originalValueVat = Number(isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat);
@@ -2306,10 +2384,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         
         const orderValue = editPaymentData.order ? getOrderNumber(editPaymentData.order) : null;
         
+        // Parse due_percent to remove % sign if present
+        const duePercentValue = parseDuePercent(editPaymentData.duePercent);
+        
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
-            due_percent: editPaymentData.duePercent,
+            due_percent: duePercentValue,
             date: dueDateValue,
             due_date: dueDateValue,
             value: editPaymentData.value,
@@ -2321,13 +2402,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         error = legacyError;
       } else {
         // For new payments, update payment_plans table
+        // Parse due_percent to remove % sign if present
+        const duePercentValue = parseDuePercent(editPaymentData.duePercent);
+        
+        // Calculate VAT based on checkbox state at save time
+        // If checkbox is unchecked, VAT must be 0
+        // If checkbox is checked, calculate 18% of the value
+        const vatValue = !editPaymentIncludeVat
+          ? 0
+          : Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100;
+        
+        console.log('💾 Saving payment - VAT calculation:', {
+          editPaymentIncludeVat,
+          checkboxChecked: editPaymentIncludeVat,
+          editPaymentDataValue: editPaymentData.value,
+          calculatedVatValue: vatValue,
+          editPaymentDataValueVat: editPaymentData.valueVat
+        });
+        
         const { error: newError } = await supabase
           .from('payment_plans')
           .update({
-            due_percent: editPaymentData.duePercent,
+            due_percent: duePercentValue,
             due_date: editPaymentData.dueDate || null, // Set to null if empty
             value: editPaymentData.value,
-            value_vat: editPaymentData.valueVat,
+            value_vat: vatValue, // Save VAT: 0 if checkbox unchecked, otherwise use value from state
             client_name: editPaymentData.client,
             payment_order: editPaymentData.order,
             notes: editPaymentData.notes,
@@ -2749,19 +2848,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (error) throw error;
       } else {
         // For new leads, save to payment_plans table
-        const paymentData = {
+        // Get client_id for the contact
+        const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
+        const clientIdForContact = getClientIdForContact(contactForPayment);
+        
+        // Calculate VAT based on checkbox state (includeVat)
+        // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
+        const vatValue = newPaymentData.includeVat !== false 
+          ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 
+          : 0;
+        
+        const paymentData: any = {
           lead_id: client?.id,
           due_percent: Number(newPaymentData.duePercent) || Number(100),
           percent: Number(newPaymentData.duePercent) || Number(100),
           due_date: newPaymentData.dueDate || null, // Set to null if empty
           value: Number(newPaymentData.value),
-          value_vat: ((newPaymentData.currency || '₪') === '₪' && newPaymentData.includeVat !== false) ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 : 0,
+          value_vat: vatValue, // Use calculated VAT based on checkbox state
           client_name: newPaymentData.client || addingPaymentContact || client?.name || '',
           payment_order: newPaymentData.paymentOrder || 'One-time Payment',
           notes: newPaymentData.notes || '',
           currency: newPaymentData.currency || '₪',
           created_by: currentUserName,
         };
+        
+        // Add client_id if available (int8 column for contact_id)
+        if (clientIdForContact !== null) {
+          paymentData.client_id = clientIdForContact;
+        }
         
         const { data, error } = await supabase
           .from('payment_plans')
@@ -2935,6 +3049,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const payments = [];
         const today = new Date();
 
+        // Get client_id for the selected contact (for new leads)
+        const selectedContactName = autoPlanData.contact || client?.name || '';
+        const clientIdForContact = getClientIdForContact(selectedContactName);
+        console.log('🔍 handleCreateAutoPlan (new leads): Getting client_id for contact', { 
+          selectedContactName, 
+          clientIdForContact,
+          contactsCount: contacts.length,
+          contacts: contacts.map(c => ({ name: c.name, id: c.id }))
+        });
+
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
           const value = (totalAmount * paymentPercent) / 100;
@@ -2944,14 +3068,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           dueDate.setMonth(dueDate.getMonth() + (i * 3));
           const dueDateStr = dueDate.toISOString().split('T')[0];
 
-          payments.push({
+          // Calculate VAT based on checkbox state (includeVat)
+          // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
+          const vatValue = autoPlanData.includeVat
+            ? Math.round(value * 0.18 * 100) / 100
+            : 0;
+          
+          const paymentData: any = {
             lead_id: client?.id,
             due_percent: paymentPercent,
             due_date: dueDateStr,
             value,
-            value_vat: autoPlanData.includeVat
-              ? Math.round(value * 0.18 * 100) / 100
-              : 0,
+            value_vat: vatValue, // Use calculated VAT based on checkbox state
             client_name: autoPlanData.contact || client?.name || 'Main Contact',
             payment_order:
               i === 0
@@ -2962,7 +3090,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             notes: '',
             currency: autoPlanData.currency,
             created_by: currentUserName,
-          });
+          };
+          
+          // Add client_id if available (int8 column for contact_id)
+          if (clientIdForContact !== null) {
+            paymentData.client_id = clientIdForContact;
+          }
+          
+          payments.push(paymentData);
         }
 
         // Log the auto plan creation in payment_plan_changes table
