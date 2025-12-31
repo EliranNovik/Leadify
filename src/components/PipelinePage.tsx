@@ -1,7 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate } from 'react-router-dom';
-import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
 import { AcademicCapIcon, MagnifyingGlassIcon, CalendarIcon, ChevronUpIcon, ChevronDownIcon, ChevronRightIcon, XMarkIcon, UserIcon, ChatBubbleLeftRightIcon, FolderIcon, ChartBarIcon, QuestionMarkCircleIcon, PhoneIcon, EnvelopeIcon, PaperClipIcon, PaperAirplaneIcon, FaceSmileIcon, CurrencyDollarIcon, EyeIcon, Squares2X2Icon, Bars3Icon, ArrowLeftIcon, ClockIcon, PencilSquareIcon, EllipsisVerticalIcon, DocumentTextIcon, CheckIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { FolderIcon as FolderIconSolid } from '@heroicons/react/24/solid';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -256,30 +255,14 @@ const getExpertStatusIcon = (lead: LeadForPipeline) => {
 const PipelinePage: React.FC = () => {
   const [leads, setLeads] = useState<LeadForPipeline[]>([]);
   const [isLoading, setIsLoading] = useState(true);
-  const [searchQuery, setSearchQuery] = usePersistedFilters('pipeline_searchQuery', '', {
-    storage: 'sessionStorage',
-  });
-  const [filterCreatedDateFrom, setFilterCreatedDateFrom] = usePersistedFilters('pipeline_filterCreatedDateFrom', '', {
-    storage: 'sessionStorage',
-  });
-  const [filterCreatedDateTo, setFilterCreatedDateTo] = usePersistedFilters('pipeline_filterCreatedDateTo', '', {
-    storage: 'sessionStorage',
-  });
-  const [filterBy, setFilterBy] = usePersistedFilters('pipeline_filterBy', 'all', {
-    storage: 'sessionStorage',
-  });
-  const [filterCountry, setFilterCountry] = usePersistedFilters('pipeline_filterCountry', '', {
-    storage: 'sessionStorage',
-  });
-  const [filterLanguage, setFilterLanguage] = usePersistedFilters('pipeline_filterLanguage', '', {
-    storage: 'sessionStorage',
-  });
-  const [sortColumn, setSortColumn] = usePersistedFilters<'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up' | null>('pipeline_sortColumn', null, {
-    storage: 'sessionStorage',
-  });
-  const [sortDirection, setSortDirection] = usePersistedFilters<'asc' | 'desc'>('pipeline_sortDirection', 'desc', {
-    storage: 'sessionStorage',
-  });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterCreatedDateFrom, setFilterCreatedDateFrom] = useState('');
+  const [filterCreatedDateTo, setFilterCreatedDateTo] = useState('');
+  const [filterBy, setFilterBy] = useState('all');
+  const [filterCountry, setFilterCountry] = useState('');
+  const [filterLanguage, setFilterLanguage] = useState('');
+  const [sortColumn, setSortColumn] = useState<'created_at' | 'meeting_date' | 'stage' | 'offer' | 'probability' | 'total_applicants' | 'potential_applicants' | 'follow_up' | null>(null);
+  const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('desc');
   const [selectedLead, setSelectedLead] = useState<LeadForPipeline | null>(null);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [isDocumentModalOpen, setIsDocumentModalOpen] = useState(false);
@@ -661,9 +644,7 @@ const PipelinePage: React.FC = () => {
     return 'list';
   });
   const [showSignedAgreements, setShowSignedAgreements] = useState(false);
-  const [pipelineMode, setPipelineMode] = usePersistedState<'closer' | 'scheduler'>('pipeline_pipelineMode', 'closer', {
-    storage: 'sessionStorage',
-  });
+  const [pipelineMode, setPipelineMode] = useState<'closer' | 'scheduler'>('closer');
   const [currentUserFullName, setCurrentUserFullName] = useState<string>('');
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null); // User ID from users table (for RLS)
@@ -4594,23 +4575,14 @@ const PipelinePage: React.FC = () => {
     })();
   }, []);
 
-  // Set default pipeline mode based on bonus role (only once on initial load, if no persisted value exists)
+  // Set default pipeline mode based on bonus role (only once on initial load)
   useEffect(() => {
     if (!pipelineModeInitialized && currentUserBonusRole) {
-      // Check if there's a persisted value in sessionStorage
-      const persistedMode = sessionStorage.getItem('persisted_state_pipeline_pipelineMode');
-      
-      // Only set default if there's no persisted value (meaning first time loading)
-      if (!persistedMode) {
-        if (currentUserBonusRole === 's') {
-          setPipelineMode('scheduler');
-          setPipelineModeInitialized(true);
-        } else if (currentUserBonusRole === 'c') {
-          // Already defaulting to 'closer', just mark as initialized
-          setPipelineModeInitialized(true);
-        }
-      } else {
-        // There's a persisted value, just mark as initialized
+      if (currentUserBonusRole === 's') {
+        setPipelineMode('scheduler');
+        setPipelineModeInitialized(true);
+      } else if (currentUserBonusRole === 'c') {
+        // Already defaulting to 'closer', just mark as initialized
         setPipelineModeInitialized(true);
       }
     }

@@ -3,7 +3,6 @@ import { supabase } from '../lib/supabase';
 import { useAuth } from '../hooks/useAuth';
 import { useNavigate } from 'react-router-dom';
 import { getStageColour } from '../lib/stageUtils';
-import { usePersistedFilters } from '../hooks/usePersistedState';
 import { PlayIcon, PaperAirplaneIcon, ExclamationTriangleIcon, PhoneIcon, EnvelopeIcon, ClockIcon, PencilSquareIcon, EyeIcon, FolderIcon, CurrencyDollarIcon, XMarkIcon, StarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import toast from 'react-hot-toast';
@@ -69,15 +68,9 @@ const MyCasesPage: React.FC = () => {
   const [closedCases, setClosedCases] = useState<Case[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [searchQuery, setSearchQuery] = usePersistedFilters('myCases_searchQuery', '', {
-    storage: 'sessionStorage',
-  });
-  const [selectedStage, setSelectedStage] = usePersistedFilters('myCases_selectedStage', '', {
-    storage: 'sessionStorage',
-  });
-  const [selectedCategory, setSelectedCategory] = usePersistedFilters('myCases_selectedCategory', '', {
-    storage: 'sessionStorage',
-  });
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedStage, setSelectedStage] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState('');
   
   // State for row selection and action menu
   const [selectedRowId, setSelectedRowId] = useState<string | null>(null);

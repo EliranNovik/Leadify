@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { usePersistedFilters } from '../hooks/usePersistedState';
 import {
   PhoneIcon,
   UserIcon,
@@ -81,24 +80,14 @@ const CallsLedgerPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
-  const [fromDate, setFromDate] = usePersistedFilters('callsLedger_fromDate', '', {
-    storage: 'sessionStorage',
-  });
-  const [toDate, setToDate] = usePersistedFilters('callsLedger_toDate', '', {
-    storage: 'sessionStorage',
-  });
-  const [appliedFromDate, setAppliedFromDate] = usePersistedFilters('callsLedger_appliedFromDate', '', {
-    storage: 'sessionStorage',
-  });
-  const [appliedToDate, setAppliedToDate] = usePersistedFilters('callsLedger_appliedToDate', '', {
-    storage: 'sessionStorage',
-  });
+  const [fromDate, setFromDate] = useState('');
+  const [toDate, setToDate] = useState('');
+  const [appliedFromDate, setAppliedFromDate] = useState('');
+  const [appliedToDate, setAppliedToDate] = useState('');
   const [totalCalls, setTotalCalls] = useState(0);
   const [totalDuration, setTotalDuration] = useState(0);
   const [employees, setEmployees] = useState<any[]>([]);
-  const [selectedEmployee, setSelectedEmployee] = usePersistedFilters('callsLedger_selectedEmployee', '', {
-    storage: 'sessionStorage',
-  });
+  const [selectedEmployee, setSelectedEmployee] = useState('');
   const [employeeSearch, setEmployeeSearch] = useState<string>('');
   const [showEmployeeDropdown, setShowEmployeeDropdown] = useState<boolean>(false);
   const [isSyncing, setIsSyncing] = useState(false);

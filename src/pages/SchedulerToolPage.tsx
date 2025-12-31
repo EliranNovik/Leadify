@@ -12,7 +12,6 @@ import { format, parseISO } from 'date-fns';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from '../components/CallOptionsModal';
-import { usePersistedFilters } from '../hooks/usePersistedState';
 
 export interface SchedulerLead {
   id: string;
@@ -91,7 +90,7 @@ const SchedulerToolPage: React.FC = () => {
   const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>(FALLBACK_SCHEDULER_STAGE_IDS);
   
   // Filter states
-  const [filters, setFilters] = usePersistedFilters('schedulerTool_filters', {
+  const [filters, setFilters] = useState({
     stage: '',
     language: '',
     source: '',
@@ -99,12 +98,8 @@ const SchedulerToolPage: React.FC = () => {
     topic: '',
     tags: '',
     country: ''
-  }, {
-    storage: 'sessionStorage',
   });
-  const [filteredLeads, setFilteredLeads] = usePersistedFilters<SchedulerLead[]>('schedulerTool_filteredLeads', [], {
-    storage: 'sessionStorage',
-  });
+  const [filteredLeads, setFilteredLeads] = useState<SchedulerLead[]>([]);
   const [showDropdowns, setShowDropdowns] = useState({
     stage: false,
     language: false,
@@ -116,25 +111,17 @@ const SchedulerToolPage: React.FC = () => {
   });
   
   // Sorting state
-  const [sortConfig, setSortConfig] = usePersistedFilters<{
+  const [sortConfig, setSortConfig] = useState<{
     key: string | null;
     direction: 'asc' | 'desc' | null;
-  }>('schedulerTool_sortConfig', { key: null, direction: null }, {
-    storage: 'sessionStorage',
-  });
+  }>({ key: null, direction: null });
   
   // Search state
-  const [searchTerm, setSearchTerm] = usePersistedFilters('schedulerTool_searchTerm', '', {
-    storage: 'sessionStorage',
-  });
+  const [searchTerm, setSearchTerm] = useState('');
   
   // Date filter state
-  const [dateFrom, setDateFrom] = usePersistedFilters('schedulerTool_dateFrom', '', {
-    storage: 'sessionStorage',
-  });
-  const [dateTo, setDateTo] = usePersistedFilters('schedulerTool_dateTo', '', {
-    storage: 'sessionStorage',
-  });
+  const [dateFrom, setDateFrom] = useState('');
+  const [dateTo, setDateTo] = useState('');
   
   // Collapsible rows state
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
@@ -153,9 +140,7 @@ const SchedulerToolPage: React.FC = () => {
   const [callLeadName, setCallLeadName] = useState<string>('');
   
   // View mode state (box view is default on mobile)
-  const [viewMode, setViewMode] = usePersistedFilters<'table' | 'box'>('schedulerTool_viewMode', 'box', {
-    storage: 'sessionStorage',
-  });
+  const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
   
   // Editing state
   const [editingField, setEditingField] = useState<{leadId: string, field: string} | null>(null);
