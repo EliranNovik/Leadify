@@ -2254,6 +2254,24 @@ const Dashboard: React.FC = () => {
             })), // Actual departments
             { count: 0, amount: 0, expected: 0 }, // Total (last index)
           ],
+          Yesterday: [
+            { count: 0, amount: 0, expected: 0 }, // General (index 0)
+            ...departmentTargets.map(dept => ({ 
+              count: 0, 
+              amount: 0, 
+              expected: parseFloat(dept.min_income || '0') 
+            })), // Actual departments
+            { count: 0, amount: 0, expected: 0 }, // Total (last index)
+          ],
+          Week: [
+            { count: 0, amount: 0, expected: 0 }, // General (index 0)
+            ...departmentTargets.map(dept => ({ 
+              count: 0, 
+              amount: 0, 
+              expected: parseFloat(dept.min_income || '0') 
+            })), // Actual departments
+            { count: 0, amount: 0, expected: 0 }, // Total (last index)
+          ],
           "Last 30d": [
             { count: 0, amount: 0, expected: 0 }, // General (index 0)
             ...departmentTargets.map(dept => ({ 
@@ -2275,6 +2293,12 @@ const Dashboard: React.FC = () => {
         
         // Calculate date ranges
         const todayStr = today.toISOString().split('T')[0];
+        const yesterday = new Date(today);
+        yesterday.setDate(yesterday.getDate() - 1);
+        const yesterdayStr = yesterday.toISOString().split('T')[0];
+        const oneWeekAgo = new Date(today);
+        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+        const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
         const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
         
         // Fix timezone issue: Use UTC to avoid timezone conversion problems
@@ -2284,14 +2308,29 @@ const Dashboard: React.FC = () => {
         const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
         const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
         
-        // Check if we're at the end of the month (last 3 days)
-        const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
-        const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
-        
-        // If we're at the end of the month, Last 30d should cover the entire month (same as month view)
-        // Use startOfMonthStr as the start date, and endOfMonthStr as the end date (not todayStr)
-        const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
-        const effectiveLast30dEnd = isEndOfMonth ? endOfMonthStr : todayStr;
+        // Calculate Last 30d: today and 30 days before today (inclusive)
+        // When viewing current month at end of month, ensure Last 30d doesn't exceed month total
+        // by using month start as the lower bound if 30 days ago is before month start
+        const currentYear = today.getFullYear();
+        const currentMonthIndex = today.getMonth();
+        const isViewingCurrentMonth = selectedYear === currentYear && selectedMonthIndex === currentMonthIndex;
+        const effectiveThirtyDaysAgo = (isViewingCurrentMonth && thirtyDaysAgoStr < startOfMonthStr) 
+          ? startOfMonthStr 
+          : thirtyDaysAgoStr;
+        const effectiveLast30dEnd = todayStr;
+        console.log('🔍 Agreement Signed - Date ranges:', {
+          todayStr,
+          thirtyDaysAgoStr,
+          effectiveThirtyDaysAgo,
+          effectiveLast30dEnd,
+          startOfMonthStr,
+          endOfMonthStr,
+          isViewingCurrentMonth,
+          selectedYear,
+          currentYear,
+          selectedMonthIndex,
+          currentMonthIndex
+        });
         // For date comparison, we need to extract just the date part from the record date
         const extractDateFromRecord = (recordDate: string) => {
           // Handle both ISO string format and date-only format
@@ -2315,7 +2354,7 @@ const Dashboard: React.FC = () => {
             .eq('stage', 60)
             .not('lead_id', 'is', null) // Legacy leads only
             .gte('date', effectiveThirtyDaysAgo)
-            .lte('date', new Date(new Date(effectiveLast30dEnd).getTime() + 86400000).toISOString().split('T')[0])
+            .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2337,54 +2376,22 @@ const Dashboard: React.FC = () => {
           // Don't throw, continue without stage records
         }
         // Fetch new leads signed agreements from multiple sources
-        // 1. Fetch contracts with signed_at (with timeout protection)
-        let contractsData: any[] = [];
-        let contractsError: any = null;
-        
-        try {
-          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
-          const queryPromise = supabase
-            .from('contracts')
-            .select('id, client_id, signed_at, total_amount')
-            .not('client_id', 'is', null)
-            .not('signed_at', 'is', null)
-            .eq('status', 'signed')
-            .gte('signed_at', effectiveThirtyDaysAgo)
-            .lt('signed_at', new Date(new Date(effectiveLast30dEnd).getTime() + 86400000).toISOString().split('T')[0])
-            .limit(5000); // Add limit to prevent timeout
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Query timeout')), 15000)
-          );
-          
-          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-          
-          if (result?.error) {
-            contractsError = result.error;
-          } else {
-            contractsData = result?.data || [];
-          }
-        } catch (err: any) {
-          contractsError = err;
-        }
-        
-        if (contractsError) {
-          // Don't throw, continue without contracts
-        }
+        // Fetch new leads signed agreements ONLY from leads_leadstage (stage 60)
+        // Do NOT include contracts - match SignedSalesReportPage behavior
         // 2. Fetch new leads stage records (newlead_id)
         // Add timeout protection and limit to prevent query timeout
         let newLeadStageRecords: any[] = [];
         let newLeadStageError: any = null;
         
         try {
-          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
+          // Use effectiveThirtyDaysAgo and todayStr to ensure we include today's records
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, newlead_id')
             .eq('stage', 60)
             .not('newlead_id', 'is', null) // New leads only
             .gte('date', effectiveThirtyDaysAgo)
-            .lte('date', effectiveLast30dEnd)
+            .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
           const timeoutPromise = new Promise((_, reject) => 
@@ -2406,48 +2413,10 @@ const Dashboard: React.FC = () => {
         if (newLeadStageError) {
           // Don't throw, continue without new lead stages
         }
-        // 3. Fetch leads with date_signed (with timeout protection)
-        let leadsWithDateSigned: any[] = [];
-        let dateSignedError: any = null;
-        
-        try {
-          // Use effectiveThirtyDaysAgo and effectiveLast30dEnd so Last 30d matches month data at end of month
-          const queryPromise = supabase
-            .from('leads')
-            .select('id, date_signed')
-            .not('date_signed', 'is', null)
-            .gte('date_signed', effectiveThirtyDaysAgo)
-            .lte('date_signed', effectiveLast30dEnd)
-            .limit(5000); // Add limit to prevent timeout
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Query timeout')), 15000)
-          );
-          
-          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-          
-          if (result?.error) {
-            dateSignedError = result.error;
-          } else {
-            leadsWithDateSigned = result?.data || [];
-          }
-        } catch (err: any) {
-          dateSignedError = err;
-        }
-        
-        if (dateSignedError) {
-          // Don't throw, continue without date_signed leads
-        }
-        // Combine all new lead IDs from different sources
+        // Combine all new lead IDs (only from leads_leadstage for stage 60)
         const newLeadIdsSet = new Set<string>();
-        (contractsData || []).forEach(contract => {
-          if (contract.client_id) newLeadIdsSet.add(String(contract.client_id));
-        });
         (newLeadStageRecords || []).forEach(record => {
           if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
-        });
-        (leadsWithDateSigned || []).forEach(lead => {
-          if (lead.id) newLeadIdsSet.add(String(lead.id));
         });
         
         const newLeadIds = Array.from(newLeadIdsSet);
@@ -2457,7 +2426,7 @@ const Dashboard: React.FC = () => {
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, date_signed,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2516,31 +2485,11 @@ const Dashboard: React.FC = () => {
           agreementRecords.push(...legacyRecords);
         }
         
-        // Process new leads - create records from contracts, stage records, and date_signed
+        // Process new leads - create records ONLY from stage records (leads_leadstage for stage 60)
+        // Do NOT include contracts - match SignedSalesReportPage behavior
         const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
         
-        // Create records from contracts
-        (contractsData || []).forEach(contract => {
-          if (!contract.client_id || !contract.signed_at) return;
-          const lead = newLeadsMap.get(String(contract.client_id));
-          if (!lead) return;
-          const recordDate = contract.signed_at.split('T')[0];
-          agreementRecords.push({
-            id: `contract-${contract.id}`,
-            date: recordDate,
-            cdate: contract.signed_at,
-            lead_id: null,
-            newlead_id: String(contract.client_id),
-            leads_lead: {
-              ...lead,
-              total: contract.total_amount || lead.balance || lead.proposal_total || 0,
-              currency_id: lead.currency_id
-            },
-            isNewLead: true
-          });
-        });
-        
-        // Create records from new lead stage records
+        // Create records from new lead stage records (only source - no contracts)
         (newLeadStageRecords || []).forEach(record => {
           if (!record.newlead_id) return;
           const lead = newLeadsMap.get(String(record.newlead_id));
@@ -2558,28 +2507,7 @@ const Dashboard: React.FC = () => {
           });
         });
         
-        // Create records from leads with date_signed
-        (leadsWithDateSigned || []).forEach(lead => {
-          if (!lead.id || !lead.date_signed) return;
-          const leadData = newLeadsMap.get(String(lead.id));
-          if (!leadData) return;
-          const recordDate = lead.date_signed.split('T')[0];
-          // Check if we already have a record for this lead (from contracts or stages)
-          const existing = agreementRecords.find(r => 
-            r.newlead_id === String(lead.id) && r.date === recordDate
-          );
-          if (!existing) {
-            agreementRecords.push({
-              id: `datesigned-${lead.id}`,
-              date: recordDate,
-              cdate: lead.date_signed,
-              lead_id: null,
-              newlead_id: String(lead.id),
-              leads_lead: leadData,
-              isNewLead: true
-            });
-          }
-        });
+        // Only use leads_leadstage for stage 60 - no date_signed from leads table
         if (agreementRecords && agreementRecords.length > 0) {
         }
         
@@ -2587,58 +2515,35 @@ const Dashboard: React.FC = () => {
         // endOfMonthStr is already calculated above, reuse it
         
         // Fetch legacy leads stage records for month
+        // Use endOfMonthStr + 1 day as upper bound to ensure we include the entire last day of the month
+        const monthEndUpperBound = new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0];
         const { data: monthStageRecords, error: monthStageError } = await supabase
           .from('leads_leadstage')
           .select('id, date, cdate, lead_id')
           .eq('stage', 60)
           .not('lead_id', 'is', null) // Legacy leads only
           .gte('date', startOfMonthStr)
-          .lte('date', endOfMonthStr);
+          .lte('date', monthEndUpperBound);
         
         if (monthStageError) {
           throw monthStageError;
         }
-        // Fetch new leads signed agreements for month from multiple sources
-        const { data: monthContractsData, error: monthContractsError } = await supabase
-          .from('contracts')
-          .select('id, client_id, signed_at, total_amount')
-          .not('client_id', 'is', null)
-          .not('signed_at', 'is', null)
-          .eq('status', 'signed')
-          .gte('signed_at', startOfMonthStr)
-          .lte('signed_at', new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0]);
-        
-        if (monthContractsError) {
-        }
+        // Fetch new leads signed agreements for month ONLY from leads_leadstage (stage 60)
+        // Do NOT include contracts - match SignedSalesReportPage behavior
         const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
           .from('leads_leadstage')
           .select('id, date, cdate, newlead_id')
           .eq('stage', 60)
           .not('newlead_id', 'is', null) // New leads only
           .gte('date', startOfMonthStr)
-          .lte('date', endOfMonthStr);
+          .lte('date', monthEndUpperBound);
         
         if (monthNewLeadStageError) {
         }
-        const { data: monthLeadsWithDateSigned, error: monthDateSignedError } = await supabase
-          .from('leads')
-          .select('id, date_signed')
-          .not('date_signed', 'is', null)
-          .gte('date_signed', startOfMonthStr)
-          .lte('date_signed', endOfMonthStr);
-        
-        if (monthDateSignedError) {
-        }
-        // Combine all new lead IDs for month
+        // Combine all new lead IDs for month (only from leads_leadstage for stage 60)
         const monthNewLeadIdsSet = new Set<string>();
-        (monthContractsData || []).forEach(contract => {
-          if (contract.client_id) monthNewLeadIdsSet.add(String(contract.client_id));
-        });
         (monthNewLeadStageRecords || []).forEach(record => {
           if (record.newlead_id) monthNewLeadIdsSet.add(String(record.newlead_id));
-        });
-        (monthLeadsWithDateSigned || []).forEach(lead => {
-          if (lead.id) monthNewLeadIdsSet.add(String(lead.id));
         });
         
         const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
@@ -2648,7 +2553,7 @@ const Dashboard: React.FC = () => {
           const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, date_signed,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2706,28 +2611,8 @@ const Dashboard: React.FC = () => {
           monthAgreementRecords.push(...monthLegacyRecords);
         }
         
-        // Process new leads for month
+        // Process new leads for month (only from leads_leadstage - no contracts)
         const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
-        
-        (monthContractsData || []).forEach(contract => {
-          if (!contract.client_id || !contract.signed_at) return;
-          const lead = monthNewLeadsMap.get(String(contract.client_id));
-          if (!lead) return;
-          const recordDate = contract.signed_at.split('T')[0];
-          monthAgreementRecords.push({
-            id: `month-contract-${contract.id}`,
-            date: recordDate,
-            cdate: contract.signed_at,
-            lead_id: null,
-            newlead_id: String(contract.client_id),
-            leads_lead: {
-              ...lead,
-              total: contract.total_amount || lead.balance || lead.proposal_total || 0,
-              currency_id: lead.currency_id
-            },
-            isNewLead: true
-          });
-        });
         
         (monthNewLeadStageRecords || []).forEach(record => {
           if (!record.newlead_id) return;
@@ -2746,26 +2631,7 @@ const Dashboard: React.FC = () => {
           });
         });
         
-        (monthLeadsWithDateSigned || []).forEach(lead => {
-          if (!lead.id || !lead.date_signed) return;
-          const leadData = monthNewLeadsMap.get(String(lead.id));
-          if (!leadData) return;
-          const recordDate = lead.date_signed.split('T')[0];
-          const existing = monthAgreementRecords.find(r => 
-            r.newlead_id === String(lead.id) && r.date === recordDate
-          );
-          if (!existing) {
-            monthAgreementRecords.push({
-              id: `month-datesigned-${lead.id}`,
-              date: recordDate,
-              cdate: lead.date_signed,
-              lead_id: null,
-              newlead_id: String(lead.id),
-              leads_lead: leadData,
-              isNewLead: true
-            });
-          }
-        });
+        // Only use leads_leadstage for stage 60 - no date_signed from leads table
         if (monthAgreementRecords && monthAgreementRecords.length > 0) {
         }
         
@@ -2789,33 +2655,23 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // For new leads, amount might be in balance, proposal_total, or total (from contracts)
-            // For legacy leads, amount is in total
             // EXCLUDE VAT: Use base amounts only (same as invoiced table)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, prefer balance or proposal_total (should be without VAT)
-              // If using contract.total_amount, it might include VAT - need to exclude it
-              // Since contracts.total_amount may include VAT, use balance or proposal_total if available
-              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-              // If we only have contract.total_amount (stored in lead.total), assume it includes VAT for Israeli clients
-              // and calculate base amount (divide by 1.18)
-              if (amount === 0 && lead.total) {
-                const contractAmount = parseFloat(lead.total) || 0;
-                // Check if currency is NIS (currency_id = 1) - VAT applies to Israeli clients
-                if (lead.currency_id === 1 && contractAmount > 0) {
-                  amount = contractAmount / 1.18; // Exclude VAT (divide by 1.18)
-                } else {
-                  amount = contractAmount; // Non-Israeli, no VAT
-                }
+              // For new leads, use balance or proposal_total and exclude VAT for NIS
+              const rawAmount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              if (lead.currency_id === 1 && rawAmount > 0) {
+                amount = rawAmount / 1.18; // Exclude VAT (divide by 1.18)
+              } else {
+                amount = rawAmount; // Non-NIS, no VAT
               }
             } else {
-              // For legacy leads, total might include VAT - exclude it for Israeli currency
+              // For legacy leads, total includes VAT - exclude it for NIS
               const legacyTotal = parseFloat(lead.total) || 0;
               if (lead.currency_id === 1 && legacyTotal > 0) {
                 amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
               } else {
-                amount = legacyTotal; // Non-Israeli, no VAT
+                amount = legacyTotal; // Non-NIS, no VAT
               }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
@@ -2850,9 +2706,24 @@ const Dashboard: React.FC = () => {
                 newAgreementData.Today[0].amount += amountInNIS; // Use NIS amount
               }
               
-              // Check if it's in last 30 days (or entire month if at end of month)
-              // Use effectiveLast30dEnd instead of just checking >= effectiveThirtyDaysAgo
-              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= effectiveLast30dEnd) {
+              // Check if it's yesterday
+              if (recordDateOnly === yesterdayStr) {
+                newAgreementData.Yesterday[deptIndex].count++;
+                newAgreementData.Yesterday[deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Yesterday[0].count++; // General
+                newAgreementData.Yesterday[0].amount += amountInNIS; // Use NIS amount
+              }
+              
+              // Check if it's in the last week (7 days including today)
+              if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
+                newAgreementData.Week[deptIndex].count++;
+                newAgreementData.Week[deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Week[0].count++; // General
+                newAgreementData.Week[0].amount += amountInNIS; // Use NIS amount
+              }
+              
+              // Check if it's in last 30 days (rolling 30 days from today)
+              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= todayStr) {
                 newAgreementData["Last 30d"][deptIndex].count++;
                 newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
                 newAgreementData["Last 30d"][0].count++; // General
@@ -2888,33 +2759,23 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // For new leads, amount might be in balance, proposal_total, or total (from contracts)
-            // For legacy leads, amount is in total
             // EXCLUDE VAT: Use base amounts only (same as invoiced table)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, prefer balance or proposal_total (should be without VAT)
-              // If using contract.total_amount, it might include VAT - need to exclude it
-              // Since contracts.total_amount may include VAT, use balance or proposal_total if available
-              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-              // If we only have contract.total_amount (stored in lead.total), assume it includes VAT for Israeli clients
-              // and calculate base amount (divide by 1.18)
-              if (amount === 0 && lead.total) {
-                const contractAmount = parseFloat(lead.total) || 0;
-                // Check if currency is NIS (currency_id = 1) - VAT applies to Israeli clients
-                if (lead.currency_id === 1 && contractAmount > 0) {
-                  amount = contractAmount / 1.18; // Exclude VAT (divide by 1.18)
-                } else {
-                  amount = contractAmount; // Non-Israeli, no VAT
-                }
+              // For new leads, use balance or proposal_total and exclude VAT for NIS
+              const rawAmount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+              if (lead.currency_id === 1 && rawAmount > 0) {
+                amount = rawAmount / 1.18; // Exclude VAT (divide by 1.18)
+              } else {
+                amount = rawAmount; // Non-NIS, no VAT
               }
             } else {
-              // For legacy leads, total might include VAT - exclude it for Israeli currency
+              // For legacy leads, total includes VAT - exclude it for NIS
               const legacyTotal = parseFloat(lead.total) || 0;
               if (lead.currency_id === 1 && legacyTotal > 0) {
                 amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
               } else {
-                amount = legacyTotal; // Non-Israeli, no VAT
+                amount = legacyTotal; // Non-NIS, no VAT
               }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
@@ -2933,8 +2794,8 @@ const Dashboard: React.FC = () => {
               // Extract date part for comparison
               const recordDateOnly = extractDateFromRecord(recordDate);
               
-              // Check if it's in selected month
-              if (recordDateOnly >= startOfMonthStr) {
+              // Check if it's in selected month (must be between start and end of month)
+              if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
                 newAgreementData[selectedMonthName][monthDeptIndex].count++;
                 newAgreementData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
               }
@@ -2959,6 +2820,24 @@ const Dashboard: React.FC = () => {
           expected: 0
         };
         
+        // Yesterday totals
+        const yesterdayTotalCount = newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+        const yesterdayTotalAmount = Math.ceil(newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+        newAgreementData.Yesterday[totalIndexToday] = {
+          count: yesterdayTotalCount,
+          amount: yesterdayTotalAmount,
+          expected: 0
+        };
+        
+        // Week totals
+        const weekTotalCount = newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+        const weekTotalAmount = Math.ceil(newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+        newAgreementData.Week[totalIndexToday] = {
+          count: weekTotalCount,
+          amount: weekTotalAmount,
+          expected: 0
+        };
+        
         // Last 30d totals - use the General row [0] which already contains the total
         const last30TotalCount = newAgreementData["Last 30d"][0].count;
         const last30TotalAmount = Math.ceil(newAgreementData["Last 30d"][0].amount);
@@ -2976,6 +2855,15 @@ const Dashboard: React.FC = () => {
           amount: monthTotalAmount,
           expected: 0
         };
+        
+        console.log('🔍 Agreement Signed - Totals comparison:', {
+          last30dCount: last30TotalCount,
+          last30dAmount: last30TotalAmount,
+          monthCount: monthTotalCount,
+          monthAmount: monthTotalAmount,
+          difference: last30TotalCount - monthTotalCount,
+          amountDifference: last30TotalAmount - monthTotalAmount
+        });
         
         // Debug: Show the calculated totals
         // Log currency distribution summary
@@ -3212,13 +3100,37 @@ const Dashboard: React.FC = () => {
       const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
       
-      // Check if we're at the end of the month
-      const daysInMonth = new Date(selectedYear, selectedMonthIndex + 1, 0).getDate();
-      const isEndOfMonth = now.getDate() >= (daysInMonth - 2);
-      const effectiveThirtyDaysAgo = isEndOfMonth ? startOfMonthStr : thirtyDaysAgoStr;
+      // Calculate Last 30d: always use rolling 30 days from today (not affected by month boundaries)
+      const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
+      // Calculate date ranges for invoiced data
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      const oneWeekAgo = new Date(today);
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
+      
       // Initialize invoiced data structure
       const newInvoicedData = {
         Today: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({ 
+            count: 0, 
+            amount: 0, 
+            expected: parseFloat(dept.min_income || '0') 
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        Yesterday: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({ 
+            count: 0, 
+            amount: 0, 
+            expected: parseFloat(dept.min_income || '0') 
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        Week: [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
           ...departmentTargets.map(dept => ({ 
             count: 0, 
@@ -3665,6 +3577,22 @@ const Dashboard: React.FC = () => {
           newInvoicedData["Today"][0].amount += amountInNIS;
         }
 
+        // Check if it's yesterday
+        if (dueDate === yesterdayStr) {
+          newInvoicedData["Yesterday"][deptIndex].count += 1;
+          newInvoicedData["Yesterday"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Yesterday"][0].count += 1; // General
+          newInvoicedData["Yesterday"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in the last week (7 days including today)
+        if (dueDate >= oneWeekAgoStr && dueDate <= todayStr) {
+          newInvoicedData["Week"][deptIndex].count += 1;
+          newInvoicedData["Week"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Week"][0].count += 1; // General
+          newInvoicedData["Week"][0].amount += amountInNIS;
+        }
+
         // Check if it's in last 30 days
         if (dueDate >= effectiveThirtyDaysAgo && dueDate <= todayStr) {
           newInvoicedData["Last 30d"][deptIndex].count += 1;
@@ -3759,6 +3687,22 @@ const Dashboard: React.FC = () => {
           newInvoicedData["Today"][0].amount += amountInNIS;
         }
 
+        // Check if it's yesterday
+        if (dueDate === yesterdayStr) {
+          newInvoicedData["Yesterday"][deptIndex].count += 1;
+          newInvoicedData["Yesterday"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Yesterday"][0].count += 1; // General
+          newInvoicedData["Yesterday"][0].amount += amountInNIS;
+        }
+
+        // Check if it's in the last week (7 days including today)
+        if (dueDate >= oneWeekAgoStr && dueDate <= todayStr) {
+          newInvoicedData["Week"][deptIndex].count += 1;
+          newInvoicedData["Week"][deptIndex].amount += amountInNIS;
+          newInvoicedData["Week"][0].count += 1; // General
+          newInvoicedData["Week"][0].amount += amountInNIS;
+        }
+
         // Check if it's in last 30 days
         if (dueDate >= effectiveThirtyDaysAgo && dueDate <= todayStr) {
           newInvoicedData["Last 30d"][deptIndex].count += 1;
@@ -3798,6 +3742,16 @@ const Dashboard: React.FC = () => {
       const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
       const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
+      
+      // Yesterday totals
+      const yesterdayTotalCount = newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const yesterdayTotalAmount = Math.ceil(newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
+      
+      // Week totals
+      const weekTotalCount = newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const weekTotalAmount = Math.ceil(newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newInvoicedData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
       
       // Last 30d totals
       const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
@@ -3881,6 +3835,9 @@ const Dashboard: React.FC = () => {
   const [showTodayCols, setShowTodayCols] = React.useState(true);
   const [showLast30Cols, setShowLast30Cols] = React.useState(true);
   const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
+  
+  // Filter mode: 'today', 'yesterday', or 'week' - controls which data is shown in "Today" column
+  const [todayFilterMode, setTodayFilterMode] = React.useState<'today' | 'yesterday' | 'week'>('today');
   
   // Month and year filter states - default to current month and year
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthName);
@@ -4277,9 +4234,9 @@ const Dashboard: React.FC = () => {
         {teamAvg !== null && (
           <div>Team Avg: {teamAvg} contracts</div>
         )}
-          </div>
-  );
-};
+      </div>
+    );
+  };
 
   // Refs and state for matching AI Suggestions height
   const aiRef = useRef<HTMLDivElement>(null);
@@ -4432,7 +4389,16 @@ const Dashboard: React.FC = () => {
   const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
     const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
     const visibleColumns: string[] = [];
-    if (showTodayCols) visibleColumns.push('Today');
+    // Show "Today" column based on filter mode - if yesterday/week is active, show that data instead
+    if (showTodayCols) {
+      if (todayFilterMode === 'yesterday') {
+        visibleColumns.push('Yesterday');
+      } else if (todayFilterMode === 'week') {
+        visibleColumns.push('Week');
+      } else {
+        visibleColumns.push('Today');
+      }
+    }
     if (showLast30Cols) visibleColumns.push('Last 30d');
     if (showLastMonthCols) visibleColumns.push(selectedMonth);
 
@@ -4453,6 +4419,8 @@ const Dashboard: React.FC = () => {
         <tbody className="divide-y divide-slate-100">
           {visibleColumns.map(columnType => {
             const isToday = columnType === 'Today';
+            const isYesterday = columnType === 'Yesterday';
+            const isWeek = columnType === 'Week';
             const isLast30 = columnType === 'Last 30d';
             const isThisMonth = columnType === selectedMonth;
             
@@ -4466,6 +4434,8 @@ const Dashboard: React.FC = () => {
                     const deptIndexInNames = departmentNames.indexOf(category);
                     const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
                     const data = isToday ? dataSource["Today"][dataIndex + 1] : // Skip General row
+                                isYesterday ? dataSource["Yesterday"][dataIndex + 1] : // Skip General row
+                                isWeek ? dataSource["Week"][dataIndex + 1] : // Skip General row
                                 isLast30 ? dataSource["Last 30d"][dataIndex + 1] : // Skip General row
                                 dataSource[selectedMonth]?.[dataIndex]; // This month uses selected month data (no General row)
                     const amount = data?.amount || 0;
@@ -4495,6 +4465,12 @@ const Dashboard: React.FC = () => {
                             if (isToday) {
                               // Use pre-calculated total from data structure
                               return dataSource["Today"]?.[totalIndexToday]?.count || 0;
+                            } else if (isYesterday) {
+                              // Use pre-calculated total from data structure
+                              return dataSource["Yesterday"]?.[totalIndexToday]?.count || 0;
+                            } else if (isWeek) {
+                              // Use pre-calculated total from data structure
+                              return dataSource["Week"]?.[totalIndexToday]?.count || 0;
                             } else if (isLast30) {
                               // Use pre-calculated total from data structure
                               return dataSource["Last 30d"]?.[totalIndexToday]?.count || 0;
@@ -4515,6 +4491,12 @@ const Dashboard: React.FC = () => {
                           if (isToday) {
                             // Use pre-calculated total from data structure
                             return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                          } else if (isYesterday) {
+                            // Use pre-calculated total from data structure
+                            return Math.ceil(dataSource["Yesterday"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                          } else if (isWeek) {
+                            // Use pre-calculated total from data structure
+                            return Math.ceil(dataSource["Week"]?.[totalIndexToday]?.amount || 0).toLocaleString();
                           } else if (isLast30) {
                             // Use pre-calculated total from data structure
                             return Math.ceil(dataSource["Last 30d"]?.[totalIndexToday]?.amount || 0).toLocaleString();
@@ -6484,7 +6466,23 @@ const Dashboard: React.FC = () => {
                         <div className="text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
-                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>Today</button>
+                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                            {todayFilterMode === 'yesterday' ? 'Yesterday' : todayFilterMode === 'week' ? 'Week' : 'Today'}
+                          </button>
+                          <button 
+                            className={`btn btn-xs ${todayFilterMode === 'yesterday' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setTodayFilterMode(v => v === 'yesterday' ? 'today' : 'yesterday')}
+                            title={todayFilterMode === 'yesterday' ? 'Switch back to Today' : 'Show Yesterday data'}
+                          >
+                            Yesterday
+                          </button>
+                          <button 
+                            className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
+                            title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
+                          >
+                            Week
+                          </button>
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
@@ -6555,7 +6553,23 @@ const Dashboard: React.FC = () => {
                         <div className="text-sm font-semibold text-[#3b28c7]">Invoiced</div>
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
-                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>Today</button>
+                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                            {todayFilterMode === 'yesterday' ? 'Yesterday' : todayFilterMode === 'week' ? 'Week' : 'Today'}
+                          </button>
+                          <button 
+                            className={`btn btn-xs ${todayFilterMode === 'yesterday' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setTodayFilterMode(v => v === 'yesterday' ? 'today' : 'yesterday')}
+                            title={todayFilterMode === 'yesterday' ? 'Switch back to Today' : 'Show Yesterday data'}
+                          >
+                            Yesterday
+                          </button>
+                          <button 
+                            className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
+                            onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
+                            title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
+                          >
+                            Week
+                          </button>
                           <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
                           <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
                           <div className="border-l border-slate-300 h-6 mx-2"></div>
