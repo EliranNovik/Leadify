@@ -41,7 +41,7 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
       .then((registration) => {
         console.log('✅ Service Worker registered successfully:', registration.scope);
         
-        // Check for updates on every page load/refresh
+        // Check for updates
         const checkForUpdates = () => {
           registration.update().catch((error) => {
             console.warn('⚠️ Service Worker update check failed:', error);
@@ -51,9 +51,19 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
         // Check immediately on load
         checkForUpdates();
         
+        // Check periodically every 60 seconds (aggressive checking)
+        const updateInterval = setInterval(() => {
+          console.log('🔄 Periodic service worker update check...');
+          checkForUpdates();
+        }, 60 * 1000);
+        
+        // Store interval ID for cleanup
+        (window as any).__swUpdateInterval = updateInterval;
+        
         // Also check when page becomes visible (user returns to tab)
         document.addEventListener('visibilitychange', () => {
           if (!document.hidden) {
+            console.log('🔄 Page visible - checking for service worker updates...');
             checkForUpdates();
           }
         });
@@ -66,6 +76,9 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
               if (newWorker.state === 'installed' && navigator.serviceWorker.controller) {
                 // New service worker is ready - reload immediately
                 console.log('🔄 New Service Worker installed - reloading page');
+                if ((window as any).__swUpdateInterval) {
+                  clearInterval((window as any).__swUpdateInterval);
+                }
                 window.location.reload();
               }
             });
@@ -79,6 +92,9 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     // Listen for service worker controller changes
     navigator.serviceWorker.addEventListener('controllerchange', () => {
       console.log('🔄 Service Worker controller changed - reloading page');
+      if ((window as any).__swUpdateInterval) {
+        clearInterval((window as any).__swUpdateInterval);
+      }
       window.location.reload();
     });
   });

@@ -1777,21 +1777,21 @@ const resolveLegacyLanguage = (lead: any) => {
               </div>
             ) : (
               <div className="overflow-x-auto">
-                <table className="table">
+                <table className="table text-xs md:text-sm">
                   <thead>
                     <tr>
-                      <th>Lead</th>
-                      <th>C. Date</th>
-                      <th>Category</th>
-                      <th>Stage</th>
-                      <th>Sign Date</th>
-                      <th>Scheduler</th>
-                      <th>Manager</th>
-                      <th>Closer</th>
-                      <th>Expert</th>
-                      <th>Handler</th>
-                      <th>Total</th>
-                      <th>Total (₪)</th>
+                      <th className="text-xs md:text-sm">Lead</th>
+                      <th className="text-xs md:text-sm">C. Date</th>
+                      <th className="text-xs md:text-sm">Category</th>
+                      <th className="text-xs md:text-sm">Stage</th>
+                      <th className="text-xs md:text-sm">Sign Date</th>
+                      <th className="text-xs md:text-sm">Scheduler</th>
+                      <th className="text-xs md:text-sm">Manager</th>
+                      <th className="text-xs md:text-sm">Closer</th>
+                      <th className="text-xs md:text-sm">Expert</th>
+                      <th className="text-xs md:text-sm">Handler</th>
+                      <th className="text-xs md:text-sm">Total</th>
+                      <th className="text-xs md:text-sm">Total (₪)</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1801,26 +1801,26 @@ const resolveLegacyLanguage = (lead: any) => {
                           <div className="flex flex-col">
                             <Link
                               to={`/clients/${encodeURIComponent(row.leadIdentifier)}`}
-                              className="font-semibold text-primary hover:underline"
+                              className="text-xs md:text-sm font-semibold text-primary hover:underline"
                             >
                               {row.leadNumber}
                             </Link>
-                            <span className="text-sm text-gray-500">{row.leadName}</span>
+                            <span className="text-[10px] md:text-xs text-gray-500">{row.leadName}</span>
                           </div>
                         </td>
-                        <td>{formatDate(row.createdDate)}</td>
-                        <td className="max-w-[220px]">
+                        <td className="text-xs md:text-sm">{formatDate(row.createdDate)}</td>
+                        <td className="max-w-[220px] text-xs md:text-sm">
                           <span className="truncate block">{row.category}</span>
                         </td>
-                        <td className="text-sm font-semibold text-black">{row.stage}</td>
-                        <td>{formatDate(row.signDate)}</td>
-                        <td>{renderRoleCell(row, 'scheduler')}</td>
-                        <td>{renderRoleCell(row, 'manager')}</td>
-                        <td>{renderRoleCell(row, 'closer')}</td>
-                        <td>{renderRoleCell(row, 'expert')}</td>
-                        <td>{renderRoleCell(row, 'handler')}</td>
-                        <td>{row.totalOriginalDisplay}</td>
-                        <td>{row.totalNISDisplay}</td>
+                        <td className="text-xs md:text-sm font-semibold text-black">{row.stage}</td>
+                        <td className="text-xs md:text-sm">{formatDate(row.signDate)}</td>
+                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'scheduler')}</td>
+                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'manager')}</td>
+                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'closer')}</td>
+                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'expert')}</td>
+                        <td className="text-xs md:text-sm">{renderRoleCell(row, 'handler')}</td>
+                        <td className="text-xs md:text-sm">{row.totalOriginalDisplay}</td>
+                        <td className="text-xs md:text-sm">{row.totalNISDisplay}</td>
                       </tr>
                     ))}
                   </tbody>

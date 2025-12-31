@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react';
+import { useLocation } from 'react-router-dom';
 import { ArrowPathIcon, XMarkIcon } from '@heroicons/react/24/outline';
 
 const PWAUpdateNotification: React.FC = () => {
   const [showUpdate, setShowUpdate] = useState(false);
   const [registration, setRegistration] = useState<ServiceWorkerRegistration | null>(null);
+  const location = useLocation();
 
   useEffect(() => {
     if ('serviceWorker' in navigator) {
@@ -12,7 +14,9 @@ const PWAUpdateNotification: React.FC = () => {
 
         // Check for updates
         const checkForUpdates = () => {
-          reg.update();
+          reg.update().catch((error) => {
+            console.warn('⚠️ PWAUpdateNotification: Update check failed:', error);
+          });
         };
 
         // Listen for service worker updates
@@ -28,14 +32,38 @@ const PWAUpdateNotification: React.FC = () => {
           }
         });
 
-        // Check for updates every 5 minutes
-        const interval = setInterval(checkForUpdates, 5 * 60 * 1000);
+        // Check for updates every 60 seconds (aggressive checking)
+        const interval = setInterval(() => {
+          console.log('🔄 PWAUpdateNotification: Periodic update check...');
+          checkForUpdates();
+        }, 60 * 1000);
         checkForUpdates(); // Initial check
 
-        return () => clearInterval(interval);
+        // Also check when window regains focus (user switches back to tab/window)
+        const handleFocus = () => {
+          console.log('🔄 PWAUpdateNotification: Window focused - checking for updates...');
+          checkForUpdates();
+        };
+        window.addEventListener('focus', handleFocus);
+
+        // Cleanup
+        return () => {
+          clearInterval(interval);
+          window.removeEventListener('focus', handleFocus);
+        };
       });
     }
   }, []);
+
+  // Check for updates whenever route changes
+  useEffect(() => {
+    if (registration && location.pathname) {
+      console.log('🔄 PWAUpdateNotification: Route changed - checking for updates...', location.pathname);
+      registration.update().catch((error) => {
+        console.warn('⚠️ PWAUpdateNotification: Update check failed on route change:', error);
+      });
+    }
+  }, [location.pathname, registration]);
 
   const handleUpdate = () => {
     if (registration?.waiting) {

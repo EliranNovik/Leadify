@@ -46,7 +46,8 @@
 }
 
 @keyframes gradient-move {
-  0%, 100% {
+  0%,
+  100% {
     background-position: 0% 50%;
   }
   50% {
@@ -59,12 +60,20 @@
 }
 
 @keyframes move1 {
-  0% { transform: translateY(0) scale(1); }
-  100% { transform: translateY(40px) scale(1.1); }
+  0% {
+    transform: translateY(0) scale(1);
+  }
+  100% {
+    transform: translateY(40px) scale(1.1);
+  }
 }
 @keyframes move2 {
-  0% { transform: translateX(0) scale(1); }
-  100% { transform: translateX(-40px) scale(1.05); }
+  0% {
+    transform: translateX(0) scale(1);
+  }
+  100% {
+    transform: translateX(-40px) scale(1.05);
+  }
 }
 .animate-move1 {
   animation: move1 10s ease-in-out infinite alternate;
@@ -74,32 +83,55 @@
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 .fade-in {
-  animation: fadeIn 0.7s cubic-bezier(0.4,0,0.2,1) both;
+  animation: fadeIn 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes slideFadeIn {
-  from { opacity: 0; transform: translateY(30px); }
-  to { opacity: 1; transform: translateY(0); }
+  from {
+    opacity: 0;
+    transform: translateY(30px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
 }
 .slide-fade-in {
-  animation: slideFadeIn 0.7s cubic-bezier(0.4,0,0.2,1) both;
+  animation: slideFadeIn 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
 @keyframes checkmarkPop {
-  0% { transform: scale(0.5); opacity: 0; }
-  60% { transform: scale(1.2); opacity: 1; }
-  80% { transform: scale(0.95); }
-  100% { transform: scale(1); opacity: 1; }
+  0% {
+    transform: scale(0.5);
+    opacity: 0;
+  }
+  60% {
+    transform: scale(1.2);
+    opacity: 1;
+  }
+  80% {
+    transform: scale(0.95);
+  }
+  100% {
+    transform: scale(1);
+    opacity: 1;
+  }
 }
 .checkmark-pop {
-  animation: checkmarkPop 0.7s cubic-bezier(0.4,0,0.2,1) both;
+  animation: checkmarkPop 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
 
-body, html, #root {
+body,
+html,
+#root {
   font-family: "Saira", sans-serif !important;
   font-optical-sizing: auto;
   font-weight: 500;
@@ -119,18 +151,23 @@ body, html, #root {
     max-height: 4.5rem !important;
     margin-top: 0 !important;
   }
-  .navbar .btn, .navbar .btn-circle, .navbar .btn-square {
+  .navbar .btn,
+  .navbar .btn-circle,
+  .navbar .btn-square {
     min-width: 2.75rem;
     min-height: 2.75rem;
     height: 2.75rem;
     width: 2.75rem;
     font-size: 1.25rem;
   }
-  .navbar .w-6, .navbar .h-6 {
+  .navbar .w-6,
+  .navbar .h-6 {
     width: 2rem !important;
     height: 2rem !important;
   }
-  .navbar .text-base, .navbar .font-medium, .navbar .font-semibold {
+  .navbar .text-base,
+  .navbar .font-medium,
+  .navbar .font-semibold {
     font-size: 1.15rem !important;
   }
 }
@@ -147,13 +184,14 @@ body, html, #root {
 /* Subtle shadow for active tab on mobile */
 @media (max-width: 768px) {
   .tab-mobile-active {
-    box-shadow: 0 4px 16px 0 rgba(0,0,0,0.10), 0 1.5px 0 0 #6366f1;
+    box-shadow: 0 4px 16px 0 rgba(0, 0, 0, 0.1), 0 1.5px 0 0 #6366f1;
     z-index: 1;
   }
 }
 
 /* Custom styles for react-big-calendar event boxes in week/day views */
-.rbc-event-content, .event-item {
+.rbc-event-content,
+.event-item {
   min-height: 40px !important;
   font-size: 1rem !important;
   padding: 8px 10px !important;
@@ -167,7 +205,8 @@ body, html, #root {
   max-height: none !important;
 }
 
-.rbc-event-content span, .event-item span {
+.rbc-event-content span,
+.event-item span {
   white-space: normal !important;
   word-break: break-word;
   overflow: visible !important;
@@ -183,8 +222,8 @@ body, html, #root {
   --bg-light: #ffffff;
   --bg-dark: #f5f7fa;
   --border-radius: 12px;
-  --font-main: 'Inter', sans-serif;
-  
+  --font-main: "Inter", sans-serif;
+
   /* Dark mode colors */
   --dark-bg-primary: #0f0f0f;
   --dark-bg-secondary: #1a1a1a;
@@ -439,7 +478,11 @@ html.dark [class*="RMQ"] {
 
 /* RMQ main container background */
 html.dark .z-50.fixed.inset-0.bg-gradient-to-br {
-  background: linear-gradient(to bottom right, rgba(15, 23, 42, 0.95), rgba(11, 30, 61, 0.95)) !important;
+  background: linear-gradient(
+    to bottom right,
+    rgba(15, 23, 42, 0.95),
+    rgba(11, 30, 61, 0.95)
+  ) !important;
 }
 
 /* RMQ sidebar and main containers */
@@ -725,13 +768,12 @@ html.dark .toast {
   backdrop-filter: blur(8px) !important;
 }
 
-
-input[type=number].no-arrows::-webkit-inner-spin-button, 
-input[type=number].no-arrows::-webkit-outer-spin-button {
+input[type="number"].no-arrows::-webkit-inner-spin-button,
+input[type="number"].no-arrows::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
-input[type=number].no-arrows {
+input[type="number"].no-arrows {
   -moz-appearance: textfield;
 }
 
@@ -740,13 +782,13 @@ input[type=number].no-arrows {
   .hide-client-header-mobile > div.text-black > div:first-child {
     display: none !important;
   }
-  
+
   /* Ensure content is visible after hiding header */
   .hide-client-header-mobile > div.text-black > div:first-child + div {
     margin-top: 0 !important;
     display: block !important;
   }
-  
+
   /* Make sure the content div is visible */
   .hide-client-header-mobile > div.text-black {
     display: block !important;
@@ -757,7 +799,7 @@ input[type=number].no-arrows {
 
 /* Sidebar frosted glass - Light mode keeps gradient */
 .sidebar-frosted-glass {
-  background-color: #3E2BCD;
+  background-color: #3e2bcd;
   border-color: rgba(255, 255, 255, 0.1);
 }
 
@@ -828,6 +870,17 @@ html.dark .z-\[9999\] .fixed.inset-0.bg-black\/50 {
   -webkit-backdrop-filter: blur(12px) !important;
 }
 
+/* DaisyUI tooltip z-index fix to ensure tooltips overlay on top */
+.tooltip {
+  position: relative;
+  z-index: 9999;
+}
+
+.tooltip::before,
+.tooltip::after {
+  z-index: 9999 !important;
+}
+
 /* --- Print styles for ProformaViewPage --- */
 @media print {
   * {
@@ -836,10 +889,14 @@ html.dark .z-\[9999\] .fixed.inset-0.bg-black\/50 {
     background-color: #fff !important;
     box-shadow: none !important;
   }
-  .text-primary, .text-purple-700, .text-primary-content {
+  .text-primary,
+  .text-purple-700,
+  .text-primary-content {
     color: #3b28c7 !important;
   }
-  .bg-primary, .bg-purple-700, .bg-primary-content {
+  .bg-primary,
+  .bg-purple-700,
+  .bg-primary-content {
     background: #3b28c7 !important;
     background-color: #3b28c7 !important;
   }

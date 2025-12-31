@@ -3049,7 +3049,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     if (isContact) {
       return (
         <span 
-          className="badge badge-sm text-xs px-2 py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
+          className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
         >
           {stageName}
         </span>
@@ -3062,7 +3062,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     
     return (
       <span 
-        className="badge badge-sm text-xs px-2 py-1"
+        className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1"
         style={{
           backgroundColor: backgroundColor,
           color: textColor,
@@ -3547,33 +3547,33 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                               <button
                                 key={uniqueKey}
                                 onClick={() => handleSearchResultClick(result)}
-                                className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
+                                className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
                               >
-                                <div className="absolute top-2 right-2 z-10">
+                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10">
                                   {getStageBadge(result.stage)}
                                 </div>
-                                <div className="flex items-start gap-3 pr-24 md:pr-16">
+                                <div className="flex items-start gap-2 md:gap-3 pr-16 md:pr-16">
                                   <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
                                     <span className="font-semibold text-white">
                                       {displayName.charAt(0).toUpperCase()}
                                     </span>
                                   </div>
-                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
-                                    <div className="mb-1">
-                                      <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                    <div className="mb-0.5 md:mb-1">
+                                      <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                         {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                       </p>
                                     </div>
-                                    <div className="mb-1">
-                                      <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    <div className="mb-0.5 md:mb-1">
+                                      <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
                                     </div>
                                     {result.category && (
-                                      <p className="text-sm text-base-content/80 truncate">
+                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
                                         <span className="font-medium">Category:</span> {result.category}
                                       </p>
                                     )}
                                     {result.topic && (
-                                      <p className="text-sm text-base-content/80 truncate">
+                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
                                         <span className="font-medium">Topic:</span> {result.topic}
                                       </p>
                                     )}
@@ -3585,10 +3585,24 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         </>
                       )}
                       
+                      {/* No exact match message - shown when there are fuzzy matches but no exact matches */}
+                      {exactMatches.length === 0 && fuzzyMatches.length > 0 && (
+                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
+                          <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact match found</p>
+                        </div>
+                      )}
+                      
                       {/* Divider between exact and fuzzy matches */}
                       {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
-                        <div className="px-4 py-2 border-t border-base-300">
-                          <p className="text-xs text-base-content/60 font-medium">Similar matches</p>
+                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-t border-base-300">
+                          <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar matches</p>
+                        </div>
+                      )}
+                      
+                      {/* Similar results header - shown when there are no exact matches but there are fuzzy matches */}
+                      {exactMatches.length === 0 && fuzzyMatches.length > 0 && (
+                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
+                          <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar results</p>
                         </div>
                       )}
                       
@@ -3606,33 +3620,33 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                               <button
                                 key={uniqueKey}
                                 onClick={() => handleSearchResultClick(result)}
-                                className="w-full px-4 py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
+                                className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
                               >
-                                <div className="absolute top-2 right-2 z-10">
+                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10">
                                   {getStageBadge(result.stage)}
                                 </div>
-                                <div className="flex items-start gap-3 pr-24 md:pr-16">
+                                <div className="flex items-start gap-2 md:gap-3 pr-16 md:pr-16">
                                   <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
                                     <span className="font-semibold text-white">
                                       {displayName.charAt(0).toUpperCase()}
                                     </span>
                                   </div>
-                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 80px)' }}>
-                                    <div className="mb-1">
-                                      <p className="text-[10px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                    <div className="mb-0.5 md:mb-1">
+                                      <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
                                         {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
                                       </p>
                                     </div>
-                                    <div className="mb-1">
-                                      <span className="text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    <div className="mb-0.5 md:mb-1">
+                                      <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
                                     </div>
                                     {result.category && (
-                                      <p className="text-sm text-base-content/80 truncate">
+                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
                                         <span className="font-medium">Category:</span> {result.category}
                                       </p>
                                     )}
                                     {result.topic && (
-                                      <p className="text-sm text-base-content/80 truncate">
+                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
                                         <span className="font-medium">Topic:</span> {result.topic}
                                       </p>
                                     )}
