@@ -5906,14 +5906,15 @@ useEffect(() => {
       }
 
       // Use updateLeadStageWithHistory to ensure celebration triggers
+      // Pass signedDate as stageDate so it's saved in leads_leadstage.date field
+      // Note: We don't save date_signed in leads_lead table - it's only saved in leads_leadstage.date
       await updateLeadStageWithHistory({
         lead: selectedClient,
         stage: signedStageId,
-        additionalFields: {
-          date_signed: signedDate,
-        },
+        additionalFields: {}, // No additional fields - date is saved in leads_leadstage via stageDate
         actor,
         timestamp: stageTimestamp,
+        stageDate: signedDate, // Pass the signed date to be used in leads_leadstage.date field
       });
       
       setShowSignedDrawer(false);

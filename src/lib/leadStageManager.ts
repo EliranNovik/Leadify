@@ -171,21 +171,41 @@ export const fetchStageActorInfo = async (): Promise<StageActorInfo> => {
 /**
  * Records a stage change entry for the supplied lead.
  * The stage value is resolved to a numeric ID when possible.
+ * @param stageDate Optional custom date for the stage occurrence (used for the `date` field).
+ *                  If not provided, uses the current timestamp. `cdate` and `udate` always use current timestamp.
  */
 export const recordLeadStageChange = async ({
   lead,
   stage,
   actor,
   timestamp,
+  stageDate,
 }: {
   lead: CombinedLead;
   stage: string | number;
   actor?: StageActorInfo;
   timestamp?: string;
+  stageDate?: string;
 }): Promise<boolean> => {
   const stageActor = actor ?? (await fetchStageActorInfo());
   const resolvedStageId = await resolveStageId(stage);
   const effectiveTimestamp = timestamp ?? new Date().toISOString();
+  // Convert stageDate (which might be a date string like "2024-12-30") to ISO timestamp
+  // If it's already an ISO timestamp, use it as-is; otherwise, convert date string to start of day in UTC
+  let effectiveStageDate: string;
+  if (stageDate) {
+    // If it's already an ISO timestamp (contains 'T'), use it as-is
+    if (stageDate.includes('T')) {
+      effectiveStageDate = stageDate;
+    } else {
+      // Otherwise, it's a date string (YYYY-MM-DD), convert to start of day in UTC
+      const [year, month, day] = stageDate.split('-').map(Number);
+      const dateObj = new Date(Date.UTC(year, (month || 1) - 1, day || 1, 0, 0, 0, 0));
+      effectiveStageDate = dateObj.toISOString();
+    }
+  } else {
+    effectiveStageDate = effectiveTimestamp;
+  }
   const { isLegacy, recordId } = getLeadIdentity(lead);
 
   const payload: {
@@ -198,7 +218,7 @@ export const recordLeadStageChange = async ({
     newlead_id?: string | null;
   } = {
     stage: resolvedStageId,
-    date: effectiveTimestamp,
+    date: effectiveStageDate,
     cdate: effectiveTimestamp,
     udate: effectiveTimestamp,
     creator_id: stageActor.employeeId,
@@ -467,6 +487,8 @@ const triggerCelebrationIfNeeded = async (
 /**
  * Applies a stage update to the correct lead table and logs history.
  * Accepts optional additional update fields to merge into the update payload.
+ * @param stageDate Optional custom date for the stage occurrence (used for the `date` field in leads_leadstage).
+ *                  If not provided, uses the current timestamp. Useful for historical dates like "date_signed".
  */
 export const updateLeadStageWithHistory = async ({
   lead,
@@ -474,12 +496,14 @@ export const updateLeadStageWithHistory = async ({
   additionalFields = {},
   actor,
   timestamp,
+  stageDate,
 }: {
   lead: CombinedLead;
   stage: string | number;
   additionalFields?: Record<string, any>;
   actor?: StageActorInfo;
   timestamp?: string;
+  stageDate?: string;
 }) => {
   const stageActor = actor ?? (await fetchStageActorInfo());
   const effectiveTimestamp = timestamp ?? new Date().toISOString();
@@ -544,7 +568,13 @@ export const updateLeadStageWithHistory = async ({
   console.log('📝 Now recording stage change history...');
   
   try {
-    const recordSuccess = await recordLeadStageChange({ lead, stage, actor: stageActor, timestamp: effectiveTimestamp });
+    const recordSuccess = await recordLeadStageChange({ 
+      lead, 
+      stage, 
+      actor: stageActor, 
+      timestamp: effectiveTimestamp,
+      stageDate: stageDate,
+    });
     if (recordSuccess) {
       console.log('✅ Stage change history recorded successfully');
     } else {
