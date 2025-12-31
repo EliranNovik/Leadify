@@ -55,7 +55,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [editingPaymentId, setEditingPaymentId] = useState<string | number | null>(null);
   const [editPaymentData, setEditPaymentData] = useState<any>({});
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
-  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('boxes');
+  const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
   
   // Initialize all contacts as collapsed by default
@@ -694,6 +694,115 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     fetchUserPermissions();
   }, []);
 
+  // Define fetchContacts at component level so it can be called from multiple places
+  // Returns the contacts array so it can be used immediately without waiting for state update
+  const fetchContacts = async (): Promise<any[]> => {
+    if (!client?.id) return [];
+    
+    // Check if this is a legacy lead
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    
+    if (isLegacyLead) {
+      // For legacy leads, fetch contacts from leads_contact and lead_leadcontact tables
+      const legacyId = client.id.toString().replace('legacy_', '');
+      
+      try {
+        // Fetch contacts from lead_leadcontact and leads_contact tables
+        const { data: leadContacts, error: leadContactsError } = await supabase
+          .from('lead_leadcontact')
+          .select(`
+            id,
+            main,
+            contact_id,
+            lead_id,
+            leads_contact!inner(
+              id,
+              name,
+              email,
+              phone,
+              mobile
+            )
+          `)
+          .eq('lead_id', legacyId);
+        
+        if (leadContactsError) {
+          console.error('Error fetching legacy lead contacts:', leadContactsError);
+          setContacts([]);
+          return [];
+        }
+        
+        if (leadContacts && leadContacts.length > 0) {
+          // Transform contacts to include the contact data
+          const contactsWithData = leadContacts.map((leadContact: any) => {
+            const contactData = Array.isArray(leadContact.leads_contact) 
+              ? leadContact.leads_contact[0] 
+              : leadContact.leads_contact;
+            
+            return {
+              id: contactData?.id || leadContact.contact_id,
+              name: contactData?.name || '',
+              email: contactData?.email || '',
+              phone: contactData?.phone || '',
+              mobile: contactData?.mobile || '',
+              isMain: leadContact.main === 'true' || leadContact.main === true,
+            };
+          });
+          
+          setContacts(contactsWithData);
+          console.log('✅ fetchContacts: Loaded contacts', contactsWithData.map(c => ({ id: c.id, name: c.name })));
+          return contactsWithData;
+        } else {
+          setContacts([]);
+          return [];
+        }
+      } catch (error) {
+        console.error('Error fetching legacy contacts:', error);
+        setContacts([]);
+        return [];
+      }
+    }
+    
+    try {
+      // First check if we have additional_contacts in the client object
+      if (client.additional_contacts && Array.isArray(client.additional_contacts)) {
+        const contactsWithIds = client.additional_contacts.map((contact: any, index: number) => ({
+          id: index + 1, // Use index + 1 as ID to match contact_id
+          ...contact
+        }));
+        setContacts(contactsWithIds);
+        return contactsWithIds;
+      } else {
+        // If not, fetch from database
+        const { data: leadData, error } = await supabase
+          .from('leads')
+          .select('additional_contacts')
+          .eq('id', client.id)
+          .single();
+        
+        if (!error && leadData?.additional_contacts) {
+          // Transform additional_contacts to include IDs
+          const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
+            id: index + 1, // Use index + 1 as ID to match contact_id
+            ...contact
+          }));
+          setContacts(contactsWithIds);
+          return contactsWithIds;
+        } else {
+          setContacts([]);
+          return [];
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching contacts:', error);
+      setContacts([]);
+      return [];
+    }
+  };
+
+  // Use a ref to track if we're currently fetching to prevent infinite loops
+  const isFetchingRef = React.useRef(false);
+  const contactsLoadedRef = React.useRef<string | null>(null);
+
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
       const fetchPaymentPlans = async () => {
@@ -702,7 +811,26 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
     
+    // Prevent duplicate fetches
+    if (isFetchingRef.current) {
+      return;
+    }
+    
+    // Check if contacts are already loaded for this client
+    const clientIdKey = client.id.toString();
+    const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && contacts.length > 0;
+    
+    isFetchingRef.current = true;
     setIsLoadingFinancePlan(true);
+    
+    // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
+    // This prevents payment plans from being incorrectly labeled with main client name
+    // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
+    let currentContacts = contacts;
+    if (!contactsAlreadyLoaded) {
+      currentContacts = await fetchContacts();
+      contactsLoadedRef.current = clientIdKey;
+    }
     
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
@@ -720,12 +848,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const numericId = parseInt(legacyId);
           const isNumericIdValid = !isNaN(numericId);
           
-          // Build OR condition: lead_id matches OR client_id matches main lead ID
-          // Note: We don't include contact IDs here since contacts might not be loaded yet
-          // The refreshPaymentPlans function will use the full OR condition with contacts
-          const orCondition = isNumericIdValid
-            ? `lead_id.eq.${legacyId},client_id.eq.${numericId}`
-            : `lead_id.eq.${legacyId}`;
+          // Build OR condition: lead_id matches OR client_id matches main lead ID or contact IDs
+          // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
+          const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null) : [];
+          
+          // Build OR condition properly - each condition separated by comma
+          let orCondition = `lead_id.eq.${legacyId}`;
+          if (isNumericIdValid) {
+            orCondition += `,client_id.eq.${numericId}`;
+          }
+          // Add contact IDs to OR condition
+          contactIds.forEach(contactId => {
+            if (contactId != null && !isNaN(Number(contactId))) {
+              orCondition += `,client_id.eq.${contactId}`;
+            }
+          });
           
           let { data: legacyData, error: legacyError } = await supabase
             .from('finances_paymentplanrow')
@@ -830,7 +967,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Group payments by contact to calculate percentages per contact
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
-            const contactName = getContactNameFromClientId(processed.plan.client_id);
+            const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
             if (!paymentsByContact.has(contactName)) {
               paymentsByContact.set(contactName, []);
             }
@@ -842,7 +979,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const { plan, value, valueVat, currency, paymentTotal } = processed;
             
             // Get contact name from client_id
-            const contactName = getContactNameFromClientId(plan.client_id);
+            const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
             
             // Calculate total for this contact's payments
             const contactPayments = paymentsByContact.get(contactName) || [];
@@ -981,8 +1118,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         setPaidMap({});
       } finally {
         setIsLoadingFinancePlan(false);
+        isFetchingRef.current = false;
       }
     };
+    
+    fetchPaymentPlans();
+  }, [client?.id]);
 
       const fetchContracts = async () => {
     if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;
@@ -1082,102 +1223,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
-    const fetchContacts = async () => {
-      if (!client?.id) return;
-      
-      // Check if this is a legacy lead
-      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
-      if (isLegacyLead) {
-        // For legacy leads, fetch contacts from leads_contact and lead_leadcontact tables
-        const legacyId = client.id.toString().replace('legacy_', '');
-        
-        try {
-          // Fetch contacts from lead_leadcontact and leads_contact tables
-          const { data: leadContacts, error: leadContactsError } = await supabase
-            .from('lead_leadcontact')
-            .select(`
-              id,
-              main,
-              contact_id,
-              lead_id,
-              leads_contact!inner(
-                id,
-                name,
-                email,
-                phone,
-                mobile
-              )
-            `)
-            .eq('lead_id', legacyId);
-          
-          if (leadContactsError) {
-            console.error('Error fetching legacy lead contacts:', leadContactsError);
-            setContacts([]);
-            return;
-          }
-          
-          if (leadContacts && leadContacts.length > 0) {
-            // Transform contacts to include the contact data
-            const contactsWithData = leadContacts.map((leadContact: any) => {
-              const contactData = Array.isArray(leadContact.leads_contact) 
-                ? leadContact.leads_contact[0] 
-                : leadContact.leads_contact;
-              
-              return {
-                id: contactData?.id || leadContact.contact_id,
-                name: contactData?.name || '',
-                email: contactData?.email || '',
-                phone: contactData?.phone || '',
-                mobile: contactData?.mobile || '',
-                isMain: leadContact.main === 'true' || leadContact.main === true,
-              };
-            });
-            
-            setContacts(contactsWithData);
-          } else {
-            setContacts([]);
-          }
-        } catch (error) {
-          console.error('Error fetching legacy contacts:', error);
-          setContacts([]);
-        }
-        return;
-      }
-      
-      try {
-        // First check if we have additional_contacts in the client object
-        if (client.additional_contacts && Array.isArray(client.additional_contacts)) {
-          const contactsWithIds = client.additional_contacts.map((contact: any, index: number) => ({
-            id: index + 1, // Use index + 1 as ID to match contact_id
-            ...contact
-          }));
-          setContacts(contactsWithIds);
-        } else {
-          // If not, fetch from database
-          const { data: leadData, error } = await supabase
-            .from('leads')
-            .select('additional_contacts')
-            .eq('id', client.id)
-            .single();
-          
-          if (!error && leadData?.additional_contacts) {
-            // Transform additional_contacts to include IDs
-            const contactsWithIds = leadData.additional_contacts.map((contact: any, index: number) => ({
-              id: index + 1, // Use index + 1 as ID to match contact_id
-              ...contact
-            }));
-            setContacts(contactsWithIds);
-          } else {
-            setContacts([]);
-          }
-        }
-      } catch (error) {
-        console.error('Error fetching contacts:', error);
-        setContacts([]);
-      }
-    };
-
+  // Separate useEffect for loading contacts, contracts, and currencies
+  useEffect(() => {
     // Add event listener for payment marked as paid
     const handlePaymentMarkedPaid = (event: CustomEvent) => {
       // Refresh payment plans to reflect the updated paid status
@@ -1188,9 +1235,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     window.addEventListener('paymentMarkedPaid', handlePaymentMarkedPaid as EventListener);
 
     // Fetch contacts first, then fetch payment plans (which needs contacts to be loaded)
+    // Note: fetchPaymentPlans now ensures contacts are loaded internally via await fetchContacts()
     const loadData = async () => {
       await fetchContacts();
-      fetchPaymentPlans();
+      // fetchPaymentPlans will be called by its own useEffect, and it will await fetchContacts() again
+      // This ensures contacts are always loaded before payment plans
       fetchContracts();
       
       // Fetch available currencies
@@ -1249,6 +1298,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const refreshPaymentPlans = async () => {
     if (!client?.id) return;
     
+    // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
+    // This prevents payment plans from being incorrectly labeled with main client name
+    // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
+    let currentContacts = contacts;
+    if (!contactsAlreadyLoaded) {
+      currentContacts = await fetchContacts();
+      contactsLoadedRef.current = clientIdKey;
+    }
+    
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     
@@ -1267,15 +1325,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const isNumericIdValid = !isNaN(numericId);
               
               // Build OR condition: lead_id matches OR client_id matches main lead ID or contact IDs
-              const contactIds = contacts.map(c => c.id).filter(id => id != null);
+              // Only use contact IDs if contacts array is loaded (non-empty)
+              const contactIds = contacts.length > 0 ? contacts.map(c => c.id).filter(id => id != null) : [];
               const allClientIds = [numericId, ...contactIds].filter(id => id != null && !isNaN(Number(id)));
-              const clientIdConditions = allClientIds.length > 0 
-                ? allClientIds.map(id => `client_id.eq.${id}`).join(',')
-                : '';
               
-              const orCondition = isNumericIdValid && clientIdConditions
-                ? `lead_id.eq.${legacyId},${clientIdConditions}`
-                : `lead_id.eq.${legacyId}${isNumericIdValid ? `,client_id.eq.${numericId}` : ''}`;
+              // Build OR condition properly - each condition separated by comma
+              let orCondition = `lead_id.eq.${legacyId}`;
+              if (isNumericIdValid) {
+                orCondition += `,client_id.eq.${numericId}`;
+              }
+              // Add contact IDs to OR condition
+              contactIds.forEach(contactId => {
+                if (contactId != null && !isNaN(Number(contactId))) {
+                  orCondition += `,client_id.eq.${contactId}`;
+                }
+              });
               
               const { data: legacyData, error: legacyError } = await supabase
                 .from('finances_paymentplanrow')
@@ -1374,7 +1438,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Group payments by contact to calculate percentages per contact
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
-            const contactName = getContactNameFromClientId(processed.plan.client_id);
+            const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
             if (!paymentsByContact.has(contactName)) {
               paymentsByContact.set(contactName, []);
             }
@@ -1386,7 +1450,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const { plan, value, valueVat, currency, paymentTotal } = processed;
             
             // Get contact name from client_id
-            const contactName = getContactNameFromClientId(plan.client_id);
+            const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
             
             // Calculate total for this contact's payments
             const contactPayments = paymentsByContact.get(contactName) || [];
@@ -1963,9 +2027,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   };
   
   // Helper function to get contact name from client_id for legacy payments
-  const getContactNameFromClientId = (clientId: number | null | undefined): string => {
+  // contactsArray parameter allows passing contacts directly to avoid state timing issues
+  const getContactNameFromClientId = (clientId: number | null | undefined, contactsArray?: any[]): string => {
+    // Use provided contacts array or fallback to state
+    const contactsToUse = contactsArray || contacts;
     if (!clientId) {
-      console.warn('🔍 getContactNameFromClientId: clientId is null/undefined, returning main client name');
       return client?.name || 'Legacy Client';
     }
     
@@ -1978,32 +2044,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const legacyId = client?.id?.toString().replace('legacy_', '');
     const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
     if (numericLegacyId && clientId === numericLegacyId) {
-      console.log('🔍 getContactNameFromClientId: clientId matches main lead ID', { clientId, numericLegacyId, clientName: client?.name });
-      return client?.name || 'Legacy Client';
-    }
-    
-    // If contacts array is empty, it might not be loaded yet - fallback gracefully
-    if (contacts.length === 0 && numericLegacyId) {
-      // This is expected during initial load - contacts will be loaded and payments will refresh
-      // No need to log a warning as this is normal behavior
       return client?.name || 'Legacy Client';
     }
     
     // Check if client_id matches a contact ID
-    const contact = contacts.find(c => c.id === clientId);
+    // Normalize both IDs to numbers for comparison to handle type mismatches
+    const normalizedClientId = typeof clientId === 'string' ? parseInt(clientId, 10) : clientId;
+    const contact = contactsToUse.find(c => {
+      const normalizedContactId = typeof c.id === 'string' ? parseInt(c.id, 10) : c.id;
+      return normalizedContactId === normalizedClientId;
+    });
+    
     if (contact?.name) {
-      console.log('🔍 getContactNameFromClientId: Found contact by ID', { clientId, contactName: contact.name, allContacts: contacts.map(c => ({ name: c.name, id: c.id })) });
+      console.log('✅ getContactNameFromClientId: Found contact', { clientId, contactId: contact.id, contactName: contact.name });
       return contact.name;
     }
     
-    console.warn('🔍 getContactNameFromClientId: Contact not found, falling back to main client name', { 
+    // Debug: Log when contact is not found
+    console.warn('⚠️ getContactNameFromClientId: Contact not found', { 
       clientId, 
-      numericLegacyId,
-      availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
+      normalizedClientId,
+      contactsCount: contactsToUse.length,
+      availableContactIds: contactsToUse.map(c => ({ id: c.id, name: c.name, idType: typeof c.id }))
     });
     
-    // Fallback to main client name
-    return client?.name || 'Legacy Client';
+    // If contact not found, don't fallback to main client - return a placeholder
+    // This prevents incorrectly labeling contact payments as main client payments
+    // The name will be corrected once contacts are loaded and payment plans refresh
+    return `Contact #${clientId}`;
   };
 
   // Helper function to get contact name by contact_id
