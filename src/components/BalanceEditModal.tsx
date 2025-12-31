@@ -148,12 +148,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         }
       }
       // If vat is null/undefined, keep default 'included'
-    } else if (selectedClient.proposal_vat) {
-      // Fallback to proposal_vat for legacy leads
-      vatStatus = selectedClient.proposal_vat;
     } else {
-      // For legacy leads without proposal_vat, default to included
-      vatStatus = 'included';
+      // For legacy leads, check the 'vat' column (text type, same as new leads)
+      if ((selectedClient as any).vat !== null && (selectedClient as any).vat !== undefined) {
+        const vatValue = String((selectedClient as any).vat).toLowerCase().trim();
+        if (vatValue === 'false' || vatValue === '0' || vatValue === 'no') {
+          vatStatus = 'excluded';
+        } else {
+          // Default to included for 'true', '1', 'yes', or any other value
+          vatStatus = 'included';
+        }
+      }
+      // If vat is null/undefined, keep default 'included'
     }
     
         // Get currency_id (works for both legacy and new leads)
@@ -265,15 +271,21 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         const currencyId = parseInt(formData.currencyId, 10) || 1; // Default to ID 1 if not found
         
         // Update legacy lead in leads_lead table
+        // Map proposal_vat to 'vat' column (text): 'included' → 'true', 'excluded' → 'false' (same as new leads)
+        const vatColumnValue = formData.proposal_vat === 'included' ? 'true' : 'false';
+        
+        const updateData: any = {
+          total: formData.proposal_total,
+          currency_id: currencyId,
+          no_of_applicants: formData.number_of_applicants_meeting,
+          subcontractor_fee: formData.subcontractor_fee,
+          potential_total: formData.potential_value.toString(),
+          vat: vatColumnValue // Save VAT status in 'vat' column for legacy leads
+        };
+        
         const { error } = await supabase
           .from('leads_lead')
-          .update({
-            total: formData.proposal_total,
-            currency_id: currencyId,
-            no_of_applicants: formData.number_of_applicants_meeting,
-            subcontractor_fee: formData.subcontractor_fee,
-            potential_total: formData.potential_value.toString()
-          })
+          .update(updateData)
           .eq('id', selectedClient.id.toString().replace('legacy_', ''));
 
         if (error) throw error;

@@ -2552,6 +2552,7 @@ useEffect(() => {
             currency_id,
             closer_id,
             case_handler_id,
+            vat,
             meeting_scheduler_id,
             meeting_manager_id,
             meeting_lawyer_id,
@@ -2618,9 +2619,36 @@ useEffect(() => {
 
           // Transform legacy lead to match new lead structure
           const legacyStageId = resolveStageId(data.stage);
+          // Extract language name from joined table - ensure we get the name, not the ID
+          let languageName = '';
+          if (legacyLanguageRecord?.name) {
+            languageName = legacyLanguageRecord.name;
+          } else if (data.language_id) {
+            // If join failed, fetch language name directly by language_id
+            console.warn('⚠️ Language join failed, fetching language name directly for language_id:', data.language_id);
+            try {
+              const { data: langData } = await supabase
+                .from('misc_language')
+                .select('name')
+                .eq('id', data.language_id)
+                .maybeSingle();
+              if (langData?.name) {
+                languageName = langData.name;
+              }
+            } catch (langError) {
+              console.error('Error fetching language name:', langError);
+            }
+          }
+          
+          // Create transformed data by explicitly selecting only the fields we want
+          // This ensures unwanted fields (description, tracking fields, language_id) are never included
           const transformedData = {
-            ...data,
             id: `legacy_${data.id}`,
+            name: data.name || '',
+            email: data.email || '',
+            phone: data.phone || '',
+            mobile: data.mobile || '',
+            topic: data.topic || '',
             lead_number: formatLegacyLeadNumber(data, subLeadSuffix), // Format lead number with /1 for master, /X for sub-leads
             stage: legacyStageId ?? (typeof data.stage === 'number' ? data.stage : null),
             source: sourceName || String(data.source_id || ''), // Get source name from separate query
@@ -2641,7 +2669,7 @@ useEffect(() => {
               console.log('🔍 Processing new lead category result:', { category_id: data.category_id, category_name: categoryName });
               return categoryName;
             })(),
-            language: legacyLanguageRecord?.name || String(data.language_id || ''), // Get language name from joined table
+            language: languageName, // Always use the language name (never use ID)
             balance: String(data.total || ''), // Map total to balance
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
@@ -2674,6 +2702,17 @@ useEffect(() => {
             reason_id: data.reason_id || null, // Include reason_id for fallback unactivation reason
             unactivated_by: data.unactivated_by || null, // Include unactivated_by
             unactivated_at: data.unactivated_at || null, // Include unactivated_at
+            vat: (data as any).vat || null, // Include vat column for legacy leads
+            manual_id: data.manual_id || null,
+            master_id: data.master_id || null,
+            eligibile: data.eligibile || null,
+            no_of_applicants: data.no_of_applicants || null,
+            meeting_scheduler_id: data.meeting_scheduler_id || null,
+            meeting_manager_id: data.meeting_manager_id || null,
+            meeting_lawyer_id: data.meeting_lawyer_id || null,
+            expert_id: data.expert_id || null,
+            // Explicitly DO NOT include: description, description_last_edited_by, description_last_edited_at,
+            // special_notes_last_edited_by, special_notes_last_edited_at, language_id
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
@@ -3015,9 +3054,36 @@ useEffect(() => {
               }
 
               const legacyStageId = resolveStageId(legacyLead.stage);
+              
+              // Extract language name from joined table
+              let languageName = '';
+              if (legacyLanguageRecord?.name) {
+                languageName = legacyLanguageRecord.name;
+              } else if (legacyLead.language_id) {
+                // If join failed, fetch language name directly by language_id
+                try {
+                  const { data: langData } = await supabase
+                    .from('misc_language')
+                    .select('name')
+                    .eq('id', legacyLead.language_id)
+                    .maybeSingle();
+                  if (langData?.name) {
+                    languageName = langData.name;
+                  }
+                } catch (langError) {
+                  console.error('Error fetching language name:', langError);
+                }
+              }
+              
+              // Create transformed data by explicitly selecting only the fields we want
+              // This ensures unwanted fields (description, tracking fields, language_id) are never included
               clientData = {
-                ...legacyLead,
                 id: `legacy_${legacyLead.id}`,
+                name: legacyLead.name || '',
+                email: legacyLead.email || '',
+                phone: legacyLead.phone || '',
+                mobile: legacyLead.mobile || '',
+                topic: legacyLead.topic || '',
                 lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
                 stage: legacyStageId ?? (typeof legacyLead.stage === 'number' ? legacyLead.stage : null),
                 source: String(legacyLead.source_id || ''),
@@ -3028,7 +3094,7 @@ useEffect(() => {
                 next_followup: legacyLead.next_followup || '',
                 probability: legacyLead.probability !== null && legacyLead.probability !== undefined ? Number(legacyLead.probability) : 0,
                 category: getCategoryName(legacyLead.category_id, legacyLead.category),
-                language: legacyLanguageRecord?.name || String(legacyLead.language_id || ''),
+                language: languageName, // Always use the language name (never use ID)
                 balance: String(legacyLead.total || ''),
                 balance_currency: legacyCurrencyRecord?.name || (() => {
                   switch (legacyLead.currency_id) {
@@ -3054,6 +3120,18 @@ useEffect(() => {
                 status: legacyLead.status || null,
                 sales_roles_locked: legacyLead.sales_roles_locked || null,
                 reason_id: legacyLead.reason_id || null,
+                manual_id: legacyLead.manual_id || null,
+                master_id: legacyLead.master_id || null,
+                eligibile: legacyLead.eligibile || null,
+                no_of_applicants: legacyLead.no_of_applicants || null,
+                meeting_scheduler_id: legacyLead.meeting_scheduler_id || null,
+                meeting_manager_id: legacyLead.meeting_manager_id || null,
+                meeting_lawyer_id: legacyLead.meeting_lawyer_id || null,
+                expert_id: legacyLead.expert_id || null,
+                vat: (legacyLead as any).vat || null,
+                potential_total: legacyLead.potential_total || null,
+                // Explicitly DO NOT include: description, description_last_edited_by, description_last_edited_at,
+                // special_notes_last_edited_by, special_notes_last_edited_at, language_id
               };
               break; // Found it, stop searching
             } else if (type === 'lead_number' && data && !error) {
@@ -11405,22 +11483,36 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     let shouldShowVAT = false;
                     
                     if (isLegacyLead) {
-                      // Legacy leads: calculate VAT for all currencies
-                      const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                      vatAmount = totalAmount * 0.18;
-                      shouldShowVAT = true; // Always show for legacy leads
-                    } else {
-                      // New leads: check 'vat' column (text type)
-                      // Default to showing VAT (since database default is TRUE)
-                      // NULL/undefined → show VAT (default)
-                      // FALSE, 'false', 'FALSE' → don't show VAT
-                      // TRUE, 'true', 'TRUE' → show VAT
-                      const vatValue = selectedClient?.vat;
-                      shouldShowVAT = true; // Default to showing VAT
+                      // Legacy leads: check 'vat' column (text type, same as new leads)
+                      // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                      // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                      const vatValue = (selectedClient as any)?.vat;
+                      shouldShowVAT = true; // Default to showing VAT (included)
                       
                       if (vatValue !== null && vatValue !== undefined) {
                         const vatStr = String(vatValue).toLowerCase().trim();
-                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no') {
+                        // If VAT is excluded, don't show VAT in badge
+                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                          shouldShowVAT = false;
+                        }
+                      }
+                      
+                      // Only calculate VAT if we should show it
+                      if (shouldShowVAT) {
+                        const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                        vatAmount = totalAmount * 0.18;
+                      }
+                    } else {
+                      // New leads: check 'vat' column (text type)
+                      // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                      // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                      const vatValue = selectedClient?.vat;
+                      shouldShowVAT = true; // Default to showing VAT (included)
+                      
+                      if (vatValue !== null && vatValue !== undefined) {
+                        const vatStr = String(vatValue).toLowerCase().trim();
+                        // If VAT is excluded, don't show VAT in badge
+                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
                           shouldShowVAT = false;
                         }
                       }
@@ -12147,22 +12239,36 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         let shouldShowVAT = false;
                         
                         if (isLegacyLead) {
-                          // Legacy leads: calculate VAT for all currencies
-                          const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
-                          vatAmount = totalAmount * 0.18;
-                          shouldShowVAT = true; // Always show for legacy leads
-                        } else {
-                          // New leads: check 'vat' column (text type)
-                          // Default to showing VAT (since database default is TRUE)
-                          // NULL/undefined → show VAT (default)
-                          // FALSE, 'false', 'FALSE' → don't show VAT
-                          // TRUE, 'true', 'TRUE' → show VAT
-                          const vatValue = selectedClient?.vat;
-                          shouldShowVAT = true; // Default to showing VAT
+                          // Legacy leads: check 'vat' column (text type, same as new leads)
+                          // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                          // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                          const vatValue = (selectedClient as any)?.vat;
+                          shouldShowVAT = true; // Default to showing VAT (included)
                           
                           if (vatValue !== null && vatValue !== undefined) {
                             const vatStr = String(vatValue).toLowerCase().trim();
-                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no') {
+                            // If VAT is excluded, don't show VAT in badge
+                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                              shouldShowVAT = false;
+                            }
+                          }
+                          
+                          // Only calculate VAT if we should show it
+                          if (shouldShowVAT) {
+                            const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                            vatAmount = totalAmount * 0.18;
+                          }
+                        } else {
+                          // New leads: check 'vat' column (text type)
+                          // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                          // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                          const vatValue = selectedClient?.vat;
+                          shouldShowVAT = true; // Default to showing VAT (included)
+                          
+                          if (vatValue !== null && vatValue !== undefined) {
+                            const vatStr = String(vatValue).toLowerCase().trim();
+                            // If VAT is excluded, don't show VAT in badge
+                            if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
                               shouldShowVAT = false;
                             }
                           }
