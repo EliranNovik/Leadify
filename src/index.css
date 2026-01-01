@@ -414,16 +414,49 @@ html.dark .badge:not(.stage-badge) {
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
 }
 
-/* Dropdown styling */
+/* Dropdown styling - Light mode (globally applied) */
+.dropdown-content {
+  background: #ffffff !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15) !important;
+  color: #1a1a1a !important;
+}
+
+/* Dropdown styling - Dark mode */
 html.dark .dropdown-content {
   background: rgba(11, 30, 61, 0.95) !important;
   border: 1px solid rgba(255, 255, 255, 0.2) !important;
   border-radius: 12px !important;
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.3) !important;
   backdrop-filter: blur(8px) !important;
+  color: #ffffff !important;
 }
 
-/* Modal styling with frosted glass background */
+/* Modal styling - Light mode (globally applied) */
+.modal-box {
+  background: #ffffff !important;
+  color: #1a1a1a !important;
+  border: 1px solid rgba(0, 0, 0, 0.1) !important;
+  border-radius: 12px !important;
+  box-shadow: 0 25px 60px rgba(0, 0, 0, 0.3) !important;
+}
+
+/* DaisyUI modal backdrop - Light mode */
+.modal {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+.modal.modal-open {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+.modal::backdrop,
+dialog::backdrop {
+  background: rgba(0, 0, 0, 0.5) !important;
+}
+
+/* Modal styling with frosted glass background - Dark mode */
 html.dark .modal-box {
   background: rgba(15, 23, 42, 0.85) !important;
   backdrop-filter: blur(20px) !important;
@@ -434,7 +467,7 @@ html.dark .modal-box {
   box-shadow: 0 25px 60px rgba(0, 0, 0, 0.55) !important;
 }
 
-/* DaisyUI modal backdrop - darker with blur */
+/* DaisyUI modal backdrop - darker with blur - Dark mode */
 html.dark .modal {
   background: rgba(11, 30, 61, 0.75) !important;
   backdrop-filter: blur(8px) !important;
@@ -452,6 +485,26 @@ html.dark dialog::backdrop {
   background: rgba(11, 30, 61, 0.75) !important;
   backdrop-filter: blur(8px) !important;
   -webkit-backdrop-filter: blur(8px) !important;
+}
+
+/* Collapse/Menu styling - Light mode (globally applied) */
+.collapse-title,
+.collapse-content,
+.menu {
+  background: #ffffff !important;
+  color: #1a1a1a !important;
+}
+
+.collapse:not(.collapse-open) .collapse-content {
+  display: none;
+}
+
+/* Collapse/Menu styling - Dark mode */
+html.dark .collapse-title,
+html.dark .collapse-content,
+html.dark .menu {
+  background: rgba(15, 23, 42, 0.95) !important;
+  color: #ffffff !important;
 }
 
 /* Don't use these overly broad selectors - they affect Clients.tsx */
