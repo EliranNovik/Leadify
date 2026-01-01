@@ -755,38 +755,57 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         
         // Prefix match: search for legacy leads where id (as text) starts with the search digits
         // This allows finding "192191" when searching "19", "192", "1921", etc.
-        // Use a range query to efficiently find IDs that start with the search digits
+        // Use a more precise range query to reduce unnecessary fetches
         try {
           const searchStr = String(num);
-          const minId = num;
-          // Calculate max ID: for "19" (2 digits), we want up to 199999 (6 digits max)
-          // For "192" (3 digits), we want up to 192999, etc.
-          // Formula: num * 10^(6 - length) + 10^(6 - length) - 1
-          const remainingDigits = Math.max(0, 6 - searchStr.length);
-          const maxId = num * Math.pow(10, remainingDigits) + Math.pow(10, remainingDigits) - 1;
+          const searchLength = searchStr.length;
+          
+          // For short queries (1-3 digits), use a more conservative range to avoid fetching too many non-matching results
+          // For longer queries (4+ digits), the range is naturally smaller
+          let minId = num;
+          let maxId: number;
+          let queryLimit = 200;
+          
+          if (searchLength <= 3) {
+            // For short queries like "209", limit the range more aggressively
+            // Instead of 209-209999, use a smaller range like 209-20999 (4-5 digit IDs)
+            // This reduces the number of non-matching results fetched
+            const conservativeRemainingDigits = Math.min(2, 6 - searchLength); // Max 2 extra digits for short queries
+            maxId = num * Math.pow(10, conservativeRemainingDigits) + Math.pow(10, conservativeRemainingDigits) - 1;
+            queryLimit = 50; // Lower limit for short queries to reduce bouncing
+          } else {
+            // For longer queries (4+ digits), use the full range calculation
+            const remainingDigits = Math.max(0, 6 - searchLength);
+            maxId = num * Math.pow(10, remainingDigits) + Math.pow(10, remainingDigits) - 1;
+            queryLimit = 200;
+          }
           
           console.log('[searchContactsSimple] Legacy lead ID range calculation:', { 
             searchStr, 
             minId, 
             maxId, 
-            remainingDigits,
-            calculation: `${num} * 10^${remainingDigits} + 10^${remainingDigits} - 1 = ${maxId}`
+            searchLength,
+            queryLimit,
+            calculation: searchLength <= 3 
+              ? `Short query: ${num} * 10^${Math.min(2, 6 - searchLength)} + 10^${Math.min(2, 6 - searchLength)} - 1 = ${maxId}`
+              : `${num} * 10^${Math.max(0, 6 - searchLength)} + 10^${Math.max(0, 6 - searchLength)} - 1 = ${maxId}`
           });
           
           console.log('[searchContactsSimple] Querying leads_lead table:', {
             table: 'leads_lead',
             minId,
             maxId,
-            limit: 200
+            limit: queryLimit
           });
           
           // OPTIMIZATION: Fetch full lead data in one query instead of just IDs
+          // Use a more conservative limit for short queries to reduce bouncing
           const { data: legacyLeads, error: legacyLeadsError } = await supabase
             .from('leads_lead')
             .select('id, name, email, phone, mobile, topic, stage, cdate, master_id')
             .gte('id', minId)
             .lte('id', maxId)
-            .limit(200); // Increased limit for prefix matches
+            .limit(queryLimit);
           
           if (legacyLeadsError) {
             console.error('[searchContactsSimple] ERROR querying legacy leads:', {
@@ -1504,17 +1523,45 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
     });
 
     // Mark and sort - simplified for speed
+    // CRITICAL: Properly detect exact matches for emails, phones, and lead numbers
+    const isEmailQuery = looksLikeEmail(trimmed);
+    const trimmedDigits = getDigits(trimmed);
+    
     results.forEach((l) => {
-      const nm = (l.contactName || l.name).toLowerCase();
-      const emailLower = (l.email || '').toLowerCase();
+      const nm = (l.contactName || l.name || '').toLowerCase();
+      const emailLower = (l.email || '').toLowerCase().trim();
       const phoneDigits = getDigits(l.phone || '');
       const mobileDigits = getDigits(l.mobile || '');
+      const leadNumLower = String(l.lead_number || '').toLowerCase().trim();
 
-      const exact = nm === lower || l.lead_number === trimmed || emailLower === lower ||
-        (isPhone && (phoneDigits.endsWith(digits.slice(-5)) || mobileDigits.endsWith(digits.slice(-5))));
-      const starts = nm.startsWith(lower) || emailLower.startsWith(lower);
+      // Check for exact matches
+      let isExactMatch = false;
+      
+      // Email exact match (case-insensitive, trimmed)
+      if (isEmailQuery && emailLower === lower.trim()) {
+        isExactMatch = true;
+      }
+      // Lead number exact match
+      else if (isLeadNumber && leadNumLower === trimmed.toLowerCase().trim()) {
+        isExactMatch = true;
+      }
+      // Phone exact match (all digits must match)
+      else if (isPhone && trimmedDigits.length >= 3) {
+        if (phoneDigits === trimmedDigits || mobileDigits === trimmedDigits) {
+          isExactMatch = true;
+        }
+      }
+      // Name exact match
+      else if (nm === lower) {
+        isExactMatch = true;
+      }
+      
+      // Prefix matches (starts with)
+      const starts = nm.startsWith(lower) || emailLower.startsWith(lower.trim()) ||
+        (isPhone && (phoneDigits.startsWith(trimmedDigits) || mobileDigits.startsWith(trimmedDigits)));
 
-      l.isFuzzyMatch = !exact && !starts;
+      // Mark as fuzzy only if it's not exact and doesn't start with the query
+      l.isFuzzyMatch = !isExactMatch && !starts;
     });
 
     // Fast sort

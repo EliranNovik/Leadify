@@ -147,6 +147,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const fuzzyMatchesRef = useRef<CombinedLead[]>([]);
   const previousSearchQueryRef = useRef<string>('');
   const fuzzySearchTimeoutRef = useRef<NodeJS.Timeout>();
+  const showNoExactMatchTimeoutRef = useRef<NodeJS.Timeout>();
+  const isSearchingRef = useRef<boolean>(false);
+  const [showNoExactMatch, setShowNoExactMatch] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const searchContainerRef = useRef<HTMLDivElement>(null);
@@ -561,372 +564,679 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     };
   }, []);
 
-  // Client-side filtering function - filters existing results based on query
-  const filterResultsClientSide = (results: CombinedLead[], query: string): CombinedLead[] => {
-    const trimmed = query.trim().toLowerCase();
-    if (!trimmed) return results;
-
-    const searchVariants = generateSearchVariants(trimmed);
-    const digits = trimmed.replace(/\D/g, '');
-
-    return results.filter((lead) => {
-      const name = (lead.contactName || lead.name || '').toLowerCase();
-      const email = (lead.email || '').toLowerCase();
-      const phone = (lead.phone || '').replace(/\D/g, '');
-      const mobile = (lead.mobile || '').replace(/\D/g, '');
-      const leadNumber = (lead.lead_number || '').toLowerCase();
-
-      // Check if any search variant matches
-      return searchVariants.some(variant => {
-        const variantLower = variant.toLowerCase();
-        return (
-          name.includes(variantLower) ||
-          email.includes(variantLower) ||
-          leadNumber.includes(variantLower) ||
-          (digits.length >= 3 && (phone.includes(digits) || mobile.includes(digits)))
-        );
-      });
-    });
-  };
-
-  // Fuzzy search function for when no direct matches found
-  const performFuzzySearch = async (query: string): Promise<CombinedLead[]> => {
+  // Immediate prefix search - shows results as user types (no delay)
+  const performImmediateSearch = async (query: string): Promise<CombinedLead[]> => {
     const trimmed = query.trim();
-    if (!trimmed || trimmed.length < 2) return [];
+    if (!trimmed || trimmed.length < 1) return [];
 
     const lower = trimmed.toLowerCase();
     const digits = trimmed.replace(/\D/g, '');
     const isEmail = trimmed.includes('@');
-    const isPureNumeric = /^\d+$/.test(trimmed);
-    const hasPrefix = /^[LC]/i.test(trimmed);
-    const noPrefix = trimmed.replace(/^[LC]/i, '');
-    const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
+    const isPhoneLike = digits.length >= 3;
+    const isLeadNumber = /^[LC]?\d{1,6}$/i.test(trimmed.replace(/[^\dLC]/gi, ''));
     
-    // Phone detection logic (same as in legacyLeadsApi.ts):
-    // - 4+ digits starting with 0: phone (e.g., "0507")
-    // - 7+ digits: always phone (lead numbers are max 6 digits)
-    // - 3-6 digits that are NOT pure numeric (has formatting/spaces): phone
-    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-    // Lead number: has prefix OR pure numeric query with 1-6 digits (but NOT if starts with 0 and 4+ digits)
-    const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
-    // Phone: starts with 0 OR 7+ digits OR has formatting (not pure numeric) OR 3-6 digits that aren't lead numbers
-    const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
+    const results: CombinedLead[] = [];
+    const seen = new Set<string>();
 
     try {
-      // Build conditions for fuzzy matching - search all relevant fields with multilingual support
-      const newLeadConditions: string[] = [];
-      const legacyLeadConditions: string[] = [];
-
-      // Generate search variants for multilingual matching (Hebrew, Arabic, English)
-      // This includes reverse transliteration: English -> Hebrew/Arabic equivalents
-      const searchVariants = generateSearchVariants(trimmed);
-
-      // Always search name (if query is at least 2 chars) - with multilingual support
-      if (trimmed.length >= 2) {
-        searchVariants.forEach(variant => {
-          // Search for each variant (English, Hebrew, Arabic equivalents)
-          newLeadConditions.push(`name.ilike.%${variant}%`);
-          legacyLeadConditions.push(`name.ilike.%${variant}%`);
-        });
-      }
-
-      // Email fuzzy search - multilingual support
-      if (isEmail || trimmed.length >= 3) {
-        searchVariants.forEach(variant => {
-          newLeadConditions.push(`email.ilike.%${variant}%`);
-          legacyLeadConditions.push(`email.ilike.%${variant}%`);
-        });
-      }
-
-      // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2" or "L39854/2")
-      const hasSubLeadPattern = trimmed.includes('/');
-      let masterIdFromQuery: number | null = null;
-      let suffixFromQuery: number | null = null;
-      
-      if (hasSubLeadPattern) {
-        const parts = trimmed.split('/');
-        if (parts.length === 2) {
-          const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
-          const suffixPart = parts[1];
-          const masterNum = parseInt(masterPart, 10);
-          const suffixNum = parseInt(suffixPart, 10);
-          if (!isNaN(masterNum) && !isNaN(suffixNum)) {
-            masterIdFromQuery = masterNum;
-            suffixFromQuery = suffixNum;
-          }
-        }
-      }
-
-      // Phone number search - prioritize phone search if detected as phone
-      if (isPhone && digits.length >= 3 && !hasSubLeadPattern) {
-        // Phone numbers: search phone/mobile fields only
-        newLeadConditions.push(`phone.ilike.%${digits}%`);
-        newLeadConditions.push(`mobile.ilike.%${digits}%`);
-        legacyLeadConditions.push(`phone.ilike.%${digits}%`);
-        legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
-        // Don't search lead_number or ID for phone numbers
-      } else if (isLeadNumber || hasSubLeadPattern) {
-        // Lead number search - search lead_number fields and ID (for legacy)
-        // Also handle sub-lead patterns (e.g., "39854/2", "L39854/2")
-        newLeadConditions.push(`lead_number.ilike.%${trimmed}%`);
-        newLeadConditions.push(`lead_number.ilike.L%${trimmed}%`);
-        newLeadConditions.push(`lead_number.ilike.C%${trimmed}%`);
+      // Email prefix search - immediate results (e.g., "keller@" matches "keller@jfjfj.com")
+      // Also handles exact email matches (e.g., "keller@example.com" matches exactly)
+      if (isEmail || lower.includes('@')) {
+        const emailPrefix = lower.split('@')[0] || lower;
+        const hasDomain = lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
         
-        // For sub-lead pattern, also search without the suffix to find all sub-leads
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          newLeadConditions.push(`lead_number.ilike.%${masterIdFromQuery}/%`);
-          newLeadConditions.push(`lead_number.ilike.L%${masterIdFromQuery}/%`);
-          newLeadConditions.push(`lead_number.ilike.C%${masterIdFromQuery}/%`);
-        }
-        
-        // For legacy leads, search by master_id if sub-lead pattern detected
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          // Search for master lead
-          legacyLeadConditions.push(`id.eq.${masterIdFromQuery}`);
-          // Search for sub-leads with this master_id
-          legacyLeadConditions.push(`master_id.eq.${masterIdFromQuery}`);
-        } else if (isNumericQuery && digits.length <= 6 && !startsWithZero) {
-          // For legacy leads, only search by ID if it's a valid small number (1-6 digits, no leading zero)
-          // Note: lead_number in leads_lead is bigint, so we can't use ilike on it
-          const numId = parseInt(noPrefix, 10);
-          if (!isNaN(numId) && numId > 0) {
-            legacyLeadConditions.push(`id.eq.${numId}`);
-            // Also search for sub-leads with this master_id
-            legacyLeadConditions.push(`master_id.eq.${numId}`);
+        if (emailPrefix.length >= 1) {
+          // Build search conditions: exact match first, then prefix matches
+          const emailConditions: string[] = [];
+          if (hasDomain) {
+            // If full email provided (e.g., "keller@example.com"), search for exact match (no % wildcard)
+            emailConditions.push(`email.ilike.${lower}`); // Exact match (case-insensitive, no wildcard)
           }
-        }
-        // Don't search legacy lead_number with ilike (it's bigint) - only search by ID above
-      } else if (digits.length > 0) {
-        // Mixed query with digits - search both lead numbers and phones
-        if (digits.length >= 3) {
-          newLeadConditions.push(`phone.ilike.%${digits}%`);
-          newLeadConditions.push(`mobile.ilike.%${digits}%`);
-          legacyLeadConditions.push(`phone.ilike.%${digits}%`);
-          legacyLeadConditions.push(`mobile.ilike.%${digits}%`);
-        }
-        if (digits.length <= 6 && !startsWithZero) {
-          // Only search lead_number for new leads (text field)
-          newLeadConditions.push(`lead_number.ilike.%${digits}%`);
-          // For legacy leads, only search by ID if it's a valid number (lead_number is bigint, can't use ilike)
-          const numId = parseInt(digits, 10);
-          if (!isNaN(numId) && numId > 0) {
-            legacyLeadConditions.push(`id.eq.${numId}`);
+          // Always include prefix matches (e.g., "keller@" matches "keller@example.com")
+          emailConditions.push(`email.ilike.${emailPrefix}%`);
+          if (lower !== emailPrefix && !hasDomain) {
+            emailConditions.push(`email.ilike.${lower}%`);
           }
-        }
-      }
+          
+          // Search new leads
+          const { data: newLeads } = await supabase
+            .from('leads')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+            .or(emailConditions.join(','))
+            .limit(20);
 
-      const results: CombinedLead[] = [];
-      const isEnglishQuery = !/[\u0590-\u05FF\u0600-\u06FF]/.test(trimmed); // No Hebrew or Arabic characters
-
-      // Search new leads
-      if (newLeadConditions.length > 0) {
-        const { data: newLeads } = await supabase
-          .from('leads')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-          .or(newLeadConditions.join(','))
-          .limit(50); // Increased limit to include Hebrew/Arabic names for filtering
-
-        if (newLeads) {
-          newLeads.forEach((lead: any) => {
-            results.push({
-              id: lead.id,
-              lead_number: lead.lead_number || '',
-              name: lead.name || '',
-              email: lead.email || '',
-              phone: lead.phone || '',
-              mobile: lead.mobile || '',
-              topic: lead.topic || '',
-              stage: String(lead.stage ?? ''),
-              source: '',
-              created_at: lead.created_at || '',
-              updated_at: lead.created_at || '',
-              notes: '',
-              special_notes: '',
-              next_followup: '',
-              probability: '',
-              category: '',
-              language: '',
-              balance: '',
-              lead_type: 'new',
-              unactivation_reason: null,
-              deactivate_note: null,
-              isFuzzyMatch: true,
-            });
-          });
-        }
-      }
-
-      // Search legacy leads
-      if (legacyLeadConditions.length > 0) {
-        const { data: legacyLeads } = await supabase
-          .from('leads_lead')
-          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
-          .or(legacyLeadConditions.join(','))
-          .limit(50); // Increased limit to handle sub-lead searches
-
-        if (legacyLeads) {
-          // If searching for a specific sub-lead (has suffix), filter to match the suffix
-          let filteredLegacyLeads = legacyLeads;
-          if (hasSubLeadPattern && masterIdFromQuery !== null && suffixFromQuery !== null) {
-            // Get all sub-leads with this master_id, ordered by ID
-            const subLeadsWithMaster = legacyLeads
-              .filter(lead => lead.master_id === masterIdFromQuery)
-              .sort((a, b) => a.id - b.id);
-            
-            // Find the lead at the position that matches the suffix (suffix starts at 2)
-            const targetIndex = suffixFromQuery - 2;
-            if (targetIndex >= 0 && targetIndex < subLeadsWithMaster.length) {
-              // Return only the specific sub-lead
-              filteredLegacyLeads = [subLeadsWithMaster[targetIndex]];
-            } else {
-              // Also include master lead if searching for sub-lead
-              const masterLead = legacyLeads.find(lead => lead.id === masterIdFromQuery && !lead.master_id);
-              if (masterLead) {
-                filteredLegacyLeads = [masterLead, ...subLeadsWithMaster];
-              } else {
-                filteredLegacyLeads = subLeadsWithMaster;
+          if (newLeads) {
+            newLeads.forEach((lead: any) => {
+              const key = `new:${lead.id}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                // Check if email exactly matches (case-insensitive, trimmed)
+                const leadEmail = (lead.email || '').toLowerCase().trim();
+                const searchEmail = lower.trim();
+                const isExactEmailMatch = hasDomain && leadEmail === searchEmail;
+                results.push({
+                  id: lead.id,
+                  lead_number: lead.lead_number || '',
+                  name: lead.name || '',
+                  email: lead.email || '',
+                  phone: lead.phone || '',
+                  mobile: lead.mobile || '',
+                  topic: lead.topic || '',
+                  stage: String(lead.stage ?? ''),
+                  source: '',
+                  created_at: lead.created_at || '',
+                  updated_at: lead.created_at || '',
+                  notes: '',
+                  special_notes: '',
+                  next_followup: '',
+                  probability: '',
+                  category: '',
+                  language: '',
+                  balance: '',
+                  lead_type: 'new',
+                  unactivation_reason: null,
+                  deactivate_note: null,
+                  isFuzzyMatch: !isExactEmailMatch, // Only exact email matches are not fuzzy
+                });
               }
-            }
-          } else if (masterIdFromQuery !== null && !hasSubLeadPattern) {
-            // Searching for master lead - include master and all sub-leads
-            const masterLead = legacyLeads.find(lead => lead.id === masterIdFromQuery && !lead.master_id);
-            const subLeads = legacyLeads.filter(lead => lead.master_id === masterIdFromQuery);
-            filteredLegacyLeads = masterLead ? [masterLead, ...subLeads] : subLeads;
+            });
           }
 
-          filteredLegacyLeads.forEach((lead: any) => {
-            // Format lead number with suffix for sub-leads
-            let leadNumber: string;
-            if (lead.master_id) {
-              // It's a sub-lead - calculate suffix
-              const allSubLeads = legacyLeads
-                .filter(l => l.master_id === lead.master_id)
-                .sort((a, b) => a.id - b.id);
-              const suffix = allSubLeads.findIndex(l => l.id === lead.id) + 2;
-              leadNumber = `${lead.master_id}/${suffix}`;
-            } else {
-              // It's a master lead
-              leadNumber = String(lead.id);
-            }
-            
-            results.push({
-              id: `legacy_${lead.id}`,
-              lead_number: leadNumber,
-              manual_id: leadNumber,
-              name: lead.name || '',
-              email: lead.email || '',
-              phone: lead.phone || '',
-              mobile: lead.mobile || '',
-              topic: lead.topic || '',
-              stage: String(lead.stage ?? ''),
-              source: '',
-              created_at: lead.cdate || '',
-              updated_at: lead.cdate || '',
-              notes: '',
-              special_notes: '',
-              next_followup: '',
-              probability: '',
-              category: '',
-              language: '',
-              balance: '',
-              lead_type: 'legacy',
-              unactivation_reason: null,
-              deactivate_note: null,
-              isFuzzyMatch: true,
-            });
-          });
-        }
-      }
+          // Search legacy leads
+          const { data: legacyLeads } = await supabase
+            .from('leads_lead')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+            .or(emailConditions.join(','))
+            .limit(20);
 
-      // Search contacts (for both new and legacy leads) - fuzzy search on name, email, phone with multilingual support
-      if (trimmed.length >= 2) {
-        const contactConditions: string[] = [];
-        const contactSearchVariants = generateSearchVariants(trimmed);
-        
-        if (trimmed.length >= 2) {
-          // Search name with multilingual variants
-          contactSearchVariants.forEach(variant => {
-            contactConditions.push(`name.ilike.%${variant}%`);
-          });
-        }
-        if (isEmail || trimmed.length >= 3) {
-          // Search email with multilingual variants
-          contactSearchVariants.forEach(variant => {
-            contactConditions.push(`email.ilike.%${variant}%`);
-          });
-        }
-        if (digits.length >= 3) {
-          contactConditions.push(`phone.ilike.%${digits}%`);
-          contactConditions.push(`mobile.ilike.%${digits}%`);
-        }
-        
-        if (contactConditions.length > 0) {
+          if (legacyLeads) {
+            legacyLeads.forEach((lead: any) => {
+              const key = `legacy:${lead.id}`;
+              if (!seen.has(key)) {
+                seen.add(key);
+                // Check if email exactly matches (case-insensitive, trimmed)
+                const leadEmail = (lead.email || '').toLowerCase().trim();
+                const searchEmail = lower.trim();
+                const isExactEmailMatch = hasDomain && leadEmail === searchEmail;
+                results.push({
+                  id: `legacy_${lead.id}`,
+                  lead_number: String(lead.id),
+                  manual_id: String(lead.id),
+                  name: lead.name || '',
+                  email: lead.email || '',
+                  phone: lead.phone || '',
+                  mobile: lead.mobile || '',
+                  topic: lead.topic || '',
+                  stage: String(lead.stage ?? ''),
+                  source: '',
+                  created_at: lead.cdate || '',
+                  updated_at: lead.cdate || '',
+                  notes: '',
+                  special_notes: '',
+                  next_followup: '',
+                  probability: '',
+                  category: '',
+                  language: '',
+                  balance: '',
+                  lead_type: 'legacy',
+                  unactivation_reason: null,
+                  deactivate_note: null,
+                  isFuzzyMatch: !isExactEmailMatch, // Only exact email matches are not fuzzy
+                });
+              }
+            });
+          }
+
+          // Search contacts - run in parallel for better performance
           const { data: contacts } = await supabase
             .from('leads_contact')
             .select('id, name, email, phone, mobile, newlead_id')
-            .or(contactConditions.join(','))
+            .or(emailConditions.join(','))
             .limit(20);
 
-          if (contacts) {
-            for (const contact of contacts) {
-              // Get associated lead
-              if (contact.newlead_id) {
-                const { data: lead } = await supabase
-                  .from('leads')
-                  .select('id, lead_number, topic, stage, created_at')
-                  .eq('id', contact.newlead_id)
-                  .single();
-
-                if (lead) {
-                  results.push({
-                    id: lead.id,
-                    lead_number: lead.lead_number || '',
-                    name: contact.name || '',
-                    email: contact.email || '',
-                    phone: contact.phone || '',
-                    mobile: contact.mobile || '',
-                    topic: lead.topic || '',
-                    stage: String(lead.stage ?? ''),
-                    source: '',
-                    created_at: lead.created_at || '',
-                    updated_at: lead.created_at || '',
-                    notes: '',
-                    special_notes: '',
-                    next_followup: '',
-                    probability: '',
-                    category: '',
-                    language: '',
-                    balance: '',
-                    lead_type: 'new',
-                    unactivation_reason: null,
-                    deactivate_note: null,
-                    isFuzzyMatch: true,
-                    isContact: true,
-                    contactName: contact.name || '',
-                    isMainContact: false,
-                  });
+          if (contacts && contacts.length > 0) {
+            // Collect all unique newlead_ids first
+            const uniqueLeadIds = Array.from(new Set(
+              contacts
+                .map(c => c.newlead_id)
+                .filter(id => id != null)
+            ));
+            
+            // Fetch all leads in parallel (single query instead of loop)
+            if (uniqueLeadIds.length > 0) {
+              const { data: leadsData } = await supabase
+                .from('leads')
+                .select('id, lead_number, topic, stage, created_at')
+                .in('id', uniqueLeadIds);
+              
+              // Create a map for quick lookup
+              const leadsMap = new Map((leadsData || []).map(lead => [lead.id, lead]));
+              
+              // Process contacts with their corresponding leads
+              for (const contact of contacts) {
+                if (contact.newlead_id) {
+                  const lead = leadsMap.get(contact.newlead_id);
+                  if (lead) {
+                    const key = `new:${lead.id}:contact:${contact.id}`;
+                    if (!seen.has(key)) {
+                      seen.add(key);
+                      // Check if email exactly matches (case-insensitive, trimmed)
+                      const contactEmail = (contact.email || '').toLowerCase().trim();
+                      const searchEmail = lower.trim();
+                      const isExactEmailMatch = hasDomain && contactEmail === searchEmail;
+                      results.push({
+                        id: lead.id,
+                        lead_number: lead.lead_number || '',
+                        name: contact.name || '',
+                        email: contact.email || '',
+                        phone: contact.phone || '',
+                        mobile: contact.mobile || '',
+                        topic: lead.topic || '',
+                        stage: String(lead.stage ?? ''),
+                        source: '',
+                        created_at: lead.created_at || '',
+                        updated_at: lead.created_at || '',
+                        notes: '',
+                        special_notes: '',
+                        next_followup: '',
+                        probability: '',
+                        category: '',
+                        language: '',
+                        balance: '',
+                        lead_type: 'new',
+                        unactivation_reason: null,
+                        deactivate_note: null,
+                        isFuzzyMatch: !isExactEmailMatch, // Only exact email matches are not fuzzy
+                        isContact: true,
+                        contactName: contact.name || '',
+                        isMainContact: false,
+                      });
+                    }
+                  }
                 }
               }
             }
           }
+
+          // Sort email results: exact matches first, then prefix matches
+          results.sort((a, b) => {
+            if (a.isFuzzyMatch !== b.isFuzzyMatch) {
+              return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
+            }
+            return 0;
+          });
+          
+          // Return early if we have email results (prioritize exact/prefix matches)
+          if (results.length > 0) {
+            return results;
+          }
         }
       }
 
-      // Deduplicate results
-      const seen = new Set<string>();
-      return results.filter((lead) => {
-        const key = lead.lead_type === 'legacy' ? `legacy_${lead.id}` : lead.id;
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
+      // Phone/Mobile prefix search - immediate results (handles various formats)
+      if (isPhoneLike && digits.length >= 3) {
+        // Normalize the search digits - handle formats like 00972, 972, 050, 50
+        // Remove leading zeros and country code prefixes for better matching
+        let normalizedDigits = digits;
+        // If starts with 00, remove it (00972... -> 972...)
+        if (normalizedDigits.startsWith('00')) {
+          normalizedDigits = normalizedDigits.substring(2);
+        }
+        // If starts with 972, keep it but also try without
+        const searchVariants = [normalizedDigits];
+        if (normalizedDigits.startsWith('972')) {
+          // Also search for local format (remove 972 prefix)
+          const localFormat = normalizedDigits.substring(3);
+          if (localFormat.length >= 3) {
+            searchVariants.push(localFormat);
+          }
+        }
+        // Also try with leading 0 (for local format like 050...)
+        if (!normalizedDigits.startsWith('0') && normalizedDigits.length >= 3) {
+          searchVariants.push('0' + normalizedDigits);
+        }
+        // Also try original digits (in case user typed exact format)
+        if (!searchVariants.includes(digits)) {
+          searchVariants.push(digits);
+        }
+
+        // Build OR conditions for all variants
+        const phoneConditions: string[] = [];
+        const mobileConditions: string[] = [];
+        searchVariants.forEach(variant => {
+          phoneConditions.push(`phone.ilike.%${variant}%`);
+          mobileConditions.push(`mobile.ilike.%${variant}%`);
+        });
+
+        // Search new leads
+        const { data: newLeads } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+          .or([...phoneConditions, ...mobileConditions].join(','))
+          .limit(50);
+
+        if (newLeads) {
+          newLeads.forEach((lead: any) => {
+            const key = `new:${lead.id}`;
+            if (!seen.has(key)) {
+              const phoneDigits = (lead.phone || '').replace(/\D/g, '');
+              const mobileDigits = (lead.mobile || '').replace(/\D/g, '');
+              
+              // Check all variants for prefix matches (prioritize exact prefix)
+              let isPrefixMatch = false;
+              let isContainsMatch = false;
+              
+              for (const variant of searchVariants) {
+                if (phoneDigits.startsWith(variant) || mobileDigits.startsWith(variant)) {
+                  isPrefixMatch = true;
+                  break;
+                }
+                if (phoneDigits.includes(variant) || mobileDigits.includes(variant)) {
+                  isContainsMatch = true;
+                }
+              }
+              
+              if (isPrefixMatch || isContainsMatch) {
+                seen.add(key);
+                results.push({
+                  id: lead.id,
+                  lead_number: lead.lead_number || '',
+                  name: lead.name || '',
+                  email: lead.email || '',
+                  phone: lead.phone || '',
+                  mobile: lead.mobile || '',
+                  topic: lead.topic || '',
+                  stage: String(lead.stage ?? ''),
+                  source: '',
+                  created_at: lead.created_at || '',
+                  updated_at: lead.created_at || '',
+                  notes: '',
+                  special_notes: '',
+                  next_followup: '',
+                  probability: '',
+                  category: '',
+                  language: '',
+                  balance: '',
+                  lead_type: 'new',
+                  unactivation_reason: null,
+                  deactivate_note: null,
+                  isFuzzyMatch: !isPrefixMatch,
+                });
+              }
+            }
+          });
+        }
+
+        // Search legacy leads
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+          .or([...phoneConditions, ...mobileConditions].join(','))
+          .limit(50);
+
+        if (legacyLeads) {
+          legacyLeads.forEach((lead: any) => {
+            const key = `legacy:${lead.id}`;
+            if (!seen.has(key)) {
+              const phoneDigits = (lead.phone || '').replace(/\D/g, '');
+              const mobileDigits = (lead.mobile || '').replace(/\D/g, '');
+              
+              // Check all variants for exact matches first, then prefix matches
+              let isExactMatch = false;
+              let isPrefixMatch = false;
+              let isContainsMatch = false;
+              
+              for (const variant of searchVariants) {
+                // Check for exact match
+                if (phoneDigits === variant || mobileDigits === variant) {
+                  isExactMatch = true;
+                  break;
+                }
+                // Check for prefix match
+                if (phoneDigits.startsWith(variant) || mobileDigits.startsWith(variant)) {
+                  isPrefixMatch = true;
+                  break;
+                }
+                if (phoneDigits.includes(variant) || mobileDigits.includes(variant)) {
+                  isContainsMatch = true;
+                }
+              }
+              
+              if (isExactMatch || isPrefixMatch || isContainsMatch) {
+                seen.add(key);
+                results.push({
+                  id: `legacy_${lead.id}`,
+                  lead_number: String(lead.id),
+                  manual_id: String(lead.id),
+                  name: lead.name || '',
+                  email: lead.email || '',
+                  phone: lead.phone || '',
+                  mobile: lead.mobile || '',
+                  topic: lead.topic || '',
+                  stage: String(lead.stage ?? ''),
+                  source: '',
+                  created_at: lead.cdate || '',
+                  updated_at: lead.cdate || '',
+                  notes: '',
+                  special_notes: '',
+                  next_followup: '',
+                  probability: '',
+                  category: '',
+                  language: '',
+                  balance: '',
+                  lead_type: 'legacy',
+                  unactivation_reason: null,
+                  deactivate_note: null,
+                  isFuzzyMatch: !isExactMatch && !isPrefixMatch, // Exact or prefix match = not fuzzy
+                });
+              }
+            }
+          });
+        }
+
+        // Sort results: prefix matches first
+        results.sort((a, b) => {
+          if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
+          return 0;
+        });
+
+        if (results.length > 0) {
+          return results;
+        }
+      }
+
+      // Lead number prefix search - immediate results
+      if (isLeadNumber || digits.length <= 6) {
+        const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
+        const numPart = leadNumQuery.replace(/[^\d]/g, '');
+        
+        if (numPart.length >= 1) {
+          // Search new leads - prefix match on lead_number
+          const { data: newLeads } = await supabase
+            .from('leads')
+            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+            .or(`lead_number.ilike.${leadNumQuery}%,lead_number.ilike.%${numPart}%`)
+            .limit(20);
+
+          if (newLeads) {
+            newLeads.forEach((lead: any) => {
+              const key = `new:${lead.id}`;
+              if (!seen.has(key)) {
+                const leadNum = (lead.lead_number || '').toLowerCase().trim();
+                const queryLower = leadNumQuery.toLowerCase().trim();
+                const isExactMatch = leadNum === queryLower;
+                const isPrefixMatch = leadNum.startsWith(queryLower);
+                seen.add(key);
+                results.push({
+                  id: lead.id,
+                  lead_number: lead.lead_number || '',
+                  name: lead.name || '',
+                  email: lead.email || '',
+                  phone: lead.phone || '',
+                  mobile: lead.mobile || '',
+                  topic: lead.topic || '',
+                  stage: String(lead.stage ?? ''),
+                  source: '',
+                  created_at: lead.created_at || '',
+                  updated_at: lead.created_at || '',
+                  notes: '',
+                  special_notes: '',
+                  next_followup: '',
+                  probability: '',
+                  category: '',
+                  language: '',
+                  balance: '',
+                  lead_type: 'new',
+                  unactivation_reason: null,
+                  deactivate_note: null,
+                  isFuzzyMatch: !isExactMatch && !isPrefixMatch, // Exact or prefix match = not fuzzy
+                });
+              }
+            });
+          }
+
+          // Search legacy leads by ID (numeric prefix match)
+          const numId = parseInt(numPart, 10);
+          if (!isNaN(numId) && numId > 0) {
+            const { data: legacyLeads } = await supabase
+              .from('leads_lead')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+              .gte('id', numId)
+              .lt('id', numId * 10) // Approximate prefix match range
+              .limit(20);
+
+            if (legacyLeads) {
+              legacyLeads.forEach((lead: any) => {
+                const key = `legacy:${lead.id}`;
+                if (!seen.has(key)) {
+                  const leadIdStr = String(lead.id);
+                  const isExactMatch = leadIdStr === numPart;
+                  const isPrefixMatch = leadIdStr.startsWith(numPart);
+                  if (isPrefixMatch || isExactMatch) {
+                    seen.add(key);
+                    results.push({
+                      id: `legacy_${lead.id}`,
+                      lead_number: leadIdStr,
+                      manual_id: leadIdStr,
+                      name: lead.name || '',
+                      email: lead.email || '',
+                      phone: lead.phone || '',
+                      mobile: lead.mobile || '',
+                      topic: lead.topic || '',
+                      stage: String(lead.stage ?? ''),
+                      source: '',
+                      created_at: lead.cdate || '',
+                      updated_at: lead.cdate || '',
+                      notes: '',
+                      special_notes: '',
+                      next_followup: '',
+                      probability: '',
+                      category: '',
+                      language: '',
+                      balance: '',
+                      lead_type: 'legacy',
+                      unactivation_reason: null,
+                      deactivate_note: null,
+                      isFuzzyMatch: !isExactMatch && !isPrefixMatch, // Exact or prefix match = not fuzzy
+                    });
+                  }
+                }
+              });
+            }
+          }
+
+          // Sort results: prefix matches first
+          results.sort((a, b) => {
+            if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
+            return 0;
+          });
+
+          if (results.length > 0) {
+            return results;
+          }
+        }
+      }
+
+      // Name search with multilingual variants - immediate results for prefix matches
+      // Only search by name if query is not email, phone, or lead number
+      if (!isEmail && !isPhoneLike && !isLeadNumber && trimmed.length >= 2) {
+        const nameVariants = generateSearchVariants(trimmed);
+        
+        // Build OR conditions for all variants (prefix match for speed)
+        const nameConditions = nameVariants.length > 1
+          ? nameVariants.map(v => `name.ilike.${v.toLowerCase()}%`).join(',')
+          : `name.ilike.${lower}%`;
+
+        // Search new leads by name
+        const { data: newLeads } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+          .or(nameConditions)
+          .limit(20);
+
+        if (newLeads) {
+          newLeads.forEach((lead: any) => {
+            const key = `new:${lead.id}`;
+            if (!seen.has(key)) {
+              const leadName = (lead.name || '').toLowerCase();
+              const isExactMatch = leadName === lower;
+              const isPrefixMatch = leadName.startsWith(lower);
+              seen.add(key);
+              results.push({
+                id: lead.id,
+                lead_number: lead.lead_number || '',
+                name: lead.name || '',
+                email: lead.email || '',
+                phone: lead.phone || '',
+                mobile: lead.mobile || '',
+                topic: lead.topic || '',
+                stage: String(lead.stage ?? ''),
+                source: '',
+                created_at: lead.created_at || '',
+                updated_at: lead.created_at || '',
+                notes: '',
+                special_notes: '',
+                next_followup: '',
+                probability: '',
+                category: '',
+                language: '',
+                balance: '',
+                lead_type: 'new',
+                unactivation_reason: null,
+                deactivate_note: null,
+                isFuzzyMatch: !isExactMatch && !isPrefixMatch,
+              });
+            }
+          });
+        }
+
+        // Search legacy leads by name
+        const { data: legacyLeads } = await supabase
+          .from('leads_lead')
+          .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+          .or(nameConditions)
+          .limit(20);
+
+        if (legacyLeads) {
+          legacyLeads.forEach((lead: any) => {
+            const key = `legacy:${lead.id}`;
+            if (!seen.has(key)) {
+              const leadName = (lead.name || '').toLowerCase();
+              const isExactMatch = leadName === lower;
+              const isPrefixMatch = leadName.startsWith(lower);
+              seen.add(key);
+              results.push({
+                id: `legacy_${lead.id}`,
+                lead_number: String(lead.id),
+                manual_id: String(lead.id),
+                name: lead.name || '',
+                email: lead.email || '',
+                phone: lead.phone || '',
+                mobile: lead.mobile || '',
+                topic: lead.topic || '',
+                stage: String(lead.stage ?? ''),
+                source: '',
+                created_at: lead.cdate || '',
+                updated_at: lead.cdate || '',
+                notes: '',
+                special_notes: '',
+                next_followup: '',
+                probability: '',
+                category: '',
+                language: '',
+                balance: '',
+                lead_type: 'legacy',
+                unactivation_reason: null,
+                deactivate_note: null,
+                isFuzzyMatch: !isExactMatch && !isPrefixMatch,
+              });
+            }
+          });
+        }
+
+        // Sort name results: exact matches first, then prefix matches
+        results.sort((a, b) => {
+          if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
+          return 0;
+        });
+
+        if (results.length > 0) {
+          return results;
+        }
+      }
+
+      return results;
+    } catch (error) {
+      console.error('Error performing immediate search:', error);
+      return [];
+    }
+  };
+
+  // Fuzzy search function - limited to 5 best results for name matching, sorted by relevance
+  const performFuzzySearch = async (query: string): Promise<CombinedLead[]> => {
+    const trimmed = query.trim();
+    if (!trimmed || trimmed.length < 2) return [];
+
+    // Only perform fuzzy search on names if query is long enough and no immediate results found
+    // Use the existing searchLeads function but limit and prioritize results
+    try {
+      const allResults = await searchLeads(trimmed);
+      
+      // Sort by relevance: exact matches > starts with > contains
+      const lower = trimmed.toLowerCase();
+      const scoredResults = allResults.map(lead => {
+        const name = (lead.contactName || lead.name || '').toLowerCase();
+        const email = (lead.email || '').toLowerCase();
+        const leadNumber = (lead.lead_number || '').toLowerCase();
+        
+        let score = 0;
+        // Exact match gets highest score
+        if (name === lower || email === lower || leadNumber === trimmed) {
+          score = 100;
+        } 
+        // Starts with gets high score
+        else if (name.startsWith(lower) || email.startsWith(lower) || leadNumber.startsWith(trimmed)) {
+          score = 50;
+        } 
+        // Contains gets medium score
+        else if (name.includes(lower) || email.includes(lower)) {
+          // Calculate position - earlier in string = higher score
+          const namePos = name.indexOf(lower);
+          const emailPos = email.indexOf(lower);
+          const earliestPos = namePos >= 0 && emailPos >= 0 
+            ? Math.min(namePos, emailPos)
+            : namePos >= 0 ? namePos : emailPos;
+          score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score (max 30)
+        } 
+        // No match
+        else {
+          score = 0;
+        }
+        
+        return { lead, score };
       });
+      
+      // Sort by score (highest first = closest match first), then limit to 5
+      scoredResults.sort((a, b) => b.score - a.score);
+      const topResults = scoredResults.slice(0, 5).map(item => {
+        // CRITICAL: Preserve the isFuzzyMatch flag from searchLeads
+        // If searchLeads marked it as an exact match (isFuzzyMatch: false), keep it as exact
+        // Only mark as fuzzy if it wasn't already marked as exact
+        const isExactMatch = item.lead.isFuzzyMatch === false;
+        return {
+          ...item.lead,
+          isFuzzyMatch: isExactMatch ? false : true, // Preserve exact matches, mark others as fuzzy
+        };
+      });
+      
+      return topResults;
     } catch (error) {
       console.error('Error performing fuzzy search:', error);
       return [];
     }
   };
 
-  // Handle search - with improved fuzzy search behavior and incremental filtering
+  // Handle search - immediate prefix matching with fuzzy fallback
   useEffect(() => {
     // Clear any existing timeouts
     if (searchTimeoutRef.current) {
@@ -935,9 +1245,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (fuzzySearchTimeoutRef.current) {
       clearTimeout(fuzzySearchTimeoutRef.current);
     }
+    if (showNoExactMatchTimeoutRef.current) {
+      clearTimeout(showNoExactMatchTimeoutRef.current);
+    }
+    
+    // Reset "no exact match" state when search value changes (user is still typing)
+    setShowNoExactMatch(false);
 
     const trimmedQuery = searchValue.trim();
-    const previousQuery = previousSearchQueryRef.current.trim();
 
     if (!trimmedQuery) {
       setSearchResults([]);
@@ -946,112 +1261,214 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       fuzzyMatchesRef.current = [];
       previousSearchQueryRef.current = '';
       setIsSearching(false);
+      isSearchingRef.current = false;
       return;
     }
 
-    // Detect query type for better filtering decisions
-    const isNumeric = /^\d+$/.test(trimmedQuery);
-    const digits = trimmedQuery.replace(/\D/g, '');
-    const isPhoneNumber = /^[\d\s\-\(\)\+]+$/.test(trimmedQuery) && digits.length >= 3;
-    const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-    const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
-    const isVeryShortQuery = trimmedQuery.length < 2;
-    
-    // Check if this is an extension of the previous query (user is continuing to type)
-    // An extension means: the new query is longer AND starts with the previous query
-    const isQueryExtension = previousQuery && 
-      trimmedQuery.length > previousQuery.length && 
-      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
-      (exactMatchesRef.current.length > 0 || fuzzyMatchesRef.current.length > 0) &&
-      !isNumeric && // Don't use incremental filtering for pure numeric queries
-      !isPhoneNumber && // Don't use incremental filtering for phone numbers
-      !isLeadNumber && // Don't use incremental filtering for lead numbers
-      !isVeryShortQuery && // Don't use incremental filtering for very short queries
-      previousQuery.length >= 2; // Previous query must be at least 2 chars
-    
-    if (isQueryExtension && fuzzyMatchesRef.current.length > 0) {
-      // User is continuing to type - filter existing fuzzy results client-side
-      // This provides smooth, instant filtering without jumping around
-      const filteredFuzzy = filterResultsClientSide(fuzzyMatchesRef.current, trimmedQuery);
-      
-      // Combine exact matches (if any) with filtered fuzzy matches
-      const combinedResults = [...exactMatchesRef.current, ...filteredFuzzy];
-      masterSearchResultsRef.current = combinedResults;
-      fuzzyMatchesRef.current = filteredFuzzy; // Update fuzzy matches
-      setSearchResults(combinedResults);
-      setIsSearching(false);
-      previousSearchQueryRef.current = trimmedQuery;
-      
-      // Cancel any pending fuzzy search since we're filtering existing results
-      if (fuzzySearchTimeoutRef.current) {
-        clearTimeout(fuzzySearchTimeoutRef.current);
-      }
-      return;
-    }
-
-    // Query changed significantly or is new - perform fresh search
+    // Perform immediate prefix search (no delay for emails, phones, lead numbers)
     setIsSearching(true);
-
-    // First, try exact/direct search (faster, 300ms delay)
-    searchTimeoutRef.current = setTimeout(async () => {
+    isSearchingRef.current = true;
+    
+    (async () => {
       try {
-        // Try direct search first
-        const directResults = await searchLeads(trimmedQuery);
+        // First, try immediate prefix search (for emails, phones, lead numbers)
+        const immediateResults = await performImmediateSearch(trimmedQuery);
         
-        // Separate exact matches (non-fuzzy) from fuzzy matches
-        const exactMatches = directResults.filter(r => !r.isFuzzyMatch);
-        const directFuzzyMatches = directResults.filter(r => r.isFuzzyMatch);
-        
-        // Store exact matches
-        exactMatchesRef.current = exactMatches;
-        
-        // If we have exact matches, show them immediately
-        if (exactMatches.length > 0) {
-          masterSearchResultsRef.current = exactMatches;
-          setSearchResults(exactMatches);
+        if (immediateResults.length > 0) {
+          // Re-evaluate exact matches based on the trimmed query to ensure accuracy for ALL search types
+          const lowerTrimmed = trimmedQuery.toLowerCase().trim();
+          const trimmedDigits = trimmedQuery.replace(/\D/g, '');
+          
+          // Check if query is email
+          const hasDomainCheck = lowerTrimmed.includes('@') && lowerTrimmed.split('@').length > 1 && lowerTrimmed.split('@')[1].length > 0;
+          
+          // Check if query is phone-like
+          const isPhoneQuery = /^[\d\s\-\+\(\)]+$/.test(trimmedQuery) && trimmedDigits.length >= 3;
+          
+          // Check if query is lead number-like
+          const leadNumQuery = trimmedQuery.replace(/[^\dLC]/gi, '');
+          const isLeadNumQuery = /^[LC]?\d+$/i.test(leadNumQuery);
+          
+          // Ensure exact matches are correctly marked (re-evaluate to fix any missed matches)
+          // This is CRITICAL: We must re-check ALL results to ensure exact matches are properly identified
+          const resultsWithExactFlags = immediateResults.map(result => {
+            let isExactMatch = false;
+            
+            // Email exact match - check email field (for both leads and contacts)
+            if (hasDomainCheck && result.email) {
+              const resultEmail = (result.email || '').toLowerCase().trim();
+              if (resultEmail === lowerTrimmed) {
+                isExactMatch = true;
+              }
+            }
+            
+            // Phone exact match (check if phone or mobile exactly matches)
+            if (!isExactMatch && isPhoneQuery) {
+              const resultPhone = (result.phone || '').replace(/\D/g, '');
+              const resultMobile = (result.mobile || '').replace(/\D/g, '');
+              if (resultPhone === trimmedDigits || resultMobile === trimmedDigits) {
+                isExactMatch = true;
+              }
+            }
+            
+            // Lead number exact match
+            if (!isExactMatch && isLeadNumQuery && result.lead_number) {
+              const resultLeadNum = String(result.lead_number || '').toLowerCase().trim();
+              const queryLeadNum = leadNumQuery.toLowerCase().trim();
+              if (resultLeadNum === queryLeadNum) {
+                isExactMatch = true;
+              }
+            }
+            
+            // If we found an exact match, ensure it's marked as not fuzzy
+            if (isExactMatch) {
+              return { ...result, isFuzzyMatch: false };
+            }
+            
+            // Otherwise, keep the original fuzzy match flag (don't change prefix matches to fuzzy)
+            return result;
+          });
+          
+          // Sort immediate results: exact matches first, then fuzzy matches
+          const sortedResults = [...resultsWithExactFlags].sort((a, b) => {
+            if (a.isFuzzyMatch !== b.isFuzzyMatch) {
+              return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
+            }
+            return 0;
+          });
+          
+          // We have immediate results - show them right away (sorted)
+          const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
+          const prefixMatches = sortedResults.filter(r => r.isFuzzyMatch);
+          
+          // CRITICAL: Set refs and state together, and only mark as not searching AFTER results are set
+          exactMatchesRef.current = exactMatches;
+          fuzzyMatchesRef.current = prefixMatches;
+          masterSearchResultsRef.current = sortedResults;
+          
+          // Set results FIRST, then mark as not searching
+          // This ensures exact matches are available when the UI renders
+          setSearchResults(sortedResults);
+          
+          // Only mark as not searching AFTER results are set
+          // This prevents "No exact matches found" from showing prematurely
           setIsSearching(false);
+          isSearchingRef.current = false;
           previousSearchQueryRef.current = trimmedQuery;
           
-          // Still perform fuzzy search in background if query is long enough
-          // but don't show loading state
-          if (trimmedQuery.length >= 3 && directFuzzyMatches.length === 0) {
+          // Delay showing "No exact matches found" until user stops typing AND all queries complete
+          // Clear any existing timeout
+          if (showNoExactMatchTimeoutRef.current) {
+            clearTimeout(showNoExactMatchTimeoutRef.current);
+          }
+          
+          // Only show "No exact matches found" if:
+          // 1. There are no exact matches
+          // 2. We're not currently searching (all queries completed)
+          // 3. Wait a bit to ensure user has stopped typing
+          if (exactMatches.length === 0) {
+            showNoExactMatchTimeoutRef.current = setTimeout(() => {
+              // Double-check that we're still not searching before showing the message
+              // This prevents the message from showing if new queries started
+              if (!isSearchingRef.current) {
+                setShowNoExactMatch(true);
+              }
+            }, 500); // 500ms delay after typing stops
+          } else {
+            setShowNoExactMatch(false);
+          }
+          
+          // If query is long enough (3+ chars) and we only have prefix matches (or no exact matches), also try fuzzy name search
+          // BUT: Only do this if we're sure there are NO exact matches (check refs, not local variable)
+          if (trimmedQuery.length >= 3 && exactMatches.length === 0) {
+            // Run fuzzy search in background (with small delay to avoid blocking)
+            fuzzySearchTimeoutRef.current = setTimeout(async () => {
+              try {
+                // Double-check that we still have no exact matches (in case they were added)
+                const currentExactMatches = exactMatchesRef.current;
+                if (currentExactMatches.length > 0) {
+                  // Exact matches were found, don't overwrite with fuzzy results
+                  return;
+                }
+                
+                const fuzzyResults = await performFuzzySearch(trimmedQuery);
+                // Combine prefix matches with fuzzy matches (fuzzy already limited to 5)
+                // Limit total fuzzy results to 5 (prefix + name fuzzy)
+                const allFuzzy = [...prefixMatches, ...fuzzyResults];
+                // Sort all fuzzy by relevance and limit to 5
+                const lower = trimmedQuery.toLowerCase();
+                const scoredFuzzy = allFuzzy.map(lead => {
+                  const name = (lead.contactName || lead.name || '').toLowerCase();
+                  const email = (lead.email || '').toLowerCase();
+                  let score = 0;
+                  if (name.startsWith(lower) || email.startsWith(lower)) {
+                    score = 50;
+                  } else if (name.includes(lower) || email.includes(lower)) {
+                    const namePos = name.indexOf(lower);
+                    const emailPos = email.indexOf(lower);
+                    const earliestPos = namePos >= 0 && emailPos >= 0 
+                      ? Math.min(namePos, emailPos)
+                      : namePos >= 0 ? namePos : emailPos;
+                    score = 30 - Math.min(earliestPos, 20);
+                  }
+                  return { lead, score };
+                });
+                scoredFuzzy.sort((a, b) => b.score - a.score);
+                const limitedFuzzy = scoredFuzzy.slice(0, 5).map(item => item.lead);
+                fuzzyMatchesRef.current = limitedFuzzy;
+                // Keep exact matches + limited fuzzy (check refs again to ensure we don't overwrite exact matches)
+                const finalExactMatches = exactMatchesRef.current;
+                const combinedResults = [...finalExactMatches, ...limitedFuzzy];
+                masterSearchResultsRef.current = combinedResults;
+                setSearchResults(combinedResults);
+                
+                // Update "No exact matches found" state after fuzzy search completes
+                // Only show if user has stopped typing AND we're not searching
+                if (finalExactMatches.length === 0 && limitedFuzzy.length > 0) {
+                  if (showNoExactMatchTimeoutRef.current) {
+                    clearTimeout(showNoExactMatchTimeoutRef.current);
+                  }
+                  showNoExactMatchTimeoutRef.current = setTimeout(() => {
+                    // Only show if we're not currently searching
+                    if (!isSearchingRef.current) {
+                      setShowNoExactMatch(true);
+                    }
+                  }, 300); // Small delay to ensure user has stopped typing
+                } else {
+                  setShowNoExactMatch(false);
+                }
+              } catch (error) {
+                console.error('Error performing fuzzy search:', error);
+              }
+            }, 200);
+          }
+        } else {
+          // No immediate results - try fuzzy name search (only if query is 2+ chars)
+          if (trimmedQuery.length >= 2) {
             fuzzySearchTimeoutRef.current = setTimeout(async () => {
               try {
                 const fuzzyResults = await performFuzzySearch(trimmedQuery);
                 fuzzyMatchesRef.current = fuzzyResults;
-                // Combine exact matches with fuzzy matches
-                const combinedResults = [...exactMatches, ...fuzzyResults];
-                masterSearchResultsRef.current = combinedResults;
-                setSearchResults(combinedResults);
+                masterSearchResultsRef.current = fuzzyResults;
+                setSearchResults(fuzzyResults);
+                setIsSearching(false);
+                isSearchingRef.current = false;
+                previousSearchQueryRef.current = trimmedQuery;
               } catch (error) {
                 console.error('Error performing fuzzy search:', error);
+                setSearchResults([]);
+                masterSearchResultsRef.current = [];
+                setIsSearching(false);
+                isSearchingRef.current = false;
               }
-            }, 500); // Additional delay for fuzzy search
-          } else if (directFuzzyMatches.length > 0) {
-            // If direct search returned fuzzy matches, use them
-            fuzzyMatchesRef.current = directFuzzyMatches;
-            const combinedResults = [...exactMatches, ...directFuzzyMatches];
-            masterSearchResultsRef.current = combinedResults;
-            setSearchResults(combinedResults);
+            }, 300); // Small delay for fuzzy search to avoid too many requests
+          } else {
+            // Query too short - no results
+            setSearchResults([]);
+            masterSearchResultsRef.current = [];
             setIsSearching(false);
+            isSearchingRef.current = false;
           }
-        } else {
-          // No exact matches - perform fuzzy search (longer delay to avoid jumping)
-          fuzzySearchTimeoutRef.current = setTimeout(async () => {
-            try {
-              const fuzzyResults = await performFuzzySearch(trimmedQuery);
-              fuzzyMatchesRef.current = fuzzyResults;
-              masterSearchResultsRef.current = fuzzyResults;
-              setSearchResults(fuzzyResults);
-              setIsSearching(false);
-              previousSearchQueryRef.current = trimmedQuery;
-            } catch (error) {
-              console.error('Error performing fuzzy search:', error);
-              setSearchResults([]);
-              masterSearchResultsRef.current = [];
-              setIsSearching(false);
-            }
-          }, 600); // Longer delay for fuzzy search to reduce jumping
         }
       } catch (error) {
         console.error('Error searching leads:', error);
@@ -1060,8 +1477,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         exactMatchesRef.current = [];
         fuzzyMatchesRef.current = [];
         setIsSearching(false);
+        isSearchingRef.current = false;
       }
-    }, 300); // Fast response for exact matches
+    })();
   }, [searchValue]);
 
   // Keep search active when filter dropdown is open
@@ -2379,8 +2797,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setIsSearchActive(false);
     setHasAppliedFilters(false);
     setIsSearching(false);
+    isSearchingRef.current = false;
+    setShowNoExactMatch(false);
     if (fuzzySearchTimeoutRef.current) {
       clearTimeout(fuzzySearchTimeoutRef.current);
+    }
+    if (showNoExactMatchTimeoutRef.current) {
+      clearTimeout(showNoExactMatchTimeoutRef.current);
     }
     searchInputRef.current?.blur();
   };
@@ -2396,8 +2819,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     setHasAppliedFilters(false);
     setShowFilterDropdown(false);
     setIsSearching(false);
+    isSearchingRef.current = false;
+    setShowNoExactMatch(false);
     if (fuzzySearchTimeoutRef.current) {
       clearTimeout(fuzzySearchTimeoutRef.current);
+    }
+    if (showNoExactMatchTimeoutRef.current) {
+      clearTimeout(showNoExactMatchTimeoutRef.current);
     }
     searchInputRef.current?.blur();
   };
@@ -3512,28 +3940,63 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               <div className="space-y-2">
                 {/* Separate exact matches from fuzzy matches */}
                 {(() => {
-                  const exactMatches = searchResults.filter(r => !r.isFuzzyMatch);
-                  const allFuzzyMatches = searchResults.filter(r => r.isFuzzyMatch);
+                  // Ensure results are sorted: exact matches first
+                  const sortedResults = [...searchResults].sort((a, b) => {
+                    if (a.isFuzzyMatch !== b.isFuzzyMatch) {
+                      return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
+                    }
+                    return 0;
+                  });
+                  
+                  const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
+                  let allFuzzyMatches = sortedResults.filter(r => r.isFuzzyMatch);
                   
                   // Create a set of exact match lead identifiers to filter duplicates
                   const exactMatchIdentifiers = new Set<string>();
                   exactMatches.forEach(match => {
-                    const identifier = match.lead_number?.toString().trim() || '';
+                    const identifier = match.lead_number?.toString().trim() || match.id?.toString().trim() || '';
                     if (identifier) {
                       exactMatchIdentifiers.add(identifier.toLowerCase());
                     }
                   });
                   
-                  // Filter out fuzzy matches that have the same lead_number as exact matches
-                  const fuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
-                    const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || '';
+                  // Filter out fuzzy matches that have the same lead_number or id as exact matches
+                  allFuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
+                    const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || fuzzyMatch.id?.toString().trim() || '';
                     if (!fuzzyIdentifier) return true; // Keep if no identifier
                     return !exactMatchIdentifiers.has(fuzzyIdentifier.toLowerCase());
                   });
                   
+                  // Sort fuzzy matches by relevance (closest match first)
+                  // Re-score fuzzy matches to ensure proper ordering
+                  const lower = searchValue.trim().toLowerCase();
+                  const scoredFuzzyMatches = allFuzzyMatches.map(lead => {
+                    const name = (lead.contactName || lead.name || '').toLowerCase();
+                    const email = (lead.email || '').toLowerCase();
+                    
+                    let score = 0;
+                    if (name.startsWith(lower) || email.startsWith(lower)) {
+                      score = 50; // Starts with
+                    } else if (name.includes(lower) || email.includes(lower)) {
+                      // Calculate position - earlier in string = higher score
+                      const namePos = name.indexOf(lower);
+                      const emailPos = email.indexOf(lower);
+                      const earliestPos = namePos >= 0 && emailPos >= 0 
+                        ? Math.min(namePos, emailPos)
+                        : namePos >= 0 ? namePos : emailPos;
+                      score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score
+                    }
+                    
+                    return { lead, score };
+                  });
+                  
+                  // Sort by score (highest first = closest match first), then limit to 5
+                  scoredFuzzyMatches.sort((a, b) => b.score - a.score);
+                  const fuzzyMatches = scoredFuzzyMatches.slice(0, 5).map(item => item.lead);
+                  
                   return (
                     <>
-                      {/* Exact Matches Section */}
+                      {/* Exact Matches Section - ALWAYS show first if they exist */}
                       {exactMatches.length > 0 && (
                         <>
                           {exactMatches.map((result, index) => {
@@ -3585,10 +4048,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         </>
                       )}
                       
-                      {/* No exact match message - shown when there are fuzzy matches but no exact matches */}
-                      {exactMatches.length === 0 && fuzzyMatches.length > 0 && (
+                      {/* No exact match message - ONLY show when:
+                          1. showNoExactMatch state is true (debounced, user stopped typing)
+                          2. There are no exact matches
+                          3. There are fuzzy matches to show
+                          4. We're not currently searching (all queries completed)
+                          5. Not in advanced search mode */}
+                      {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
                         <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
-                          <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact match found</p>
+                          <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact matches found</p>
                         </div>
                       )}
                       
@@ -3599,14 +4067,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         </div>
                       )}
                       
-                      {/* Similar results header - shown when there are no exact matches but there are fuzzy matches */}
-                      {exactMatches.length === 0 && fuzzyMatches.length > 0 && (
-                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
-                          <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar results</p>
-                        </div>
-                      )}
-                      
-                      {/* Fuzzy Matches Section */}
+                      {/* Fuzzy Matches Section - limited to 5, sorted by closest match first */}
                       {fuzzyMatches.length > 0 && (
                         <>
                           {fuzzyMatches.map((result, index) => {
@@ -4526,3 +4987,4 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 };
 
 export default Header;
+
