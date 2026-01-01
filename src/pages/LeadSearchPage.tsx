@@ -554,7 +554,7 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 };
 
 // Table View Component
-const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (leadNumber: string) => void }) => {
+const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (leadNumber: string, event?: React.MouseEvent) => void }) => {
   // Helper function to get currency symbol
   const getCurrencySymbol = (currencyId: any) => {
     if (!currencyId) return '₪'; // Default to NIS
@@ -758,7 +758,7 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 
   return (
     <div className="overflow-x-auto">
-      <table className="table table-zebra w-full">
+      <table className="table w-full">
         <thead>
           <tr>
             {selectedColumns.map((columnKey) => {
@@ -776,10 +776,10 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
             <tr 
               key={lead.id || index} 
               className="hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100"
-              onClick={() => {
+              onClick={(e) => {
                 const leadNumber = (lead as any).lead_number || lead.id?.toString();
                 if (leadNumber) {
-                  onLeadClick(leadNumber);
+                  onLeadClick(leadNumber, e);
                 }
               }}
               title={`Click to view lead ${(lead as any).lead_number || lead.id}`}
@@ -874,8 +874,13 @@ const LeadSearchPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Handle lead click navigation
-  const handleLeadClick = (leadNumber: string) => {
-    navigate(`/clients/${leadNumber}`);
+  const handleLeadClick = (leadNumber: string, event?: React.MouseEvent) => {
+    if (event && (event.metaKey || event.ctrlKey)) {
+      // Open in new tab if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
+      window.open(`/clients/${leadNumber}`, '_blank');
+    } else {
+      navigate(`/clients/${leadNumber}`);
+    }
   };
 
   // Clear any old persistent storage that might interfere with filters
@@ -2691,7 +2696,12 @@ const LeadSearchPage: React.FC = () => {
   <div 
       key={lead.id} 
       className={cardClasses}
-      onClick={() => navigate(`/clients/${lead.lead_number || lead.id}`)}
+      onClick={(e) => {
+        const leadNumber = lead.lead_number || lead.id?.toString();
+        if (leadNumber) {
+          handleLeadClick(leadNumber, e);
+        }
+      }}
     >
       <div className="card-body p-5 relative">
         {isLegacyInactive && (
