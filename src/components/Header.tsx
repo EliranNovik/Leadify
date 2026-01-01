@@ -773,8 +773,80 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
 
+      // Lead number prefix search - use searchLeads for proper exact match and contact handling
+      // MUST come BEFORE phone search to prioritize lead numbers over phone numbers
+      if (isLeadNumber || (digits.length <= 6 && !isPhoneLike)) {
+        const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
+        const numPart = leadNumQuery.replace(/[^\d]/g, '');
+        
+        if (numPart.length >= 1) {
+          // Use searchLeads for lead number queries - it handles exact matches and contacts properly
+          const leadResults = await searchLeads(trimmed);
+          console.log('[performImmediateSearch] Lead number search - raw results from searchLeads:', {
+            query: trimmed,
+            numResults: leadResults.length,
+            results: leadResults.map(r => ({
+              id: r.id,
+              lead_number: r.lead_number,
+              name: r.name || r.contactName,
+              isContact: r.isContact,
+              isFuzzyMatch: r.isFuzzyMatch
+            }))
+          });
+          
+          // Mark exact matches based on lead_number
+          // For lead number searches, only the lead itself (isContact: false) should be exact match
+          // Contacts should be fuzzy matches even if they share the same lead_number
+          const numPartLower = numPart.toLowerCase().trim();
+          const processedResults = leadResults.map(result => {
+            const resultLeadNum = (result.lead_number || '').toLowerCase().trim();
+            // Remove any "L" or "C" prefix from result lead_number for comparison
+            const resultLeadNumNoPrefix = resultLeadNum.replace(/^[lc]/i, '');
+            
+            // Only mark as exact match if:
+            // 1. The lead_number (without prefix) exactly matches the numeric part
+            // 2. AND it's not a contact (isContact: false or undefined)
+            const isExactMatch = resultLeadNumNoPrefix === numPartLower && 
+                                 (!result.isContact || result.isContact === false);
+            const isPrefixMatch = resultLeadNumNoPrefix.startsWith(numPartLower);
+            
+            const finalIsFuzzy = result.isContact ? true : (!isExactMatch && !isPrefixMatch);
+            
+            return {
+              ...result,
+              // For lead number searches, contacts should always be fuzzy matches
+              isFuzzyMatch: finalIsFuzzy
+            };
+          });
+          
+          console.log('[performImmediateSearch] Lead number search - processed results:', {
+            query: trimmed,
+            numResults: processedResults.length,
+            results: processedResults.map(r => ({
+              id: r.id,
+              lead_number: r.lead_number,
+              name: r.name || r.contactName,
+              isContact: r.isContact,
+              isFuzzyMatch: r.isFuzzyMatch
+            }))
+          });
+          
+          // Sort results: exact matches first
+          processedResults.sort((a, b) => {
+            if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
+            return 0;
+          });
+
+          if (processedResults.length > 0) {
+            console.log('[performImmediateSearch] Returning processed results:', processedResults.length);
+            return processedResults;
+          }
+        }
+      }
+
       // Phone/Mobile prefix search - immediate results (handles various formats)
-      if (isPhoneLike && digits.length >= 3) {
+      // Only run if NOT a lead number query (lead numbers take priority)
+      if (isPhoneLike && digits.length >= 3 && !isLeadNumber) {
         // Normalize the search digits - handle formats like 00972, 972, 050, 50
         // Remove leading zeros and country code prefixes for better matching
         let normalizedDigits = digits;
@@ -942,118 +1014,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         if (results.length > 0) {
           return results;
-        }
-      }
-
-      // Lead number prefix search - immediate results
-      if (isLeadNumber || digits.length <= 6) {
-        const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
-        const numPart = leadNumQuery.replace(/[^\d]/g, '');
-        
-        if (numPart.length >= 1) {
-          // Search new leads - prefix match on lead_number
-          const { data: newLeads } = await supabase
-            .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-            .or(`lead_number.ilike.${leadNumQuery}%,lead_number.ilike.%${numPart}%`)
-            .limit(20);
-
-          if (newLeads) {
-            newLeads.forEach((lead: any) => {
-              const key = `new:${lead.id}`;
-              if (!seen.has(key)) {
-                const leadNum = (lead.lead_number || '').toLowerCase().trim();
-                const queryLower = leadNumQuery.toLowerCase().trim();
-                const isExactMatch = leadNum === queryLower;
-                const isPrefixMatch = leadNum.startsWith(queryLower);
-                seen.add(key);
-                results.push({
-                  id: lead.id,
-                  lead_number: lead.lead_number || '',
-                  name: lead.name || '',
-                  email: lead.email || '',
-                  phone: lead.phone || '',
-                  mobile: lead.mobile || '',
-                  topic: lead.topic || '',
-                  stage: String(lead.stage ?? ''),
-                  source: '',
-                  created_at: lead.created_at || '',
-                  updated_at: lead.created_at || '',
-                  notes: '',
-                  special_notes: '',
-                  next_followup: '',
-                  probability: '',
-                  category: '',
-                  language: '',
-                  balance: '',
-                  lead_type: 'new',
-                  unactivation_reason: null,
-                  deactivate_note: null,
-                  isFuzzyMatch: !isExactMatch && !isPrefixMatch, // Exact or prefix match = not fuzzy
-                });
-              }
-            });
-          }
-
-          // Search legacy leads by ID (numeric prefix match)
-          const numId = parseInt(numPart, 10);
-          if (!isNaN(numId) && numId > 0) {
-            const { data: legacyLeads } = await supabase
-              .from('leads_lead')
-              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
-              .gte('id', numId)
-              .lt('id', numId * 10) // Approximate prefix match range
-              .limit(20);
-
-            if (legacyLeads) {
-              legacyLeads.forEach((lead: any) => {
-                const key = `legacy:${lead.id}`;
-                if (!seen.has(key)) {
-                  const leadIdStr = String(lead.id);
-                  const isExactMatch = leadIdStr === numPart;
-                  const isPrefixMatch = leadIdStr.startsWith(numPart);
-                  if (isPrefixMatch || isExactMatch) {
-                    seen.add(key);
-                    results.push({
-                      id: `legacy_${lead.id}`,
-                      lead_number: leadIdStr,
-                      manual_id: leadIdStr,
-                      name: lead.name || '',
-                      email: lead.email || '',
-                      phone: lead.phone || '',
-                      mobile: lead.mobile || '',
-                      topic: lead.topic || '',
-                      stage: String(lead.stage ?? ''),
-                      source: '',
-                      created_at: lead.cdate || '',
-                      updated_at: lead.cdate || '',
-                      notes: '',
-                      special_notes: '',
-                      next_followup: '',
-                      probability: '',
-                      category: '',
-                      language: '',
-                      balance: '',
-                      lead_type: 'legacy',
-                      unactivation_reason: null,
-                      deactivate_note: null,
-                      isFuzzyMatch: !isExactMatch && !isPrefixMatch, // Exact or prefix match = not fuzzy
-                    });
-                  }
-                }
-              });
-            }
-          }
-
-          // Sort results: prefix matches first
-          results.sort((a, b) => {
-            if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
-            return 0;
-          });
-
-          if (results.length > 0) {
-            return results;
-          }
         }
       }
 
@@ -1312,10 +1272,19 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }
             
             // Lead number exact match
+            // For lead number searches, only the lead itself (not contacts) should be exact match
             if (!isExactMatch && isLeadNumQuery && result.lead_number) {
               const resultLeadNum = String(result.lead_number || '').toLowerCase().trim();
-              const queryLeadNum = leadNumQuery.toLowerCase().trim();
-              if (resultLeadNum === queryLeadNum) {
+              // Remove any "L" or "C" prefix from result lead_number for comparison
+              const resultLeadNumNoPrefix = resultLeadNum.replace(/^[lc]/i, '');
+              // Extract numeric part from query (remove "L" or "C" prefix if present)
+              const queryLeadNumNumeric = leadNumQuery.replace(/^[lc]/i, '').toLowerCase().trim();
+              
+              // Only mark as exact match if:
+              // 1. The lead_number (without prefix) exactly matches the numeric part of query
+              // 2. AND it's not a contact (isContact: false or undefined)
+              if (resultLeadNumNoPrefix === queryLeadNumNumeric && 
+                  (!result.isContact || result.isContact === false)) {
                 isExactMatch = true;
               }
             }
@@ -1323,6 +1292,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             // If we found an exact match, ensure it's marked as not fuzzy
             if (isExactMatch) {
               return { ...result, isFuzzyMatch: false };
+            }
+            
+            // For lead number searches, ensure contacts are always marked as fuzzy
+            if (isLeadNumQuery && result.isContact) {
+              return { ...result, isFuzzyMatch: true };
             }
             
             // Otherwise, keep the original fuzzy match flag (don't change prefix matches to fuzzy)
@@ -1340,6 +1314,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // We have immediate results - show them right away (sorted)
           const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
           const prefixMatches = sortedResults.filter(r => r.isFuzzyMatch);
+          
+          console.log('[Header useEffect] Immediate search results processed:', {
+            totalResults: sortedResults.length,
+            exactMatches: exactMatches.length,
+            fuzzyMatches: prefixMatches.length,
+            exactMatchDetails: exactMatches.map(r => ({
+              id: r.id,
+              lead_number: r.lead_number,
+              name: r.name || r.contactName,
+              isContact: r.isContact,
+              isFuzzyMatch: r.isFuzzyMatch
+            })),
+            allResults: sortedResults.map(r => ({
+              id: r.id,
+              lead_number: r.lead_number,
+              name: r.name || r.contactName,
+              isContact: r.isContact,
+              isFuzzyMatch: r.isFuzzyMatch
+            }))
+          });
           
           // CRITICAL: Set refs and state together, and only mark as not searching AFTER results are set
           exactMatchesRef.current = exactMatches;
@@ -3467,6 +3461,17 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     return luminance > 0.55 ? '#111827' : '#ffffff';
   };
 
+  // Helper function to check if a lead is inactive
+  const isInactiveLead = (lead: any) => {
+    if (lead.lead_type === 'legacy') {
+      // Legacy leads: status = 10 means inactive
+      return lead.status === 10;
+    } else {
+      // New leads: check status column for 'inactive' text, or stage = '91' (Dropped/Spam/Irrelevant)
+      return lead.status === 'inactive' || lead.stage === '91' || lead.stage === 91;
+    }
+  };
+
   // Stage badge function for search results
   const getStageBadge = (stage: string | number | null | undefined) => {
     const stageStr = stage ? String(stage).trim() : '';
@@ -4012,10 +4017,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                 onClick={() => handleSearchResultClick(result)}
                                 className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
                               >
-                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10">
+                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
                                   {getStageBadge(result.stage)}
+                                  {isInactiveLead(result) && (
+                                    <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
+                                      Inactive
+                                    </span>
+                                  )}
                                 </div>
-                                <div className="flex items-start gap-2 md:gap-3 pr-16 md:pr-16">
+                                <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
                                   <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
                                     <span className="font-semibold text-white">
                                       {displayName.charAt(0).toUpperCase()}
@@ -4083,10 +4093,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                                 onClick={() => handleSearchResultClick(result)}
                                 className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
                               >
-                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10">
+                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
                                   {getStageBadge(result.stage)}
+                                  {isInactiveLead(result) && (
+                                    <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
+                                      Inactive
+                                    </span>
+                                  )}
                                 </div>
-                                <div className="flex items-start gap-2 md:gap-3 pr-16 md:pr-16">
+                                <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
                                   <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
                                     <span className="font-semibold text-white">
                                       {displayName.charAt(0).toUpperCase()}

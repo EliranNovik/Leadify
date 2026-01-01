@@ -56,6 +56,7 @@ export interface CombinedLead {
   isContact?: boolean;
   contactName?: string;
   isMainContact?: boolean;
+  status?: number | string | null; // For legacy: number (0=active, 10=inactive), for new: string ('active'|'inactive') or null
 }
 
 // -----------------------------------------------------
@@ -331,7 +332,7 @@ async function searchNewLeadsSimple(query: string, limit = 20): Promise<Combined
   const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumeric && !hasPrefix && trimmed.length > digits.length);
 
   // Minimal columns for fastest query
-  const selectFields = 'id, lead_number, name, email, phone, mobile, topic, stage, created_at';
+  const selectFields = 'id, lead_number, name, email, phone, mobile, topic, stage, created_at, status';
 
   try {
     let queryBuilder = supabase.from('leads').select(selectFields);
@@ -451,6 +452,7 @@ async function searchNewLeadsSimple(query: string, limit = 20): Promise<Combined
       unactivation_reason: null,
       deactivate_note: null,
       isFuzzyMatch: false,
+      status: lead.status ?? null,
     }));
   } catch (err) {
     return [];
@@ -760,6 +762,41 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           const searchStr = String(num);
           const searchLength = searchStr.length;
           
+          // For 4-6 digit queries, try exact match first (likely to be exact lead IDs)
+          // This ensures exact matches are found immediately for both 4-digit and 5-6 digit legacy lead IDs
+          // For 1-3 digit queries, ONLY do exact match (skip range query to avoid fetching too many irrelevant results)
+          if (searchLength >= 1 && searchLength <= 6) {
+            console.log('[searchContactsSimple] Trying exact match for query:', {
+              num,
+              searchStr,
+              searchLength
+            });
+            
+            const { data: exactMatch, error: exactError } = await supabase
+              .from('leads_lead')
+              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
+              .eq('id', num)
+              .limit(1);
+            
+            if (!exactError && exactMatch && exactMatch.length > 0) {
+              console.log('[searchContactsSimple] Found exact match:', {
+                id: exactMatch[0].id,
+                name: exactMatch[0].name
+              });
+              foundLegacyLeadIds.push(exactMatch[0].id);
+              cachedLegacyLeadsMap.set(exactMatch[0].id, exactMatch[0]);
+              
+              // For 1-3 digit queries, ONLY do exact match - skip range query to avoid race conditions
+              // The exact match is likely what the user wants, and range queries for short queries
+              // fetch too many irrelevant results that cause flickering when typing fast
+              if (searchLength <= 3) {
+                console.log('[searchContactsSimple] Skipping range query for short query - using exact match only');
+                // Don't proceed to range query for short queries - exact match is sufficient
+                // This prevents fetching hundreds of irrelevant results that cause flickering
+              }
+            }
+          }
+          
           // For short queries (1-3 digits), use a more conservative range to avoid fetching too many non-matching results
           // For longer queries (4+ digits), the range is naturally smaller
           let minId = num;
@@ -767,12 +804,13 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           let queryLimit = 200;
           
           if (searchLength <= 3) {
-            // For short queries like "209", limit the range more aggressively
-            // Instead of 209-209999, use a smaller range like 209-20999 (4-5 digit IDs)
-            // This reduces the number of non-matching results fetched
-            const conservativeRemainingDigits = Math.min(2, 6 - searchLength); // Max 2 extra digits for short queries
-            maxId = num * Math.pow(10, conservativeRemainingDigits) + Math.pow(10, conservativeRemainingDigits) - 1;
-            queryLimit = 50; // Lower limit for short queries to reduce bouncing
+            // For short queries like "624", allow up to 5-digit IDs to catch numbers like 6241
+            // For 3-digit queries: 624-62499 (allows 3-5 digit IDs starting with 624)
+            // For 2-digit queries: 62-6299 (allows 2-5 digit IDs starting with 62)
+            // For 1-digit queries: 6-699 (allows 1-3 digit IDs starting with 6)
+            const maxDigits = Math.min(5, searchLength + 2); // Allow up to 2 more digits
+            maxId = (num + 1) * Math.pow(10, maxDigits - searchLength) - 1;
+            queryLimit = 100; // Moderate limit for short queries
           } else {
             // For longer queries (4+ digits), use the full range calculation
             const remainingDigits = Math.max(0, 6 - searchLength);
@@ -787,7 +825,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
             searchLength,
             queryLimit,
             calculation: searchLength <= 3 
-              ? `Short query: ${num} * 10^${Math.min(2, 6 - searchLength)} + 10^${Math.min(2, 6 - searchLength)} - 1 = ${maxId}`
+              ? `Short query: maxDigits=${Math.min(5, searchLength + 2)}, maxId = (${num} + 1) * 10^${Math.min(5, searchLength + 2) - searchLength} - 1 = ${maxId}`
               : `${num} * 10^${Math.max(0, 6 - searchLength)} + 10^${Math.max(0, 6 - searchLength)} - 1 = ${maxId}`
           });
           
@@ -800,12 +838,34 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           
           // OPTIMIZATION: Fetch full lead data in one query instead of just IDs
           // Use a more conservative limit for short queries to reduce bouncing
-          const { data: legacyLeads, error: legacyLeadsError } = await supabase
-            .from('leads_lead')
-            .select('id, name, email, phone, mobile, topic, stage, cdate, master_id')
-            .gte('id', minId)
-            .lte('id', maxId)
-            .limit(queryLimit);
+          // For 4-6 digit queries, if we found an exact match, skip the range query to avoid duplicates
+          // For 1-3 digit queries, skip range query entirely (too many irrelevant results, causes flickering)
+          let legacyLeads: any[] = [];
+          let legacyLeadsError: any = null;
+          
+          // Skip range query if:
+          // 1. Exact match found for 4-6 digit queries (to avoid duplicates)
+          // 2. Query is 1-3 digits (to avoid fetching hundreds of irrelevant results that cause flickering)
+          const shouldSkipRangeQuery = 
+            (searchLength >= 4 && searchLength <= 6 && foundLegacyLeadIds.length > 0) ||
+            (searchLength <= 3);
+          
+          if (shouldSkipRangeQuery) {
+            if (searchLength <= 3) {
+              console.log('[searchContactsSimple] Skipping range query for short query (1-3 digits) - exact match only');
+            } else {
+              console.log('[searchContactsSimple] Skipping range query - exact match already found for 4-6 digit query');
+            }
+          } else {
+            const result = await supabase
+              .from('leads_lead')
+              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
+              .gte('id', minId)
+              .lte('id', maxId)
+              .limit(queryLimit);
+            legacyLeads = result.data || [];
+            legacyLeadsError = result.error;
+          }
           
           if (legacyLeadsError) {
             console.error('[searchContactsSimple] ERROR querying legacy leads:', {
@@ -1075,7 +1135,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         (async () => {
           const result = await supabase
             .from('leads')
-            .select('id, lead_number, topic, stage, created_at')
+            .select('id, lead_number, topic, stage, created_at, status')
             .in('id', directNewLeadIds)
             .limit(limit);
           return { type: 'direct', data: result.data || [] };
@@ -1090,7 +1150,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
         (async () => {
           const result = await supabase
             .from('leads')
-            .select('id, lead_number, topic, stage, created_at')
+            .select('id, lead_number, topic, stage, created_at, status')
             .in('id', additionalIds)
             .limit(limit);
           return { type: 'junction', data: result.data || [] };
@@ -1118,7 +1178,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
           (async () => {
             const result = await supabase
               .from('leads_lead')
-              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id')
+              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
               .in('id', missingLegacyIds)
               .limit(limit);
             
@@ -1252,6 +1312,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
               isContact: !isMain,
               contactName: c.name || '',
               isMainContact: isMain,
+              status: l.status ?? null,
             });
           }
         }
@@ -1289,6 +1350,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
               isContact: !isMain,
               contactName: c.name || '',
               isMainContact: isMain,
+              status: legacyLead?.status ?? null,
             });
           }
         }
@@ -1308,12 +1370,16 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
       let skippedCount = 0;
       
       legacyLeadMap.forEach((legacyLead: any, leadId: number) => {
-        // Check if this legacy lead was already added via contacts
-        const alreadyAdded = results.some((r: any) => 
-          r.lead_type === 'legacy' && String(r.id) === String(leadId)
+        // Check if this legacy lead was already added as a non-contact result (the lead itself)
+        // Contacts have isContact: true, so they won't match this check
+        // This ensures that for lead number searches, we add the lead itself even if contacts exist
+        const alreadyAddedAsLead = results.some((r: any) => 
+          r.lead_type === 'legacy' && 
+          String(r.id) === String(leadId) && 
+          (!r.isContact || r.isContact === false) // Only skip if added as the lead itself, not as a contact
         );
         
-        if (!alreadyAdded) {
+        if (!alreadyAddedAsLead) {
           // Add legacy lead even without contacts
           const key = `legacy:${leadId}`;
           if (!seen.has(key)) {
@@ -1336,8 +1402,6 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
               id: String(legacyLead.id),
               lead_number: leadNumber,
               manual_id: leadNumber,
-              lead_number: String(legacyLead.id),
-              manual_id: String(legacyLead.id),
               name: legacyLead.name || '',
               email: legacyLead.email || '',
               phone: legacyLead.phone || '',
@@ -1361,6 +1425,7 @@ async function searchContactsSimple(query: string, limit = 30): Promise<Combined
               isContact: false,
               contactName: legacyLead.name || '',
               isMainContact: false,
+              status: legacyLead.status ?? null,
             });
             console.log('[searchContactsSimple] Added legacy lead without contact:', {
               id: leadId,
@@ -1476,9 +1541,21 @@ export async function searchLeads(query: string): Promise<CombinedLead[]> {
       contactLeads.forEach((lead) => {
         const key = lead.lead_type === 'legacy' ? `legacy:${lead.id}` : `new:${lead.id}`;
         const contactKey = `${key}:${lead.contactName || ''}`;
-        if (!seen.has(key) && !seen.has(contactKey)) {
-          seen.add(contactKey);
-          results.push(lead);
+        
+        // For contact entries (isContact: true), use contactKey to allow multiple contacts per lead
+        // For lead entries (isContact: false), use key to ensure the lead itself is added
+        if (lead.isContact) {
+          // This is a contact entry - use contactKey to allow multiple contacts per lead
+          if (!seen.has(contactKey)) {
+            seen.add(contactKey);
+            results.push(lead);
+          }
+        } else {
+          // This is the lead itself - use key, but don't skip if contacts exist
+          if (!seen.has(key)) {
+            seen.add(key);
+            results.push(lead);
+          }
         }
       });
 
