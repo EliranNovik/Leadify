@@ -135,10 +135,79 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  // State for eligibility status and section eligibility (for legacy leads)
+  const [eligibilityStatus, setEligibilityStatus] = useState<string>('');
+  const [sectionEligibility, setSectionEligibility] = useState<string>('');
+
+  // Function to fetch eligibility data for legacy leads
+  const fetchLegacyEligibilityData = async () => {
+    if (!isLegacy || !client?.id) return;
+    
+    try {
+      const legacyId = client.id.toString().replace('legacy_', '');
+      const { data, error } = await supabase
+        .from('leads_lead')
+        .select('expert_examination, section_eligibility, eligibilty_date, eligibility_status, eligibility_status_timestamp')
+        .eq('id', legacyId)
+        .single();
+      
+      if (error) {
+        console.error('Error fetching legacy eligibility data:', error);
+        return;
+      }
+      
+      if (data) {
+        // Priority: Use eligibility_status if it exists, otherwise map from expert_examination
+        let eligibilityValue = '';
+        
+        if (data.eligibility_status) {
+          eligibilityValue = data.eligibility_status;
+        } else {
+          // Fallback: Map expert_examination to eligibility status
+          const examValue = Number(data.expert_examination);
+          if (examValue === 8) {
+            eligibilityValue = 'feasible_no_check';
+          } else if (examValue === 1) {
+            eligibilityValue = 'not_feasible';
+          } else if (examValue === 5) {
+            eligibilityValue = 'feasible_check';
+          }
+        }
+        
+        setEligibilityStatus(eligibilityValue);
+        setSectionEligibility(data.section_eligibility || '');
+        
+        console.log('✅ InfoTab - Legacy eligibility data loaded:', {
+          eligibility_status: data.eligibility_status,
+          expert_examination: data.expert_examination,
+          final_eligibility: eligibilityValue,
+          section_eligibility: data.section_eligibility
+        });
+      }
+    } catch (error) {
+      console.error('Error in fetchLegacyEligibilityData:', error);
+    }
+  };
+
+  // Fetch eligibility data for legacy leads on mount
+  useEffect(() => {
+    const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+    if (isLegacyLead) {
+      fetchLegacyEligibilityData();
+    } else {
+      // For new leads, use client data
+      setEligibilityStatus(getFieldValue(client, 'eligibility_status') || '');
+      setSectionEligibility(getFieldValue(client, 'section_eligibility') || '');
+    }
+  }, [client?.id, client?.lead_type]);
+
   const getEligibilityStatus = () => {
-    // For legacy leads, use 'eligibile' field instead of 'eligibility_status'
-    const status = isLegacy ? getFieldValue(client, 'eligibile') : getFieldValue(client, 'eligibility_status');
-    return status || '';
+    // For legacy leads, use state (fetched from database)
+    // For new leads, use client data
+    if (isLegacy) {
+      return eligibilityStatus;
+    }
+    return getFieldValue(client, 'eligibility_status') || '';
   };
 
   const getEligibleStatus = () => {
@@ -910,21 +979,25 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <span className="text-sm font-medium text-gray-500">Expert Status</span>
                 <span className={`inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-[#3b28c7] text-white ${getEligibilityStatus() === 'feasible_no_check' ? 'px-4 py-2 text-base rounded-xl' : ''}`}>
                   {eligibilityDisplay.text}
-                  {['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && (client.section_eligibility ?? '') && (
-                    <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs">
-                      {(() => {
-                        // Map section_eligibility to label as in ExpertTab
-                        const sections = [
-                          { value: '116', label: 'German Citizenship - § 116' },
-                          { value: '15', label: 'German Citizenship - § 15' },
-                          { value: '5', label: 'German Citizenship - § 5' },
-                          { value: '58c', label: 'Austrian Citizenship - § 58c' },
-                        ];
-                        const found = sections.find(s => s.value === (client.section_eligibility ?? ''));
-                        return found ? found.label.split(' - ')[1] : client.section_eligibility;
-                      })()}
-                    </span>
-                  )}
+                  {(() => {
+                    // Get section_eligibility - use state for legacy leads, client data for new leads
+                    const currentSection = isLegacy ? sectionEligibility : (client.section_eligibility ?? '');
+                    if (['feasible_no_check', 'feasible_check'].includes(getEligibilityStatus() ?? '') && currentSection) {
+                      const sections = [
+                        { value: '116', label: 'German Citizenship - § 116' },
+                        { value: '15', label: 'German Citizenship - § 15' },
+                        { value: '5', label: 'German Citizenship - § 5' },
+                        { value: '58c', label: 'Austrian Citizenship - § 58c' },
+                      ];
+                      const found = sections.find(s => s.value === currentSection);
+                      return (
+                        <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs">
+                          {found ? found.label.split(' - ')[1] : currentSection}
+                        </span>
+                      );
+                    }
+                    return null;
+                  })()}
                 </span>
               </div>
               <div className="flex justify-between items-center pt-2 border-t border-gray-200">

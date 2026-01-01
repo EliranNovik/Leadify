@@ -2567,6 +2567,11 @@ useEffect(() => {
             unactivated_at,
             master_id,
             manual_id,
+            description,
+            description_last_edited_by,
+            description_last_edited_at,
+            special_notes_last_edited_by,
+            special_notes_last_edited_at,
             misc_language!leads_lead_language_id_fkey (
               name
             ),
@@ -2691,10 +2696,12 @@ useEffect(() => {
             client_country: null,
             emails: [],
             closer: data.closer_id, // Use closer_id from legacy table
+            closer_id: data.closer_id || null, // Include closer_id for RolesTab
             handler:
               data.case_handler_id !== null && data.case_handler_id !== undefined
                 ? getEmployeeDisplayName(String(data.case_handler_id))
                 : 'Not assigned',
+            case_handler_id: data.case_handler_id || null, // Include case_handler_id for RolesTab
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
             potential_total: data.potential_total || null, // Include potential_total for legacy leads
             status: data.status || null, // Include status field for unactivation check
@@ -2711,8 +2718,12 @@ useEffect(() => {
             meeting_manager_id: data.meeting_manager_id || null,
             meeting_lawyer_id: data.meeting_lawyer_id || null,
             expert_id: data.expert_id || null,
-            // Explicitly DO NOT include: description, description_last_edited_by, description_last_edited_at,
-            // special_notes_last_edited_by, special_notes_last_edited_at, language_id
+            description: data.description || null,
+            description_last_edited_by: data.description_last_edited_by || null,
+            description_last_edited_at: data.description_last_edited_at || null,
+            special_notes_last_edited_by: data.special_notes_last_edited_by || null,
+            special_notes_last_edited_at: data.special_notes_last_edited_at || null,
+            // Note: language_id is excluded as we use language (name) instead
           };
           console.log('onClientUpdate: Setting transformed legacy data:', transformedData);
           console.log('onClientUpdate: Currency mapping - currency_id:', data.currency_id, 'balance_currency:', transformedData.balance_currency);
@@ -3109,10 +3120,12 @@ useEffect(() => {
                 client_country: null,
                 emails: [],
                 closer: legacyLead.closer_id,
+                closer_id: legacyLead.closer_id || null, // Include closer_id for RolesTab
                 handler:
                   legacyLead.case_handler_id !== null && legacyLead.case_handler_id !== undefined
                     ? getEmployeeDisplayName(String(legacyLead.case_handler_id))
                     : 'Not assigned',
+                case_handler_id: legacyLead.case_handler_id || null, // Include case_handler_id for RolesTab
                 scheduler: schedulerName,
                 unactivation_reason: legacyLead.unactivation_reason || null,
                 unactivated_by: legacyLead.unactivated_by || null,
@@ -3130,8 +3143,12 @@ useEffect(() => {
                 expert_id: legacyLead.expert_id || null,
                 vat: (legacyLead as any).vat || null,
                 potential_total: legacyLead.potential_total || null,
-                // Explicitly DO NOT include: description, description_last_edited_by, description_last_edited_at,
-                // special_notes_last_edited_by, special_notes_last_edited_at, language_id
+                description: legacyLead.description || null,
+                description_last_edited_by: legacyLead.description_last_edited_by || null,
+                description_last_edited_at: legacyLead.description_last_edited_at || null,
+                special_notes_last_edited_by: legacyLead.special_notes_last_edited_by || null,
+                special_notes_last_edited_at: legacyLead.special_notes_last_edited_at || null,
+                // Note: language_id is excluded as we use language (name) instead
               };
               break; // Found it, stop searching
             } else if (type === 'lead_number' && data && !error) {

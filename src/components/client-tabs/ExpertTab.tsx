@@ -348,26 +348,39 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   };
 
   // Function to fetch eligibility data for legacy leads
+  // Note: This function is defined before state declarations, but it's fine because
+  // it's only called in useEffect which runs after render when state exists
   const fetchLegacyEligibilityData = async () => {
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
     
-    if (isLegacyLead) {
-      try {
-        const legacyId = client.id.toString().replace('legacy_', '');
-        const { data, error } = await supabase
-          .from('leads_lead')
-          .select('expert_examination, section_eligibility, eligibilty_date')
-          .eq('id', legacyId)
-          .single();
+    if (!isLegacyLead) {
+      return;
+    }
+    
+    try {
+      const legacyId = client.id.toString().replace('legacy_', '');
+      
+      const { data, error } = await supabase
+        .from('leads_lead')
+        .select('expert_examination, section_eligibility, eligibilty_date, section_eligibility_last_edited_by, section_eligibility_last_edited_at, eligibility_status, eligibility_status_timestamp')
+        .eq('id', legacyId)
+        .single();
+      
+      if (error) {
+        return;
+      }
+      
+      if (data) {
+        // Priority: Use eligibility_status if it exists, otherwise map from expert_examination
+        let eligibilityValue = '';
+        let eligibilityTimestamp = '';
         
-        if (error) {
-          console.error('Error fetching legacy eligibility data:', error);
-          return;
-        }
-        
-        if (data) {
-          // Map expert_examination to eligibility status
-          let eligibilityValue = '';
+        // First, try to use eligibility_status column (like new leads)
+        if (data.eligibility_status) {
+          eligibilityValue = data.eligibility_status;
+          eligibilityTimestamp = data.eligibility_status_timestamp || data.eligibilty_date || new Date().toISOString();
+        } else {
+          // Fallback: Map expert_examination to eligibility status (legacy behavior)
           // Convert to number for comparison since it might come as string from database
           const examValue = Number(data.expert_examination);
           if (examValue === 8) {
@@ -377,31 +390,28 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           } else if (examValue === 5) {
             eligibilityValue = 'feasible_check';
           }
-          
-          // Update eligibility status if we have a value
-          if (eligibilityValue) {
-            setEligibilityStatus({
-              value: eligibilityValue,
-              timestamp: data.eligibilty_date || new Date().toISOString() // Use eligibilty_date if available
-            });
-          }
-          
-          // Update section eligibility if we have a value (optional for legacy leads)
-          if (data.section_eligibility) {
-            setSelectedSection(data.section_eligibility);
-          }
-          
-          console.log('Legacy eligibility data loaded:', {
-            expert_examination: data.expert_examination,
-            examValue_converted: Number(data.expert_examination),
-            mapped_eligibility: eligibilityValue,
-            section_eligibility: data.section_eligibility,
-            eligibilty_date: data.eligibilty_date
-          });
+          eligibilityTimestamp = data.eligibilty_date || new Date().toISOString();
         }
-      } catch (error) {
-        console.error('Error in fetchLegacyEligibilityData:', error);
+        
+        // Update eligibility status (always set, even if empty, to ensure state is updated)
+        setEligibilityStatus({
+          value: eligibilityValue,
+          timestamp: eligibilityTimestamp
+        });
+        
+        // Update section eligibility (optional for legacy leads, can be null)
+        setSelectedSection(data.section_eligibility || '');
+        
+        // Update section eligibility tracking info
+        if (data.section_eligibility_last_edited_by) {
+          setSectionEligibilityLastEditedBy(data.section_eligibility_last_edited_by);
+        }
+        if (data.section_eligibility_last_edited_at) {
+          setSectionEligibilityLastEditedAt(data.section_eligibility_last_edited_at);
+        }
       }
+    } catch (error) {
+      // Silent error handling
     }
   };
 
@@ -602,6 +612,17 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   };
 
+  // Section & eligibility - Initialize for new leads, legacy leads will be fetched
+  // MUST be declared BEFORE useEffect hooks that use them
+  const isLegacyForInit = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+  const [selectedSection, setSelectedSection] = useState(isLegacyForInit ? '' : (client.section_eligibility || ''));
+  const [eligibilityStatus, setEligibilityStatus] = useState<EligibilityStatus>({
+    value: isLegacyForInit ? '' : (client.eligibility_status || ''),
+    timestamp: isLegacyForInit ? '' : (client.eligibility_status_timestamp || '')
+  });
+  const [sectionEligibilityLastEditedBy, setSectionEligibilityLastEditedBy] = useState<string | null>(null);
+  const [sectionEligibilityLastEditedAt, setSectionEligibilityLastEditedAt] = useState<string | null>(null);
+
   // Fetch legacy expert data on component mount
   useEffect(() => {
     fetchLegacyExpertData();
@@ -624,12 +645,29 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     }
   }, [client.expert_notes, client.handler_notes]);
 
-  // Section & eligibility
-  const [selectedSection, setSelectedSection] = useState(client.section_eligibility || '');
-  const [eligibilityStatus, setEligibilityStatus] = useState<EligibilityStatus>({
-    value: client.eligibility_status || '',
-    timestamp: client.eligibility_status_timestamp || ''
-  });
+  // Sync eligibility status and section for new leads when client data changes
+  useEffect(() => {
+    const isLegacy = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    if (!isLegacy) {
+      // For new leads, sync from client data
+      if (client.eligibility_status !== eligibilityStatus.value) {
+        setEligibilityStatus({
+          value: client.eligibility_status || '',
+          timestamp: client.eligibility_status_timestamp || ''
+        });
+      }
+      if (client.section_eligibility !== selectedSection) {
+        setSelectedSection(client.section_eligibility || '');
+      }
+      // Sync section eligibility tracking info for new leads
+      if (client.section_eligibility_last_edited_by !== undefined) {
+        setSectionEligibilityLastEditedBy(client.section_eligibility_last_edited_by || null);
+      }
+      if (client.section_eligibility_last_edited_at !== undefined) {
+        setSectionEligibilityLastEditedAt(client.section_eligibility_last_edited_at || null);
+      }
+    }
+  }, [client.eligibility_status, client.eligibility_status_timestamp, client.section_eligibility, client.section_eligibility_last_edited_by, client.section_eligibility_last_edited_at]);
 
   // Expert Notes
   const [expertNotes, setExpertNotes] = useState<Note[]>(client.expert_notes || []);
@@ -655,11 +693,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   // Function to fetch document count - using useCallback to memoize
   const fetchDocumentCount = useCallback(async () => {
     if (!client.lead_number) {
-      console.log('fetchDocumentCount: No lead_number available');
       return;
     }
-    
-    console.log('fetchDocumentCount: Fetching count for lead:', client.lead_number);
     
     try {
       const { data, error } = await supabase.functions.invoke('list-lead-documents', {
@@ -675,10 +710,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       if (data && data.success) {
         // The API returns a count field
         const count = data.count || (data.files ? data.files.length : 0);
-        console.log('fetchDocumentCount: Success - count:', count);
         setDocumentCount(count);
       } else {
-        console.warn('fetchDocumentCount: No success in response:', data);
         setDocumentCount(0);
       }
     } catch (error) {
@@ -691,15 +724,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   useEffect(() => {
     // Skip if already fetching or no lead_number
     if (isFetchingCountRef.current || !client.lead_number) {
-      if (!client.lead_number) {
-        console.log('Document count useEffect: lead_number not available yet');
-      }
       return;
     }
     
     const fetchCount = async () => {
       isFetchingCountRef.current = true;
-      console.log('Document count useEffect: lead_number available, fetching count');
       
       try {
         const { data, error } = await supabase.functions.invoke('list-lead-documents', {
@@ -714,11 +743,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
         if (data && data.success) {
           const count = data.count || (data.files ? data.files.length : 0);
-          console.log('Document count useEffect: Success - count:', count);
           setDocumentCount(count);
-        } else {
-          console.warn('Document count useEffect: No success in response:', data);
-          // Don't reset to 0 - keep previous count
         }
       } catch (error) {
         console.error('Error fetching document count:', error);
@@ -765,10 +790,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       
       try {
         // First, try to update with tracking columns
+        // section_eligibility can be null (empty string becomes null)
         const { error: updateError } = await supabase
           .from('leads_lead')
           .update({ 
-            section_eligibility: value,
+            section_eligibility: value || null,
             section_eligibility_last_edited_by: currentUser,
             section_eligibility_last_edited_at: new Date().toISOString()
           })
@@ -780,13 +806,17 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           // Fallback: try without tracking columns
           const { error: fallbackError } = await supabase
             .from('leads_lead')
-            .update({ section_eligibility: value })
+            .update({ section_eligibility: value || null })
             .eq('id', legacyId);
           
           if (fallbackError) {
             console.error('Error updating section eligibility (fallback - legacy):', fallbackError);
             throw fallbackError;
           }
+        } else {
+          // Update local state with tracking info after successful save
+          setSectionEligibilityLastEditedBy(currentUser);
+          setSectionEligibilityLastEditedAt(new Date().toISOString());
         }
       } catch (error) {
         console.error('Error in handleSectionChange (legacy):', error);
@@ -795,13 +825,14 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     } else {
       // For new leads, save to leads table with tracking
       try {
+        const timestamp = new Date().toISOString();
         // First, try to update with tracking columns
         const { error: updateError } = await supabase
           .from('leads')
           .update({ 
             section_eligibility: value,
             section_eligibility_last_edited_by: currentUser,
-            section_eligibility_last_edited_at: new Date().toISOString()
+            section_eligibility_last_edited_at: timestamp
           })
           .eq('id', client.id);
         
@@ -818,6 +849,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             console.error('Error updating section eligibility (fallback - new leads):', fallbackError);
             throw fallbackError;
           }
+        } else {
+          // Update local state with tracking info after successful save
+          setSectionEligibilityLastEditedBy(currentUser);
+          setSectionEligibilityLastEditedAt(timestamp);
         }
       } catch (error) {
         console.error('Error in handleSectionChange (new leads):', error);
@@ -878,8 +913,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       // Prepare update data for legacy table
       const legacyUpdateData: any = {
         expert_examination: expertExaminationValue,
+        eligibility_status: newValue, // Store eligibility_status directly (like new leads)
+        eligibility_status_timestamp: timestamp, // Store eligibility_status_timestamp
         section_eligibility: newValue === 'not_feasible' ? '' : selectedSection,
-        eligibilty_date: timestamp // Always update eligibilty_date when eligibility changes
+        eligibilty_date: timestamp // Always update eligibilty_date when eligibility changes (legacy compatibility)
       };
       
       // Add tracking data if available
@@ -973,7 +1010,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
       
       try {
-        console.log('🔍 Saving expert notes for legacy lead:', { legacyId, notesCount: notes.length, notes });
         
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
@@ -1003,14 +1039,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             throw fallbackError;
           }
           
-          console.log('✅ Expert notes updated (fallback, no tracking):', fallbackData);
-          
           // Update local state with what was saved
           if (fallbackData?.expert_notes) {
             setExpertNotes(fallbackData.expert_notes);
           }
         } else {
-          console.log('✅ Expert notes updated (with tracking):', data);
           
           // Update local state with what was saved
           if (data?.expert_notes) {
@@ -1026,11 +1059,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .single();
         
         if (verifyError) {
-          console.error('❌ Error verifying expert notes save:', verifyError);
           // Don't throw - the update might have succeeded even if verification fails
-          console.warn('⚠️ Could not verify save, but update may have succeeded');
         } else if (verifyData) {
-          console.log('✅ Expert notes verified from database:', verifyData.expert_notes);
           // Update local state with verified data
           if (verifyData.expert_notes) {
             setExpertNotes(verifyData.expert_notes);
@@ -1122,7 +1152,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
       
       try {
-        console.log('🔍 Saving handler notes for legacy lead:', { legacyId, notesCount: notes.length, notes });
         
         // First, try to update with tracking columns
         const { data, error: updateError } = await supabase
@@ -1152,14 +1181,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             throw fallbackError;
           }
           
-          console.log('✅ Handler notes updated (fallback, no tracking):', fallbackData);
-          
           // Update local state with what was saved
           if (fallbackData?.handler_notes) {
             setHandlerNotes(fallbackData.handler_notes);
           }
         } else {
-          console.log('✅ Handler notes updated (with tracking):', data);
           
           // Update local state with what was saved
           if (data?.handler_notes) {
@@ -1175,11 +1201,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .single();
         
         if (verifyError) {
-          console.error('❌ Error verifying handler notes save:', verifyError);
           // Don't throw - the update might have succeeded even if verification fails
-          console.warn('⚠️ Could not verify save, but update may have succeeded');
         } else if (verifyData) {
-          console.log('✅ Handler notes verified from database:', verifyData.handler_notes);
           // Update local state with verified data
           if (verifyData.handler_notes) {
             setHandlerNotes(verifyData.handler_notes);
@@ -1541,16 +1564,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const selectedSectionLabel = sections.find(s => s.value === selectedSection)?.label.split(' - ')[1] || '';
   const selectedEligibilityLabel = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value)?.label || '';
   
-  const statusDisplay = eligibilityStatus.value === 'not_feasible'
-    ? selectedEligibilityLabel || 'No feasibility'
-    : (isLegacyLead 
-      ? (eligibilityStatus.value ? selectedEligibilityLabel : 'Not checked')
-      : (eligibilityStatus.value
-        ? (selectedSection 
-          ? `${selectedSectionLabel} - ${selectedEligibilityLabel}`
-          : selectedEligibilityLabel)
-        : 'Not checked')
-    );
 
   const selectedEligibility = eligibilityOptions.find(opt => opt.value === eligibilityStatus.value);
 
@@ -1571,20 +1584,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
      assignedExpertDisplayName.trim().toLowerCase() === currentUserDisplayName.trim().toLowerCase())
   );
 
-  // Debug: Log document count when it changes
-  useEffect(() => {
-    console.log('Document count state updated:', documentCount);
-  }, [documentCount]);
 
   // Function to update document count from DocumentModal
   const handleDocumentCountChange = (count: number) => {
     // Only update if modal is open (to prevent resetting when modal initializes)
     // Or if the new count is greater than 0 (to allow updates when documents are added/removed)
     if (isDocumentModalOpen || count > 0) {
-      console.log('handleDocumentCountChange: Updating count to', count, 'modal open:', isDocumentModalOpen);
       setDocumentCount(count);
-    } else {
-      console.log('handleDocumentCountChange: Skipping update (count:', count, 'modal open:', isDocumentModalOpen, ')');
     }
   };
 
@@ -1595,8 +1601,6 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchDocumentCount();
   };
 
-  // Debug: Log documentCount before render
-  console.log('ExpertTab render - documentCount:', documentCount, 'lead_number:', client.lead_number);
 
   return (
     <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
@@ -1633,7 +1637,12 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                   eligibilityStatus.value.includes('not_feasible') ? 'bg-red-100 text-red-800' :
                   'bg-gray-100 text-gray-800'
                 }`}>
-                  {statusDisplay}
+                  {selectedEligibilityLabel}
+                  {selectedSection && ['feasible_no_check', 'feasible_check'].includes(eligibilityStatus.value) && (
+                    <span className="ml-2 px-2 py-0.5 rounded text-white font-semibold text-xs bg-[#3b28c7]">
+                      {selectedSectionLabel}
+                    </span>
+                  )}
                 </span>
               </div>
             </div>
@@ -1743,10 +1752,11 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 </div>
               </div>
               
-              {/* Timestamp */}
-              {eligibilityStatus.timestamp && (
+              {/* Section Eligibility Last Edited */}
+              {sectionEligibilityLastEditedBy && sectionEligibilityLastEditedAt && (
                 <div className="text-sm text-gray-400 flex justify-between border-t border-gray-100 pt-3">
-                  <span>Last updated: {new Date(eligibilityStatus.timestamp).toLocaleString()}</span>
+                  <span>Last edited by {sectionEligibilityLastEditedBy}</span>
+                  <span>{new Date(sectionEligibilityLastEditedAt).toLocaleString()}</span>
                 </div>
               )}
             </div>
@@ -1888,9 +1898,9 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             <div className="border-b border-gray-200 mt-2"></div>
           </div>
           <div className="p-6">
-            {/* Add/Edit Expert Note Form */}
-            {(isAddingExpertNote || editingExpertNoteId) && (
-              <div className="mb-6">
+            {/* Add Expert Note Form */}
+            {isAddingExpertNote && !editingExpertNoteId && (
+              <div className="mb-6 border border-gray-200 rounded-lg bg-white p-4">
                 <textarea
                   className="textarea textarea-bordered w-full h-32 mb-3"
                   placeholder="Enter your note..."
@@ -1924,38 +1934,58 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 expertNotes.map((note, index) => (
                   <div 
                     key={note.id} 
-                    className={`relative p-4 rounded-lg transition-all duration-200 hover:shadow-sm ${
+                    className={`border border-gray-200 rounded-lg transition-all duration-200 hover:shadow-sm ${
                       editingExpertNoteId === note.id ? 'ring-2 ring-purple-200 bg-purple-50' : 'bg-white'
                     }`}
                     style={editingExpertNoteId === note.id ? { '--tw-ring-color': '#3b28c7', '--tw-ring-opacity': '0.2' } as React.CSSProperties : {}}
                   >
                     {/* Note Content */}
                     {editingExpertNoteId === note.id ? (
-                      <textarea
-                        className="textarea textarea-bordered w-full h-32 mb-3"
-                        value={newExpertNoteContent}
-                        onChange={(e) => setNewExpertNoteContent(e.target.value)}
-                      />
+                      <div className="p-4">
+                        <textarea
+                          className="textarea textarea-bordered w-full h-32 mb-3"
+                          value={newExpertNoteContent}
+                          onChange={(e) => setNewExpertNoteContent(e.target.value)}
+                        />
+                        <div className="flex justify-end gap-2">
+                          <button 
+                            className="btn btn-ghost btn-sm hover:bg-red-50"
+                            onClick={handleCancelExpertEdit}
+                          >
+                            <XMarkIcon className="w-4 h-4 text-red-600" />
+                            Cancel
+                          </button>
+                          <button 
+                            className="btn btn-sm"
+                            style={{ backgroundColor: '#3b28c7', color: 'white' }}
+                            onClick={handleSaveExpertNote}
+                            disabled={!newExpertNoteContent.trim()}
+                          >
+                            <CheckIcon className="w-4 h-4" />
+                            Save
+                          </button>
+                        </div>
+                      </div>
                     ) : (
                       <div className="p-4">
-                        <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed">{formatNoteText(note.content)}</p>
-                      </div>
-                    )}
-
-                    {/* Note Footer */}
-                    {note.edited_by && (
-                      <div className="mt-3 pt-2 bg-[#391BCB] rounded-b-lg -mx-4 -mb-4 px-4 pb-3">
-                        <div className="flex items-center gap-2 text-sm text-white">
-                          <span className="font-medium">Edited by {note.edited_by}</span>
-                          <span>•</span>
-                          <span>{note.timestamp}</span>
-                          {note.edited_at && note.edited_at !== note.timestamp && (
-                            <>
+                        <p className="text-base text-gray-800 whitespace-pre-wrap leading-relaxed mb-3">{formatNoteText(note.content)}</p>
+                        
+                        {/* Note Footer - Simple and Clean */}
+                        {note.edited_by && (
+                          <div className="pt-3 border-t border-gray-100">
+                            <div className="flex items-center gap-2 text-sm text-gray-500">
+                              <span>Edited by {note.edited_by}</span>
                               <span>•</span>
-                              <span>Updated: {note.edited_at}</span>
-                            </>
-                          )}
-                        </div>
+                              <span>{note.timestamp}</span>
+                              {note.edited_at && note.edited_at !== note.timestamp && (
+                                <>
+                                  <span>•</span>
+                                  <span>Updated: {note.edited_at}</span>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>

@@ -7,6 +7,8 @@ export interface Client extends Lead {
   potential_metrics?: any; // JSON or PotentialMetric[]
   desired_location?: string;
   section_eligibility?: string;
+  section_eligibility_last_edited_by?: string;
+  section_eligibility_last_edited_at?: string;
   eligibility_status?: string;
   eligibility_status_timestamp?: string;
   expert_notes?: any; // JSON or Note[]
