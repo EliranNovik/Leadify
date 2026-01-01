@@ -1191,12 +1191,33 @@ const ExpertPage: React.FC = () => {
     };
   }, [selectedLead]);
 
-  const handleRowSelect = (leadId: string | number) => {
+  const handleRowSelect = (leadId: string | number, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, find the lead and open in new tab
+    if (isNewTab) {
+      const lead = leads.find(l => String(l.id) === String(leadId));
+      if (lead) {
+        window.open(`/clients/${lead.lead_number}`, '_blank');
+        return;
+      }
+    }
+    
+    // Normal behavior: select row
     setSelectedRowId(leadId);
     setShowActionMenu(true);
   };
 
-  const handleRowClick = (lead: LeadForExpert) => {
+  const handleRowClick = (lead: LeadForExpert, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, open lead in new tab
+    if (isNewTab) {
+      window.open(`/clients/${lead.lead_number}`, '_blank');
+      return;
+    }
+    
+    // Normal behavior: open drawer
     setSelectedLead(lead);
     setDrawerOpen(true);
   };
@@ -1225,7 +1246,16 @@ const ExpertPage: React.FC = () => {
     navigate(`/clients/${lead.lead_number}?tab=interactions`);
   };
 
-  const handleViewClient = (lead: LeadForExpert) => {
+  const handleViewClient = (lead: LeadForExpert, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    if (isNewTab) {
+      // Open in new tab
+      window.open(`/clients/${lead.lead_number}`, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
     navigate(`/clients/${lead.lead_number}`);
   };
   const closeDrawer = () => {
@@ -1681,7 +1711,7 @@ const ExpertPage: React.FC = () => {
           meetingSortedLeads.map((lead) => (
             <div
               key={lead.id}
-              onClick={() => handleRowClick(lead)}
+              onClick={(e) => handleRowClick(lead, e)}
               className="bg-white rounded-2xl p-6 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 cursor-pointer border border-gray-100 group relative pb-16"
             >
               {/* Lead Number and Name */}
@@ -1904,7 +1934,7 @@ const ExpertPage: React.FC = () => {
                   <React.Fragment key={lead.id}>
                 <tr 
                   className={`hover:bg-blue-50 cursor-pointer ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
-                  onClick={() => handleRowSelect(lead.id)}
+                  onClick={(e) => handleRowSelect(lead.id, e)}
                 >
                       {/* Expand/Collapse Arrow */}
                       <td className="px-2 py-3 md:py-4 text-center w-10">
@@ -2370,7 +2400,7 @@ const ExpertPage: React.FC = () => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleViewClient(selectedLead);
+                    handleViewClient(selectedLead, e);
                     setShowActionMenu(false);
                     setSelectedRowId(null);
                   }}

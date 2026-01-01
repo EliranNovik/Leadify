@@ -784,7 +784,21 @@ const MyCasesPage: React.FC = () => {
     navigate(`/clients/${navigationId}`);
   };
 
-  const handleRowSelect = (caseId: string) => {
+  const handleRowSelect = (caseId: string, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, open lead in new tab
+    if (isNewTab) {
+      const allCases = [...newCases, ...activeCases, ...closedCases];
+      const caseItem = allCases.find(c => c.id === caseId);
+      if (caseItem) {
+        const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+        window.open(`/clients/${navigationId}`, '_blank');
+        return;
+      }
+    }
+    
+    // Normal behavior: select row
     const allCases = [...newCases, ...activeCases, ...closedCases];
     const caseItem = allCases.find(c => c.id === caseId);
     if (caseItem) {
@@ -882,8 +896,17 @@ const MyCasesPage: React.FC = () => {
     setSelectedRowId(null);
   };
 
-  const handleViewClient = (caseItem: Case) => {
+  const handleViewClient = (caseItem: Case, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
     const navigationId = caseItem.isNewLead ? caseItem.lead_number : caseItem.id;
+    
+    if (isNewTab) {
+      // Open in new tab
+      window.open(`/clients/${navigationId}`, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
     navigate(`/clients/${navigationId}`);
   };
 
@@ -1603,7 +1626,7 @@ const MyCasesPage: React.FC = () => {
                   className={`hover:bg-gray-50 cursor-pointer transition-colors ${
                     selectedRowId === caseItem.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''
                   }`}
-                  onClick={() => handleRowSelect(caseItem.id)}
+                  onClick={(e) => handleRowSelect(caseItem.id, e)}
                 >
                   <td className="px-3 sm:px-4 lg:px-6 py-2 sm:py-3 lg:py-4 min-w-[100px]">
                     <div className="flex items-center gap-2">
@@ -2029,7 +2052,7 @@ const MyCasesPage: React.FC = () => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleViewClient(selectedCase);
+                    handleViewClient(selectedCase, e);
                     setShowActionMenu(false);
                     setSelectedRowId(null);
                     setSelectedCase(null);

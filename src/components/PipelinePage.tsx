@@ -2396,12 +2396,33 @@ const PipelinePage: React.FC = () => {
     };
   }, [sortedLeads, pipelineMode, realSummaryStats]);
 
-  const handleRowSelect = (leadId: string | number) => {
+  const handleRowSelect = (leadId: string | number, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, find the lead and open in new tab
+    if (isNewTab) {
+      const lead = leads.find(l => String(l.id) === String(leadId));
+      if (lead) {
+        window.open(`/clients/${lead.lead_number}`, '_blank');
+        return;
+      }
+    }
+    
+    // Normal behavior: select row
     setSelectedRowId(leadId);
     setShowActionMenu(true);
   };
 
-  const handleRowClick = (lead: LeadForPipeline) => {
+  const handleRowClick = (lead: LeadForPipeline, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, open lead in new tab
+    if (isNewTab) {
+      window.open(`/clients/${lead.lead_number}`, '_blank');
+      return;
+    }
+    
+    // Normal behavior: open drawer
     setSelectedLead(lead);
     setDrawerOpen(true);
     setNewComment('');
@@ -2657,7 +2678,16 @@ const PipelinePage: React.FC = () => {
     navigate(`/clients/${lead.lead_number}?tab=interactions`);
   };
 
-  const handleViewClient = (lead: LeadForPipeline) => {
+  const handleViewClient = (lead: LeadForPipeline, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    if (isNewTab) {
+      // Open in new tab
+      window.open(`/clients/${lead.lead_number}`, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
     navigate(`/clients/${lead.lead_number}`);
   };
 
@@ -5391,7 +5421,7 @@ const PipelinePage: React.FC = () => {
                 key={lead.id}
                 ref={el => (mainCardRefs.current[Number(lead.id)] = el)}
                 className={`bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16 cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2' : ''}`}
-                onClick={() => handleRowSelect(lead.id)}
+                onClick={(e) => handleRowSelect(lead.id, e)}
               >
                 <div className="flex-1 flex flex-col">
                   {/* Lead Number and Name */}
@@ -5600,7 +5630,7 @@ const PipelinePage: React.FC = () => {
                     <React.Fragment key={lead.id}>
                       <tr
                     className={`transition group bg-base-100 hover:bg-primary/5 border-b-2 border-base-300 relative ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
-                    onClick={() => handleRowSelect(lead.id)}
+                    onClick={(e) => handleRowSelect(lead.id, e)}
                     style={{ overflow: 'visible' }}
                   >
                         {/* Expand/Collapse Arrow */}
@@ -6165,7 +6195,7 @@ const PipelinePage: React.FC = () => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleViewClient(selectedLead);
+                    handleViewClient(selectedLead, e);
                     setShowActionMenu(false);
                     setSelectedRowId(null);
                   }}

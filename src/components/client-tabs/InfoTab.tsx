@@ -4,6 +4,60 @@ import { InformationCircleIcon, ExclamationCircleIcon, PencilIcon, CheckIcon, XM
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
 
+// Helper function to decode HTML entities
+const decodeHtmlEntities = (text: string): string => {
+  if (!text) return '';
+  
+  // Create a temporary DOM element to decode HTML entities
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  return textarea.value;
+};
+
+// Helper function to strip HTML tags from text
+const stripHtmlTags = (text: string): string => {
+  if (!text) return '';
+  
+  // First decode HTML entities
+  let decoded = decodeHtmlEntities(text);
+  
+  // Decode HTML entities again in case there were double-encoded entities
+  decoded = decodeHtmlEntities(decoded);
+  
+  // Convert common HTML line breaks and block elements to newlines before stripping tags
+  // Order matters: process block-level elements first, then inline breaks
+  decoded = decoded.replace(/<\/p>/gi, '\n\n'); // Paragraphs get double newline
+  decoded = decoded.replace(/<\/div>/gi, '\n'); // Divs get single newline
+  decoded = decoded.replace(/<\/tr>/gi, '\n'); // Table rows get newline
+  decoded = decoded.replace(/<\/td>/gi, ' '); // Table cells get space
+  decoded = decoded.replace(/<\/th>/gi, ' '); // Table headers get space
+  decoded = decoded.replace(/<\/li>/gi, '\n'); // List items get newline
+  decoded = decoded.replace(/<\/h[1-6]>/gi, '\n\n'); // Headings get double newline
+  decoded = decoded.replace(/<br\s*\/?>/gi, '\n'); // Line breaks get newline
+  decoded = decoded.replace(/<\/blockquote>/gi, '\n\n'); // Blockquotes get double newline
+  
+  // Remove HTML tags using regex (non-greedy match)
+  const withoutTags = decoded.replace(/<[^>]*>/g, '');
+  
+  // Decode HTML entities one more time to catch any remaining entities
+  let finalDecoded = decodeHtmlEntities(withoutTags);
+  
+  // Convert underscores to spaces for better readability
+  finalDecoded = finalDecoded.replace(/_/g, ' ');
+  
+  // Clean up whitespace while preserving line breaks
+  // Replace multiple spaces/tabs with single space (but not newlines)
+  finalDecoded = finalDecoded.replace(/[ \t]+/g, ' '); // Collapse horizontal whitespace to single space
+  // Remove spaces at the start of lines
+  finalDecoded = finalDecoded.replace(/^[ \t]+/gm, '');
+  // Remove spaces at the end of lines
+  finalDecoded = finalDecoded.replace(/[ \t]+$/gm, '');
+  // Collapse 3+ consecutive newlines to max 2 newlines
+  finalDecoded = finalDecoded.replace(/\n{3,}/g, '\n\n');
+  
+  return finalDecoded.trim();
+};
+
 // Helper function to clean up text formatting
 const formatNoteText = (text: string): string => {
   if (!text) return '';
@@ -111,7 +165,9 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           .filter(([key, value]) => value !== null && value !== undefined && value !== '')
           .map(([key, value]) => {
             // Convert "n/" to line break in values
-            const processedValue = typeof value === 'string' ? value.replace(/n\//g, '\n') : value;
+            let processedValue = typeof value === 'string' ? value.replace(/n\//g, '\n') : String(value || '');
+            // Strip HTML tags from the value
+            processedValue = stripHtmlTags(processedValue);
             return { key, value: processedValue };
           });
         
@@ -120,15 +176,17 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
       
       // If it's not an object, treat as plain text
-      // Convert "n/" to line break
-      const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
+      // Convert "n/" to line break and strip HTML tags
+      let processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : String(facts || '');
+      processedFacts = stripHtmlTags(processedFacts);
       const result = [{ key: 'facts', value: processedFacts }];
       console.log('🔍 DEBUG getFacts() - returning plain text (JSON was not object):', result);
       return result;
     } catch (error) {
       // If JSON parsing fails, treat as plain text
-      // Convert "n/" to line break
-      const processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : facts;
+      // Convert "n/" to line break and strip HTML tags
+      let processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : String(facts || '');
+      processedFacts = stripHtmlTags(processedFacts);
       const result = [{ key: 'facts', value: processedFacts }];
       console.log('🔍 DEBUG getFacts() - returning plain text (JSON parse failed):', result, 'error:', error);
       return result;
@@ -1387,19 +1445,22 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       console.log('🔍 DEBUG RENDER - isEditingFacts:', isEditingFacts);
                       
                       if (factsOfCase.length > 0) {
+                        // Process facts: HTML tags are already stripped in getFacts(), just format for display
+                        const processedFacts = factsOfCase.map((fact, index) => {
+                          // Convert "n/" to line break in display (HTML tags already stripped)
+                          const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : String(fact.value || '');
+                          // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
+                          const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
+                          if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
+                            return `${fact.key}: ${displayValue}`;
+                          } else {
+                            return displayValue;
+                          }
+                        }).join('\n');
+                        
                         return (
                           <p className={`text-gray-900 whitespace-pre-wrap break-words ${getTextAlignment(factsOfCase.map(fact => fact.value).join('\n'))}`}>
-                            {factsOfCase.map((fact, index) => {
-                              // Convert "n/" to line break in display
-                              const displayValue = typeof fact.value === 'string' ? fact.value.replace(/n\//g, '\n') : fact.value;
-                              // Only add "key: " prefix if key is not 'facts' or if there are multiple facts with different keys
-                              const hasMultipleKeys = factsOfCase.length > 1 && new Set(factsOfCase.map(f => f.key)).size > 1;
-                              if (hasMultipleKeys || (fact.key !== 'facts' && fact.key)) {
-                                return `${fact.key}: ${displayValue}`;
-                              } else {
-                                return displayValue;
-                              }
-                            }).join('\n')}
+                            {processedFacts}
                           </p>
                         );
                       } else {

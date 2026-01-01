@@ -1418,8 +1418,16 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
-  const handleViewClient = (lead: SchedulerLead) => {
-    // Navigate to the client page using the lead number
+  const handleViewClient = (lead: SchedulerLead, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    if (isNewTab) {
+      // Open in new tab
+      window.open(`/clients/${lead.lead_number}`, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
     navigate(`/clients/${lead.lead_number}`);
   };
 
@@ -1597,7 +1605,19 @@ const SchedulerToolPage: React.FC = () => {
   };
 
   // Handle row selection (for action menu)
-  const handleRowSelect = (leadId: string) => {
+  const handleRowSelect = (leadId: string, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    // If Cmd/Ctrl is pressed, open lead in new tab
+    if (isNewTab) {
+      const lead = leads.find(l => l.id === leadId);
+      if (lead) {
+        window.open(`/clients/${lead.lead_number}`, '_blank');
+        return;
+      }
+    }
+    
+    // Normal behavior: select row
     setSelectedRowId(leadId);
     setShowActionMenu(false); // Close menu when selecting new row
   };
@@ -2932,7 +2952,7 @@ const SchedulerToolPage: React.FC = () => {
                 </button>
 
                 {/* Header */}
-                <div onClick={() => handleRowSelect(lead.id)} className={`cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
+                <div onClick={(e) => handleRowSelect(lead.id, e)} className={`cursor-pointer ${selectedRowId === lead.id ? 'ring-2 ring-primary ring-offset-2 rounded-lg p-2 -m-2' : ''}`}>
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex flex-col gap-2 flex-1 min-w-0">
                       {getStageBadge(lead.stage)}
@@ -3226,7 +3246,7 @@ const SchedulerToolPage: React.FC = () => {
                   <React.Fragment key={lead.id}>
                     <tr 
                       className={`hover:bg-gray-50 cursor-pointer transition-all duration-200 ${selectedRowId === lead.id ? 'bg-primary/5 ring-2 ring-primary ring-offset-1' : ''}`}
-                      onClick={() => handleRowSelect(lead.id)}
+                      onClick={(e) => handleRowSelect(lead.id, e)}
                     >
                       <td className="pr-1">
                         <div className="flex items-center gap-2">
@@ -3601,7 +3621,7 @@ const SchedulerToolPage: React.FC = () => {
                 <button
                   onClick={(e) => {
                     e.stopPropagation();
-                    handleViewClient(selectedLead);
+                    handleViewClient(selectedLead, e);
                     setShowActionMenu(false);
                     setSelectedRowId(null);
                   }}

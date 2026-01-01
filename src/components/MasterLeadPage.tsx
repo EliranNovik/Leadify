@@ -346,6 +346,18 @@ const MasterLeadPage: React.FC = () => {
           }
         });
 
+        // Fetch employees for mapping IDs to display names
+        const { data: employees } = await supabase
+          .from('tenants_employee')
+          .select('id, display_name');
+
+        const employeeMap = new Map<number, string>();
+        employees?.forEach(emp => {
+          if (emp.id && emp.display_name) {
+            employeeMap.set(emp.id, emp.display_name);
+          }
+        });
+
         const leadIdsForContacts = [
           masterLead?.id,
           ...(subLeadsData?.map((lead: any) => lead.id) || []),
@@ -470,6 +482,72 @@ const MasterLeadPage: React.FC = () => {
             </button>
           ) : '---';
 
+          // Map scheduler: check ID fields first, then check if text field is numeric
+          let schedulerName = '---';
+          const schedulerIdValue = lead.meeting_scheduler_id || lead.scheduler_id;
+          if (schedulerIdValue) {
+            const schedulerIdNum = typeof schedulerIdValue === 'string' ? parseInt(schedulerIdValue, 10) : schedulerIdValue;
+            if (!isNaN(schedulerIdNum) && employeeMap.has(schedulerIdNum)) {
+              schedulerName = employeeMap.get(schedulerIdNum)!;
+            }
+          }
+          if (schedulerName === '---') {
+            const schedulerText = lead.scheduler || lead.meeting_scheduler;
+            if (schedulerText) {
+              // Check if scheduler text is a numeric string (ID)
+              const schedulerTextNum = typeof schedulerText === 'string' ? parseInt(schedulerText.trim(), 10) : NaN;
+              if (!isNaN(schedulerTextNum) && employeeMap.has(schedulerTextNum)) {
+                schedulerName = employeeMap.get(schedulerTextNum)!;
+              } else {
+                schedulerName = schedulerText;
+              }
+            }
+          }
+
+          // Map closer: check ID fields first, then check if text field is numeric
+          let closerName = '---';
+          const closerIdValue = lead.closer_id || lead.meeting_closer_id;
+          if (closerIdValue) {
+            const closerIdNum = typeof closerIdValue === 'string' ? parseInt(closerIdValue, 10) : closerIdValue;
+            if (!isNaN(closerIdNum) && employeeMap.has(closerIdNum)) {
+              closerName = employeeMap.get(closerIdNum)!;
+            }
+          }
+          if (closerName === '---') {
+            const closerText = lead.closer || lead.meeting_closer;
+            if (closerText) {
+              // Check if closer text is a numeric string (ID)
+              const closerTextNum = typeof closerText === 'string' ? parseInt(closerText.trim(), 10) : NaN;
+              if (!isNaN(closerTextNum) && employeeMap.has(closerTextNum)) {
+                closerName = employeeMap.get(closerTextNum)!;
+              } else {
+                closerName = closerText;
+              }
+            }
+          }
+
+          // Map handler: check ID fields first, then check if text field is numeric
+          let handlerName = '---';
+          const handlerIdValue = lead.case_handler_id || lead.handler_id;
+          if (handlerIdValue) {
+            const handlerIdNum = typeof handlerIdValue === 'string' ? parseInt(handlerIdValue, 10) : handlerIdValue;
+            if (!isNaN(handlerIdNum) && employeeMap.has(handlerIdNum)) {
+              handlerName = employeeMap.get(handlerIdNum)!;
+            }
+          }
+          if (handlerName === '---') {
+            const handlerText = lead.handler || lead.case_handler;
+            if (handlerText) {
+              // Check if handler text is a numeric string (ID)
+              const handlerTextNum = typeof handlerText === 'string' ? parseInt(handlerText.trim(), 10) : NaN;
+              if (!isNaN(handlerTextNum) && employeeMap.has(handlerTextNum)) {
+                handlerName = employeeMap.get(handlerTextNum)!;
+              } else {
+                handlerName = handlerText;
+              }
+            }
+          }
+
           return {
             id: String(lead.id),
             lead_number: leadNumberValue,
@@ -484,9 +562,9 @@ const MasterLeadPage: React.FC = () => {
             contact: contactName,
             applicants: Number(applicantsValue) || 0,
             agreement: agreementNode,
-            scheduler: lead.scheduler || lead.meeting_scheduler || '---',
-            closer: lead.closer || lead.meeting_closer || '---',
-            handler: lead.handler || lead.case_handler || '---',
+            scheduler: schedulerName,
+            closer: closerName,
+            handler: handlerName,
             master_id: lead.master_id || baseLeadNumber,
             isMaster,
             route: buildClientRoute(manualValue, leadNumberValue),
@@ -497,6 +575,11 @@ const MasterLeadPage: React.FC = () => {
         subLeadsData?.forEach((lead: any) => processedSubLeads.push(formatNewLead(lead, false)));
 
         processedSubLeads.sort((a, b) => {
+          // Master lead always comes first
+          if (a.isMaster && !b.isMaster) return -1;
+          if (!a.isMaster && b.isMaster) return 1;
+          
+          // For non-master leads, sort by suffix number
           const extractOrder = (leadNumber: string) => {
             const parts = leadNumber.split('/');
             const lastPart = parts[parts.length - 1];
@@ -1011,9 +1094,13 @@ const MasterLeadPage: React.FC = () => {
           });
         }
 
-        // Sort sub-leads by lead number (manual_id if available, otherwise id)
+        // Sort sub-leads: master first, then by suffix number
         processedSubLeads.sort((a, b) => {
-          // Extract the numeric part from the lead number for comparison
+          // Master lead always comes first
+          if (a.isMaster && !b.isMaster) return -1;
+          if (!a.isMaster && b.isMaster) return 1;
+          
+          // For non-master leads, sort by suffix number
           const getNumericPart = (leadNumber: string) => {
             // Remove any prefixes like 'C' and extract the numeric part
             const cleanNumber = leadNumber.replace(/^C/, '');
@@ -1156,7 +1243,17 @@ const MasterLeadPage: React.FC = () => {
     navigate(`/contract/${contractId}`);
   };
 
-  const handleSubLeadClick = (subLead: SubLead) => {
+  const handleSubLeadClick = (subLead: SubLead, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    
+    if (isNewTab) {
+      // Open in new tab
+      const url = subLead.route || (subLead.actual_lead_id ? `/clients/${subLead.actual_lead_id}` : '#');
+      window.open(url, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
     if (subLead.route) {
       navigate(subLead.route);
       return;
@@ -1229,7 +1326,12 @@ const MasterLeadPage: React.FC = () => {
                   Master lead #{(() => {
                     if (!masterLeadInfo) return lead_number;
                     
-                    // Format lead number using the same logic as Clients.tsx
+                    // For new leads, use lead_number directly
+                    if (masterLeadInfo.lead_number) {
+                      return masterLeadInfo.lead_number;
+                    }
+                    
+                    // For legacy leads, format lead number using the same logic as Clients.tsx
                     const formattedLeadNumber = formatLegacyLeadNumber(masterLeadInfo);
                     let displayNumber = formattedLeadNumber;
                     
@@ -1259,11 +1361,7 @@ const MasterLeadPage: React.FC = () => {
       <div className="max-w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-8">
 
         {/* Sub-leads Section */}
-        <div className="bg-white rounded-lg shadow-sm border">
-          <div className="px-4 sm:px-6 py-3 sm:py-4 border-b">
-            <h2 className="text-base sm:text-lg font-semibold text-gray-900">Sub-leads</h2>
-          </div>
-          
+        <div>
           {subLeads.length === 0 ? (
             <div className="px-4 sm:px-6 py-8 sm:py-12 text-center">
               <UserIcon className="w-12 h-12 text-gray-400 mx-auto mb-4" />
@@ -1294,7 +1392,7 @@ const MasterLeadPage: React.FC = () => {
                     <div
                       key={subLead.id}
                       className={cardClasses}
-                      onClick={() => handleSubLeadClick(subLead)}
+                      onClick={(e) => handleSubLeadClick(subLead, e)}
                     >
                       <div className="card-body p-5">
                         <div className="flex justify-between items-start mb-2">
@@ -1382,35 +1480,35 @@ const MasterLeadPage: React.FC = () => {
               <div className="hidden md:block overflow-x-auto">
                 <table className="table w-full compact-table">
                   <thead>
-                    <tr className="bg-gray-50">
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <tr>
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Lead
                       </th>
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Total
                       </th>
-                      <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden md:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Category
                       </th>
-                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Stage
                       </th>
-                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Contact
                       </th>
-                      <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden sm:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Applicants
                       </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Agreement
                       </th>
-                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden lg:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Scheduler
                       </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Closer
                       </th>
-                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                      <th className="hidden xl:table-cell px-3 sm:px-6 py-3 text-left text-xs font-medium text-black uppercase tracking-wider">
                         Handler
                       </th>
                     </tr>
@@ -1420,7 +1518,7 @@ const MasterLeadPage: React.FC = () => {
                       <tr 
                         key={subLead.id} 
                         className="hover:bg-gray-50 cursor-pointer"
-                        onClick={() => handleSubLeadClick(subLead)}
+                        onClick={(e) => handleSubLeadClick(subLead, e)}
                       >
                         <td className="px-3 sm:px-6 py-4 whitespace-nowrap">
                           <div className="flex items-center">

@@ -9128,30 +9128,18 @@ useEffect(() => {
       }
     }
     
-    // If we found the base lead and both master_id and manual_id are NULL, it has no subleads - don't fetch
+    // If we found the base lead and it has a master_id (meaning it IS a sublead), don't fetch subleads
     if (foundBaseLead) {
-      // Check if both master_id and manual_id are NULL or empty
-      const masterIdIsEmpty = baseLeadMasterId === null || baseLeadMasterId === undefined || String(baseLeadMasterId).trim() === '';
-      const manualIdIsEmpty = baseLeadManualId === null || baseLeadManualId === undefined || String(baseLeadManualId).trim() === '';
+      // Check if master_id is NOT NULL/empty (meaning this base lead IS a sublead itself)
+      const hasMasterId = baseLeadMasterId !== null && baseLeadMasterId !== undefined && String(baseLeadMasterId).trim() !== '';
       
-      console.log('🔍 Checking base lead for subleads:', {
-        baseLeadNumber: normalizedBase,
-        foundBaseLead,
-        baseLeadMasterId,
-        baseLeadManualId,
-        masterIdIsEmpty,
-        manualIdIsEmpty
-      });
-      
-      // If BOTH master_id and manual_id are NULL/empty, this lead has no subleads
-      if (masterIdIsEmpty && manualIdIsEmpty) {
-        console.log('🔍 Base lead has master_id and manual_id NULL - no subleads, skipping fetch');
+      // If the base lead has a master_id, it IS a sublead - don't fetch its subleads
+      if (hasMasterId) {
         setSubLeads([]);
         setIsMasterLead(false);
         return [];
       }
-    } else {
-      console.log('🔍 Base lead not found in database, continuing to fetch subleads');
+      // If master_id is NULL, it's a master lead - proceed to fetch subleads
     }
 
     const allSubLeads: any[] = [];
@@ -9167,31 +9155,29 @@ useEffect(() => {
       if (newLeadsError) {
         console.error('Error fetching new sub-leads:', newLeadsError);
       } else if (newLeads && newLeads.length > 0) {
-        // Filter to only include leads that have valid master_id or manual_id
-        // And ensure their master_id matches the base lead (if they have master_id)
+        // Filter to only include leads that match the pattern
+        // For new leads, we rely on lead_number pattern matching (e.g., "L209667/1")
         const validNewSubLeads = newLeads.filter(lead => {
           const leadNumberValue = lead.lead_number || '';
           const hasValidLeadNumber = !!leadNumberValue && leadNumberValue.includes('/');
           
-          // Must have either master_id or manual_id
-          const hasMasterId = lead.master_id && String(lead.master_id).trim() !== '';
-          const hasManualId = lead.manual_id && String(lead.manual_id).trim() !== '';
-          
-          if (!hasMasterId && !hasManualId) {
-            return false; // No master_id or manual_id saved
+          if (!hasValidLeadNumber) {
+            return false;
           }
           
           // If master_id exists, it should match the base lead (or base without prefix)
-          if (hasMasterId) {
+          // But don't exclude if master_id is not set - pattern matching is sufficient
+          if (lead.master_id && String(lead.master_id).trim() !== '') {
             const masterIdStr = String(lead.master_id).trim();
-            const baseWithoutPrefix = normalizedBase.replace(/^C/, '');
-            const masterMatchesBase = masterIdStr === normalizedBase || masterIdStr === baseWithoutPrefix;
+            const baseWithoutPrefix = normalizedBase.replace(/^C/, '').replace(/^L/, '');
+            const normalizedBaseClean = normalizedBase.replace(/^C/, '').replace(/^L/, '');
+            const masterMatchesBase = masterIdStr === normalizedBase || masterIdStr === normalizedBaseClean || masterIdStr === baseWithoutPrefix;
             if (!masterMatchesBase) {
               return false; // master_id doesn't point to this base lead
             }
           }
           
-          return hasValidLeadNumber;
+          return true;
         });
         allSubLeads.push(...validNewSubLeads);
       }
