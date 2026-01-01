@@ -804,9 +804,12 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
 };
 
 const LeadSearchPage: React.FC = () => {
+  // Initialize filters with current date - ensure no persistent state interferes
+  const todayStr = new Date().toISOString().split('T')[0];
+  
   const [filters, setFilters] = useState({
-    fromDate: new Date().toISOString().split('T')[0], // Default to today
-    toDate: new Date().toISOString().split('T')[0], // Default to today
+    fromDate: todayStr, // Default to today
+    toDate: todayStr, // Default to today
     category: [] as string[],
     language: [] as string[],
     reason: [] as string[],
@@ -875,6 +878,33 @@ const LeadSearchPage: React.FC = () => {
     navigate(`/clients/${leadNumber}`);
   };
 
+  // Clear any old persistent storage that might interfere with filters
+  // This ensures that old persistent state code doesn't break the filters
+  useEffect(() => {
+    // Clear any old localStorage/sessionStorage keys that might have been used for persistent state
+    try {
+      const keysToCheck = [
+        'leadSearchPage_filters',
+        'leadSearch_filters',
+        'leadSearchPage_results',
+        'leadSearch_results',
+        'leadSearchPage_searchPerformed',
+        'leadSearch_searchPerformed',
+        'LeadSearchPage_filters',
+        'LeadSearch_filters',
+        'LeadSearchPage_results',
+        'LeadSearch_results',
+      ];
+      keysToCheck.forEach(key => {
+        localStorage.removeItem(key);
+        sessionStorage.removeItem(key);
+      });
+      console.log('✅ Cleared any old persistent storage for LeadSearchPage');
+    } catch (error) {
+      console.warn('⚠️ Error clearing old persistent storage:', error);
+    }
+  }, []);
+
   // Initialize stage names cache on mount
   useEffect(() => {
     fetchStageNames().catch(error => {
@@ -882,17 +912,18 @@ const LeadSearchPage: React.FC = () => {
     });
   }, []);
 
-  // Fetch stage options from lead_stages table
+  // Fetch stage options from lead_stages table, ordered by ID (lowest to highest)
   useEffect(() => {
     const fetchStageOptions = async () => {
       try {
         const { data, error } = await supabase
           .from('lead_stages')
-          .select('name')
-          .order('name');
+          .select('id, name')
+          .order('id', { ascending: true }); // Order by ID, lowest to highest
         
         if (error) throw error;
         
+        // Extract names in the order they were fetched (sorted by ID)
         const stages = data?.map(stage => stage.name) || [];
         setStageOptions(stages);
       } catch (error) {
@@ -1394,6 +1425,32 @@ const LeadSearchPage: React.FC = () => {
     const nameToIdMapping = new Map<string, number>();
     const idToNameMapping = new Map<number, string>();
     
+    // Fetch categories and create reverse mapping (formatted name -> category_id) for filtering
+    // This avoids using ilike/eq queries during filtering - we use the mapping directly
+    const categoryNameToIdMapping = new Map<string, number>();
+    try {
+      const { data: categoriesData } = await supabase
+        .from('misc_category')
+        .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
+        .order('name');
+      
+      if (categoriesData) {
+        categoriesData.forEach((category: any) => {
+          const mainRel = category.misc_maincategory;
+          const mainCategory = Array.isArray(mainRel)
+            ? mainRel[0]?.name
+            : mainRel?.name;
+          const formattedName = mainCategory
+            ? `${category.name} (${mainCategory})`
+            : category.name;
+          categoryNameToIdMapping.set(formattedName, category.id);
+        });
+        console.log('✅ Created category name to ID mapping:', categoryNameToIdMapping.size, 'categories');
+      }
+    } catch (error) {
+      console.error('⚠️ Error fetching categories for mapping:', error);
+    }
+    
     try {
       // Helper to build UTC range for a given local date string (YYYY-MM-DD)
       const buildUtcStartOfDay = (dateStr: string) => {
@@ -1779,59 +1836,38 @@ const LeadSearchPage: React.FC = () => {
       console.log('📋 Legacy leads query base:', legacyLeadsQuery);
       
       // Apply filters for legacy leads (mapping fields)
+      // Use date strings directly - cdate column handles date comparisons correctly
       if (filters.fromDate) {
-        console.log('📅 Adding fromDate filter for legacy leads (UTC range):', filters.fromDate);
-        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', buildUtcStartOfDay(filters.fromDate));
+        console.log('📅 Adding fromDate filter for legacy leads:', filters.fromDate);
+        legacyLeadsQuery = legacyLeadsQuery.gte('cdate', filters.fromDate);
       }
       if (filters.toDate) {
-        console.log('📅 Adding toDate filter for legacy leads (UTC range):', filters.toDate);
-        const endOfDay = buildUtcEndOfDay(filters.toDate);
-        console.log('📅 Using end of day (UTC) for toDate:', endOfDay);
+        console.log('📅 Adding toDate filter for legacy leads:', filters.toDate);
+        // Append time to include the entire day
+        const endOfDay = `${filters.toDate}T23:59:59`;
         legacyLeadsQuery = legacyLeadsQuery.lte('cdate', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
         console.log('🏷️ Adding category filter for legacy leads:', filters.category);
-        try {
-          // Look up all selected categories to get their category_ids
-          const categoryIds: number[] = [];
-          for (const cat of filters.category) {
-            const categoryName = cat.split(' (')[0].trim();
-            console.log('🔧 Extracted category name:', categoryName);
-            
-            const categoryLookup = await supabase
-              .from('misc_category')
-              .select('id')
-              .ilike('name', `%${categoryName}%`)
-              .limit(1);
-            
-            if (categoryLookup.data && categoryLookup.data.length > 0) {
-              const categoryId = categoryLookup.data[0].id;
-              categoryIds.push(categoryId);
-              console.log('🔍 Found category_id:', categoryId, 'for category:', categoryName);
-            }
-          }
-          
-          if (categoryIds.length > 0) {
-            // Use IN operator for multiple category_ids
-            legacyLeadsQuery = legacyLeadsQuery.in('category_id', categoryIds);
+        // Use the category name to ID mapping we created earlier (no database queries needed)
+        const categoryIds: number[] = [];
+        for (const formattedCategoryName of filters.category) {
+          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+          if (categoryId !== undefined) {
+            categoryIds.push(categoryId);
+            console.log('🔍 Found category_id:', categoryId, 'for category:', formattedCategoryName);
           } else {
-            console.log('❌ No category_ids found for any categories');
-            // Fallback to exact match on misc_category.name
-            const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
-            if (categoryNames.length === 1) {
-              legacyLeadsQuery = legacyLeadsQuery.eq('misc_category.name', categoryNames[0]);
-            } else {
-              legacyLeadsQuery = legacyLeadsQuery.in('misc_category.name', categoryNames);
-            }
+            console.log('⚠️ No category ID found for:', formattedCategoryName);
           }
-        } catch (error) {
-          console.log('⚠️ Category lookup failed, falling back to misc_category.name:', error);
-          const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
-          if (categoryNames.length === 1) {
-            legacyLeadsQuery = legacyLeadsQuery.eq('misc_category.name', categoryNames[0]);
-          } else {
-            legacyLeadsQuery = legacyLeadsQuery.in('misc_category.name', categoryNames);
-          }
+        }
+        
+        console.log(`🔍 DEBUG Lead 174503: Category filter - categoryIds found:`, categoryIds, 'Lead has category_id: 122, included:', categoryIds.includes(122));
+        
+        if (categoryIds.length > 0) {
+          // Use IN operator for multiple category_ids
+          legacyLeadsQuery = legacyLeadsQuery.in('category_id', categoryIds);
+        } else {
+          console.log('❌ No category_ids found for any categories - category filter will not be applied');
         }
       }
       if (filters.language && filters.language.length > 0) {
@@ -1849,10 +1885,13 @@ const LeadSearchPage: React.FC = () => {
         const includeActive = filters.status.includes('Active');
         const includeInactive = filters.status.includes('Not active');
 
-        // Legacy mapping (corrected): status 0 = Active, status 10 = Not active, status null = Active (subleads)
+        // Legacy mapping: status 0 = Active, status 10 = Not active, status null = Active (subleads)
+        // This matches the logic in SignedSalesReportPage.tsx
         if (includeActive && !includeInactive) {
-          legacyLeadsQuery = legacyLeadsQuery.or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
+          // Active: status = 0 OR status IS NULL (subleads are considered active)
+          legacyLeadsQuery = legacyLeadsQuery.or('status.eq.0,status.is.null');
         } else if (!includeActive && includeInactive) {
+          // Not active: status = 10 only (excludes status null and status 0)
           legacyLeadsQuery = legacyLeadsQuery.eq('status', 10);
         }
         // If both selected, don't filter (includes all)
@@ -2138,6 +2177,74 @@ const LeadSearchPage: React.FC = () => {
         count: legacyLeadsResult.data?.length || 0
       });
 
+      // DEBUG: Check if lead 174503 is in the query results
+      const debugLeadId = 174503;
+      const debugLeadInResults = legacyLeadsResult.data?.find((lead: any) => lead.id === debugLeadId);
+      if (debugLeadInResults) {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: Found in query results:`, {
+          id: debugLeadInResults.id,
+          name: debugLeadInResults.name,
+          cdate: debugLeadInResults.cdate,
+          status: debugLeadInResults.status,
+          stage: debugLeadInResults.stage,
+          category_id: debugLeadInResults.category_id,
+          source_id: debugLeadInResults.source_id,
+          language_id: debugLeadInResults.language_id,
+          topic: debugLeadInResults.topic,
+        });
+      } else {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: NOT found in query results - checking if it exists in database...`);
+        // Check if the lead exists at all
+        const { data: debugLeadCheck, error: debugCheckError } = await supabase
+          .from('leads_lead')
+          .select('id, name, cdate, status, stage, category_id, source_id, language_id, topic, unactivated_at')
+          .eq('id', debugLeadId)
+          .maybeSingle();
+        if (!debugCheckError && debugLeadCheck) {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: Exists in database:`, debugLeadCheck);
+          
+          // Check what category name corresponds to category_id 122
+          let categoryNameFor122 = null;
+          try {
+            const { data: catData } = await supabase
+              .from('misc_category')
+              .select('id, name, parent_id, misc_maincategory!parent_id(name)')
+              .eq('id', debugLeadCheck.category_id)
+              .single();
+            if (catData) {
+              const mainCat = Array.isArray(catData.misc_maincategory) ? catData.misc_maincategory[0] : catData.misc_maincategory;
+              categoryNameFor122 = mainCat?.name ? `${catData.name} (${mainCat.name})` : catData.name;
+              console.log(`🔍 DEBUG Lead ${debugLeadId}: Category name for category_id ${debugLeadCheck.category_id}:`, categoryNameFor122);
+            }
+          } catch (e) {
+            console.log(`🔍 DEBUG Lead ${debugLeadId}: Error fetching category name for ID ${debugLeadCheck.category_id}:`, e);
+          }
+          
+          // Check why it was filtered out
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: Filter analysis:`, {
+            fromDate: filters.fromDate,
+            toDate: filters.toDate,
+            cdate: debugLeadCheck.cdate,
+            cdateMatchesFromDate: filters.fromDate ? (debugLeadCheck.cdate >= filters.fromDate) : 'N/A',
+            cdateMatchesToDate: filters.toDate ? (debugLeadCheck.cdate <= `${filters.toDate}T23:59:59`) : 'N/A',
+            status: debugLeadCheck.status,
+            statusFilter: filters.status,
+            stage: debugLeadCheck.stage,
+            stageFilter: filters.stage,
+            category_id: debugLeadCheck.category_id,
+            categoryNameFor122: categoryNameFor122,
+            categoryFilter: filters.category,
+            categoryMatches: categoryNameFor122 ? filters.category.includes(categoryNameFor122) : 'Unknown - check category IDs',
+            source_id: debugLeadCheck.source_id,
+            sourceFilter: filters.source,
+            language_id: debugLeadCheck.language_id,
+            languageFilter: filters.language,
+          });
+        } else {
+          console.log(`🔍 DEBUG Lead ${debugLeadId}: Does not exist in database or error:`, debugCheckError);
+        }
+      }
+
       if (newLeadsResult.error) {
         console.error('❌ New leads query error:', newLeadsResult.error);
         throw newLeadsResult.error;
@@ -2420,18 +2527,45 @@ const LeadSearchPage: React.FC = () => {
         console.log('🏷️ Applying tag-based filtering to mapped leads...');
 
         if (taggedNewLeadIds.size > 0) {
+          const beforeTagFilter = mappedNewLeads.length;
           mappedNewLeads = mappedNewLeads.filter(lead => taggedNewLeadIds.has(String(lead.id)));
+          console.log(`🏷️ Tag filter for new leads: ${beforeTagFilter} → ${mappedNewLeads.length}`);
         } else {
           console.log('🏷️ No tagged new leads found, filtering out all new leads for tag filter.');
           mappedNewLeads = [];
         }
 
         if (taggedLegacyLeadIds.size > 0) {
+          const beforeTagFilter = mappedLegacyLeads.length;
+          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
           mappedLegacyLeads = mappedLegacyLeads.filter(lead => taggedLegacyLeadIds.has(String(lead.id)));
+          const debugLeadAfterTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
+          console.log(`🏷️ Tag filter for legacy leads: ${beforeTagFilter} → ${mappedLegacyLeads.length}`);
+          if (debugLeadBeforeTags && !debugLeadAfterTags) {
+            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out by tag filter. Tagged legacy lead IDs include 174503:`, taggedLegacyLeadIds.has(String(debugLeadId)));
+          }
         } else {
           console.log('🏷️ No tagged legacy leads found, filtering out all legacy leads for tag filter.');
+          const debugLeadBeforeTags = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
+          if (debugLeadBeforeTags) {
+            console.log(`🔍 DEBUG Lead ${debugLeadId}: Filtered out because no tagged leads found (tag filter active but lead not tagged)`);
+          }
           mappedLegacyLeads = [];
         }
+      }
+      
+      // DEBUG: Check if lead 174503 is still in mapped legacy leads after all processing
+      const debugLeadFinal = mappedLegacyLeads.find((lead: any) => lead.id === debugLeadId);
+      if (debugLeadFinal) {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: Still present in final mapped legacy leads:`, {
+          id: debugLeadFinal.id,
+          name: debugLeadFinal.name,
+          status: debugLeadFinal.status,
+          stage: debugLeadFinal.stage,
+          category: debugLeadFinal.category,
+        });
+      } else if (debugLeadInResults) {
+        console.log(`🔍 DEBUG Lead ${debugLeadId}: Was in query results but filtered out during mapping/processing`);
       }
 
       // Debug: Check what the mapped data looks like
