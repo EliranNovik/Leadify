@@ -345,14 +345,16 @@ const ClosedDealsWithoutPaymentPlanWidget: React.FC<Props> = ({ maxItems = 6, cl
 
         // Fetch all payment plans for legacy leads
         const legacyLeadIds = (legacyData || []).map((lead: any) => lead.id).filter(Boolean);
+        // Convert to strings for querying (lead_id in finances_paymentplanrow is text/varchar)
+        const legacyLeadIdsAsStrings = legacyLeadIds.map(id => String(id));
         console.log('[ClosedDealsWithoutPaymentPlan] Checking payment plans for', legacyLeadIds.length, 'legacy leads');
-        let legacyPaymentPlanLeadIds = new Set<number>();
+        let legacyPaymentPlanLeadIds = new Set<string>();
         
-        if (legacyLeadIds.length > 0) {
+        if (legacyLeadIdsAsStrings.length > 0) {
           const { data: legacyPaymentPlansData, error: legacyPaymentPlansError } = await supabase
             .from('finances_paymentplanrow')
             .select('lead_id')
-            .in('lead_id', legacyLeadIds)
+            .in('lead_id', legacyLeadIdsAsStrings)
             .is('cancel_date', null);
           
           if (legacyPaymentPlansError) {
@@ -360,7 +362,17 @@ const ClosedDealsWithoutPaymentPlanWidget: React.FC<Props> = ({ maxItems = 6, cl
           } else {
             console.log('[ClosedDealsWithoutPaymentPlan] Legacy payment plans found:', legacyPaymentPlansData?.length || 0);
             if (legacyPaymentPlansData) {
-              legacyPaymentPlanLeadIds = new Set(legacyPaymentPlansData.map((plan: any) => plan.lead_id).filter(Boolean));
+              // Convert lead_id to string and add to Set (handle both string and number types)
+              legacyPaymentPlansData.forEach((plan: any) => {
+                if (plan.lead_id != null) {
+                  legacyPaymentPlanLeadIds.add(String(plan.lead_id));
+                  // Also add numeric version for safety (in case lead.id is compared as number)
+                  const numericId = Number(plan.lead_id);
+                  if (!isNaN(numericId)) {
+                    legacyPaymentPlanLeadIds.add(numericId.toString());
+                  }
+                }
+              });
             }
           }
         }
@@ -379,8 +391,9 @@ const ClosedDealsWithoutPaymentPlanWidget: React.FC<Props> = ({ maxItems = 6, cl
           
           legacyLeadsMatchedCloser++;
 
-          // Check if lead has payment plans
-          if (legacyPaymentPlanLeadIds.has(lead.id)) {
+          // Check if lead has payment plans (convert lead.id to string for comparison)
+          const leadIdStr = String(lead.id);
+          if (legacyPaymentPlanLeadIds.has(leadIdStr)) {
             return; // Skip leads that have payment plans
           }
           

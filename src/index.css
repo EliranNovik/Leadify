@@ -934,6 +934,12 @@ html.dark .z-\[9999\] .fixed.inset-0.bg-black\/50 {
   z-index: 9999 !important;
 }
 
+/* Hide tooltips when manual price offer modal is open */
+body:has(.manual-price-offer-modal-open) .tooltip::before,
+body:has(.manual-price-offer-modal-open) .tooltip::after {
+  display: none !important;
+}
+
 /* --- Print styles for ProformaViewPage --- */
 @media print {
   * {

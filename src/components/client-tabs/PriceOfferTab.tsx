@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { ClientTabProps } from '../../types/client';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
-import { CurrencyDollarIcon, PencilSquareIcon } from '@heroicons/react/24/outline';
+import { CurrencyDollarIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 
 interface PriceOfferHistoryEntry {
@@ -21,8 +21,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
   const closer = client?.closer || '---';
   const proposal = client?.proposal_text ?? '';
 
-  const [isEditing, setIsEditing] = useState(false);
-  const [editExtra, setEditExtra] = useState(3060.0);
   const [historyLoading, setHistoryLoading] = useState(false);
   const [historyError, setHistoryError] = useState<string | null>(null);
   const [history, setHistory] = useState<PriceOfferHistoryEntry[]>([]);
@@ -37,15 +35,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
 
   // Use legacyTotal for legacy leads, otherwise use proposalTotal
   const total = isLegacyLead && legacyTotal !== null ? legacyTotal : proposalTotal;
-  
-  const [editTotal, setEditTotal] = useState<number | null | undefined>(proposalTotal);
-  
-  // Update editTotal when total changes (but not while editing)
-  useEffect(() => {
-    if (!isEditing) {
-      setEditTotal(total);
-    }
-  }, [total, isEditing]);
 
   // Fetch closer display name and total for legacy leads
   useEffect(() => {
@@ -291,21 +280,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
     });
   };
 
-  const handleEdit = () => {
-    setEditTotal(total);
-    setEditExtra(3060.0);
-    setIsEditing(true);
-  };
-
-  const handleSave = () => {
-    // Handle saving the edited total and extra
-    setIsEditing(false);
-  };
-
-  const handleCancel = () => {
-    setIsEditing(false);
-  };
-
   const fallbackEntry: PriceOfferHistoryEntry | null = useMemo(() => {
     if (!proposal || !proposal.trim()) {
       return null;
@@ -428,39 +402,6 @@ const PriceOfferTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => 
           {renderProposalContent(displayProposal)}
         </div>
       </div>
-      {isEditing ? (
-        <div className="flex flex-col sm:flex-row gap-4 items-start sm:items-center mb-2">
-          <div className="flex gap-2 items-center">
-            <label className="font-semibold">Total:</label>
-            <input
-              type="number"
-              className="input input-bordered w-28"
-              value={editTotal}
-              onChange={e => setEditTotal(Number(e.target.value))}
-              min={0}
-            />
-          </div>
-          <div className="flex gap-2 items-center">
-            <label className="font-semibold">Extra:</label>
-            <input
-              type="number"
-              className="input input-bordered w-28"
-              value={editExtra}
-              onChange={e => setEditExtra(Number(e.target.value))}
-              min={0}
-            />
-          </div>
-          <div className="flex gap-2 mt-2 sm:mt-0">
-            <button className="btn btn-success btn-sm" onClick={handleSave}>Save</button>
-            <button className="btn btn-ghost btn-sm" onClick={handleCancel}>Cancel</button>
-          </div>
-        </div>
-      ) : (
-        <button className="btn btn-outline flex items-center gap-2" onClick={handleEdit}>
-          <PencilSquareIcon className="w-5 h-5" />
-          Edit Total
-        </button>
-      )}
       
       <TimelineHistoryButtons client={client} />
     </div>

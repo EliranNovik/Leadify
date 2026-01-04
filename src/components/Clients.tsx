@@ -1111,6 +1111,22 @@ const Clients: React.FC<ClientsProps> = ({
     specialNotes: '',
   });
   const [showSendOfferModal, setShowSendOfferModal] = useState(false);
+  const [showPriceOfferChoiceModal, setShowPriceOfferChoiceModal] = useState(false);
+  const [showManualPriceOfferModal, setShowManualPriceOfferModal] = useState(false);
+  const [manualPriceOfferText, setManualPriceOfferText] = useState('');
+  
+  // Add/remove body class when manual price offer modal opens/closes to hide tooltips
+  useEffect(() => {
+    if (showManualPriceOfferModal) {
+      document.body.classList.add('manual-price-offer-modal-open');
+    } else {
+      document.body.classList.remove('manual-price-offer-modal-open');
+    }
+    return () => {
+      document.body.classList.remove('manual-price-offer-modal-open');
+    };
+  }, [showManualPriceOfferModal]);
+  
   const [showSignedDrawer, setShowSignedDrawer] = useState(false);
   const [signedDate, setSignedDate] = useState(() => {
     const today = new Date();
@@ -6011,7 +6027,79 @@ useEffect(() => {
 
   const openSendOfferModal = () => {
     if (!selectedClient) return;
-    setShowSendOfferModal(true);
+    setShowPriceOfferChoiceModal(true);
+  };
+  
+  const handlePriceOfferChoice = (choice: 'automated' | 'manual') => {
+    setShowPriceOfferChoiceModal(false);
+    if (choice === 'automated') {
+      setShowSendOfferModal(true);
+    } else {
+      setManualPriceOfferText('');
+      setShowManualPriceOfferModal(true);
+    }
+  };
+  
+  const handleSaveManualPriceOffer = async () => {
+    if (!selectedClient || !manualPriceOfferText.trim()) {
+      toast.error('Please enter a price offer text.');
+      return;
+    }
+    
+    try {
+      const isLegacyLead = selectedClient.id.startsWith('legacy_');
+      const stageId = getStageIdOrWarn('Mtng sum+Agreement sent');
+      if (stageId === null) {
+        toast.error('Unable to resolve the "Mtng sum+Agreement sent" stage. Please contact an administrator.');
+        return;
+      }
+      
+      let additionalFields: Record<string, any> = {};
+      
+      if (isLegacyLead) {
+        // For legacy leads, save to 'proposal' column
+        additionalFields = {
+          proposal: manualPriceOfferText.trim(),
+        };
+      } else {
+        // For new leads, save to 'proposal_text' column and set closer
+        const actor = await fetchStageActorInfo();
+        additionalFields = {
+          proposal_text: manualPriceOfferText.trim(),
+          closer: actor.fullName,
+        };
+      }
+      
+      await updateLeadStageWithHistory({
+        lead: selectedClient,
+        stage: stageId,
+        additionalFields,
+      });
+      
+      setSelectedClient((prev: any) => {
+        if (!prev) return prev;
+        return { ...prev, stage: stageId };
+      });
+      
+      await onClientUpdate();
+      setShowManualPriceOfferModal(false);
+      setManualPriceOfferText('');
+      toast.success('Manual price offer saved!');
+    } catch (error: any) {
+      console.error('Error saving manual price offer:', error);
+      if (error?.message && error.message.includes('category')) {
+        toast.error('Please set a category for this client before performing this action.', {
+          duration: 4000,
+          style: {
+            background: '#fee2e2',
+            color: '#dc2626',
+            border: '1px solid #fecaca',
+          },
+        });
+      } else {
+        toast.error('Failed to save manual price offer. Please try again.');
+      }
+    }
   };
 
   const handleOpenSignedDrawer = () => {
@@ -14521,6 +14609,68 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       )}
 
       <LeadSummaryDrawer isOpen={showLeadSummaryDrawer} onClose={() => setShowLeadSummaryDrawer(false)} client={selectedClient} />
+      {/* Price Offer Choice Modal */}
+      {showPriceOfferChoiceModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="bg-base-100 rounded-xl shadow-xl p-6 max-w-md w-full mx-4">
+            <h3 className="text-lg font-semibold mb-4">Send Price Offer</h3>
+            <p className="text-base-content/70 mb-6">How would you like to send the price offer?</p>
+            <div className="flex flex-col gap-3">
+              <button
+                className="btn btn-primary w-full"
+                onClick={() => handlePriceOfferChoice('automated')}
+              >
+                Automated Email
+              </button>
+              <button
+                className="btn btn-outline w-full"
+                onClick={() => handlePriceOfferChoice('manual')}
+              >
+                Manual Price Offer
+              </button>
+              <button
+                className="btn btn-ghost w-full mt-2"
+                onClick={() => setShowPriceOfferChoiceModal(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
+      {/* Manual Price Offer Modal */}
+      {showManualPriceOfferModal && (
+        <div className="fixed inset-0 z-[10000] md:flex md:items-center md:justify-center md:bg-black/30" style={{ zIndex: 10000 }}>
+          <div className="bg-base-100 h-full w-full flex flex-col p-6 md:h-auto md:rounded-xl md:shadow-xl md:max-w-2xl md:w-full md:mx-4 md:max-h-[90vh] relative" style={{ zIndex: 10001 }}>
+            <h3 className="text-lg font-semibold mb-4">Manual Price Offer</h3>
+            <textarea
+              className="textarea textarea-bordered w-full flex-1 min-h-[300px] mb-4"
+              placeholder="Enter price offer text..."
+              value={manualPriceOfferText}
+              onChange={(e) => setManualPriceOfferText(e.target.value)}
+            />
+            <div className="flex gap-3 justify-end">
+              <button
+                className="btn btn-ghost"
+                onClick={() => {
+                  setShowManualPriceOfferModal(false);
+                  setManualPriceOfferText('');
+                }}
+              >
+                Cancel
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleSaveManualPriceOffer}
+              >
+                Save
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      
       <SendPriceOfferModal
         isOpen={Boolean(showSendOfferModal && selectedClient)}
         onClose={() => setShowSendOfferModal(false)}

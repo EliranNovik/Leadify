@@ -3916,10 +3916,11 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
         </div>
 
         {/* End of search bar container */}
-        {isSearchActive && (
-          <div className="fixed z-50 flex gap-4" style={{
+        {isSearchActive && typeof window !== 'undefined' && createPortal(
+          <div className="fixed z-[10000] flex gap-4" style={{
             top: searchDropdownStyle.top,
             left: searchDropdownStyle.left,
+            zIndex: 10000,
           }}>
             {/* Search Results - show if there's a search value (always show when searching or has value), or filters applied */}
             {(searchValue.trim() || isAdvancedSearching || hasAppliedFilters) && (
@@ -3928,6 +3929,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                 className="bg-base-100 rounded-xl shadow-xl border border-base-300 max-h-96 overflow-y-auto search-dropdown"
                 style={{
                   width: searchDropdownStyle.width,
+                  zIndex: 10000,
                 }}
                 onMouseEnter={() => {
                   isMouseOverSearchRef.current = true;
@@ -4429,7 +4431,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               </div>
             )}
           </div>
-        )}
+        , document.body)}
 
         {/* Right section with notifications and user */}
         <div className={`flex-1 justify-end flex items-center gap-2 md:gap-4 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>

@@ -2309,19 +2309,17 @@ const Dashboard: React.FC = () => {
         const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
         
         // Calculate Last 30d: today and 30 days before today (inclusive)
-        // When viewing current month at end of month, ensure Last 30d doesn't exceed month total
-        // by using month start as the lower bound if 30 days ago is before month start
+        // Last 30d should always be from 30 days ago to today, regardless of month view
         const currentYear = today.getFullYear();
         const currentMonthIndex = today.getMonth();
         const isViewingCurrentMonth = selectedYear === currentYear && selectedMonthIndex === currentMonthIndex;
-        const effectiveThirtyDaysAgo = (isViewingCurrentMonth && thirtyDaysAgoStr < startOfMonthStr) 
-          ? startOfMonthStr 
-          : thirtyDaysAgoStr;
+        // For Last 30d, always use thirtyDaysAgoStr (30 days ago from today)
+        const last30dStartDate = thirtyDaysAgoStr;
         const effectiveLast30dEnd = todayStr;
         console.log('🔍 Agreement Signed - Date ranges:', {
           todayStr,
           thirtyDaysAgoStr,
-          effectiveThirtyDaysAgo,
+          last30dStartDate,
           effectiveLast30dEnd,
           startOfMonthStr,
           endOfMonthStr,
@@ -2347,13 +2345,13 @@ const Dashboard: React.FC = () => {
         
         try {
           // Query legacy leads - use date for filtering
-          // Use effectiveThirtyDaysAgo instead of thirtyDaysAgoStr so Last 30d matches month data at end of month
+          // Use last30dStartDate (thirtyDaysAgoStr) for Last 30d - always from 30 days ago to today
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, lead_id')
             .eq('stage', 60)
             .not('lead_id', 'is', null) // Legacy leads only
-            .gte('date', effectiveThirtyDaysAgo)
+            .gte('date', last30dStartDate)
             .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
@@ -2384,13 +2382,14 @@ const Dashboard: React.FC = () => {
         let newLeadStageError: any = null;
         
         try {
-          // Use effectiveThirtyDaysAgo and todayStr to ensure we include today's records
+          // Use last30dStartDate (thirtyDaysAgoStr) and todayStr to ensure we include today's records
+          // Last 30d should always be from 30 days ago to today
           const queryPromise = supabase
             .from('leads_leadstage')
             .select('id, date, cdate, newlead_id')
             .eq('stage', 60)
             .not('newlead_id', 'is', null) // New leads only
-            .gte('date', effectiveThirtyDaysAgo)
+            .gte('date', last30dStartDate)
             .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
             .limit(5000); // Add limit to prevent timeout
           
@@ -2723,7 +2722,8 @@ const Dashboard: React.FC = () => {
               }
               
               // Check if it's in last 30 days (rolling 30 days from today)
-              if (recordDateOnly >= effectiveThirtyDaysAgo && recordDateOnly <= todayStr) {
+              // Always use thirtyDaysAgoStr for Last 30d - from 30 days ago to today
+              if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
                 newAgreementData["Last 30d"][deptIndex].count++;
                 newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
                 newAgreementData["Last 30d"][0].count++; // General
@@ -3836,8 +3836,8 @@ const Dashboard: React.FC = () => {
   const [showLast30Cols, setShowLast30Cols] = React.useState(true);
   const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
   
-  // Filter mode: 'today', 'yesterday', or 'week' - controls which data is shown in "Today" column
-  const [todayFilterMode, setTodayFilterMode] = React.useState<'today' | 'yesterday' | 'week'>('today');
+  // Filter mode: 'today' or 'week' - controls which data is shown in "Today" column
+  const [todayFilterMode, setTodayFilterMode] = React.useState<'today' | 'week'>('today');
   
   // Month and year filter states - default to current month and year
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthName);
@@ -4389,11 +4389,9 @@ const Dashboard: React.FC = () => {
   const renderColumnsView = (tableType: 'agreement' | 'invoiced') => {
     const categories = scoreboardCategories.filter(cat => cat !== 'General' && cat !== 'Total');
     const visibleColumns: string[] = [];
-    // Show "Today" column based on filter mode - if yesterday/week is active, show that data instead
+    // Show "Today" column based on filter mode - if week is active, show that data instead
     if (showTodayCols) {
-      if (todayFilterMode === 'yesterday') {
-        visibleColumns.push('Yesterday');
-      } else if (todayFilterMode === 'week') {
+      if (todayFilterMode === 'week') {
         visibleColumns.push('Week');
       } else {
         visibleColumns.push('Today');
@@ -4465,9 +4463,6 @@ const Dashboard: React.FC = () => {
                             if (isToday) {
                               // Use pre-calculated total from data structure
                               return dataSource["Today"]?.[totalIndexToday]?.count || 0;
-                            } else if (isYesterday) {
-                              // Use pre-calculated total from data structure
-                              return dataSource["Yesterday"]?.[totalIndexToday]?.count || 0;
                             } else if (isWeek) {
                               // Use pre-calculated total from data structure
                               return dataSource["Week"]?.[totalIndexToday]?.count || 0;
@@ -4491,9 +4486,6 @@ const Dashboard: React.FC = () => {
                           if (isToday) {
                             // Use pre-calculated total from data structure
                             return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                          } else if (isYesterday) {
-                            // Use pre-calculated total from data structure
-                            return Math.ceil(dataSource["Yesterday"]?.[totalIndexToday]?.amount || 0).toLocaleString();
                           } else if (isWeek) {
                             // Use pre-calculated total from data structure
                             return Math.ceil(dataSource["Week"]?.[totalIndexToday]?.amount || 0).toLocaleString();
@@ -6339,7 +6331,8 @@ const Dashboard: React.FC = () => {
               </div>
 
               {/* Performance Summary Cards */}
-              <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
+              {/* COMMENTED OUT: 4 performance boxes (Leads This Month, Meetings Scheduled, Revenue This Month, Contracts Signed) */}
+              {/* <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
@@ -6408,7 +6401,7 @@ const Dashboard: React.FC = () => {
                     )}
                   </div>
                   {/* Progress Bar */}
-                  {!revenueLoading && (
+                  {/* {!revenueLoading && (
                     <div className="mt-3">
                       <div className="w-full bg-gray-200 rounded-full h-2">
                         <div 
@@ -6448,7 +6441,7 @@ const Dashboard: React.FC = () => {
                     )}
                   </div>
                 </div>
-              </div>
+              </div> */}
 
               {/* Department Performance Boxes */}
               {scoreTab === 'Tables' && (
@@ -6467,14 +6460,7 @@ const Dashboard: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
                           <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
-                            {todayFilterMode === 'yesterday' ? 'Yesterday' : todayFilterMode === 'week' ? 'Week' : 'Today'}
-                          </button>
-                          <button 
-                            className={`btn btn-xs ${todayFilterMode === 'yesterday' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setTodayFilterMode(v => v === 'yesterday' ? 'today' : 'yesterday')}
-                            title={todayFilterMode === 'yesterday' ? 'Switch back to Today' : 'Show Yesterday data'}
-                          >
-                            Yesterday
+                            {todayFilterMode === 'week' ? 'Week' : 'Today'}
                           </button>
                           <button 
                             className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
@@ -6554,14 +6540,7 @@ const Dashboard: React.FC = () => {
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
                           <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
-                            {todayFilterMode === 'yesterday' ? 'Yesterday' : todayFilterMode === 'week' ? 'Week' : 'Today'}
-                          </button>
-                          <button 
-                            className={`btn btn-xs ${todayFilterMode === 'yesterday' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setTodayFilterMode(v => v === 'yesterday' ? 'today' : 'yesterday')}
-                            title={todayFilterMode === 'yesterday' ? 'Switch back to Today' : 'Show Yesterday data'}
-                          >
-                            Yesterday
+                            {todayFilterMode === 'week' ? 'Week' : 'Today'}
                           </button>
                           <button 
                             className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
@@ -7222,7 +7201,8 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* 3. Employee Scoreboard Component */}
-      <EmployeeScoreboard />
+      {/* COMMENTED OUT: Employee performance 4 boxes (Top Closers, Top Schedulers, Top Experts, Top Handlers) */}
+      {/* <EmployeeScoreboard /> */}
 
       {/* Closed deals without Payments plan Box */}
       <div className="w-full mt-12">
