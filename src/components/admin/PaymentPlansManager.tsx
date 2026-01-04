@@ -109,6 +109,12 @@ interface LegacyLead {
   phone: string;
 }
 
+interface LegacyContact {
+  name: string;
+  email?: string;
+  phone?: string;
+}
+
 const PaymentPlansManager: React.FC = () => {
   const [paymentPlans, setPaymentPlans] = useState<UnifiedPaymentPlan[]>([]);
   const [leads, setLeads] = useState<{ [key: string]: Lead }>({});
@@ -118,16 +124,37 @@ const PaymentPlansManager: React.FC = () => {
   const [editedPlan, setEditedPlan] = useState<UnifiedPaymentPlan | null>(null);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
-  const [leadTypeFilter, setLeadTypeFilter] = useState<'all' | 'legacy' | 'new'>('all');
+  const [activeSearchTerm, setActiveSearchTerm] = useState(''); // The search term actually used in queries
   const [currentPage, setCurrentPage] = useState(1);
   const [pageSize] = useState(50);
 
+  // State for total count
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalPages, setTotalPages] = useState(0);
+
+  // Handle search button click - set active search term and reset to page 1
+  const handleSearch = () => {
+    setActiveSearchTerm(searchTerm);
+    setCurrentPage(1);
+  };
+
+  // Handle clear search
+  const handleClearSearch = () => {
+    setSearchTerm('');
+    setActiveSearchTerm('');
+    setCurrentPage(1);
+  };
+
   // Fetch payment plans and leads
   useEffect(() => {
-    fetchPaymentPlans();
     fetchLeads();
     fetchLegacyLeads();
   }, []);
+
+  // Fetch payment plans when page or active search changes
+  useEffect(() => {
+    fetchPaymentPlans();
+  }, [currentPage, activeSearchTerm]);
 
   const fetchLeads = async (): Promise<{ [key: string]: Lead }> => {
     try {
@@ -169,7 +196,7 @@ const PaymentPlansManager: React.FC = () => {
     }
   };
 
-  const fetchLegacyClients = async (clientIds: (number | null)[]): Promise<{ [key: number]: LegacyLead }> => {
+  const fetchLegacyClients = async (clientIds: (number | null)[]): Promise<{ [key: number]: { name: string; email?: string; phone?: string } }> => {
     try {
       // Filter out null values
       const validClientIds = clientIds.filter((id): id is number => id !== null);
@@ -178,21 +205,118 @@ const PaymentPlansManager: React.FC = () => {
         return {};
       }
 
-      const { data, error } = await supabase
-        .from('leads_lead')
-        .select('id, name, email, phone')
-        .in('id', validClientIds);
-
-      if (error) throw error;
-      
-      const clientsMap: { [key: number]: LegacyLead } = {};
-      data?.forEach(client => {
-        clientsMap[client.id] = client;
+      console.log('🔍 [PaymentPlansManager] Fetching legacy clients via lead_leadcontact:', {
+        clientIdsCount: validClientIds.length,
+        sampleIds: validClientIds.slice(0, 10)
       });
+
+      // Batch the queries (Supabase has limits on .in() clause size, typically 1000)
+      const batchSize = 1000;
+      const allLeadContacts: any[] = [];
       
+      for (let i = 0; i < validClientIds.length; i += batchSize) {
+        const batch = validClientIds.slice(i, i + batchSize);
+        console.log(`🔍 [PaymentPlansManager] Fetching lead_leadcontact batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(validClientIds.length / batchSize)} (${batch.length} IDs)...`);
+        
+        const { data: leadContactsBatch, error: leadContactsError } = await supabase
+          .from('lead_leadcontact')
+          .select('id, contact_id')
+          .in('id', batch);
+
+        if (leadContactsError) {
+          console.error(`❌ [PaymentPlansManager] Error fetching lead_leadcontact batch ${Math.floor(i / batchSize) + 1}:`, leadContactsError);
+          // Continue with other batches instead of throwing
+          continue;
+        }
+
+        if (leadContactsBatch) {
+          allLeadContacts.push(...leadContactsBatch);
+        }
+      }
+
+      console.log('🔍 [PaymentPlansManager] Found lead-contact relationships:', {
+        count: allLeadContacts.length,
+        sample: allLeadContacts.slice(0, 5)
+      });
+
+      if (allLeadContacts.length === 0) {
+        return {};
+      }
+
+      // Extract unique contact_ids
+      const contactIdsSet = new Set<number>();
+      allLeadContacts.forEach(lc => {
+        if (lc.contact_id !== null && lc.contact_id !== undefined) {
+          contactIdsSet.add(lc.contact_id);
+        }
+      });
+      const contactIds = Array.from(contactIdsSet);
+
+      console.log('🔍 [PaymentPlansManager] Fetching contacts from leads_contact:', {
+        contactIdsCount: contactIds.length,
+        sampleIds: contactIds.slice(0, 10)
+      });
+
+      if (contactIds.length === 0) {
+        return {};
+      }
+
+      // Batch the contact queries as well
+      const allContacts: any[] = [];
+      for (let i = 0; i < contactIds.length; i += batchSize) {
+        const batch = contactIds.slice(i, i + batchSize);
+        console.log(`🔍 [PaymentPlansManager] Fetching leads_contact batch ${Math.floor(i / batchSize) + 1}/${Math.ceil(contactIds.length / batchSize)} (${batch.length} IDs)...`);
+        
+        const { data: contactsBatch, error: contactsError } = await supabase
+          .from('leads_contact')
+          .select('id, name, email, phone')
+          .in('id', batch);
+
+        if (contactsError) {
+          console.error(`❌ [PaymentPlansManager] Error fetching leads_contact batch ${Math.floor(i / batchSize) + 1}:`, contactsError);
+          // Continue with other batches instead of throwing
+          continue;
+        }
+
+        if (contactsBatch) {
+          allContacts.push(...contactsBatch);
+        }
+      }
+
+      console.log('🔍 [PaymentPlansManager] Found contacts:', {
+        count: allContacts.length,
+        sample: allContacts.slice(0, 5)
+      });
+
+      // Create a map: contact_id -> contact info
+      const contactsMap = new Map<number, { name: string; email?: string; phone?: string }>();
+      allContacts.forEach(contact => {
+        contactsMap.set(contact.id, {
+          name: contact.name || 'Unknown',
+          email: contact.email || undefined,
+          phone: contact.phone || undefined
+        });
+      });
+
+      // Create the final map: client_id (lead_leadcontact.id) -> contact info
+      const clientsMap: { [key: number]: { name: string; email?: string; phone?: string } } = {};
+      allLeadContacts.forEach(lc => {
+        if (lc.contact_id && contactsMap.has(lc.contact_id)) {
+          clientsMap[lc.id] = contactsMap.get(lc.contact_id)!;
+        }
+      });
+
+      console.log('🔍 [PaymentPlansManager] Final clients map:', {
+        count: Object.keys(clientsMap).length,
+        sample: Object.keys(clientsMap).slice(0, 5).map(key => ({
+          clientId: key,
+          name: clientsMap[Number(key)]?.name
+        }))
+      });
+
       return clientsMap;
     } catch (error) {
-      console.error('Error fetching legacy clients:', error);
+      console.error('❌ [PaymentPlansManager] Error fetching legacy clients:', error);
       return {};
     }
   };
@@ -241,27 +365,146 @@ const PaymentPlansManager: React.FC = () => {
   const fetchPaymentPlans = async () => {
     setLoading(true);
     try {
-      // Fetch leads data first and get the returned maps
-      const [leadsMap, legacyLeadsMap] = await Promise.all([
-        fetchLeads(),
-        fetchLegacyLeads()
-      ]);
+      // Get legacy leads map (for fallback names)
+      const legacyLeadsMap = await fetchLegacyLeads();
 
-      // Fetch legacy payment plans
-      const { data: legacyData, error: legacyError } = await supabase
-        .from('finances_paymentplanrow')
-        .select(`
-          *,
-          accounting_currencies!finances_paymentplanrow_currency_id_fkey (
-            name,
-            iso_code
-          )
-        `)
-        .is('cancel_date', null)
-        .order('cdate', { ascending: false });
+      // Helper function to build legacy count query with filters
+      const buildLegacyCountQuery = () => {
+        let query = supabase
+          .from('finances_paymentplanrow')
+          .select('*', { count: 'exact', head: true })
+          .is('cancel_date', null);
 
-      if (legacyError) {
-        console.error('Error fetching legacy payment plans:', legacyError);
+        // Apply exact match search filter at database level for legacy plans
+        if (activeSearchTerm) {
+          const searchAsNumber = parseInt(activeSearchTerm);
+          const isNumeric = !isNaN(searchAsNumber) && activeSearchTerm.trim() === String(searchAsNumber);
+          
+          if (isNumeric) {
+            // Exact match on lead_id if search term is a number
+            query = query.eq('lead_id', activeSearchTerm);
+          }
+          // If not numeric, no search (exact match only works on numeric lead_id)
+        }
+        
+        return query;
+      };
+
+      // Helper function to build legacy data query with filters and pagination
+      const buildLegacyDataQuery = (from: number, to: number) => {
+        let query = supabase
+          .from('finances_paymentplanrow')
+          .select(`
+            *,
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+              name,
+              iso_code
+            )
+          `, { count: 'exact' })
+          .is('cancel_date', null);
+
+        // Apply exact match search filter at database level for legacy plans
+        if (activeSearchTerm) {
+          const searchAsNumber = parseInt(activeSearchTerm);
+          const isNumeric = !isNaN(searchAsNumber) && activeSearchTerm.trim() === String(searchAsNumber);
+          
+          if (isNumeric) {
+            // Exact match on lead_id if search term is a number
+            query = query.eq('lead_id', activeSearchTerm);
+          }
+          // If not numeric, no search (exact match only works on numeric lead_id)
+        }
+        
+        return query
+          .order('cdate', { ascending: false })
+          .range(from, to);
+      };
+
+      // Helper function to build new count query with filters
+      const buildNewCountQuery = () => {
+        let query = supabase
+          .from('payment_plans')
+          .select('*', { count: 'exact', head: true })
+          .is('cancel_date', null);
+
+        // Apply exact match search filter at database level for new plans
+        if (activeSearchTerm) {
+          // Exact match on lead_id
+          query = query.eq('lead_id', activeSearchTerm);
+        }
+        
+        return query;
+      };
+
+      // Helper function to build new data query with filters and pagination
+      const buildNewDataQuery = (from: number, to: number) => {
+        let query = supabase
+          .from('payment_plans')
+          .select('*', { count: 'exact' })
+          .is('cancel_date', null);
+
+        // Apply exact match search filter at database level for new plans
+        if (activeSearchTerm) {
+          // Exact match on lead_id
+          query = query.eq('lead_id', activeSearchTerm);
+        }
+        
+        return query
+          .order('id', { ascending: false })
+          .range(from, to);
+      };
+
+      // Get total count for legacy plans (with filters applied)
+      const { count: legacyCount, error: legacyCountError } = await buildLegacyCountQuery();
+
+      if (legacyCountError) {
+        console.error('❌ [PaymentPlansManager] Error getting legacy count:', legacyCountError);
+      }
+
+      // Get total count for new plans (with filters applied)
+      const { count: newCount, error: newCountError } = await buildNewCountQuery();
+
+      if (newCountError) {
+        console.error('❌ [PaymentPlansManager] Error getting new count:', newCountError);
+      }
+
+      // Calculate totals - always show all (legacy + new)
+      let totalLegacyCount = legacyCount || 0;
+      let totalNewCount = newCount || 0;
+      let totalCountValue = totalLegacyCount + totalNewCount;
+
+      const calculatedTotalPages = Math.ceil(totalCountValue / pageSize);
+      setTotalCount(totalCountValue);
+      setTotalPages(calculatedTotalPages);
+
+      console.log('🔍 [PaymentPlansManager] Fetching page data:', {
+        currentPage,
+        pageSize,
+        totalCount: totalCountValue,
+        totalPages: calculatedTotalPages,
+        legacyCount: totalLegacyCount,
+        newCount: totalNewCount,
+        searchTerm: activeSearchTerm
+      });
+
+      // Fetch legacy data - always fetch all (we'll combine and paginate client-side)
+      let legacyData: any[] = [];
+      let legacyError: any = null;
+
+      // Fetch all legacy (we'll combine and paginate client-side)
+      let legacyFrom = 0;
+      let legacyTo = Math.max(0, totalLegacyCount - 1);
+
+      const { data: fetchedLegacyData, error: fetchedLegacyError } = await buildLegacyDataQuery(
+        Math.max(0, legacyFrom), 
+        Math.max(0, legacyTo)
+      );
+
+      legacyData = fetchedLegacyData || [];
+      legacyError = fetchedLegacyError;
+
+      if (fetchedLegacyError) {
+        console.error('❌ [PaymentPlansManager] Error fetching legacy payment plans:', fetchedLegacyError);
       }
 
       // Extract unique client_ids from legacy payment plans
@@ -269,28 +512,109 @@ const PaymentPlansManager: React.FC = () => {
         .map((plan: LegacyPaymentPlan) => plan.client_id)
         .filter((id): id is number => id !== null);
       
+      console.log('🔍 [PaymentPlansManager] Client IDs to fetch:', {
+        count: clientIds.length,
+        sample: clientIds.slice(0, 10)
+      });
+      
       // Fetch client information using client_id
       const legacyClientsMap = await fetchLegacyClients(clientIds);
+      console.log('🔍 [PaymentPlansManager] Legacy clients map:', {
+        count: Object.keys(legacyClientsMap).length,
+        sample: Object.keys(legacyClientsMap).slice(0, 5).map(key => ({
+          id: key,
+          name: legacyClientsMap[Number(key)]?.name
+        }))
+      });
 
-      // Fetch new payment plans
-      // Try ordering by id descending as fallback (newest first)
-      const { data: newData, error: newError } = await supabase
-        .from('payment_plans')
-        .select('*')
-        .is('cancel_date', null)
-        .order('id', { ascending: false });
+      // Fetch new data - always fetch all (we'll combine and paginate client-side)
+      let newData: any[] = [];
+      let newError: any = null;
 
-      if (newError) {
-        console.error('Error fetching new payment plans:', newError);
+      // Fetch all new (we'll combine and paginate client-side)
+      let newFrom = 0;
+      let newTo = Math.max(0, totalNewCount - 1);
+
+      const { data: fetchedNewData, error: fetchedNewError } = await buildNewDataQuery(
+        Math.max(0, newFrom), 
+        Math.max(0, newTo)
+      );
+
+      newData = fetchedNewData || [];
+      newError = fetchedNewError;
+
+      if (fetchedNewError) {
+        console.error('❌ [PaymentPlansManager] Error fetching new payment plans:', fetchedNewError);
+      }
+
+      // Get leads map for new payment plans
+      const leadsMap = await fetchLeads();
+
+      // Collect unique lead_ids that we need but don't have in the map yet
+      const missingLeadIds = new Set<number>();
+      (legacyData || []).forEach((plan: LegacyPaymentPlan) => {
+        if (plan.lead_id && !plan.client_id) {
+          // Only fetch lead if client_id is null (no contact available)
+          const leadIdStr = String(plan.lead_id);
+          if (!legacyLeadsMap[leadIdStr]) {
+            missingLeadIds.add(Number(plan.lead_id));
+          }
+        }
+      });
+
+      // Fetch missing leads in batches
+      if (missingLeadIds.size > 0) {
+        console.log(`🔍 [PaymentPlansManager] Fetching ${missingLeadIds.size} missing leads for fallback...`);
+        const missingLeadIdsArray = Array.from(missingLeadIds);
+        const batchSize = 1000;
+        
+        for (let i = 0; i < missingLeadIdsArray.length; i += batchSize) {
+          const batch = missingLeadIdsArray.slice(i, i + batchSize);
+          const { data: missingLeads, error: missingLeadsError } = await supabase
+            .from('leads_lead')
+            .select('id, name, email, phone')
+            .in('id', batch);
+          
+          if (!missingLeadsError && missingLeads) {
+            missingLeads.forEach(lead => {
+              legacyLeadsMap[String(lead.id)] = lead;
+            });
+          }
+        }
+        
+        console.log(`✅ [PaymentPlansManager] Fetched ${missingLeadIds.size} missing leads, total in map: ${Object.keys(legacyLeadsMap).length}`);
       }
 
       // Transform legacy payment plans
+      console.log('🔍 [PaymentPlansManager] Transforming legacy payment plans...');
       const legacyPlans: UnifiedPaymentPlan[] = (legacyData || []).map((plan: LegacyPaymentPlan) => {
         const currency = plan.accounting_currencies?.name || '₪';
-        // Use client_id to get client name, fallback to lead_id if client_id is null
+        // Use client_id to get client name from lead_leadcontact -> leads_contact
+        // If no contact found, fallback to lead name from leads_lead
         const client = plan.client_id ? legacyClientsMap[plan.client_id] : null;
         const lead = plan.lead_id ? legacyLeadsMap[String(plan.lead_id)] : null;
-        const clientName = client?.name || lead?.name || 'Unknown';
+        
+        // Fallback logic: contact name -> lead name -> Unknown
+        let clientName = 'Unknown';
+        if (client?.name) {
+          clientName = client.name;
+        } else if (lead?.name) {
+          clientName = lead.name;
+        }
+        
+        // Debug for specific lead_id 74225
+        if (Number(plan.lead_id) === 74225) {
+          console.log(`🔍 [PaymentPlansManager] Transforming lead_id 74225 plan:`, {
+            planId: plan.id,
+            client_id: plan.client_id,
+            lead_id: plan.lead_id,
+            hasClient: !!client,
+            clientName: client?.name,
+            hasLead: !!lead,
+            leadName: lead?.name,
+            finalClientName: clientName
+          });
+        }
         
         return {
           id: plan.id,
@@ -319,7 +643,30 @@ const PaymentPlansManager: React.FC = () => {
         };
       });
 
+      console.log('🔍 [PaymentPlansManager] Legacy plans transformed:', {
+        count: legacyPlans.length,
+        sample: legacyPlans.slice(0, 3).map(p => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          client_name: p.client_name
+        }))
+      });
+
+      // Check if lead_id 74225 is in transformed plans
+      const targetLeadId = '74225';
+      const transformedPlansWith74225 = legacyPlans.filter(p => p.lead_id === targetLeadId);
+      console.log(`🔍 [PaymentPlansManager] Transformed plans with lead_id ${targetLeadId}:`, {
+        count: transformedPlansWith74225.length,
+        plans: transformedPlansWith74225.map(p => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          client_name: p.client_name,
+          value: p.value
+        }))
+      });
+
       // Transform new payment plans
+      console.log('🔍 [PaymentPlansManager] Transforming new payment plans...');
       const newPlans: UnifiedPaymentPlan[] = (newData || []).map((plan: any) => {
         const lead = leadsMap[plan.lead_id];
         // Handle different possible date column names
@@ -355,12 +702,31 @@ const PaymentPlansManager: React.FC = () => {
         };
       });
 
-      // Combine and sort by creation date
-      const combined = [...legacyPlans, ...newPlans].sort((a, b) => 
+      // Combine plans
+      let combined = [...legacyPlans, ...newPlans];
+      
+      // Sort by creation date (newest first)
+      combined.sort((a, b) => 
         new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
       );
 
-      setPaymentPlans(combined);
+      // Apply client-side pagination only if we have 'all' filter (mixed legacy + new)
+      // Otherwise, pagination was already applied at DB level
+      // Paginate the combined results
+      const from = (currentPage - 1) * pageSize;
+      const to = from + pageSize;
+      let finalPlans = combined.slice(from, to);
+
+      console.log('🔍 [PaymentPlansManager] Final plans:', {
+        fetchedLegacy: legacyPlans.length,
+        fetchedNew: newPlans.length,
+        combined: combined.length,
+        final: finalPlans.length,
+        currentPage,
+        totalCount: totalCountValue
+      });
+
+      setPaymentPlans(finalPlans);
     } catch (error) {
       console.error('Error fetching payment plans:', error);
       toast.error('Failed to fetch payment plans');
@@ -560,30 +926,13 @@ const PaymentPlansManager: React.FC = () => {
     });
   };
 
-  // Filter payment plans
-  const filteredPaymentPlans = paymentPlans.filter(plan => {
-    if (leadTypeFilter !== 'all' && plan.lead_type !== leadTypeFilter) return false;
-    
-    if (!searchTerm) return true;
-    
-    const searchLower = searchTerm.toLowerCase();
-    return (
-      plan.client_name.toLowerCase().includes(searchLower) ||
-      plan.lead_number?.toLowerCase().includes(searchLower) ||
-      plan.lead_id.toLowerCase().includes(searchLower) ||
-      plan.payment_order.toLowerCase().includes(searchLower) ||
-      plan.notes.toLowerCase().includes(searchLower)
-    );
-  });
+  // No client-side filtering - all filtering done at database level with exact match
+  const paginatedPlans = paymentPlans;
 
-  // Pagination
-  const totalPages = Math.ceil(filteredPaymentPlans.length / pageSize);
-  const paginatedPlans = filteredPaymentPlans.slice(
-    (currentPage - 1) * pageSize,
-    currentPage * pageSize
-  );
-
-  if (loading) {
+  // Show loading spinner when fetching
+  const isActuallyLoading = loading;
+  
+  if (isActuallyLoading && paginatedPlans.length === 0) {
     return (
       <div className="flex items-center justify-center h-64">
         <span className="loading loading-spinner loading-lg"></span>
@@ -599,51 +948,48 @@ const PaymentPlansManager: React.FC = () => {
           <div className="flex justify-between items-center mb-6">
             <h2 className="text-2xl font-bold">Payment Plans</h2>
             <div className="text-sm text-gray-500">
-              Total: {filteredPaymentPlans.length} of {paymentPlans.length} payment plans
+              Total: {totalCount} payment plans
             </div>
           </div>
 
-          {/* Filters and Search */}
-          <div className="mb-6 flex flex-col md:flex-row gap-4">
-            <div className="form-control flex-1">
-              <div className="input-group">
-                <span className="bg-base-200">
-                  <MagnifyingGlassIcon className="w-5 h-5" />
-                </span>
-                <input
-                  type="text"
-                  placeholder="Search by lead number, client name, or notes..."
-                  className="input input-bordered w-full"
-                  value={searchTerm}
-                  onChange={(e) => {
-                    setSearchTerm(e.target.value);
-                    setCurrentPage(1);
-                  }}
-                />
-                {searchTerm && (
-                  <button 
-                    className="btn btn-square btn-outline"
-                    onClick={() => setSearchTerm('')}
-                  >
-                    <XMarkIcon className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            </div>
-            <div className="form-control">
-              <select
-                className="select select-bordered"
-                value={leadTypeFilter}
-                onChange={(e) => {
-                  setLeadTypeFilter(e.target.value as 'all' | 'legacy' | 'new');
-                  setCurrentPage(1);
+          {/* Search */}
+          <div className="mb-6 flex items-center gap-2">
+            <div className="flex items-center gap-2 border border-base-300 rounded-lg p-1">
+              <span className="px-2 text-base-content/60">
+                <MagnifyingGlassIcon className="w-4 h-4" />
+              </span>
+              <input
+                type="text"
+                placeholder="Search by lead ID (exact match)..."
+                className="input input-sm border-0 focus:outline-none w-48 bg-transparent"
+                value={searchTerm}
+                onChange={(e) => setSearchTerm(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    handleSearch();
+                  }
                 }}
-              >
-                <option value="all">All Leads</option>
-                <option value="legacy">Legacy Leads</option>
-                <option value="new">New Leads</option>
-              </select>
+              />
             </div>
+            <div className="h-8 w-px bg-base-300"></div>
+            <button 
+              className="btn btn-primary btn-sm"
+              onClick={handleSearch}
+            >
+              Search
+            </button>
+            {activeSearchTerm && (
+              <>
+                <div className="h-8 w-px bg-base-300"></div>
+                <button 
+                  className="btn btn-square btn-outline btn-sm"
+                  onClick={handleClearSearch}
+                  title="Clear search"
+                >
+                  <XMarkIcon className="w-3 h-3" />
+                </button>
+              </>
+            )}
           </div>
 
           {/* Desktop Table View */}
@@ -651,15 +997,15 @@ const PaymentPlansManager: React.FC = () => {
             <table className="table w-full">
               <thead>
                 <tr>
-                  <th>Lead #</th>
-                  <th>Client</th>
-                  <th>Order</th>
-                  <th>Currency</th>
-                  <th>Value</th>
-                  <th>VAT</th>
-                  <th>Total</th>
-                  <th>Due Date</th>
-                  <th>Status</th>
+                  <th className="text-left">Lead #</th>
+                  <th className="text-left">Client</th>
+                  <th className="text-left">Order</th>
+                  <th className="text-left">Currency</th>
+                  <th className="text-right">Value</th>
+                  <th className="text-right">VAT</th>
+                  <th className="text-right">Total</th>
+                  <th className="text-left">Due Date</th>
+                  <th className="text-left">Status</th>
                 </tr>
               </thead>
               <tbody>
@@ -697,7 +1043,9 @@ const PaymentPlansManager: React.FC = () => {
                         {formatDate(plan.due_date)}
                       </td>
                       <td>
-                        {plan.paid ? 'Paid' : 'Pending'}
+                        <span className={`px-2 py-1 rounded font-semibold ${plan.paid ? 'bg-green-500 text-white' : 'bg-yellow-500 text-white'}`}>
+                          {plan.paid ? 'Paid' : 'Pending'}
+                        </span>
                       </td>
                     </tr>
                   );
@@ -740,7 +1088,11 @@ const PaymentPlansManager: React.FC = () => {
                       </div>
                       <div>
                         <div className="text-xs text-base-content/60 mb-1">Status</div>
-                        <div className="font-medium">{plan.paid ? 'Paid' : 'Pending'}</div>
+                        <div>
+                          <span className={`px-2 py-1 rounded font-semibold ${plan.paid ? 'bg-green-500 text-white' : 'bg-yellow-500 text-white'}`}>
+                            {plan.paid ? 'Paid' : 'Pending'}
+                          </span>
+                        </div>
                       </div>
                       <div>
                         <div className="text-xs text-base-content/60 mb-1">Value</div>
