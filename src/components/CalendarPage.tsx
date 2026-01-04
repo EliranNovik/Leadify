@@ -1294,7 +1294,7 @@ const CalendarPage: React.FC = () => {
             const { data: newLeadsData } = await supabase
               .from('leads')
               .select(`
-                id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, 
+                id, name, lead_number, stage, manager, helper, category, category_id, balance, balance_currency, 
                 expert, probability, phone, email, number_of_applicants_meeting,
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 misc_category!category_id(
@@ -1474,7 +1474,7 @@ const CalendarPage: React.FC = () => {
             const { data: newLeadsData } = await supabase
               .from('leads')
               .select(`
-                id, name, lead_number, onedrive_folder_link, stage, manager, category, category_id,
+                id, name, lead_number, onedrive_folder_link, stage, manager, helper, category, category_id,
                 balance, balance_currency, expert_notes, expert, probability, phone, email, 
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
@@ -2171,7 +2171,7 @@ const CalendarPage: React.FC = () => {
       if (uniqueClientIds.length > 0) {
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads')
-          .select('id, name, lead_number, stage, manager, category, category_id, balance, balance_currency, expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status')
+          .select('id, name, lead_number, stage, manager, helper, category, category_id, balance, balance_currency, expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status')
           .in('id', uniqueClientIds)
           .limit(500);
 

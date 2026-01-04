@@ -308,19 +308,19 @@ export async function handleContractSigned(contract: Contract) {
           try {
             await updateLeadStageWithHistory({
               lead: { ...legacyLeadData, id: `legacy_${legacyId}`, lead_type: 'legacy' } as any,
-              stage: 'Client signed agreement',
+              stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
               additionalFields: {
                 total: totalValue,
               },
             });
           } catch (stageUpdateError) {
             console.error('Error updating legacy lead stage:', stageUpdateError);
-            // Fallback to direct update if stage manager fails
+            // Fallback to direct update if stage manager fails - use numeric stage ID 60 for legacy leads
             const { error: legacyLeadUpdateError } = await supabase
               .from('leads_lead')
               .update({
                 total: totalValue,
-                stage: 'Client signed agreement',
+                stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
               })
               .eq('id', legacyId);
             
