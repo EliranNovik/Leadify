@@ -1705,19 +1705,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // Remove HTML tags to check actual text content
         const textContent = content.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
         
-        // Check if body_html or body_preview exists
-        const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
-                              (interaction.body_preview && interaction.body_preview.trim() !== '');
+        // Check if this is a legacy email (from leads_leadinteractions)
+        const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
+        
+        // email_manual interactions are manual interactions, always include them
+        if (interaction.kind === 'email_manual') {
+          return true;
+        }
+        
+        let hasContent = false;
+        
+        if (isLegacyEmail) {
+          // For legacy emails, check content field directly (they don't have body_html/body_preview)
+          hasContent = textContent && 
+                      textContent.length >= 20 && 
+                      textContent.toLowerCase() !== subject.toLowerCase();
+        } else {
+          // For new emails (from emails table), check body_html/body_preview
+          const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
+                                (interaction.body_preview && interaction.body_preview.trim() !== '');
+          
+          hasContent = hasBodyContent && 
+                      textContent && 
+                      textContent.length >= 20 && 
+                      textContent.toLowerCase() !== subject.toLowerCase();
+        }
         
         // Filter out if no meaningful content
-        if (!hasBodyContent || 
-            !textContent || 
-            textContent.length < 20 || 
-            textContent.toLowerCase() === subject.toLowerCase()) {
+        if (!hasContent) {
           console.log('🚫 Final filter: Removing email interaction with no meaningful body:', {
             id: interaction.id,
+            isLegacy: isLegacyEmail,
             subject: subject.substring(0, 50),
-            contentLength: textContent.length
+            contentLength: textContent.length,
+            hasBodyHtml: !!(interaction.body_html && interaction.body_html.trim()),
+            hasBodyPreview: !!(interaction.body_preview && interaction.body_preview.trim())
           });
           return false;
         }
@@ -1850,6 +1872,20 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
   // --- Add: handler for clicking an interaction to jump to message in modal ---
   const handleInteractionClick = async (row: Interaction, idx: number) => {
+    // Legacy email interactions (email_manual) should open edit drawer, not email modal
+    if (row.kind === 'email_manual') {
+      // Treat as manual interaction - open edit drawer
+      openEditDrawer(idx);
+      return;
+    }
+    
+    // Legacy WhatsApp interactions (whatsapp_manual) should open edit drawer, not WhatsApp modal
+    if (row.kind === 'whatsapp_manual') {
+      // Treat as manual interaction - open edit drawer
+      openEditDrawer(idx);
+      return;
+    }
+    
     if (row.kind === 'email' && !row.editable) {
       // For actual sent/received emails (not manual), open email modal
       // Ensure contacts are loaded first
@@ -3328,7 +3364,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           // Note: We used to filter out calls here to avoid duplicates with call_logs table,
           // but this was also filtering out manual call interactions saved to leads_leadinteractions.
           // Now we keep all legacy interactions and rely on deduplication logic elsewhere.
-          (Array.isArray(legacyResult) ? legacyResult : [])
+          (() => {
+            const legacyInteractions = Array.isArray(legacyResult) ? legacyResult : [];
+            const clientLeadId = isLegacyLead ? legacyId : client.id;
+            console.log(`📊 [InteractionsTab] Legacy interactions from fetchLegacyInteractions for lead ${clientLeadId}:`, {
+              leadId: clientLeadId,
+              legacyResultType: Array.isArray(legacyResult) ? 'array' : typeof legacyResult,
+              legacyInteractionsCount: legacyInteractions.length,
+              legacyInteractionIds: legacyInteractions.slice(0, 20).map((i: any) => i.id) // First 20 IDs
+            });
+            return legacyInteractions;
+          })()
         ];
 
         // 1. Manual interactions - fast client-side processing
@@ -3568,11 +3614,76 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           })
           .filter((interaction: any) => interaction !== null); // Filter out null entries
       
+        // Helper function to normalize line breaks for manual email interactions
+        const normalizeManualContent = (content: string): string => {
+          if (!content) return '';
+          
+          // Check if content already has HTML tags
+          const hasHtmlTags = /<[^>]+>/.test(content);
+          
+          let normalized = content;
+          
+          if (hasHtmlTags) {
+            // Content already has HTML - normalize existing <br> tags and line breaks
+            // First, normalize line endings in the HTML
+            normalized = normalized
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n');
+            
+            // Replace existing <br> tags with placeholder to avoid duplication
+            const brPlaceholder = '__BR_PLACEHOLDER__';
+            normalized = normalized.replace(/<br\s*\/?>/gi, brPlaceholder);
+            
+            // Normalize multiple consecutive line breaks (3+ to 2)
+            normalized = normalized.replace(/\n{3,}/g, '\n\n');
+            
+            // Convert newlines to <br> tags
+            normalized = normalized.replace(/\n\n/g, '__PARA_BREAK__');
+            normalized = normalized.replace(/\n/g, '<br>');
+            normalized = normalized.replace(/__PARA_BREAK__/g, '<br><br>');
+            
+            // Restore original <br> tags (they were already there)
+            normalized = normalized.replace(new RegExp(brPlaceholder, 'g'), '<br>');
+            
+            // Collapse 3+ consecutive <br> tags to exactly 2
+            normalized = normalized.replace(/(<br\s*\/?>\s*){3,}/gi, '<br><br>');
+          } else {
+            // Plain text - normalize line endings
+            normalized = normalized
+              .replace(/\r\n/g, '\n')
+              .replace(/\r/g, '\n');
+            
+            // Collapse excessive consecutive line breaks (3+ to 2 for paragraph spacing)
+            normalized = normalized.replace(/\n{3,}/g, '\n\n');
+            
+            // Convert to HTML: single newline becomes <br>, double newline becomes <br><br>
+            normalized = normalized.replace(/\n\n/g, '__PARA_BREAK__');
+            normalized = normalized.replace(/\n/g, '<br>');
+            normalized = normalized.replace(/__PARA_BREAK__/g, '<br><br>');
+          }
+          
+          // Wrap in div with proper styling if not already wrapped
+          if (!normalized.includes('<div')) {
+            normalized = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif; white-space: normal; line-height: 1.6;">${normalized}</div>`;
+          }
+          
+          return normalized;
+        };
+        
         // Process legacy interactions to set recipient_name correctly (similar to manual interactions)
         const processedLegacyInteractions = (legacyInteractions || []).map((i: any) => {
+          // Normalize content for email_manual and whatsapp_manual interactions
+          let normalizedContent = i.content;
+          if ((i.kind === 'email_manual' || i.kind === 'whatsapp_manual') && i.content) {
+            normalizedContent = normalizeManualContent(i.content);
+          }
+          
           // If recipient_name is already set (from transformLegacyInteraction), use it
           if (i.recipient_name) {
-            return i;
+            return {
+              ...i,
+              content: normalizedContent, // Store normalized content
+            };
           }
           
           // Calculate recipient_name based on direction (same logic as manual interactions)
@@ -3588,21 +3699,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return {
             ...i,
             recipient_name: recipientName, // Store recipient for display
+            content: normalizedContent, // Store normalized content
           };
         });
         
         // Combine all interactions
         const combined = [...manualInteractions, ...emailInteractions, ...whatsAppDbMessages, ...callLogInteractions, ...processedLegacyInteractions];
         
+        // Log combined count before filtering
+        const clientLeadId = isLegacyLead ? legacyId : client.id;
+        console.log(`📊 [InteractionsTab] Combined interactions for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          manualCount: manualInteractions.length,
+          emailCount: emailInteractions.length,
+          whatsAppCount: whatsAppDbMessages.length,
+          callLogCount: callLogInteractions.length,
+          legacyCount: processedLegacyInteractions.length,
+          totalCombined: combined.length
+        });
+        
         // Filter out interactions with invalid dates and log for debugging
+        const filteredOutByReason: Record<string, number> = {};
+        const filteredOutDetails: Array<{id: any, kind: any, reason: string, raw_date?: string, subject?: string, contentLength?: number}> = [];
         const validInteractions = combined.filter((interaction: any) => {
           if (!interaction.raw_date) {
-            console.warn('⚠️ Interaction missing raw_date:', { id: interaction.id, kind: interaction.kind });
+            filteredOutByReason['missing_raw_date'] = (filteredOutByReason['missing_raw_date'] || 0) + 1;
+            filteredOutDetails.push({ id: interaction.id, kind: interaction.kind, reason: 'missing_raw_date' });
             return false;
           }
           const date = new Date(interaction.raw_date);
           if (isNaN(date.getTime())) {
-            console.warn('⚠️ Interaction has invalid raw_date:', { id: interaction.id, kind: interaction.kind, raw_date: interaction.raw_date });
+            filteredOutByReason['invalid_raw_date'] = (filteredOutByReason['invalid_raw_date'] || 0) + 1;
+            filteredOutDetails.push({ id: interaction.id, kind: interaction.kind, reason: 'invalid_raw_date', raw_date: interaction.raw_date });
             return false;
           }
           
@@ -3622,8 +3750,11 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             if (!textContent || 
                 textContent.length < 20 || 
                 textContent.toLowerCase() === subject.toLowerCase()) {
-              console.log('🚫 Filtering out email interaction with no meaningful body:', {
-                id: interaction.id,
+              filteredOutByReason['email_no_meaningful_body'] = (filteredOutByReason['email_no_meaningful_body'] || 0) + 1;
+              filteredOutDetails.push({ 
+                id: interaction.id, 
+                kind: interaction.kind, 
+                reason: 'email_no_meaningful_body',
                 subject: subject.substring(0, 50),
                 contentLength: textContent.length
               });
@@ -3634,36 +3765,87 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           return true;
         });
         
+        // Log filtering results
+        console.log(`📊 [InteractionsTab] After filtering validInteractions for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          beforeFiltering: combined.length,
+          afterFiltering: validInteractions.length,
+          filteredOut: combined.length - validInteractions.length,
+          filteredOutByReason,
+          filteredOutDetails: filteredOutDetails.slice(0, 20) // First 20 for debugging
+        });
+        
         // Deduplicate interactions - remove exact duplicates by id
-        const uniqueById = validInteractions.filter((interaction: any, index: number, self: any[]) => 
-          index === self.findIndex((i: any) => i.id === interaction.id)
-        );
+        const duplicateIds = new Set();
+        const uniqueById = validInteractions.filter((interaction: any, index: number, self: any[]) => {
+          const firstIndex = self.findIndex((i: any) => i.id === interaction.id);
+          if (firstIndex !== index) {
+            duplicateIds.add(interaction.id);
+            return false;
+          }
+          return true;
+        });
+        
+        console.log(`📊 [InteractionsTab] After deduplication by ID for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          beforeDedup: validInteractions.length,
+          afterDedup: uniqueById.length,
+          duplicatesRemoved: validInteractions.length - uniqueById.length,
+          duplicateIds: Array.from(duplicateIds).slice(0, 20) // First 20 for debugging
+        });
         
         // For emails, deduplicate by message_id - keep the one with most content
         // Also filter out emails that only have a subject (no actual content)
         const emailMap = new Map<string, any>();
         const nonEmailInteractions: any[] = [];
+        const emailsFilteredOut: Array<{id: any, reason: string, isLegacy?: boolean, hasBodyHtml?: boolean, hasBodyPreview?: boolean, hasContentField?: boolean, contentLength?: number, subject?: string}> = [];
+        const emailsDeduplicated: Array<{id: any, keptId: any}> = [];
         
         uniqueById.forEach((interaction: any) => {
           if (interaction.kind === 'email' && interaction.id) {
-            // STRICT filtering: Skip emails that only have a subject (no content)
-            // Check if content exists and is different from subject
-            // Also check if body_html or body_preview exist (more reliable than checking formatted content)
-            const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
-                                  (interaction.body_preview && interaction.body_preview.trim() !== '');
+            // Check if this is a legacy email (from leads_leadinteractions)
+            // Legacy emails have content field, not body_html/body_preview
+            const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
             
-            // Remove HTML tags to check actual text content
-            const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-            const subjectText = (interaction.subject || '').trim();
+            let hasContent = false;
             
-            // Must have body content AND meaningful text content that's different from subject
-            const hasContent = hasBodyContent && 
-                              contentText && 
-                              contentText.length >= 20 && // At least 20 characters
-                              contentText.toLowerCase() !== subjectText.toLowerCase();
+            if (isLegacyEmail) {
+              // For legacy emails, check content field directly
+              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const subjectText = (interaction.subject || '').trim();
+              
+              hasContent = contentText && 
+                          contentText.length >= 20 && // At least 20 characters
+                          contentText.toLowerCase() !== subjectText.toLowerCase();
+            } else {
+              // For new emails (from emails table), check body_html/body_preview
+              const hasBodyContent = (interaction.body_html && interaction.body_html.trim() !== '') ||
+                                    (interaction.body_preview && interaction.body_preview.trim() !== '');
+              
+              // Remove HTML tags to check actual text content
+              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              const subjectText = (interaction.subject || '').trim();
+              
+              // Must have body content AND meaningful text content that's different from subject
+              hasContent = hasBodyContent && 
+                          contentText && 
+                          contentText.length >= 20 && // At least 20 characters
+                          contentText.toLowerCase() !== subjectText.toLowerCase();
+            }
             
             if (!hasContent) {
-              // Skip this email - it only has a subject
+              // Skip this email - it only has a subject or no meaningful content
+              const contentText = (interaction.content || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+              emailsFilteredOut.push({ 
+                id: interaction.id, 
+                reason: 'email_no_content',
+                isLegacy: isLegacyEmail,
+                hasBodyHtml: !!(interaction.body_html && interaction.body_html.trim()),
+                hasBodyPreview: !!(interaction.body_preview && interaction.body_preview.trim()),
+                hasContentField: !!(interaction.content && interaction.content.trim()),
+                contentLength: contentText.length,
+                subject: (interaction.subject || '').substring(0, 50)
+              });
               return;
             }
             
@@ -3689,14 +3871,19 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
               
               if (currentHasContent && !existingHasContent) {
                 // Current has content, existing doesn't - replace
+                emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
                 emailMap.set(messageId, interaction);
               } else if (!currentHasContent && existingHasContent) {
                 // Existing has content, current doesn't - keep existing
+                emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
                 // Do nothing
               } else if (currentHasContent && existingHasContent) {
                 // Both have content, keep the one with more content
                 if (currentContentText.length > existingContentText.length) {
+                  emailsDeduplicated.push({ id: existing.id, keptId: interaction.id });
                   emailMap.set(messageId, interaction);
+                } else {
+                  emailsDeduplicated.push({ id: interaction.id, keptId: existing.id });
                 }
               }
               // If neither has content, don't add either (shouldn't happen due to earlier filtering)
@@ -3706,10 +3893,26 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           }
         });
         
+        console.log(`📊 [InteractionsTab] After email deduplication for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          beforeEmailDedup: uniqueById.length,
+          emailsFilteredOut: emailsFilteredOut.length,
+          emailsDeduplicated: emailsDeduplicated.length,
+          afterEmailDedup: Array.from(emailMap.values()).length + nonEmailInteractions.length,
+          emailsFilteredOutDetails: emailsFilteredOut, // Show all filtered emails
+          emailsDeduplicatedDetails: emailsDeduplicated.slice(0, 20),
+          emailBreakdown: {
+            totalEmails: uniqueById.filter((i: any) => i.kind === 'email').length,
+            legacyEmails: uniqueById.filter((i: any) => i.kind === 'email' && i.id?.toString().startsWith('legacy_')).length,
+            newEmails: uniqueById.filter((i: any) => i.kind === 'email' && !i.id?.toString().startsWith('legacy_')).length
+          }
+        });
+        
         // Additional deduplication: remove interactions with the same timestamp
         // Group by timestamp and keep only one per timestamp
         const timestampMap = new Map<string, any>();
         const allInteractions = [...Array.from(emailMap.values()), ...nonEmailInteractions];
+        const timestampDuplicates: Array<{id: any, timestampKey: string, keptId: any}> = [];
         
         allInteractions.forEach((interaction: any) => {
           const timestampKey = `${interaction.raw_date}_${interaction.kind}`;
@@ -3728,18 +3931,42 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             
             if (currentHasContent && !existingHasContent) {
               // Current has content, existing doesn't - replace
+              timestampDuplicates.push({ id: existing.id, timestampKey, keptId: interaction.id });
               timestampMap.set(timestampKey, interaction);
             } else if (!currentHasContent && existingHasContent) {
               // Existing has content, current doesn't - keep existing
+              timestampDuplicates.push({ id: interaction.id, timestampKey, keptId: existing.id });
               // Do nothing
             } else {
               // Both have same level of content, keep the first one
+              timestampDuplicates.push({ id: interaction.id, timestampKey, keptId: existing.id });
               // Do nothing
             }
           }
         });
         
         const uniqueInteractions = Array.from(timestampMap.values());
+        
+        console.log(`📊 [InteractionsTab] After timestamp deduplication for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          beforeTimestampDedup: allInteractions.length,
+          afterTimestampDedup: uniqueInteractions.length,
+          timestampDuplicatesRemoved: allInteractions.length - uniqueInteractions.length,
+          timestampDuplicatesDetails: timestampDuplicates.slice(0, 20)
+        });
+        
+        console.log(`📊 [InteractionsTab] FINAL COUNT for lead ${clientLeadId}:`, {
+          leadId: clientLeadId,
+          finalCount: uniqueInteractions.length,
+          breakdown: {
+            manual: uniqueInteractions.filter((i: any) => !i.id?.toString().startsWith('legacy_') && !i.id?.toString().startsWith('call_') && i.kind !== 'email' && i.kind !== 'whatsapp').length,
+            email: uniqueInteractions.filter((i: any) => i.kind === 'email').length,
+            whatsapp: uniqueInteractions.filter((i: any) => i.kind === 'whatsapp').length,
+            call: uniqueInteractions.filter((i: any) => i.kind === 'call').length,
+            legacy: uniqueInteractions.filter((i: any) => i.id?.toString().startsWith('legacy_')).length,
+            callLog: uniqueInteractions.filter((i: any) => i.id?.toString().startsWith('call_')).length
+          }
+        });
         
         const sorted = uniqueInteractions.sort((a, b) => {
           const dateA = new Date(a.raw_date).getTime();
@@ -4973,6 +5200,38 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     };
   }, [isEmailModalOpen, emails]);
 
+  // Helper function to convert HTML content to plain text for editing (converts <br> to newlines, strips other HTML)
+  const htmlToPlainText = (html: string): string => {
+    if (!html) return '';
+    
+    // Create a temporary div to parse HTML
+    const tmp = document.createElement('div');
+    
+    // Convert <br> tags to newlines before parsing
+    let processedHtml = html
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/p>/gi, '\n\n')
+      .replace(/<p[^>]*>/gi, '')
+      .replace(/<\/div>/gi, '\n')
+      .replace(/<div[^>]*>/gi, '');
+    
+    tmp.innerHTML = processedHtml;
+    
+    // Get text content (this strips all HTML tags)
+    let text = tmp.textContent || tmp.innerText || '';
+    
+    // Clean up excessive whitespace but preserve line breaks
+    text = text
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n')
+      .replace(/[ \t]+/g, ' ') // Replace multiple spaces/tabs with single space
+      .replace(/\n\s+\n/g, '\n\n') // Clean up lines with only whitespace
+      .replace(/\n{3,}/g, '\n\n') // Replace 3+ newlines with 2
+      .trim();
+    
+    return text;
+  };
+  
   // Update openEditDrawer to return a Promise and always fetch latest data for manual interactions
   const openEditDrawer = async (idx: number) => {
     const row = interactions[idx];
@@ -4991,10 +5250,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
       }
     }
     setActiveInteraction(latestRow);
+    
+    // Convert HTML content to plain text for email_manual and whatsapp_manual interactions
+    let contentForEdit = latestRow.content || '';
+    if ((latestRow.kind === 'email_manual' || latestRow.kind === 'whatsapp_manual') && contentForEdit) {
+      contentForEdit = htmlToPlainText(contentForEdit);
+    }
+    
     setEditData({
       date: latestRow.date || '',
       time: latestRow.time || '',
-      content: latestRow.content || '',
+      content: contentForEdit,
       observation: latestRow.observation || '',
       length: latestRow.length ? String(latestRow.length).replace(/m$/, '') : '',
       direction: latestRow.direction || 'out',
@@ -5011,10 +5277,41 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     setEditData((prev) => ({ ...prev, [field]: value }));
   };
 
+  // Helper function to convert plain text to HTML format (converts newlines to <br> tags)
+  const plainTextToHtml = (text: string): string => {
+    if (!text) return '';
+    
+    // Normalize line endings
+    let html = text
+      .replace(/\r\n/g, '\n')
+      .replace(/\r/g, '\n');
+    
+    // Collapse excessive consecutive line breaks (3+ to 2 for paragraph spacing)
+    html = html.replace(/\n{3,}/g, '\n\n');
+    
+    // Convert to HTML: single newline becomes <br>, double newline becomes <br><br>
+    html = html.replace(/\n\n/g, '__PARA_BREAK__');
+    html = html.replace(/\n/g, '<br>');
+    html = html.replace(/__PARA_BREAK__/g, '<br><br>');
+    
+    // Wrap in div with proper styling
+    if (!html.includes('<div')) {
+      html = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif; white-space: normal; line-height: 1.6;">${html}</div>`;
+    }
+    
+    return html;
+  };
+  
   const handleSave = async () => {
     if (!activeInteraction) return;
     
     const isManual = activeInteraction.id.toString().startsWith('manual_');
+    
+    // Convert plain text content back to HTML format for email_manual and whatsapp_manual interactions
+    let contentToSave = editData.content;
+    if ((activeInteraction.kind === 'email_manual' || activeInteraction.kind === 'whatsapp_manual') && contentToSave) {
+      contentToSave = plainTextToHtml(contentToSave);
+    }
 
     // --- Optimistic Update ---
     const previousInteractions = [...interactions];
@@ -5024,7 +5321,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           ...interaction,
           date: editData.date,
           time: editData.time,
-          content: editData.content,
+          content: contentToSave,
           observation: editData.observation,
           length: editData.length ? `${editData.length}m` : '',
           direction: editData.direction,
@@ -5825,6 +6122,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                 
                 const day = dateObj.getDate().toString().padStart(2, '0');
                 const month = dateObj.toLocaleString('en', { month: 'short' });
+                const year = dateObj.getFullYear();
                 const time = dateObj.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
               
               // Icon and color
@@ -5847,9 +6145,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </div>
                   );
                   iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                } else if (row.kind === 'whatsapp_manual') {
+                  // Legacy WhatsApp interactions are manual interactions but still show WhatsApp icon
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                } else if (row.kind === 'email_manual') {
+                  // Legacy email interactions are manual interactions but still show email icon
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-blue-200';
                 } else if (row.kind === 'email') {
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-blue-600 drop-shadow-sm" style={{color: '#2563eb'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-blue-200';
@@ -5885,9 +6191,17 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                     </div>
                   );
                   iconBg = 'bg-white shadow-lg border-2 border-blue-200';
+                } else if (row.kind === 'whatsapp_manual') {
+                  // Legacy WhatsApp interactions are manual interactions but still show WhatsApp icon
+                  icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-green-200';
                 } else if (row.kind === 'whatsapp') {
                   icon = <FaWhatsapp className="w-4 h-4 md:w-5 md:h-5 !text-green-600 drop-shadow-sm" style={{color: '#16a34a'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-green-200';
+                } else if (row.kind === 'email_manual') {
+                  // Legacy email interactions are manual interactions but still show email icon
+                  icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
+                  iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
                 } else if (row.kind === 'email') {
                   icon = <EnvelopeIcon className="w-4 h-4 md:w-5 md:h-5 !text-cyan-600 drop-shadow-sm" style={{color: '#0891b2'}} />;
                   iconBg = 'bg-white shadow-lg border-2 border-cyan-200';
@@ -5960,7 +6274,7 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                   <div className="flex flex-col lg:flex-row lg:items-start gap-4 lg:gap-6">
                     {/* Timestamp and metadata */}
                     <div className="flex-shrink-0 lg:w-32">
-                      <div className="text-sm md:text-base font-semibold text-gray-700 mb-1">{day} {month}</div>
+                      <div className="text-sm md:text-base font-semibold text-gray-700 mb-1">{day} {month} {year}</div>
                       <div className="text-xs md:text-sm text-gray-500">{time}</div>
                       {row.length && row.length !== 'm' && (
                         <div className="text-xs text-gray-400 mt-1">{row.length}</div>
@@ -6182,10 +6496,18 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
                             </div>
                           </div>
                         
-                          {/* Content section - hide content for database calls, but show for manual calls */}
-                          {row.content && ((row.kind !== 'call' && row.kind !== 'call_log') || row.editable) && (
+                          {/* Content section - show content for all calls (manual calls are editable, database calls have auto-generated content) */}
+                          {row.content && (
                             <TruncatedContent
-                              content={row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '')}
+                              content={(() => {
+                                // For email_manual and whatsapp_manual interactions, content is already normalized with proper line breaks
+                                if ((row.kind === 'email_manual' || row.kind === 'whatsapp_manual') && row.content) {
+                                  // Content should already be normalized, but ensure it's properly formatted
+                                  return row.renderedContent || row.renderedContentFallback || row.content;
+                                }
+                                // For other interactions, use existing logic
+                                return row.renderedContent || row.renderedContentFallback || (row.content ? row.content.replace(/\n/g, '<br>') : '');
+                              })()}
                               maxCharacters={500}
                               direction={getTextDirection(row.content)}
                               subject={row.subject}

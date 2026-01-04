@@ -1,6 +1,9 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { BrowserRouter as Router } from 'react-router-dom';
+import { QueryClientProvider } from '@tanstack/react-query';
+import { queryClient } from './lib/queryClient';
 import AppRoutes from './AppRoutes';
+import ScrollRestoration from './components/ScrollRestoration';
 import { MsalProvider, useMsal } from '@azure/msal-react';
 import { PublicClientApplication } from '@azure/msal-browser';
 import { msalConfig, loginRequest } from './msalConfig';
@@ -646,20 +649,23 @@ const AppContentInner: React.FC = () => {
 
 const AppContent: React.FC = () => {
   return (
-    <AuthProvider>
-      <CelebrationProvider>
-        <Router>
-          <AppContentInner />
-          <MoneyRainCelebration />
-          <PWAInstallPrompt />
-          <PWAUpdateNotification />
-          <Toaster 
-            position="top-center"
-            reverseOrder={false}
-          />
-        </Router>
-      </CelebrationProvider>
-    </AuthProvider>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <CelebrationProvider>
+          <Router>
+            <ScrollRestoration />
+            <AppContentInner />
+            <MoneyRainCelebration />
+            <PWAInstallPrompt />
+            <PWAUpdateNotification />
+            <Toaster 
+              position="top-center"
+              reverseOrder={false}
+            />
+          </Router>
+        </CelebrationProvider>
+      </AuthProvider>
+    </QueryClientProvider>
   );
 };
 

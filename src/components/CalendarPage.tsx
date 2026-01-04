@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../lib/supabase';
-import { Link, useNavigate } from 'react-router-dom';
+import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
+import { useCachedFetch } from '../hooks/useCachedFetch';
+import { usePersistedState } from '../hooks/usePersistedState';
 import { CalendarIcon, FunnelIcon, UserIcon, CurrencyDollarIcon, VideoCameraIcon, ChevronDownIcon, DocumentArrowUpIcon, FolderIcon, ClockIcon, ChevronLeftIcon, ChevronRightIcon, AcademicCapIcon, QuestionMarkCircleIcon, XMarkIcon, PaperAirplaneIcon, FaceSmileIcon, PaperClipIcon, Bars3Icon, Squares2X2Icon, UserGroupIcon, TruckIcon, BookOpenIcon, FireIcon, PencilIcon, PhoneIcon, EyeIcon, PencilSquareIcon, CheckIcon, CheckBadgeIcon, XCircleIcon, CheckCircleIcon, ExclamationTriangleIcon, EllipsisVerticalIcon } from '@heroicons/react/24/outline';
 import DocumentModal from './DocumentModal';
 import { FaWhatsapp } from 'react-icons/fa';
@@ -262,14 +264,29 @@ const getCurrencySymbol = (currency?: string) => {
 
 
 const CalendarPage: React.FC = () => {
-  const [meetings, setMeetings] = useState<any[]>([]);
+  // Persist meetings state so they're preserved when navigating back
+  const [meetings, setMeetings] = usePersistedState<any[]>('calendar-meetings', [], {
+    storage: 'sessionStorage',
+  });
   const [filteredMeetings, setFilteredMeetings] = useState<any[]>([]);
   const [staff, setStaff] = useState<string[]>([]);
-  const [fromDate, setFromDate] = useState(new Date().toISOString().split('T')[0]);
-  const [toDate, setToDate] = useState(new Date().toISOString().split('T')[0]);
-  const [appliedFromDate, setAppliedFromDate] = useState(new Date().toISOString().split('T')[0]);
-  const [appliedToDate, setAppliedToDate] = useState(new Date().toISOString().split('T')[0]);
-  const [datesManuallySet, setDatesManuallySet] = useState(false);
+  
+  // Persist date filters so they're preserved when navigating back
+  const [fromDate, setFromDate] = usePersistedState('calendar-fromDate', new Date().toISOString().split('T')[0], {
+    storage: 'sessionStorage',
+  });
+  const [toDate, setToDate] = usePersistedState('calendar-toDate', new Date().toISOString().split('T')[0], {
+    storage: 'sessionStorage',
+  });
+  const [appliedFromDate, setAppliedFromDate] = usePersistedState('calendar-appliedFromDate', new Date().toISOString().split('T')[0], {
+    storage: 'sessionStorage',
+  });
+  const [appliedToDate, setAppliedToDate] = usePersistedState('calendar-appliedToDate', new Date().toISOString().split('T')[0], {
+    storage: 'sessionStorage',
+  });
+  const [datesManuallySet, setDatesManuallySet] = usePersistedState('calendar-datesManuallySet', false, {
+    storage: 'sessionStorage',
+  });
   const [selectedStaff, setSelectedStaff] = useState('');
   const [staffSearchTerm, setStaffSearchTerm] = useState('');
   const [showStaffDropdown, setShowStaffDropdown] = useState(false);
@@ -290,6 +307,7 @@ const CalendarPage: React.FC = () => {
   const [selectedMeeting, setSelectedMeeting] = useState<any>(null);
   const [leadsWithPastStages, setLeadsWithPastStages] = useState<Set<string>>(new Set());
   const navigate = useNavigate();
+  const navType = useNavigationType();
 
   // Row selection and action menu state
   const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
@@ -1121,74 +1139,100 @@ const CalendarPage: React.FC = () => {
     }
   };
 
+  // Cache employees and categories data to prevent refetches when navigating back
+  const { data: employeesAndCategoriesData } = useCachedFetch(
+    'calendar-employees-categories',
+    async () => {
+      // Fetch all employees for name lookup - only active users
+      const { data: employeesData, error: employeesError } = await supabase
+        .from('users')
+        .select(`
+          id,
+          full_name,
+          email,
+          employee_id,
+          is_active,
+          tenants_employee!employee_id(
+            id,
+            display_name,
+            bonuses_role
+          )
+        `)
+        .not('employee_id', 'is', null)
+        .eq('is_active', true);
+      
+      if (employeesError) throw employeesError;
+
+      // Process the data to match the expected format
+      const processedEmployees = (employeesData || [])
+        .filter(user => user.tenants_employee && user.email)
+        .map(user => {
+          const employee = user.tenants_employee as any;
+          return {
+            id: employee.id,
+            display_name: employee.display_name,
+            bonuses_role: employee.bonuses_role
+          };
+        })
+        .sort((a, b) => a.display_name.localeCompare(b.display_name));
+
+      // Deduplicate by employee ID to prevent duplicates
+      const uniqueEmployeesMap = new Map();
+      processedEmployees.forEach(emp => {
+        if (!uniqueEmployeesMap.has(emp.id)) {
+          uniqueEmployeesMap.set(emp.id, emp);
+        }
+      });
+      const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+
+      // Fetch all categories with their parent main category names using JOINs
+      const { data: categoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id (
+            id,
+            name
+          )
+        `)
+        .order('name', { ascending: true });
+      
+      if (categoriesError) throw categoriesError;
+
+      return {
+        employees: uniqueEmployees,
+        categories: categoriesData || []
+      };
+    }
+  );
+
+  // Update state when cached data is available
   useEffect(() => {
-    console.log('🔍 CalendarPage useEffect: useEffect triggered');
+    if (employeesAndCategoriesData) {
+      setAllEmployees(employeesAndCategoriesData.employees);
+      setAllCategories(employeesAndCategoriesData.categories);
+    }
+  }, [employeesAndCategoriesData]);
+
+  useEffect(() => {
+    console.log('🔍 CalendarPage useEffect: useEffect triggered', { navType, hasCachedMeetings: meetings.length > 0 });
+    
+    // If this is a back/forward navigation (POP) and we have cached meetings, skip the fetch
+    if (navType === 'POP' && meetings.length > 0) {
+      console.log('🔍 CalendarPage: POP navigation with cached meetings, skipping fetch');
+      setIsLoading(false);
+      return;
+    }
+    
     const fetchMeetingsAndStaff = async () => {
       console.log('🔍 CalendarPage useEffect: fetchMeetingsAndStaff started');
       setIsLoading(true);
       
       try {
-        // Fetch all employees for name lookup - only active users
-        const { data: employeesData, error: employeesError } = await supabase
-          .from('users')
-          .select(`
-            id,
-            full_name,
-            email,
-            employee_id,
-            is_active,
-            tenants_employee!employee_id(
-              id,
-              display_name,
-              bonuses_role
-            )
-          `)
-          .not('employee_id', 'is', null)
-          .eq('is_active', true);
-        
-        if (!employeesError && employeesData) {
-          // Process the data to match the expected format
-          const processedEmployees = employeesData
-            .filter(user => user.tenants_employee && user.email)
-            .map(user => {
-              const employee = user.tenants_employee as any;
-              return {
-                id: employee.id,
-                display_name: employee.display_name,
-                bonuses_role: employee.bonuses_role
-              };
-            })
-            .sort((a, b) => a.display_name.localeCompare(b.display_name));
-
-          // Deduplicate by employee ID to prevent duplicates
-          const uniqueEmployeesMap = new Map();
-          processedEmployees.forEach(emp => {
-            if (!uniqueEmployeesMap.has(emp.id)) {
-              uniqueEmployeesMap.set(emp.id, emp);
-            }
-          });
-          const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
-          
-          setAllEmployees(uniqueEmployees);
-        }
-
-        // Fetch all categories with their parent main category names using JOINs
-        const { data: categoriesData, error: categoriesError } = await supabase
-          .from('misc_category')
-          .select(`
-            id,
-            name,
-            parent_id,
-            misc_maincategory!parent_id (
-              id,
-              name
-            )
-          `)
-          .order('name', { ascending: true });
-        
-        if (!categoriesError && categoriesData) {
-          setAllCategories(categoriesData);
-        }
+        // Employees and categories are now loaded via useCachedFetch hook above
+        // They are automatically cached and won't refetch when navigating back
 
 
         // Initialize stage names cache
@@ -1209,11 +1253,11 @@ const CalendarPage: React.FC = () => {
         const getCategoryNameFromData = (categoryId: string | number | null | undefined) => {
           if (!categoryId || categoryId === '---') return '';
           
-          // Use the categories data directly instead of state
-          const categoryById = categoriesData?.find((cat: any) => cat.id.toString() === categoryId.toString());
+          // Use the categories from state (populated by useCachedFetch)
+          const categoryById = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
           if (categoryById) return categoryById.name;
           
-          const categoryByName = categoriesData?.find((cat: any) => cat.name === categoryId);
+          const categoryByName = allCategories.find((cat: any) => cat.name === categoryId);
           if (categoryByName) return categoryByName.name;
           
           return String(categoryId);
@@ -1669,7 +1713,7 @@ const CalendarPage: React.FC = () => {
     // DISABLED: Meeting counts query removed to prevent timeouts
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
     // });
-  }, []);
+  }, [location.pathname]); // Run when pathname changes (navigation). Meetings are persisted separately via usePersistedState
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {

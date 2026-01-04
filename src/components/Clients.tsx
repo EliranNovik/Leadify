@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
-import { useLocation, useNavigate, useParams } from 'react-router-dom';
+import { useLocation, useNavigate, useParams, useNavigationType } from 'react-router-dom';
 import { supabase, type Lead } from '../lib/supabase';
 import { getStageName, fetchStageNames, areStagesEquivalent, normalizeStageName, getStageColour } from '../lib/stageUtils';
 import { updateLeadStageWithHistory, recordLeadStageChange, fetchStageActorInfo, getLatestStageBeforeStage } from '../lib/leadStageManager';
@@ -980,6 +980,7 @@ const Clients: React.FC<ClientsProps> = ({
   };
   const { lead_number = "" } = useParams();
   const location = useLocation();
+  const navType = useNavigationType();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedLeadNumber = searchParams.get('lead');
   const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
@@ -2906,12 +2907,43 @@ useEffect(() => {
     const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
     
+    // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
+    // Note: routeChanged can be true on POP navigation, so we check navType first
+    if (navType === 'POP' && selectedClient && lead_number) {
+      const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+      const currentClientId = isLegacy 
+        ? selectedClient.id?.toString().replace('legacy_', '')
+        : selectedClient.id?.toString();
+      const currentLeadNumber = selectedClient.lead_number;
+      
+      // Check if we have the correct client already loaded
+      if (isLegacy) {
+        if (currentClientId === lead_number) {
+          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
+          setLocalLoading(false);
+          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+          return; // Skip fetch - we have the cached client
+        }
+      } else {
+        if (currentLeadNumber === lead_number || currentClientId === lead_number) {
+          console.log('🔍 Clients: POP navigation with cached client, skipping fetch');
+          setLocalLoading(false);
+          lastRouteRef.current = currentRoute; // Update route ref to prevent future refetches
+          return; // Skip fetch - we have the cached client
+        }
+      }
+    }
+    
     // Always refetch if route changed (including coming back from /master)
-    if (routeChanged) {
+    // But skip if it's a POP navigation and we already handled it above
+    if (routeChanged && navType !== 'POP') {
       lastRouteRef.current = currentRoute;
       // Clear selectedClient immediately to reset all child components
       setSelectedClient(null);
       // Continue to fetch data below - don't return early
+    } else if (routeChanged && navType === 'POP') {
+      // POP navigation but client doesn't match - update route ref and continue
+      lastRouteRef.current = currentRoute;
     } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
       // Only skip fetch if we have the same client AND we're not on the master route
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');

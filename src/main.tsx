@@ -6,10 +6,14 @@ import { msalConfig } from './msalConfig'
 import { PublicClientApplication, EventType, AuthenticationResult } from '@azure/msal-browser'
 import { MsalProvider } from '@azure/msal-react'
 import { supabase, sessionManager } from './lib/supabase'
+import { loadRouteCacheFromStorage } from './utils/routeCache'
 
 // Expose Supabase client globally for debugging (remove in production)
 (window as any).supabase = supabase;
 (window as any).sessionManager = sessionManager;
+
+// Load route cache from sessionStorage before React mounts
+loadRouteCacheFromStorage();
 
 // Apply saved theme preference before React mounts
 const savedTheme = (() => {

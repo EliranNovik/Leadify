@@ -3715,32 +3715,6 @@ const formatEmailBody = async (
                   <span className="hidden sm:inline">Link</span>
                 </a>
               )}
-              {/* Cancel only for upcoming and not canceled */}
-              {!isPastMeeting(meeting) && meeting.status !== 'canceled' && (
-                <button
-                  className="hidden sm:flex btn btn-xs sm:btn-sm backdrop-blur-md bg-white/20 text-white hover:bg-white/30 border border-white/30 shadow-lg"
-                  title="Cancel Meeting"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    if (!confirm('Cancel this meeting?')) return;
-                    try {
-                      const { data: { user } } = await supabase.auth.getUser();
-                      const editor = user?.email || 'system';
-                      const { error } = await supabase.from('meetings').update({ status: 'canceled', last_edited_timestamp: new Date().toISOString(), last_edited_by: editor }).eq('id', meeting.id);
-                      if (error) throw error;
-                      toast.success('Meeting canceled');
-                      setMeetings(prev => prev.map(m => m.id === meeting.id ? { ...m, status: 'canceled' } : m));
-                      if (onClientUpdate) await onClientUpdate();
-                      // Refresh meetings to show updated data
-                      await fetchMeetings();
-                    } catch (err) {
-                      toast.error('Failed to cancel meeting');
-                    }
-                  }}
-                >
-                  <XMarkIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                </button>
-              )}
             </div>
           </div>
         </div>

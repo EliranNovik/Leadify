@@ -74,13 +74,16 @@ const transformLegacyInteraction = (
   let kind = interaction.kind || 'note';
   switch (kind) {
     case 'w':
-      kind = 'whatsapp';
+      // Legacy WhatsApp interactions from leads_leadinteractions are manual interactions
+      kind = 'whatsapp_manual';
       break;
     case 'c':
       kind = 'call';
       break;
     case 'e':
-      kind = 'email';
+      // Legacy email interactions from leads_leadinteractions are manual interactions
+      // They should be treated as editable manual interactions, not actual emails
+      kind = 'email_manual';
       break;
     case 'EMPTY':
       // For EMPTY kind, check description for METHOD: marker to distinguish interaction types
@@ -144,14 +147,14 @@ const transformLegacyInteraction = (
   // Since we can't distinguish easily, we'll mark interactions with kind 'c', 'e', 'w' as potentially editable.
   // But for now, let's keep editable: false and handle it in the filter logic.
   
-  // Determine status - only set for email and whatsapp, not for calls, SMS, or notes
+  // Determine status - only set for actual email (not email_manual) and whatsapp (not whatsapp_manual), not for calls, SMS, notes, email_manual, or whatsapp_manual
   // This prevents "sent" badge from showing for manual interactions
   let interactionStatus: string | undefined = undefined;
   if (kind === 'email' || kind === 'whatsapp') {
-    // Only email and WhatsApp should have status
+    // Only actual email (not email_manual) and WhatsApp (not whatsapp_manual) should have status
     interactionStatus = interaction.direction === 'o' ? 'sent' : 'received';
   }
-  // For calls, SMS, and notes, don't set status to avoid showing "sent" badge
+  // For calls, SMS, notes, email_manual, and whatsapp_manual, don't set status to avoid showing "sent" badge
   
   // Determine recipient_name based on direction (same logic as manual interactions)
   // For outgoing: recipient is the client (we contacted them)
@@ -180,9 +183,7 @@ const transformLegacyInteraction = (
     length,
     content,
     observation: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from observation
-    editable: false, // Legacy interactions from leads_leadinteractions are not editable by default
-    // However, manual interactions saved to leads_leadinteractions should be marked differently
-    // We'll handle this in the filter logic instead
+    editable: kind === 'email_manual' || kind === 'whatsapp_manual', // Legacy email and WhatsApp interactions are manual and editable
     status: interactionStatus,
     subject: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from subject
     recipient_name: recipientName, // Set recipient_name for "To:" display
@@ -213,6 +214,16 @@ export const fetchLegacyInteractions = async (
   }
 
   const interactions = (data || []) as LegacyInteraction[];
+  console.log(`📊 [fetchLegacyInteractions] Fetched ${interactions.length} interactions from database for lead_id ${numericId}`, {
+    leadId: numericId,
+    fetchedCount: interactions.length,
+    interactionIds: interactions.map(i => i.id).slice(0, 20), // First 20 IDs for debugging
+    interactionKinds: interactions.reduce((acc, i) => {
+      const kind = i.kind || 'null';
+      acc[kind] = (acc[kind] || 0) + 1;
+      return acc;
+    }, {} as Record<string, number>)
+  });
   const employeeIds = [
     ...new Set(
       interactions.flatMap((interaction) => {
