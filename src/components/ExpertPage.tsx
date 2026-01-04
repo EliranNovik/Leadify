@@ -675,14 +675,13 @@ const ExpertPage: React.FC = () => {
           .or('eligibility_status.is.null,eligibility_status.eq.""')
           .is('unactivated_at', null) // Only active leads
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
-          .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
+          .or('stage.lt.50,stage.eq.55') // Include stages 20-49 and stage 55 (Another meeting)
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
 
         // Filter new leads by expert field if we have user's employee ID
         // Note: For new leads, the 'expert' field stores an employee ID (number), not a display name
         if (currentUserEmployeeId) {
           newLeadsQuery = newLeadsQuery.eq('expert', currentUserEmployeeId);
-          console.log('Filtering new leads by expert (employee ID):', currentUserEmployeeId);
         }
 
         const { data: newLeadsData, error: newLeadsError } = await newLeadsQuery.order('created_at', { ascending: false });
@@ -731,7 +730,7 @@ const ExpertPage: React.FC = () => {
           .or('expert_examination.eq.0,expert_examination.is.null') // Only fetch leads where expert_examination is 0 or null (not yet examined)
           .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
           .gte('stage', 20) // Only leads that have reached or passed stage 20 (Meeting scheduled)
-          .lt('stage', 50) // Exclude leads that have reached stage 50 (Mtng sum+Agreement sent) and above
+          .or('stage.lt.50,stage.eq.55') // Include stages 20-49 and stage 55 (Another meeting)
           .neq('stage', 35); // Exclude stage 35 (Meeting irrelevant)
         
         // Note: We don't filter by meeting_date here because legacy leads might have meetings
