@@ -142,9 +142,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     numberOfPayments: 3,
     // Per‑payment percentages, must always sum to 100
     paymentPercents: [50, 25, 25],
+    // Payment orders for each payment
+    paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
     includeVat: true,
     contact: '', // Contact name for the auto plan
   });
+  const [isCustomPaymentCount, setIsCustomPaymentCount] = useState(false);
+  const [customPaymentCount, setCustomPaymentCount] = useState<number>(6);
 
   // Add state for percentage calculation feature
   const [showPercentageModal, setShowPercentageModal] = useState(false);
@@ -2537,6 +2541,126 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
+  // Handler to delete all payments for a specific contact
+  const handleDeletePaymentPlan = async (contactName: string) => {
+    if (!window.confirm(`Are you sure you want to delete all payment rows for "${contactName}"? This action cannot be undone.`)) return;
+    
+    try {
+      const currentUserName = await getCurrentUserName();
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      
+      if (isLegacyLead) {
+        // For legacy leads, get client_id for the contact
+        const clientIdForContact = getClientIdForContact(contactName);
+        
+        if (clientIdForContact === null) {
+          toast.error(`Failed to find contact ID for "${contactName}". Cannot delete payment plan.`);
+          return;
+        }
+        
+        // Get all payments for this contact before deletion (for logging)
+        const legacyId = client?.id?.toString().replace('legacy_', '');
+        const { data: paymentsToDelete, error: fetchError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('*')
+          .eq('lead_id', legacyId)
+          .eq('client_id', clientIdForContact)
+          .is('cancel_date', null);
+        
+        if (fetchError) {
+          console.error('Error fetching payments to delete:', fetchError);
+          toast.error('Failed to fetch payments for deletion.');
+          return;
+        }
+        
+        if (!paymentsToDelete || paymentsToDelete.length === 0) {
+          toast.success('No payments found for this contact.');
+          return;
+        }
+        
+        // Soft delete all payments for this contact
+        const { error: deleteError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({ cancel_date: new Date().toISOString().split('T')[0] })
+          .eq('lead_id', legacyId)
+          .eq('client_id', clientIdForContact)
+          .is('cancel_date', null);
+        
+        if (deleteError) throw deleteError;
+        
+        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
+      } else {
+        // For new leads, use client_name to identify payments
+        // Get all payments for this contact before deletion (for logging)
+        const { data: paymentsToDelete, error: fetchError } = await supabase
+          .from('payment_plans')
+          .select('*')
+          .eq('lead_id', client?.id)
+          .eq('client_name', contactName)
+          .is('cancel_date', null);
+        
+        if (fetchError) {
+          console.error('Error fetching payments to delete:', fetchError);
+          toast.error('Failed to fetch payments for deletion.');
+          return;
+        }
+        
+        if (!paymentsToDelete || paymentsToDelete.length === 0) {
+          toast.success('No payments found for this contact.');
+          return;
+        }
+        
+        // Log deletions in payment_plan_changes table
+        const changesToInsert = paymentsToDelete.map(payment => ({
+          payment_plan_id: payment.id,
+          lead_id: client?.id,
+          field_name: 'payment_plan_deleted',
+          old_value: JSON.stringify({
+            id: payment.id,
+            due_percent: payment.due_percent,
+            due_date: payment.due_date,
+            value: payment.value,
+            value_vat: payment.value_vat,
+            client_name: payment.client_name,
+            payment_order: payment.payment_order,
+            notes: payment.notes,
+          }),
+          new_value: '',
+          changed_by: currentUserName,
+          changed_at: new Date().toISOString()
+        }));
+        
+        if (changesToInsert.length > 0) {
+          const { error: historyError } = await supabase
+            .from('payment_plan_changes')
+            .insert(changesToInsert);
+          
+          if (historyError) {
+            console.error('Error logging deletions:', historyError);
+            // Continue with deletion even if logging fails
+          }
+        }
+        
+        // Soft delete all payments for this contact
+        const { error: deleteError } = await supabase
+          .from('payment_plans')
+          .update({ cancel_date: new Date().toISOString().split('T')[0] })
+          .eq('lead_id', client?.id)
+          .eq('client_name', contactName)
+          .is('cancel_date', null);
+        
+        if (deleteError) throw deleteError;
+        
+        toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
+      }
+      
+      await refreshPaymentPlans();
+    } catch (error) {
+      console.error('Error deleting payment plan:', error);
+      toast.error('Failed to delete payment plan.');
+    }
+  };
+
   // Generate proforma content as a structured object
   const generateProformaContent = async (data: any, createdBy: string) => {
     const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
@@ -2951,6 +3075,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             case 'Intermediate Payment': return 5;
             case 'Final Payment': return 9;
             case 'Single Payment': return 90;
+            case 'Expense (no VAT)': return 99;
             default: return 5; // Default to intermediate
           }
         };
@@ -2977,18 +3102,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           return;
         }
 
+        // Ensure paymentOrders array is properly initialized
+        const paymentOrders = autoPlanData.paymentOrders || [];
+        while (paymentOrders.length < autoPlanData.numberOfPayments) {
+          const idx = paymentOrders.length;
+          const defaultOrder = idx === 0 ? 'First Payment' : idx === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+          paymentOrders.push(defaultOrder);
+        }
+
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
           const value = (totalAmount * paymentPercent) / 100;
-          // Determine order text based on position (same as new leads)
-          let orderText: string;
-          if (i === 0) {
-            orderText = 'First Payment';
-          } else if (i === autoPlanData.numberOfPayments - 1) {
-            orderText = 'Final Payment';
-          } else {
-            orderText = 'Intermediate Payment';
-          }
+          // Use custom order from paymentOrders array, or fallback to default based on position
+          const defaultOrder = i === 0 ? 'First Payment' : i === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+          const orderText = paymentOrders[i] || defaultOrder;
           // Convert to numeric for database storage
           const orderValue = getOrderNumber(orderText);
 
@@ -3059,6 +3186,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           contacts: contacts.map(c => ({ name: c.name, id: c.id }))
         });
 
+        // Ensure paymentOrders array is properly initialized
+        const paymentOrders = autoPlanData.paymentOrders || [];
+        while (paymentOrders.length < autoPlanData.numberOfPayments) {
+          const idx = paymentOrders.length;
+          const defaultOrder = idx === 0 ? 'First Payment' : idx === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+          paymentOrders.push(defaultOrder);
+        }
+
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
           const paymentPercent = Number(activePercents[i] || 0);
           const value = (totalAmount * paymentPercent) / 100;
@@ -3074,6 +3209,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             ? Math.round(value * 0.18 * 100) / 100
             : 0;
           
+          // Use custom order from paymentOrders array, or fallback to default based on position
+          const defaultOrder = i === 0 ? 'First Payment' : i === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+          const orderText = paymentOrders[i] || defaultOrder;
+          
           const paymentData: any = {
             lead_id: client?.id,
             due_percent: paymentPercent,
@@ -3081,12 +3220,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             value,
             value_vat: vatValue, // Use calculated VAT based on checkbox state
             client_name: autoPlanData.contact || client?.name || 'Main Contact',
-            payment_order:
-              i === 0
-                ? 'First Payment'
-                : i === autoPlanData.numberOfPayments - 1
-                ? 'Final Payment'
-                : 'Intermediate Payment',
+            payment_order: orderText,
             notes: '',
             currency: autoPlanData.currency,
             created_by: currentUserName,
@@ -3148,9 +3282,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         currency: '₪',
         numberOfPayments: 3,
         paymentPercents: [50, 25, 25],
+        paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
         includeVat: true,
         contact: '', // Reset contact
       });
+      setIsCustomPaymentCount(false);
+      setCustomPaymentCount(6);
       refreshPaymentPlans();
     } catch (error) {
       console.error('Error creating auto plan:', error);
@@ -3171,9 +3308,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       currency: '₪',
       numberOfPayments: 3,
       paymentPercents: [50, 25, 25],
+      paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
       includeVat: true,
       contact: '', // Reset contact
     });
+    setIsCustomPaymentCount(false);
+    setCustomPaymentCount(6);
   };
 
   // 1. Add state to track which contact's history is open
@@ -3335,7 +3475,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             {/* Overlay */}
             <div className="fixed inset-0 bg-black/30" onClick={handleCloseStagesDrawer} />
             {/* Drawer */}
-            <div className="ml-auto w-full max-w-2xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
+            <div className="ml-auto w-full max-w-4xl h-full bg-white shadow-2xl p-0 flex flex-col animate-slideInRight z-[110] overflow-hidden">
               {/* Header */}
               <div className="bg-gradient-to-r from-purple-700 to-blue-600 text-white p-6 border-b border-purple-200">
                 <div className="flex items-center justify-between">
@@ -3421,17 +3561,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         </label>
                         <select
                           className="select select-bordered w-full"
-                          value={autoPlanData.numberOfPayments}
+                          value={isCustomPaymentCount ? 'custom' : autoPlanData.numberOfPayments}
                           onChange={(e) => {
-                            const count = Number(e.target.value);
+                            if (e.target.value === 'custom') {
+                              setIsCustomPaymentCount(true);
+                            } else {
+                              setIsCustomPaymentCount(false);
+                              const count = Number(e.target.value);
                             setAutoPlanData(prev => {
                               let percents: number[];
+                              let orders: string[];
                               if (count === 1) {
                                 // For single payment, set to 100%
                                 percents = [100];
+                                orders = ['Single Payment'];
                               } else if (count === 3) {
                                 // Special default for 3 payments
                                 percents = [50, 25, 25];
+                                orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
                               } else {
                                 // Even split that sums to 100
                                 const base = Math.floor(100 / count);
@@ -3440,13 +3587,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 for (let i = 0; i < remainder; i++) {
                                   percents[i] += 1;
                                 }
+                                // Generate default orders
+                                orders = Array.from({ length: count }, (_, i) => {
+                                  if (i === 0) return 'First Payment';
+                                  if (i === count - 1) return 'Final Payment';
+                                  return 'Intermediate Payment';
+                                });
                               }
                               return {
                                 ...prev,
                                 numberOfPayments: count,
                                 paymentPercents: percents,
+                                paymentOrders: orders,
                               };
                             });
+                            }
                           }}
                         >
                           <option value={1}>1 Payment</option>
@@ -3454,21 +3609,97 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                           <option value={3}>3 Payments</option>
                           <option value={4}>4 Payments</option>
                           <option value={5}>5 Payments</option>
+                          <option value="custom">Custom</option>
                         </select>
+                        {isCustomPaymentCount && (
+                          <div className="mt-2">
+                            <input
+                              type="number"
+                              className="input input-bordered w-full"
+                              min={1}
+                              max={100}
+                              value={customPaymentCount}
+                              onChange={(e) => {
+                                const count = Number(e.target.value) || 1;
+                                setCustomPaymentCount(count);
+                                setAutoPlanData(prev => {
+                                  let percents: number[];
+                                  let orders: string[];
+                                  if (count === 1) {
+                                    // For single payment, set to 100%
+                                    percents = [100];
+                                    orders = ['Single Payment'];
+                                  } else if (count === 3) {
+                                    // Special default for 3 payments
+                                    percents = [50, 25, 25];
+                                    orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
+                                  } else {
+                                    // Even split that sums to 100
+                                    const base = Math.floor(100 / count);
+                                    percents = Array.from({ length: count }, () => base);
+                                    const remainder = 100 - base * count;
+                                    for (let i = 0; i < remainder; i++) {
+                                      percents[i] += 1;
+                                    }
+                                    // Generate default orders
+                                    orders = Array.from({ length: count }, (_, i) => {
+                                      if (i === 0) return 'First Payment';
+                                      if (i === count - 1) return 'Final Payment';
+                                      return 'Intermediate Payment';
+                                    });
+                                  }
+                                  return {
+                                    ...prev,
+                                    numberOfPayments: count,
+                                    paymentPercents: percents,
+                                    paymentOrders: orders,
+                                  };
+                                });
+                              }}
+                              placeholder="Enter number of payments"
+                            />
+                          </div>
+                        )}
                       </div>
                       <div className="form-control">
                         <label className="label">
-                          <span className="label-text font-medium">Payment Percentages</span>
+                          <span className="label-text font-medium">Payment Percentages & Amounts</span>
                         </label>
                         <div className="space-y-2">
                           {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => {
                             const isFirst = index === 0;
                             const isLast = index === autoPlanData.numberOfPayments - 1;
-                            const label =
+                            const defaultLabel =
                               isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
+                            const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                             return (
                             <div key={index} className="flex items-center gap-2">
-                              <span className="w-40 text-sm text-gray-600">{label}</span>
+                              <select
+                                className="select select-bordered w-40 text-sm"
+                                value={currentOrder}
+                                onChange={(e) => {
+                                  setAutoPlanData(prev => {
+                                    const next = [...(prev.paymentOrders || [])];
+                                    // Ensure array length
+                                    while (next.length < prev.numberOfPayments) {
+                                      const idx = next.length;
+                                      const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+                                      next.push(defaultOrder);
+                                    }
+                                    next[index] = e.target.value;
+                                    return {
+                                      ...prev,
+                                      paymentOrders: next,
+                                    };
+                                  });
+                                }}
+                              >
+                                <option value="First Payment">First Payment</option>
+                                <option value="Intermediate Payment">Intermediate Payment</option>
+                                <option value="Final Payment">Final Payment</option>
+                                <option value="Single Payment">Single Payment</option>
+                                <option value="Expense (no VAT)">Expense (no VAT)</option>
+                              </select>
                               <input
                                 type="number"
                                 className="input input-bordered w-24 no-arrows"
@@ -3476,12 +3707,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 max={100}
                                 value={autoPlanData.paymentPercents[index] ?? 0}
                                 onChange={(e) => {
-                                  const value = Number(e.target.value || 0);
+                                  const percentValue = Number(e.target.value || 0);
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
                                   setAutoPlanData(prev => {
                                     const next = [...(prev.paymentPercents || [])];
                                     // Ensure array length
                                     while (next.length < prev.numberOfPayments) next.push(0);
-                                    next[index] = value;
+                                    next[index] = percentValue;
                                     return {
                                       ...prev,
                                       paymentPercents: next,
@@ -3490,6 +3722,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 }}
                               />
                               <span className="text-sm">%</span>
+                              <input
+                                type="number"
+                                className="input input-bordered w-32 no-arrows"
+                                min={0}
+                                step="0.01"
+                                value={(() => {
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                  const percent = autoPlanData.paymentPercents[index] ?? 0;
+                                  return totalAmount > 0 ? ((totalAmount * percent) / 100).toFixed(2) : '0.00';
+                                })()}
+                                onChange={(e) => {
+                                  const amountValue = Number(e.target.value || 0);
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                  if (totalAmount > 0) {
+                                    const newPercent = (amountValue / totalAmount) * 100;
+                                    setAutoPlanData(prev => {
+                                      const next = [...(prev.paymentPercents || [])];
+                                      // Ensure array length
+                                      while (next.length < prev.numberOfPayments) next.push(0);
+                                      next[index] = Math.round(newPercent * 100) / 100; // Round to 2 decimal places
+                                      return {
+                                        ...prev,
+                                        paymentPercents: next,
+                                      };
+                                    });
+                                  }
+                                }}
+                                placeholder="0.00"
+                              />
+                              <span className="text-sm">{autoPlanData.currency || '₪'}</span>
                             </div>
                           )})}
                           <div className="text-xs text-gray-500">
@@ -4518,9 +4780,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 </tbody>
                               </table>
                               
-                              {/* Add new payment button for this contact (table view) */}
+                              {/* Add new payment and Delete payment plan buttons for this contact (table view) */}
                               {!addingPaymentContact && (
-                                <div className="mt-4 flex justify-start">
+                                <div className="mt-4 flex justify-start gap-2">
                                   <button
                                     type="button"
                                     className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
@@ -4528,6 +4790,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   >
                                     <PlusIcon className="w-4 h-4" />
                                     Add new payment
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
+                                    onClick={() => handleDeletePaymentPlan(contactName)}
+                                  >
+                                    <TrashIcon className="w-4 h-4" />
+                                    Delete payment plan
                                   </button>
                                 </div>
                               )}
@@ -4969,9 +5239,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 );
                               })}
                             </div>
-                            {/* Add new payment button for this contact (box view) */}
+                            {/* Add new payment and Delete payment plan buttons for this contact (box view) */}
                             {!addingPaymentContact && (
-                              <div className="mt-4 flex justify-start">
+                              <div className="mt-4 flex justify-start gap-2">
                                 <button
                                   type="button"
                                   className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
@@ -4979,6 +5249,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 >
                                   <PlusIcon className="w-4 h-4" />
                                   Add new payment
+                                </button>
+                                <button
+                                  type="button"
+                                  className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
+                                  onClick={() => handleDeletePaymentPlan(contactName)}
+                                >
+                                  <TrashIcon className="w-4 h-4" />
+                                  Delete payment plan
                                 </button>
                               </div>
                             )}
@@ -5542,50 +5820,140 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       </label>
                       <select
                         className="select select-bordered w-full"
-                        value={autoPlanData.numberOfPayments}
+                        value={isCustomPaymentCount ? 'custom' : autoPlanData.numberOfPayments}
                         onChange={(e) => {
-                          const count = Number(e.target.value);
-                          setAutoPlanData(prev => {
-                            let percents: number[];
-                            if (count === 3) {
-                              // Special default for 3 payments
-                              percents = [50, 25, 25];
-                            } else {
-                              // Even split that sums to 100
-                              const base = Math.floor(100 / count);
-                              percents = Array.from({ length: count }, () => base);
-                              const remainder = 100 - base * count;
-                              for (let i = 0; i < remainder; i++) {
-                                percents[i] += 1;
+                          if (e.target.value === 'custom') {
+                            setIsCustomPaymentCount(true);
+                          } else {
+                            setIsCustomPaymentCount(false);
+                            const count = Number(e.target.value);
+                            setAutoPlanData(prev => {
+                              let percents: number[];
+                              let orders: string[];
+                              if (count === 3) {
+                                // Special default for 3 payments
+                                percents = [50, 25, 25];
+                                orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
+                              } else {
+                                // Even split that sums to 100
+                                const base = Math.floor(100 / count);
+                                percents = Array.from({ length: count }, () => base);
+                                const remainder = 100 - base * count;
+                                for (let i = 0; i < remainder; i++) {
+                                  percents[i] += 1;
+                                }
+                                // Generate default orders
+                                orders = Array.from({ length: count }, (_, i) => {
+                                  if (i === 0) return 'First Payment';
+                                  if (i === count - 1) return 'Final Payment';
+                                  return 'Intermediate Payment';
+                                });
                               }
-                            }
-                            return {
-                              ...prev,
-                              numberOfPayments: count,
-                              paymentPercents: percents,
-                            };
-                          });
+                              return {
+                                ...prev,
+                                numberOfPayments: count,
+                                paymentPercents: percents,
+                                paymentOrders: orders,
+                              };
+                            });
+                          }
                         }}
                       >
                         <option value={2}>2 Payments</option>
                         <option value={3}>3 Payments</option>
                         <option value={4}>4 Payments</option>
                         <option value={5}>5 Payments</option>
+                        <option value="custom">Custom</option>
                       </select>
+                      {isCustomPaymentCount && (
+                        <div className="mt-2">
+                          <input
+                            type="number"
+                            className="input input-bordered w-full"
+                            min={1}
+                            max={100}
+                            value={customPaymentCount}
+                            onChange={(e) => {
+                              const count = Number(e.target.value) || 1;
+                              setCustomPaymentCount(count);
+                              setAutoPlanData(prev => {
+                                let percents: number[];
+                                let orders: string[];
+                                if (count === 1) {
+                                  // For single payment, set to 100%
+                                  percents = [100];
+                                  orders = ['Single Payment'];
+                                } else if (count === 3) {
+                                  // Special default for 3 payments
+                                  percents = [50, 25, 25];
+                                  orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
+                                } else {
+                                  // Even split that sums to 100
+                                  const base = Math.floor(100 / count);
+                                  percents = Array.from({ length: count }, () => base);
+                                  const remainder = 100 - base * count;
+                                  for (let i = 0; i < remainder; i++) {
+                                    percents[i] += 1;
+                                  }
+                                  // Generate default orders
+                                  orders = Array.from({ length: count }, (_, i) => {
+                                    if (i === 0) return 'First Payment';
+                                    if (i === count - 1) return 'Final Payment';
+                                    return 'Intermediate Payment';
+                                  });
+                                }
+                                return {
+                                  ...prev,
+                                  numberOfPayments: count,
+                                  paymentPercents: percents,
+                                  paymentOrders: orders,
+                                };
+                              });
+                            }}
+                            placeholder="Enter number of payments"
+                          />
+                        </div>
+                      )}
                     </div>
                     <div className="form-control">
                       <label className="label">
-                        <span className="label-text font-medium">Payment Percentages</span>
+                        <span className="label-text font-medium">Payment Percentages & Amounts</span>
                       </label>
                       <div className="space-y-2">
                         {Array.from({ length: autoPlanData.numberOfPayments }).map((_, index) => {
                           const isFirst = index === 0;
                           const isLast = index === autoPlanData.numberOfPayments - 1;
-                          const label =
+                          const defaultLabel =
                             isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
+                          const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                           return (
                           <div key={index} className="flex items-center gap-2">
-                            <span className="w-40 text-sm text-gray-600">{label}</span>
+                            <select
+                              className="select select-bordered w-40 text-sm"
+                              value={currentOrder}
+                              onChange={(e) => {
+                                setAutoPlanData(prev => {
+                                  const next = [...(prev.paymentOrders || [])];
+                                  // Ensure array length
+                                  while (next.length < prev.numberOfPayments) {
+                                    const idx = next.length;
+                                    const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+                                    next.push(defaultOrder);
+                                  }
+                                  next[index] = e.target.value;
+                                  return {
+                                    ...prev,
+                                    paymentOrders: next,
+                                  };
+                                });
+                              }}
+                            >
+                              <option value="First Payment">First Payment</option>
+                              <option value="Intermediate Payment">Intermediate Payment</option>
+                              <option value="Final Payment">Final Payment</option>
+                              <option value="Single Payment">Single Payment</option>
+                              <option value="Expense (no VAT)">Expense (no VAT)</option>
+                            </select>
                             <input
                               type="number"
                               className="input input-bordered w-24 no-arrows"
@@ -5593,12 +5961,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               max={100}
                               value={autoPlanData.paymentPercents[index] ?? 0}
                               onChange={(e) => {
-                                const value = Number(e.target.value || 0);
+                                const percentValue = Number(e.target.value || 0);
+                                const totalAmount = Number(autoPlanData.totalAmount || 0);
                                 setAutoPlanData(prev => {
                                   const next = [...(prev.paymentPercents || [])];
                                   // Ensure array length
                                   while (next.length < prev.numberOfPayments) next.push(0);
-                                  next[index] = value;
+                                  next[index] = percentValue;
                                   return {
                                     ...prev,
                                     paymentPercents: next,
@@ -5607,6 +5976,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               }}
                             />
                             <span className="text-sm">%</span>
+                            <input
+                              type="number"
+                              className="input input-bordered w-32 no-arrows"
+                              min={0}
+                              step="0.01"
+                              value={(() => {
+                                const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                const percent = autoPlanData.paymentPercents[index] ?? 0;
+                                return totalAmount > 0 ? ((totalAmount * percent) / 100).toFixed(2) : '0.00';
+                              })()}
+                              onChange={(e) => {
+                                const amountValue = Number(e.target.value || 0);
+                                const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                if (totalAmount > 0) {
+                                  const newPercent = (amountValue / totalAmount) * 100;
+                                  setAutoPlanData(prev => {
+                                    const next = [...(prev.paymentPercents || [])];
+                                    // Ensure array length
+                                    while (next.length < prev.numberOfPayments) next.push(0);
+                                    next[index] = Math.round(newPercent * 100) / 100; // Round to 2 decimal places
+                                    return {
+                                      ...prev,
+                                      paymentPercents: next,
+                                    };
+                                  });
+                                }
+                              }}
+                              placeholder="0.00"
+                            />
+                            <span className="text-sm">{autoPlanData.currency || '₪'}</span>
                           </div>
                         )})}
                         <div className="text-xs text-gray-500">

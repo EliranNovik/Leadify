@@ -44,13 +44,14 @@ export interface SchedulerLead {
 }
 
 const SCHEDULER_STAGE_TARGETS = [
-  'Precommunication',
-  'Created',
-  'Scheduler assigned',
-  'Handler assigned',
-  'Handler started',
-  'Communication started', // Add Communication started to scheduler stage targets
-  'Success',
+  'Precommunication',      // Stage ID 11
+  'Created',              // Stage ID 0
+  'Scheduler assigned',    // Stage ID 10
+  'Communication started', // Stage ID 15
+  // Only stages 0, 10, 11, 15 should be fetched
+  // EXCLUDED: 'Handler assigned' (Handler Set) - should not be in scheduler view
+  // EXCLUDED: 'Handler started' (Stage ID 110) - should not be in scheduler view
+  // EXCLUDED: 'Success' - should not be in scheduler view
 ];
 const FALLBACK_SCHEDULER_STAGE_IDS = [0, 10, 11, 15];
 
@@ -847,6 +848,9 @@ const SchedulerToolPage: React.FC = () => {
       if (FALLBACK_SCHEDULER_STAGE_IDS.includes(15) && !stageIdsToUse.includes(15)) {
         stageIdsToUse.push(15);
       }
+      
+      // Explicitly exclude stage 110 (Handler Started) - should never be in scheduler view
+      stageIdsToUse = stageIdsToUse.filter(id => id !== 110);
 
       // Fetch new leads with scheduler assigned to current user (by name) and specific stages
       let newLeadsQueryBuilder = supabase
@@ -884,7 +888,8 @@ const SchedulerToolPage: React.FC = () => {
           )
         `)
         .eq('scheduler', employeeDisplayName)
-        .is('unactivated_at', null); // Only active leads
+        .is('unactivated_at', null) // Only active leads
+        .neq('stage', 110); // Explicitly exclude stage 110 (Handler Started)
 
       if (stageIdsToUse.length === 1) {
         newLeadsQueryBuilder = newLeadsQueryBuilder.eq('stage', stageIdsToUse[0]);
@@ -927,7 +932,8 @@ const SchedulerToolPage: React.FC = () => {
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
         .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
-        .in('stage', [0, 10, 11, 15]); // Only show leads with stages 0, 10, 11, 15
+        .in('stage', [0, 10, 11, 15]) // Only show leads with stages 0, 10, 11, 15
+        .neq('stage', 110); // Explicitly exclude stage 110 (Handler Started)
 
       if (legacyError) {
         console.error('❌ Error fetching legacy leads:', legacyError);
