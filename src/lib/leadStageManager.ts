@@ -258,10 +258,14 @@ export const recordLeadStageChange = async ({
 
   // Check for very recent duplicates (within 1 second) to prevent true double-clicks
   // But allow legitimate stage changes even if the same stage was set before
+  // Skip duplicate check if creator_id is null (public contract signing) to avoid query issues
   const duplicateCheckColumn = isLegacy ? 'lead_id' : 'newlead_id';
   const duplicateCheckValue = isLegacy ? payload.lead_id : payload.newlead_id;
   
-  if (duplicateCheckValue !== null && duplicateCheckValue !== undefined) {
+  // Only perform duplicate check if we have both a valid check value and a non-null creator_id
+  // When creator_id is null (public signing), skip duplicate check to avoid SQL syntax errors
+  if (duplicateCheckValue !== null && duplicateCheckValue !== undefined && 
+      payload.creator_id !== null && payload.creator_id !== undefined) {
     const oneSecondAgo = new Date(Date.now() - 1000).toISOString(); // Only check last 1 second for true duplicates
     
     const { data: recentRecords, error: checkError } = await supabase
@@ -291,6 +295,9 @@ export const recordLeadStageChange = async ({
       }
       // Otherwise, continue with the insert - it's a legitimate stage change
     }
+  } else if (payload.creator_id === null || payload.creator_id === undefined) {
+    // Skip duplicate check for public contract signing (creator_id is null)
+    console.log('ℹ️ Skipping duplicate check for public contract signing (creator_id is null)');
   }
 
   // Ensure we're not including an 'id' field in the payload - let Supabase auto-generate it via bigserial
@@ -319,6 +326,21 @@ export const recordLeadStageChange = async ({
   const { error, data } = await supabase.from('leads_leadstage').insert(insertPayload).select('id');
 
   if (error) {
+    // Handle RLS (Row Level Security) policy violations gracefully
+    // This can happen when signing contracts from public view (not authenticated)
+    if (error.code === '42501') {
+      console.warn('⚠️ RLS policy violation when recording stage change (likely public contract signing):', {
+        error: error.message,
+        errorCode: error.code,
+        insertPayload,
+        stage: resolvedStageId,
+        leadId: lead.id,
+        message: 'The stage update succeeded, but history recording was blocked by RLS policy. This is expected for public contract signing.',
+      });
+      // Return false but don't throw - stage update already succeeded
+      return false;
+    }
+    
     // Handle duplicate key error gracefully (code 23505)
     // This could be a true duplicate (same stage change in quick succession)
     // or a legitimate stage change that happens to match a constraint

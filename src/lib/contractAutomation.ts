@@ -273,8 +273,9 @@ export async function handleContractSigned(contract: Contract) {
               number_of_applicants_meeting: contract.applicant_count,
             },
           });
+          console.log('✅ Lead stage updated to "Client signed agreement" (stage 60)');
         } catch (stageUpdateError) {
-          console.error('Error updating lead stage:', stageUpdateError);
+          console.error('❌ Error updating lead stage:', stageUpdateError);
           // Fallback to direct update if stage manager fails
           const { error: leadUpdateError } = await supabase
             .from('leads')
@@ -287,7 +288,11 @@ export async function handleContractSigned(contract: Contract) {
             .eq('id', contract.client_id);
           
           if (leadUpdateError) {
-            console.error('Error updating lead (fallback):', leadUpdateError);
+            console.error('❌ Error updating lead (fallback):', leadUpdateError);
+            // Re-throw the error so it's caught by the outer try-catch
+            throw new Error(`Failed to update lead stage: ${leadUpdateError.message}`);
+          } else {
+            console.log('✅ Lead stage updated via fallback method');
           }
         }
       }

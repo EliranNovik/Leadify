@@ -529,37 +529,9 @@ const PublicContractView: React.FC = () => {
       return hasChanges ? merged : prev;
     });
     
-    // Now check which fields are incomplete - ONLY after we've identified applicant fields
-    // IMPORTANT: Only count fields that are actually in activeApplicantFields (for applicant fields)
-    textMatches.forEach(match => {
-      const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
-      if (!id) return;
-      
-      // Skip if field is already filled
-      if (clientFields[id]?.trim()) {
-        return;
-      }
-      
-      // Check if this is an applicant field
-      const isApplicantField = sortedApplicantIds.includes(id);
-      
-      // For applicant fields, only count them if they're in activeApplicantFields
-      // This ensures deleted fields are not counted
-      if (isApplicantField) {
-        // Check if this field is actually active (exists in activeApplicantFields)
-        // We'll check this after activeApplicantFields is updated, but for now use the sortedApplicantIds
-        // Since we're initializing activeApplicantFields from sortedApplicantIds, they should match
-        // But we need to ensure we're only counting fields that will actually be rendered
-        const isActiveField = activeApplicantFields.length === 0 || activeApplicantFields.includes(id);
-        if (isActiveField) {
-          incomplete.add(id);
-        } else {
-        }
-      } else {
-        // Non-applicant fields are required
-        incomplete.add(id);
-      }
-    });
+    // Text fields are NOT required - only date and signature fields are required
+    // Skip all text field validation - they are optional
+    
     // Date fields are ALWAYS required (never optional)
     // Also ensure date fields are NOT in applicantFieldIds
     dateMatches.forEach(match => {
@@ -580,53 +552,50 @@ const PublicContractView: React.FC = () => {
     
     signatureMatches.forEach(match => {
       const id = match.match(/\{\{signature:([^}]+)\}\}/)?.[1];
-      if (id && !clientSignature && !clientFields[id]) {
-        incomplete.add(id);
+      if (id) {
+        // Check if this specific signature field is filled
+        // First check clientFields[id] (field-specific), then clientSignature (global fallback)
+        const hasFieldSignature = !!(clientFields[id]);
+        const hasGlobalSignature = !!clientSignature;
+        
+        // If neither signature exists, mark as incomplete
+        if (!hasFieldSignature && !hasGlobalSignature) {
+          incomplete.add(id);
+        }
+        // Note: We don't explicitly delete here because the incomplete set is rebuilt each time
+        // If signature exists, it simply won't be added to incomplete
       }
     });
     
-    // IMPORTANT: Filter out any fields from incompleteFields that don't exist anymore
-    // This ensures deleted fields are removed from the count
-    const filteredIncomplete = new Set<string>();
-    incomplete.forEach(fieldId => {
-      // Check if this is an applicant field
-      const isApplicantField = sortedApplicantIds.includes(fieldId);
-      if (isApplicantField) {
-        // For applicant fields, only include if they're in activeApplicantFields
-        // If activeApplicantFields is empty, use sortedApplicantIds (initial state)
-        const activeFields = activeApplicantFields.length > 0 ? activeApplicantFields : sortedApplicantIds;
-        if (activeFields.includes(fieldId)) {
-          filteredIncomplete.add(fieldId);
-        } else {
-        }
-      } else {
-        // For non-applicant fields, include them (they always exist in template)
-        filteredIncomplete.add(fieldId);
-      }
-    });
+    // IMPORTANT: Since text fields are now optional, incomplete only contains date and signature fields
+    // No need for complex filtering - just use the incomplete set directly
+    // (Date and signature fields are always in the template, so no need to filter)
+    const filteredIncomplete = incomplete;
     
     const previousIncompleteCount = incompleteFields.size;
     setIncompleteFields(filteredIncomplete);
     
-    // If a field was just completed and we had a highlighted field, move to next
-    if (previousIncompleteCount > filteredIncomplete.size && highlightedFieldId && !filteredIncomplete.has(highlightedFieldId)) {
-      // Current field was completed, move to next
-      if (filteredIncomplete.size > 0) {
-        const nextIncomplete = Array.from(filteredIncomplete)[0];
-        setTimeout(() => {
-          setHighlightedFieldId(nextIncomplete);
-          scrollToField(nextIncomplete);
-        }, 300);
-      } else {
-        setHighlightedFieldId(null);
-      }
-    } else if (filteredIncomplete.size > 0 && !highlightedFieldId) {
-      // Auto-highlight first incomplete field on initial load
+    // Only auto-scroll on initial load, not when fields are completed
+    // This prevents unwanted scrolling when user is filling fields (especially signature pad)
+    if (filteredIncomplete.size > 0 && !highlightedFieldId && previousIncompleteCount === filteredIncomplete.size) {
+      // Auto-highlight first incomplete field on initial load only
+      // Check if previousIncompleteCount === filteredIncomplete.size to ensure this is initial load
+      // (not a field completion, which would change the count)
       const firstIncomplete = Array.from(filteredIncomplete)[0];
       setHighlightedFieldId(firstIncomplete);
       setTimeout(() => {
         scrollToField(firstIncomplete);
       }, 500);
+    } else if (previousIncompleteCount > filteredIncomplete.size && highlightedFieldId && !filteredIncomplete.has(highlightedFieldId)) {
+      // Field was completed - just update highlight, but DON'T auto-scroll
+      // This prevents scrolling when user is actively filling fields
+      if (filteredIncomplete.size > 0) {
+        const nextIncomplete = Array.from(filteredIncomplete)[0];
+        // Only update highlight, don't scroll
+        setHighlightedFieldId(nextIncomplete);
+      } else {
+        setHighlightedFieldId(null);
+      }
     }
   }, [template, clientFields, clientSignature, contract?.status, incompleteFields.size, highlightedFieldId]);
 
@@ -691,9 +660,27 @@ const PublicContractView: React.FC = () => {
   // Add a handler for submitting the contract (signing)
   const handleSubmitContract = async () => {
     if (!contract) return;
+    
+    // Validate that all required fields are filled before submitting
+    if (incompleteFields.size > 0) {
+      const incompleteArray = Array.from(incompleteFields);
+      const firstIncomplete = incompleteArray[0];
+      
+      // Scroll to the first incomplete field
+      scrollToField(firstIncomplete);
+      setHighlightedFieldId(firstIncomplete);
+      
+      // Show alert with specific message
+      const incompleteCount = incompleteFields.size;
+      alert(
+        `Please fill in all required fields before submitting.\n\n` +
+        `${incompleteCount} required field${incompleteCount > 1 ? 's' : ''} ${incompleteCount > 1 ? 'are' : 'is'} still missing.\n\n` +
+        `The first missing field has been highlighted for you.`
+      );
+      return;
+    }
+    
     setIsSubmitting(true);
-    // Scroll to top of page
-    window.scrollTo({ top: 0, behavior: 'smooth' });
     try {
       // Fill in client fields in the contract content
       const filledContent = fillClientFieldsInContent(contract.custom_content || template.content?.content);
@@ -713,10 +700,17 @@ const PublicContractView: React.FC = () => {
       if (updatedContract) {
         await handleContractSigned(updatedContract);
       }
+      
+      // Only scroll to top AFTER successful submission
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      
       setThankYou(true);
       setContract(updatedContract);
     } catch (err) {
+      console.error('Error submitting contract:', err);
       alert('Failed to submit contract. Please try again.');
+      // Don't set thankYou to true if there was an error
+      // Don't scroll to top if there was an error
     } finally {
       setIsSubmitting(false);
     }
@@ -2164,13 +2158,27 @@ const PublicContractView: React.FC = () => {
         
         {/* Submit Contract Button (only if not signed) */}
         {contract.status !== 'signed' && !thankYou && (
-          <button
-            className="btn btn-success btn-lg w-full mt-8 print-hide"
-            onClick={handleSubmitContract}
-            disabled={isSubmitting}
-          >
-            {isSubmitting ? 'Submitting...' : 'Submit Contract'}
-          </button>
+          <div className="mt-8">
+            <button
+              className={`btn btn-success btn-lg w-full print-hide ${
+                incompleteFields.size > 0 ? 'opacity-50 cursor-not-allowed' : ''
+              }`}
+              onClick={handleSubmitContract}
+              disabled={isSubmitting || incompleteFields.size > 0}
+              title={
+                incompleteFields.size > 0
+                  ? `Please fill in all ${incompleteFields.size} required field${incompleteFields.size > 1 ? 's' : ''} before submitting`
+                  : 'Submit contract'
+              }
+            >
+              {isSubmitting ? 'Submitting...' : 'Submit Contract'}
+            </button>
+            {incompleteFields.size > 0 && (
+              <p className="text-sm text-orange-600 mt-2 text-center">
+                {incompleteFields.size} required field{incompleteFields.size > 1 ? 's' : ''} still need{incompleteFields.size === 1 ? 's' : ''} to be filled
+              </p>
+            )}
+          </div>
         )}
       </div>
       
