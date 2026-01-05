@@ -7758,19 +7758,29 @@ const CollectionDueReport = () => {
       // Debug: Check for payments with due_by_id = 14 before filtering
       console.log('🔍 DEBUG Employee 14 - About to apply date filters to legacy payments query');
 
-      // Filter by 'date' column from finances_paymentplanrow for date range
-      if (filters.fromDate) {
-        const fromDateTime = `${filters.fromDate}T00:00:00`;
-        console.log('🔍 Collection Due Report - Filtering legacy payments by date column from:', fromDateTime);
-        legacyPaymentsQuery = legacyPaymentsQuery.gte('date', fromDateTime);
-      }
-      if (filters.toDate) {
-        const toDateTime = `${filters.toDate}T23:59:59`;
-        console.log('🔍 Collection Due Report - Filtering legacy payments by date column to:', toDateTime);
-        legacyPaymentsQuery = legacyPaymentsQuery.lte('date', toDateTime);
+      // DEBUG: Check ALL payments for lead 183061 BEFORE applying date filters
+      console.log('🔍 DEBUG Lead 183061 - Checking payments BEFORE date filters...');
+      const { data: beforeFilterCheck, error: beforeFilterError } = await supabase
+        .from('finances_paymentplanrow')
+        .select('id, lead_id, date, due_date, cancel_date, value, value_base')
+        .eq('lead_id', 183061)
+        .is('cancel_date', null)
+        .not('due_date', 'is', null)
+        .limit(20);
+      if (!beforeFilterError && beforeFilterCheck) {
+        console.log('🔍 DEBUG Lead 183061 - Payments BEFORE date filters:', beforeFilterCheck.length, beforeFilterCheck.map((p: any) => ({
+          id: p.id,
+          date: p.date,
+          due_date: p.due_date,
+          value: p.value,
+          value_base: p.value_base,
+          cancel_date: p.cancel_date
+        })));
       }
 
-      // Also filter by due_date to match the date range
+      // Filter by 'due_date' column for date range (this is what determines when payment is due)
+      // For legacy leads, only fetch payment rows if due_date is available (due_date means ready to pay)
+      // We already have .not('due_date', 'is', null) in the query, so we only get payments with due_date
       if (filters.fromDate) {
         const fromDateTime = `${filters.fromDate}T00:00:00`;
         console.log('🔍 Collection Due Report - Filtering legacy payments by due_date from:', fromDateTime);
@@ -7788,6 +7798,52 @@ const CollectionDueReport = () => {
         throw legacyError;
       }
       console.log('✅ Collection Due Report - Fetched legacy payments (due_date in range, ready_to_pay):', legacyPayments?.length || 0);
+      
+      // DEBUG: Check specifically for lead 183061
+      const paymentsFor183061 = legacyPayments?.filter((p: any) => 
+        p.lead_id?.toString() === '183061' || p.lead_id === 183061
+      ) || [];
+      console.log('🔍 DEBUG Lead 183061 - Payments found in query result (after due_date filter):', paymentsFor183061.length);
+      if (paymentsFor183061.length > 0) {
+        console.log('🔍 DEBUG Lead 183061 - Payment details:', paymentsFor183061.map((p: any) => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          date: p.date,
+          due_date: p.due_date,
+          value: p.value,
+          value_base: p.value_base,
+          cancel_date: p.cancel_date,
+          ready_to_pay: p.ready_to_pay,
+          actual_date: p.actual_date
+        })));
+      } else {
+        console.warn('⚠️ DEBUG Lead 183061 - NO payments found in query result! Checking if lead exists in database...');
+        // Query directly to see if payments exist and what their due_date values are
+        const { data: directCheck, error: directError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('id, lead_id, date, due_date, cancel_date, value, value_base, ready_to_pay, actual_date')
+          .eq('lead_id', 183061)
+          .is('cancel_date', null)
+          .not('due_date', 'is', null)
+          .limit(10);
+        if (directError) {
+          console.error('❌ DEBUG Lead 183061 - Error checking directly:', directError);
+        } else {
+          console.log('🔍 DEBUG Lead 183061 - Direct query result (all payments for this lead):', directCheck?.length || 0);
+          if (directCheck && directCheck.length > 0) {
+            console.log('🔍 DEBUG Lead 183061 - Payment details with due_date:', directCheck.map((p: any) => ({
+              id: p.id,
+              date: p.date,
+              due_date: p.due_date,
+              due_date_in_range: p.due_date && p.due_date >= `${filters.fromDate}T00:00:00` && p.due_date <= `${filters.toDate}T23:59:59`,
+              value: p.value,
+              value_base: p.value_base,
+              cancel_date: p.cancel_date,
+              actual_date: p.actual_date
+            })));
+          }
+        }
+      }
       
       // No need to filter again - we already filtered by due_date in the query
       const filteredLegacyPayments = legacyPayments || [];
@@ -8367,6 +8423,21 @@ const CollectionDueReport = () => {
         const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
         let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
         
+        // DEBUG: Check specifically for lead 183061
+        const isLead183061 = leadIdNum === 183061 || leadIdKey === '183061';
+        if (isLead183061) {
+          console.log('🔍 DEBUG Lead 183061 - Processing payment:', {
+            paymentId: payment.id,
+            lead_id: payment.lead_id,
+            leadIdKey,
+            leadIdNum,
+            leadFound: !!lead,
+            employeeType: filters.employeeType,
+            due_by_id: payment.due_by_id,
+            case_handler_id: lead?.case_handler_id
+          });
+        }
+        
         // Get handler - use case_handler_id or due_by_id based on filter selection
         let handlerId: number | null = null;
         let handlerName = '—';
@@ -8382,10 +8453,23 @@ const CollectionDueReport = () => {
               normalizedHandlerId: handlerId
             });
           }
+          if (isLead183061) {
+            console.log('🔍 DEBUG Lead 183061 - Using due_by_id mode, handlerId:', handlerId);
+          }
         } else {
           // Use case_handler_id from lead if "Case Handler" is selected (default)
           // If lead doesn't exist, we can't get case_handler_id, so skip this payment
           if (!lead) {
+            if (isLead183061) {
+              console.error('❌ DEBUG Lead 183061 - PAYMENT SKIPPED: Lead not found in legacyLeadsMap!', {
+                payment_lead_id: payment.lead_id,
+                payment_lead_id_type: typeof payment.lead_id,
+                leadIdKey,
+                leadIdNum,
+                available_keys_sample: Array.from(legacyLeadsMap.keys()).slice(0, 10),
+                note: 'Skipping payment because we need case_handler_id from lead and lead cannot be fetched'
+              });
+            }
             console.warn('⚠️ Collection Due Report - Legacy lead not found for payment (cannot get case_handler_id):', {
               payment_lead_id: payment.lead_id,
               payment_lead_id_type: typeof payment.lead_id,
@@ -8403,6 +8487,9 @@ const CollectionDueReport = () => {
               case_handler_id: lead?.case_handler_id,
               normalizedHandlerId: handlerId
             });
+          }
+          if (isLead183061) {
+            console.log('🔍 DEBUG Lead 183061 - Using case_handler_id mode, handlerId:', handlerId, 'from case_handler_id:', lead.case_handler_id);
           }
         }
         
@@ -8439,8 +8526,8 @@ const CollectionDueReport = () => {
         const departmentId = department?.id?.toString() || null;
         const departmentName = department?.name || mainCategory?.name || category?.name || '—';
 
-        // Use value_base for legacy payments as specified
-        const value = Number(payment.value_base || 0);
+        // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
+        const value = Number(payment.value || payment.value_base || 0);
         let vat = Number(payment.vat_value || 0);
         
         // Get currency from accounting_currencies relation (joined via currency_id)
@@ -8471,6 +8558,20 @@ const CollectionDueReport = () => {
         const amount = value + vat;
         const orderCode = normalizeOrderCode(payment.order);
 
+        // DEBUG: Check specifically for lead 183061 (reuse variable declared earlier in loop)
+        if (isLead183061) {
+          console.log('🔍 DEBUG Lead 183061 - Adding payment to payments array:', {
+            leadId: `legacy_${payment.lead_id}`,
+            amount,
+            value,
+            currency,
+            handlerId,
+            handlerName,
+            departmentId,
+            departmentName
+          });
+        }
+
         payments.push({
           leadId: `legacy_${payment.lead_id}`,
           leadType: 'legacy',
@@ -8484,6 +8585,16 @@ const CollectionDueReport = () => {
           orderCode,
         });
       });
+      
+      // DEBUG: Final check for lead 183061 in payments array
+      const finalPayments183061 = payments.filter(p => p.leadId?.includes('183061'));
+      console.log('🔍 DEBUG Lead 183061 - Final payments in array:', finalPayments183061.length, finalPayments183061.map(p => ({
+        leadId: p.leadId,
+        handlerId: p.handlerId,
+        handlerName: p.handlerName,
+        amount: p.amount,
+        value: p.value
+      })));
 
       // After processing all payments, check if we found any new handler IDs that weren't in our initial collection
       // This can happen if we fetched missing leads that had different handler IDs

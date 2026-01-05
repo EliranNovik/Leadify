@@ -1299,8 +1299,8 @@ const resolveLegacyLanguage = (lead: any) => {
         const balanceAmount = parseNumericAmount(lead.balance);
         const proposalAmount = parseNumericAmount(lead.proposal_total);
         const rawAmount = balanceAmount || proposalAmount || 0;
-        // EXCLUDE VAT: For NIS (currency_id = 1), divide by 1.18 to exclude VAT
-        const resolvedAmount = (lead.currency_id === 1 && rawAmount > 0) ? rawAmount / 1.18 : rawAmount;
+        // Use raw amount directly (VAT already excluded in database)
+        const resolvedAmount = rawAmount;
         const currencyMeta = buildCurrencyMeta(
           lead.currency_id,
           lead.proposal_currency,
@@ -1357,8 +1357,8 @@ const resolveLegacyLanguage = (lead: any) => {
         })
         .map(lead => {
           const amountRaw = parseNumericAmount(lead.total);
-          // EXCLUDE VAT: For NIS (currency_id = 1), divide by 1.18 to exclude VAT
-          const resolvedAmount = (lead.currency_id === 1 && amountRaw > 0) ? amountRaw / 1.18 : (amountRaw || 0);
+          // Use raw amount directly (VAT already excluded in database)
+          const resolvedAmount = amountRaw || 0;
           // Get sign date from stage 60 record (date)
           const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
           const currencyMeta = buildCurrencyMeta(
