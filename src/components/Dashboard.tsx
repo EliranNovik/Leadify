@@ -2225,6 +2225,36 @@ const Dashboard: React.FC = () => {
         // Sort by ID to ensure consistent order
         departmentTargets.sort((a, b) => a.id - b.id);
         const departmentIds = departmentTargets.map(dept => dept.id);
+        
+        // Fetch all categories with their main categories and department_ids for category name mapping
+        const { data: allCategoriesData, error: categoriesError } = await supabase
+          .from('misc_category')
+          .select(`
+            id,
+            name,
+            parent_id,
+            misc_maincategory!parent_id(
+              id,
+              name,
+              department_id,
+              tenant_departement(id, name)
+            )
+          `)
+          .order('name', { ascending: true });
+        
+        if (categoriesError) {
+          console.error('Error fetching categories for department mapping:', categoriesError);
+        }
+        
+        // Create a map from category name (normalized) to category data with department_id
+        const categoryNameToDataMap = new Map<string, any>();
+        (allCategoriesData || []).forEach((category: any) => {
+          if (category.name) {
+            const normalizedName = category.name.trim().toLowerCase();
+            categoryNameToDataMap.set(normalizedName, category);
+          }
+        });
+        
         // Log which departments are important
         const importantDepts = departmentTargets.filter(dept => dept.important === 't');
         // Debug: Log each department with its index
@@ -2425,7 +2455,7 @@ const Dashboard: React.FC = () => {
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, category,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2552,7 +2582,7 @@ const Dashboard: React.FC = () => {
           const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, category,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2654,24 +2684,14 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // EXCLUDE VAT: Use base amounts only (same as invoiced table)
+            // Use actual amounts (including VAT)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, use balance or proposal_total and exclude VAT for NIS
-              const rawAmount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-              if (lead.currency_id === 1 && rawAmount > 0) {
-                amount = rawAmount / 1.18; // Exclude VAT (divide by 1.18)
-              } else {
-                amount = rawAmount; // Non-NIS, no VAT
-              }
+              // For new leads, use balance or proposal_total (actual value with VAT included)
+              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, total includes VAT - exclude it for NIS
-              const legacyTotal = parseFloat(lead.total) || 0;
-              if (lead.currency_id === 1 && legacyTotal > 0) {
-                amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
-              } else {
-                amount = legacyTotal; // Non-NIS, no VAT
-              }
+              // For legacy leads, use total (actual value with VAT included)
+              amount = parseFloat(lead.total) || 0;
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
@@ -2685,6 +2705,13 @@ const Dashboard: React.FC = () => {
             let departmentId = null;
             if (lead.misc_category?.misc_maincategory?.department_id) {
               departmentId = lead.misc_category.misc_maincategory.department_id;
+            } else if (lead.category && categoryNameToDataMap) {
+              // If misc_category join failed (category_id is null), try to look up by category name
+              const normalizedCategoryName = lead.category.trim().toLowerCase();
+              const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
+              if (mappedCategory?.misc_maincategory?.department_id) {
+                departmentId = mappedCategory.misc_maincategory.department_id;
+              }
             }
             if (departmentId && departmentIds.includes(departmentId)) {
               processedCount++;
@@ -2759,24 +2786,14 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // EXCLUDE VAT: Use base amounts only (same as invoiced table)
+            // Use actual amounts (including VAT)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, use balance or proposal_total and exclude VAT for NIS
-              const rawAmount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-              if (lead.currency_id === 1 && rawAmount > 0) {
-                amount = rawAmount / 1.18; // Exclude VAT (divide by 1.18)
-              } else {
-                amount = rawAmount; // Non-NIS, no VAT
-              }
+              // For new leads, use balance or proposal_total (actual value with VAT included)
+              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, total includes VAT - exclude it for NIS
-              const legacyTotal = parseFloat(lead.total) || 0;
-              if (lead.currency_id === 1 && legacyTotal > 0) {
-                amount = legacyTotal / 1.18; // Exclude VAT (divide by 1.18)
-              } else {
-                amount = legacyTotal; // Non-NIS, no VAT
-              }
+              // For legacy leads, use total (actual value with VAT included)
+              amount = parseFloat(lead.total) || 0;
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
@@ -2785,6 +2802,13 @@ const Dashboard: React.FC = () => {
             let departmentId = null;
             if (lead.misc_category?.misc_maincategory?.department_id) {
               departmentId = lead.misc_category.misc_maincategory.department_id;
+            } else if (lead.category && categoryNameToDataMap) {
+              // If misc_category join failed (category_id is null), try to look up by category name
+              const normalizedCategoryName = lead.category.trim().toLowerCase();
+              const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
+              if (mappedCategory?.misc_maincategory?.department_id) {
+                departmentId = mappedCategory.misc_maincategory.department_id;
+              }
             }
             if (departmentId && departmentIds.includes(departmentId)) {
               monthProcessedCount++;
@@ -3087,6 +3111,35 @@ const Dashboard: React.FC = () => {
       });
       const departmentIds = departmentTargets.map(dept => dept.id);
       
+      // Fetch all categories with their main categories and department_ids for category name mapping
+      const { data: allCategoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
+          id,
+          name,
+          parent_id,
+          misc_maincategory!parent_id(
+            id,
+            name,
+            department_id,
+            tenant_departement(id, name)
+          )
+        `)
+        .order('name', { ascending: true });
+      
+      if (categoriesError) {
+        console.error('Error fetching categories for invoiced department mapping:', categoriesError);
+      }
+      
+      // Create a map from category name (normalized) to category data with department_id
+      const categoryNameToDataMap = new Map<string, any>();
+      (allCategoriesData || []).forEach((category: any) => {
+        if (category.name) {
+          const normalizedName = category.name.trim().toLowerCase();
+          categoryNameToDataMap.set(normalizedName, category);
+        }
+      });
+      
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
       departmentTargets.forEach(dept => {
@@ -3295,7 +3348,7 @@ const Dashboard: React.FC = () => {
       console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
       console.log('📊 Invoiced Data - Unique legacy lead IDs:', legacyLeadIds.length);
       
-      // Fetch lead metadata with handler info (to get employee department, matching CollectionDueReport)
+      // Fetch lead metadata with handler info and category (to get department from category, matching Agreement Signed)
       let newLeadsMap = new Map();
       if (newLeadIds.length > 0) {
         console.log('🔍 Invoiced Data - Fetching new leads metadata...');
@@ -3303,7 +3356,15 @@ const Dashboard: React.FC = () => {
           .from('leads')
           .select(`
             id,
-            handler
+            handler,
+            category,
+            misc_category!category_id(
+              id, name, parent_id,
+              misc_maincategory!parent_id(
+                id, name, department_id,
+                tenant_departement(id, name)
+              )
+            )
           `)
           .in('id', newLeadIds);
 
@@ -3534,24 +3595,20 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Get handlerId from lead's handler field (EXACTLY matching CollectionDueReport)
-        let handlerId: number | null = null;
-        if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
-          handlerId = handlerNameToIdMap.get(lead.handler.trim()) || null;
+        // Get department ID from the category (matching Agreement Signed table logic)
+        let departmentId = null;
+        if (lead.misc_category?.misc_maincategory?.department_id) {
+          departmentId = lead.misc_category.misc_maincategory.department_id;
+        } else if (lead.category && categoryNameToDataMap) {
+          // If misc_category join failed (category_id is null), try to look up by category name
+          const normalizedCategoryName = lead.category.trim().toLowerCase();
+          const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
+          if (mappedCategory?.misc_maincategory?.department_id) {
+            departmentId = mappedCategory.misc_maincategory.department_id;
+          }
         }
-        
-        // Get department NAME from employee's department (EXACTLY matching CollectionDueReport - uses department NAME, not ID)
-        const employeeDepartmentName = handlerId !== null 
-          ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
-          : '—';
-        
-        // Normalize the department name (remove " - Sales" suffix) and map to consolidated department ID
-        const normalizedDeptName = normalizeDepartmentName(employeeDepartmentName);
-        const departmentId = allDepartmentNamesToIdMap.get(employeeDepartmentName) || 
-                            allDepartmentNamesToIdMap.get(normalizedDeptName) || 
-                            null;
 
-        // Only include payments that have a department in our department list (or '—' which we'll skip)
+        // Only include payments that have a department in our department list
         if (!departmentId || !departmentIds.includes(departmentId)) {
           newPaymentsSkipped++;
           return;
@@ -3559,10 +3616,14 @@ const Dashboard: React.FC = () => {
         
         newPaymentsProcessed++;
 
-        // Exclude VAT - use value only (without VAT), same as CollectionDueReport
+        // Use value + value_vat for total amount from payment_plans table (matching CollectionDueReport logic)
         const value = Number(payment.value || 0);
-        // Don't calculate VAT - we exclude it from invoiced data
-        const amountInNIS = convertToNIS(value, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
+        let vat = Number(payment.value_vat || 0);
+        if (!vat && (payment.currency || '₪') === '₪') {
+          vat = Math.round(value * 0.18 * 100) / 100;
+        }
+        const amount = value + vat;
+        const amountInNIS = convertToNIS(amount, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
 
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
         if (!dueDate) return;

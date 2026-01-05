@@ -401,6 +401,8 @@ const SignedSalesReportPage: React.FC = () => {
   const [employees, setEmployees] = useState<EmployeeOption[]>([]);
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [languageOptions, setLanguageOptions] = useState<string[]>([]);
+  const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
+  const [categoryNameToIdMap, setCategoryNameToIdMap] = useState<Map<string, number>>(new Map());
   const [rows, setRows] = usePersistedFilters<SignedLeadRow[]>('signedSalesReport_results', [], {
     storage: 'sessionStorage',
   });
@@ -795,6 +797,16 @@ const SignedSalesReportPage: React.FC = () => {
         }
 
         if (!categoriesResult.error && categoriesResult.data) {
+          // Create a map from category name (normalized) to category data (including main category)
+          const nameToDataMap = new Map<string, any>();
+          categoriesResult.data.forEach((category: any) => {
+            if (category.name) {
+              const normalizedName = category.name.trim().toLowerCase();
+              nameToDataMap.set(normalizedName, category);
+            }
+          });
+          setCategoryNameToDataMap(nameToDataMap);
+          
           const formattedCategories = categoriesResult.data.map((category: any) => {
             const mainName = Array.isArray(category.misc_maincategory)
               ? category.misc_maincategory[0]?.name
@@ -932,26 +944,73 @@ const SignedSalesReportPage: React.FC = () => {
 const resolveCategoryName = (
   categoryValue?: string | null,
   categoryId?: string | number | null,
-  miscCategory?: any
+  miscCategory?: any,
+  categoryNameToDataMap?: Map<string, any>
 ) => {
-  const categoryRecord = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
-  const mainCategory = Array.isArray(categoryRecord?.misc_maincategory)
+  // If we have categoryValue but no miscCategory, try to look it up in the map
+  let resolvedMiscCategory = miscCategory;
+  if (!miscCategory && categoryValue && categoryValue.trim() !== '' && categoryNameToDataMap) {
+    const normalizedName = categoryValue.trim().toLowerCase();
+    const mappedCategory = categoryNameToDataMap.get(normalizedName);
+    if (mappedCategory) {
+      resolvedMiscCategory = mappedCategory;
+    }
+  }
+  
+  // Handle null/undefined
+  if (!resolvedMiscCategory) {
+    if (categoryValue && categoryValue.trim() !== '') return categoryValue;
+    if (categoryId !== null && categoryId !== undefined) return `Category ${categoryId}`;
+    return 'Uncategorized';
+  }
+
+  // Handle array case (shouldn't happen, but be safe)
+  const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
+  if (!categoryRecord) {
+    if (categoryValue && categoryValue.trim() !== '') return categoryValue;
+    if (categoryId !== null && categoryId !== undefined) return `Category ${categoryId}`;
+    return 'Uncategorized';
+  }
+
+  // Extract main category (handle both array and object cases)
+  let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
     ? categoryRecord.misc_maincategory[0]
-    : categoryRecord?.misc_maincategory;
+    : categoryRecord.misc_maincategory;
 
   const mainName = mainCategory?.name?.toString().trim();
   const subName = categoryRecord?.name?.toString().trim();
 
-  if (mainName && subName) return `${mainName} › ${subName}`;
-  if (mainName) return mainName;
-  if (subName) return subName;
+  // Debug logging for missing main categories (can be removed after debugging)
+  if (subName && !mainName && categoryId) {
+    console.warn('Category missing main category:', {
+      categoryId,
+      subName,
+      categoryRecord,
+      hasParentId: !!categoryRecord.parent_id,
+      miscMaincategory: categoryRecord.misc_maincategory
+    });
+  }
+
+  // Always show both if we have them
+  if (mainName && subName) {
+    return `${mainName} › ${subName}`;
+  }
+  // If we only have subName, return it (this is the case where join failed or category has no parent)
+  if (subName) {
+    return subName;
+  }
+  // If we only have mainName (unusual case), return it
+  if (mainName) {
+    return mainName;
+  }
+  // Fallback to categoryValue or categoryId
   if (categoryValue && categoryValue.trim() !== '') return categoryValue;
   if (categoryId !== null && categoryId !== undefined) return `Category ${categoryId}`;
   return 'Uncategorized';
 };
 
-const resolveLegacyCategory = (lead: any) =>
-  resolveCategoryName(lead?.category, lead?.category_id, lead?.misc_category);
+const resolveLegacyCategory = (lead: any, categoryNameToDataMap?: Map<string, any>) =>
+  resolveCategoryName(lead?.category, lead?.category_id, lead?.misc_category, categoryNameToDataMap);
 
 const resolveLegacyLanguage = (lead: any) => {
   const languageRecord = Array.isArray(lead?.misc_language)
@@ -1142,6 +1201,24 @@ const resolveLegacyLanguage = (lead: any) => {
 
         newLeads = newLeadsResponse || [];
         console.log(`✅ Loaded ${newLeads.length} new leads`);
+        
+        // Debug: Check category data structure for new leads
+        if (newLeads.length > 0) {
+          const sampleLead = newLeads[0];
+          console.log('🔍 DEBUG New Lead Category Structure:', {
+            leadId: sampleLead.id,
+            leadNumber: sampleLead.lead_number,
+            categoryId: sampleLead.category_id,
+            categoryValue: sampleLead.category,
+            hasMiscCategory: !!sampleLead.misc_category,
+            miscCategory: sampleLead.misc_category,
+            miscCategoryType: typeof sampleLead.misc_category,
+            isArray: Array.isArray(sampleLead.misc_category),
+            miscCategoryKeys: sampleLead.misc_category ? Object.keys(sampleLead.misc_category) : null,
+            miscMaincategory: sampleLead.misc_category?.misc_maincategory,
+            resolvedCategory: resolveCategoryName(sampleLead.category, sampleLead.category_id, sampleLead.misc_category, categoryNameToDataMap)
+          });
+        }
       }
 
       // Fetch legacy leads data (only active leads: status = 0)
@@ -1327,7 +1404,7 @@ const resolveLegacyLanguage = (lead: any) => {
             : String(lead.id),
           leadName: lead.name || 'Unnamed Lead',
           createdDate: lead.created_at || null,
-          category: resolveCategoryName(lead.category, lead.category_id, lead.misc_category),
+          category: resolveCategoryName(lead.category, lead.category_id, lead.misc_category, categoryNameToDataMap),
           stage: formatStageLabel(lead.stage),
           signDate,
           scheduler: schedulerDisplay,
@@ -1350,7 +1427,7 @@ const resolveLegacyLanguage = (lead: any) => {
       const legacyLeads = (legacyLeadsData || []).filter(lead => matchesEmployeeFilterLegacyLead(lead, employeeFilterName));
 
       const legacyLeadRows: SignedLeadRow[] = legacyLeads
-        .filter(lead => matchesCategoryFilter(resolveLegacyCategory(lead)))
+        .filter(lead => matchesCategoryFilter(resolveLegacyCategory(lead, categoryNameToDataMap)))
         .filter(lead => {
           const languageName = resolveLegacyLanguage(lead);
           return matchesLanguageFilter(languageName);
@@ -1392,7 +1469,7 @@ const resolveLegacyLanguage = (lead: any) => {
             leadIdentifier: String(lead.id),
             leadName: lead.name || 'Unnamed Lead',
             createdDate: lead.cdate || null,
-            category: resolveLegacyCategory(lead),
+            category: resolveLegacyCategory(lead, categoryNameToDataMap),
             stage: formatStageLabel(lead.stage ? String(lead.stage) : 'Client signed agreement'),
             signDate,
             scheduler: schedulerName,
