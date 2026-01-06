@@ -1901,7 +1901,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
             >
               <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
                 {/* Header with gradient background */}
-                <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600">
+                <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600 flex-shrink-0">
                   <div className="flex items-center justify-between">
                     <div className="flex items-center gap-3">
                       <FaWhatsapp className="w-6 h-6 text-white" />
@@ -1918,8 +1918,8 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                 </div>
                 
                 {/* Content */}
-                <div className="p-6">
-                  <div className="mb-5 flex gap-3">
+                <div className="p-6 flex flex-col flex-1 min-h-0 overflow-hidden">
+                  <div className="mb-5 flex gap-3 flex-shrink-0">
                     <input
                       type="text"
                       placeholder="Search templates..."
@@ -1943,7 +1943,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     </select>
                   </div>
                   
-                  <div className="flex-1 overflow-y-auto space-y-3" style={{ maxHeight: 'calc(100vh - 350px)' }}>
+                  <div className="flex-1 overflow-y-auto space-y-3 min-h-0" style={{ paddingBottom: '8px' }}>
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
                         <div className="loading loading-spinner loading-sm"></div>
