@@ -13,7 +13,9 @@ import {
   ClockIcon,
   CheckCircleIcon,
   MagnifyingGlassIcon,
-  XCircleIcon
+  XCircleIcon,
+  SparklesIcon,
+  ArrowPathIcon
 } from '@heroicons/react/24/outline';
 import { FolderIcon } from '@heroicons/react/24/solid';
 import { supabase } from '../../lib/supabase';
@@ -623,6 +625,556 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [sectionEligibilityLastEditedBy, setSectionEligibilityLastEditedBy] = useState<string | null>(null);
   const [sectionEligibilityLastEditedAt, setSectionEligibilityLastEditedAt] = useState<string | null>(null);
 
+  // AI Summary state - MUST be declared before useEffect hooks that use them
+  const [showAISummary, setShowAISummary] = useState(false);
+  const [aiSummary, setAiSummary] = useState<string>('');
+  const [savedAiSummary, setSavedAiSummary] = useState<string>('');
+  const [isGeneratingSummary, setIsGeneratingSummary] = useState(false);
+  const [useSavedSummary, setUseSavedSummary] = useState(false);
+
+  // Helper function to create a formatted summary when AI is unavailable
+  const createFormattedSummary = (text: string): string => {
+    const lines = text.split('\n').filter(line => line.trim());
+    let summary = `📋 Lead Summary for ${client.name || 'Client'}\n`;
+    if (client.lead_number) {
+      summary += `Lead #${client.lead_number}\n`;
+    }
+    summary += `${'='.repeat(50)}\n\n`;
+    
+    // Parse and format the sections
+    const sections: { [key: string]: string[] } = {};
+    let currentSection = '';
+    
+    lines.forEach(line => {
+      if (line.includes('Special Notes:') || line.includes('General Notes:') || 
+          line.includes('Facts of Case:') || line.includes('Manager Notes:')) {
+        currentSection = line.replace(':', '').trim();
+        sections[currentSection] = [];
+      } else if (currentSection && line.trim() && !line.includes('No ')) {
+        sections[currentSection].push(line.trim());
+      }
+    });
+    
+    Object.entries(sections).forEach(([section, content]) => {
+      if (content.length > 0) {
+        summary += `\n${section}:\n`;
+        content.forEach(item => {
+          summary += `  • ${item}\n`;
+        });
+      }
+    });
+    
+    return summary;
+  };
+
+  // Function to generate AI summary
+  const generateAISummary = async () => {
+    setIsGeneratingSummary(true);
+    setAiSummary('');
+    
+    try {
+      // Debug: Log individual field data
+      console.log('🔍 [AI Summary Debug] Field Data:', {
+        specialNotes: {
+          length: summaryData.specialNotes?.length || 0,
+          preview: summaryData.specialNotes?.substring(0, 100) || 'empty',
+          isEmpty: !summaryData.specialNotes || summaryData.specialNotes.trim().length === 0
+        },
+        generalNotes: {
+          length: summaryData.generalNotes?.length || 0,
+          preview: summaryData.generalNotes?.substring(0, 100) || 'empty',
+          isEmpty: !summaryData.generalNotes || summaryData.generalNotes.trim().length === 0
+        },
+        facts: {
+          length: summaryData.facts?.length || 0,
+          preview: summaryData.facts?.substring(0, 100) || 'empty',
+          isEmpty: !summaryData.facts || summaryData.facts.trim().length === 0
+        },
+        managerNotes: {
+          length: summaryData.managerNotes?.length || 0,
+          preview: summaryData.managerNotes?.substring(0, 100) || 'empty',
+          isEmpty: !summaryData.managerNotes || summaryData.managerNotes.trim().length === 0
+        }
+      });
+
+      // Combine all the summary fields
+      const combinedText = `
+Special Notes:
+${summaryData.specialNotes || 'No special notes'}
+
+General Notes:
+${summaryData.generalNotes || 'No general notes'}
+
+Facts of Case:
+${summaryData.facts || 'No facts available'}
+
+Manager Notes:
+${summaryData.managerNotes || 'No manager notes'}
+      `.trim();
+
+      // Debug: Log combined text info
+      const combinedLength = combinedText.length;
+      const nonEmptyLength = combinedText.replace(/No (special notes|general notes|facts available|manager notes)/g, '').trim().length;
+      
+      console.log('🔍 [AI Summary Debug] Combined Text:', {
+        totalLength: combinedLength,
+        nonEmptyLength: nonEmptyLength,
+        preview: combinedText.substring(0, 200),
+        hasContent: nonEmptyLength > 0,
+        estimatedTokens: Math.ceil(combinedLength / 4) // Rough estimate: 1 token ≈ 4 characters
+      });
+
+      if (!combinedText || nonEmptyLength === 0) {
+        console.warn('⚠️ [AI Summary Debug] No content available to summarize');
+        toast.error('No content available to summarize');
+        setIsGeneratingSummary(false);
+        return;
+      }
+
+      // Warn if content is very long (might cause issues)
+      if (combinedLength > 10000) {
+        console.warn('⚠️ [AI Summary Debug] Content is very long:', combinedLength, 'characters. This might cause rate limiting.');
+      }
+
+      // Try to use Supabase function first
+      try {
+        const requestBody = {
+          content: combinedText,
+          leadNumber: client.lead_number,
+          clientName: client.name
+        };
+        
+        console.log('🔍 [AI Summary Debug] Calling Supabase function with:', {
+          contentLength: combinedText.length,
+          leadNumber: client.lead_number,
+          clientName: client.name,
+          estimatedTokens: Math.ceil(combinedText.length / 4)
+        });
+
+        const { data, error } = await supabase.functions.invoke('ai-lead-summary', {
+          body: requestBody
+        });
+
+        console.log('🔍 [AI Summary Debug] Supabase function response:', {
+          hasError: !!error,
+          error: error ? {
+            message: error.message,
+            code: (error as any).code,
+            details: error
+          } : null,
+          hasData: !!data,
+          dataKeys: data ? Object.keys(data) : [],
+          summaryLength: data?.summary?.length || 0
+        });
+
+        if (!error && data?.summary) {
+          console.log('✅ [AI Summary Debug] Successfully received AI summary');
+          const generatedSummary = data.summary;
+          setAiSummary(generatedSummary);
+          setShowAISummary(true);
+          setIsGeneratingSummary(false);
+          // Save to database
+          await saveAiSummaryToDatabase(generatedSummary);
+          return;
+        }
+        
+        // If there's an error from the function, check if it's a rate limit or quota
+        if (error) {
+          const errorMessage = error.message || '';
+          const errorCode = (error as any).code || '';
+          
+          console.error('❌ [AI Summary Debug] Supabase function error:', {
+            message: errorMessage,
+            code: errorCode,
+            fullError: error
+          });
+          
+          // Check for quota errors
+          if (errorMessage.includes('quota') || errorMessage.includes('billing') || errorCode === 'QUOTA_EXCEEDED') {
+            console.warn('⚠️ [AI Summary Debug] Quota exceeded detected from Supabase function');
+            toast.error('AI service quota exceeded. Showing formatted summary instead.');
+            const fallbackSummary = createFormattedSummary(combinedText);
+            setAiSummary(fallbackSummary);
+            setShowAISummary(true);
+            setIsGeneratingSummary(false);
+            return;
+          }
+          
+          // Check for rate limit errors
+          if (errorMessage.includes('429') || errorMessage.includes('rate limit') || errorCode === 'RATE_LIMIT') {
+            console.warn('⚠️ [AI Summary Debug] Rate limit detected from Supabase function');
+            toast.error('AI service rate limit reached. Showing formatted summary instead.');
+            // Show fallback formatted summary
+            const fallbackSummary = createFormattedSummary(combinedText);
+            setAiSummary(fallbackSummary);
+            setShowAISummary(true);
+            setIsGeneratingSummary(false);
+            return;
+          }
+        }
+        
+        // If function returned an error response with status 429
+        if (data?.code === 'QUOTA_EXCEEDED') {
+          console.warn('⚠️ [AI Summary Debug] Quota exceeded in response data');
+          toast.error('AI service quota exceeded. Showing formatted summary instead.');
+          const fallbackSummary = createFormattedSummary(combinedText);
+          setAiSummary(fallbackSummary);
+          setShowAISummary(true);
+          setIsGeneratingSummary(false);
+          return;
+        }
+        
+        if (data?.code === 'RATE_LIMIT' || data?.status === 429) {
+          console.warn('⚠️ [AI Summary Debug] Rate limit in response data');
+          toast.error('AI service rate limit reached. Showing formatted summary instead.');
+          const fallbackSummary = createFormattedSummary(combinedText);
+          setAiSummary(fallbackSummary);
+          setShowAISummary(true);
+          setIsGeneratingSummary(false);
+          return;
+        }
+      } catch (functionError: any) {
+        console.error('❌ [AI Summary Debug] Supabase function exception:', {
+          message: functionError.message,
+          stack: functionError.stack,
+          fullError: functionError
+        });
+        // Continue to fallback methods
+      }
+
+      // Fallback: Direct OpenAI call (if API key is available in env)
+      const OPENAI_API_KEY = import.meta.env.VITE_OPENAI_API_KEY;
+      if (OPENAI_API_KEY) {
+        const prompt = `You are a professional legal CRM assistant. Create a comprehensive, unified summary of the following lead information.
+
+IMPORTANT FORMATTING REQUIREMENTS:
+- Write in clean, plain text with paragraphs
+- Do NOT use markdown formatting (no **, no *, no #, no -)
+- Do NOT use bullet points or lists in the main summary
+- Do NOT separate information by field names (no "Special Notes:", "General Notes:", etc.)
+- Combine all information into one flowing, natural narrative
+- Use paragraph breaks (double line breaks) to separate different topics naturally
+- Write as a cohesive story that weaves together all the information
+- Be clear, professional, and organized
+
+STRUCTURE:
+1. First, write a unified summary that combines all the information (special notes, general notes, facts, manager notes) into one flowing narrative. Do not mention field names - just naturally incorporate all the information.
+
+2. At the end, add a section titled "Actionable Insights:" followed by specific recommendations. This section can use bullet points or numbered items for clarity.
+
+Lead Information:
+${combinedText}`;
+
+        const requestBody = {
+          model: 'gpt-3.5-turbo',
+            messages: [
+              { role: 'system', content: 'You are an expert legal CRM assistant. Create clear, concise summaries. Always write in clean, plain text paragraphs without any markdown formatting, bullet points, or special characters.' },
+              { role: 'user', content: prompt }
+            ],
+          max_tokens: 500,
+          temperature: 0.4,
+        };
+
+        console.log('🔍 [AI Summary Debug] Calling OpenAI directly:', {
+          promptLength: prompt.length,
+          estimatedPromptTokens: Math.ceil(prompt.length / 4),
+          maxTokens: requestBody.max_tokens,
+          model: requestBody.model
+        });
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${OPENAI_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(requestBody),
+        });
+
+        console.log('🔍 [AI Summary Debug] OpenAI response status:', response.status, response.statusText);
+
+        if (!response.ok) {
+          const errorData = await response.json().catch(() => ({}));
+          const errorMessage = errorData.error?.message || `HTTP ${response.status}`;
+          const errorType = errorData.error?.type || '';
+          const errorCode = errorData.error?.code || '';
+          
+          console.error('❌ [AI Summary Debug] OpenAI API error:', {
+            status: response.status,
+            statusText: response.statusText,
+            errorMessage: errorMessage,
+            errorType: errorType,
+            errorCode: errorCode,
+            errorData: errorData,
+            rateLimitInfo: errorData.error?.type === 'rate_limit_error' ? {
+              retryAfter: response.headers.get('retry-after'),
+              limit: errorData.error?.limit,
+              remaining: errorData.error?.remaining
+            } : null,
+            quotaInfo: errorMessage.includes('quota') || errorMessage.includes('billing') ? {
+              isQuotaError: true,
+              message: errorMessage
+            } : null
+          });
+          
+          // Handle quota/billing errors specifically
+          if (response.status === 429) {
+            const isQuotaError = errorMessage.toLowerCase().includes('quota') || 
+                                 errorMessage.toLowerCase().includes('billing') ||
+                                 errorMessage.toLowerCase().includes('exceeded');
+            
+            if (isQuotaError) {
+              console.warn('⚠️ [AI Summary Debug] Quota/billing limit exceeded');
+              toast.error('AI service quota exceeded. Please check billing or use the individual fields view. Showing formatted summary instead.');
+              // Show fallback formatted summary
+              const fallbackSummary = createFormattedSummary(combinedText);
+              setAiSummary(fallbackSummary);
+              setShowAISummary(true);
+              setIsGeneratingSummary(false);
+              return;
+            }
+            
+            // Regular rate limit (not quota)
+            const retryAfter = response.headers.get('retry-after');
+            console.warn('⚠️ [AI Summary Debug] Rate limit hit. Retry after:', retryAfter, 'seconds');
+            toast.error(`AI service is currently busy. Please wait a moment and try again, or use the individual fields view.${retryAfter ? ` (Retry after ${retryAfter}s)` : ''}`);
+            setIsGeneratingSummary(false);
+            return;
+          }
+          
+          throw new Error(`OpenAI API error: ${response.status} - ${errorMessage}`);
+        }
+
+        const data = await response.json();
+        let summary = data.choices?.[0]?.message?.content || 'Unable to generate summary';
+        
+        // Clean up any markdown formatting that might have slipped through
+        // But preserve bullet points in the "Actionable Insights" section
+        const actionableInsightsMatch = summary.match(/Actionable Insights:[\s\S]*$/i);
+        const mainSummary = actionableInsightsMatch ? summary.substring(0, summary.indexOf('Actionable Insights:')) : summary;
+        const actionableInsights = actionableInsightsMatch ? actionableInsightsMatch[0] : '';
+        
+        // Clean main summary (no markdown, no bullets)
+        let cleanedMain = mainSummary
+          .replace(/\*\*/g, '') // Remove bold markdown
+          .replace(/\*/g, '') // Remove italic markdown
+          .replace(/#{1,6}\s+/g, '') // Remove headers
+          .replace(/^[-*+]\s+/gm, '') // Remove bullet points at start of lines
+          .replace(/^\d+\.\s+/gm, '') // Remove numbered lists
+          .replace(/\n{3,}/g, '\n\n') // Normalize multiple line breaks to double
+          .trim();
+        
+        // Clean actionable insights (allow bullets but remove markdown)
+        let cleanedInsights = actionableInsights
+          .replace(/\*\*/g, '') // Remove bold markdown
+          .replace(/\*/g, '') // Remove italic markdown (but keep * for bullets if needed)
+          .replace(/#{1,6}\s+/g, '') // Remove headers
+          .replace(/\n{3,}/g, '\n\n') // Normalize multiple line breaks
+          .trim();
+        
+        // Recombine
+        summary = cleanedMain + (cleanedInsights ? '\n\n' + cleanedInsights : '');
+        
+        console.log('✅ [AI Summary Debug] Successfully received OpenAI summary:', {
+          summaryLength: summary.length,
+          tokensUsed: data.usage?.total_tokens || 'unknown'
+        });
+        setAiSummary(summary);
+        setShowAISummary(true);
+        // Save to database
+        await saveAiSummaryToDatabase(summary);
+      } else {
+        // If no API key, show a simple formatted summary
+        const simpleSummary = `Lead Summary for ${client.name || 'Client'}:\n\n${combinedText}`;
+        setAiSummary(simpleSummary);
+        setShowAISummary(true);
+      }
+    } catch (error: any) {
+      console.error('❌ [AI Summary Debug] Final error catch:', {
+        message: error.message,
+        stack: error.stack,
+        name: error.name,
+        fullError: error
+      });
+      
+      // If API fails, show a formatted fallback summary
+      if (error.message?.includes('429') || error.message?.includes('rate limit')) {
+        console.warn('⚠️ [AI Summary Debug] Rate limit in final catch');
+        toast.error('AI service rate limit reached. Showing formatted summary instead.');
+      } else {
+        console.warn('⚠️ [AI Summary Debug] Other error, showing fallback');
+        toast.error('AI summary unavailable. Showing formatted summary instead.');
+      }
+      
+      // Fallback: Create a formatted summary
+      const fallbackSummary = createFormattedSummary(combinedText);
+      console.log('📋 [AI Summary Debug] Using fallback formatted summary');
+      setAiSummary(fallbackSummary);
+      setShowAISummary(true);
+    } finally {
+      setIsGeneratingSummary(false);
+    }
+  };
+
+  // Function to fetch saved AI summary from database
+  const fetchSavedAiSummary = async () => {
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    
+    // First check if client object already has the summary
+    const aiSummaryFromClient = (client as any).ai_summary;
+    if (aiSummaryFromClient) {
+      setSavedAiSummary(aiSummaryFromClient);
+      console.log('✅ [AI Summary] Loaded saved summary from client object');
+      return;
+    }
+    
+    try {
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const { data, error } = await supabase
+          .from('leads_lead')
+          .select('ai_summary')
+          .eq('id', legacyId)
+          .single();
+        
+        if (!error && data?.ai_summary) {
+          setSavedAiSummary(data.ai_summary);
+          console.log('✅ [AI Summary] Loaded saved summary from database (legacy)');
+        }
+      } else {
+        const { data, error } = await supabase
+          .from('leads')
+          .select('ai_summary')
+          .eq('id', client.id)
+          .single();
+        
+        if (!error && data?.ai_summary) {
+          setSavedAiSummary(data.ai_summary);
+          console.log('✅ [AI Summary] Loaded saved summary from database (new lead)');
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching saved AI summary:', error);
+    }
+  };
+
+  // Function to save AI summary to database
+  const saveAiSummaryToDatabase = async (summary: string) => {
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    
+    try {
+      if (isLegacyLead) {
+        const legacyId = client.id.toString().replace('legacy_', '');
+        const { error } = await supabase
+          .from('leads_lead')
+          .update({ ai_summary: summary })
+          .eq('id', legacyId);
+        
+        if (error) {
+          console.error('Error saving AI summary (legacy):', error);
+          throw error;
+        }
+        console.log('✅ [AI Summary] Saved summary to database (legacy)');
+      } else {
+        const { error } = await supabase
+          .from('leads')
+          .update({ ai_summary: summary })
+          .eq('id', client.id);
+        
+        if (error) {
+          console.error('Error saving AI summary (new lead):', error);
+          throw error;
+        }
+        console.log('✅ [AI Summary] Saved summary to database (new lead)');
+      }
+      
+      // Update saved summary state
+      setSavedAiSummary(summary);
+      
+      // Refresh client data
+      if (onClientUpdate) {
+        await onClientUpdate();
+      }
+    } catch (error) {
+      console.error('Error saving AI summary to database:', error);
+      toast.error('Failed to save AI summary to database');
+    }
+  };
+
+  // Function to fetch summary data
+  const fetchSummaryData = async () => {
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    
+    try {
+      if (isLegacyLead) {
+        // For legacy leads, try to use client data first, then fetch from database
+        const specialNotes = (client as any).special_notes || '';
+        const notes = (client as any).notes || '';
+        const description = (client as any).description || '';
+        const managementNotes = (client as any).management_notes || '';
+        
+        // If we have all data from client, use it; otherwise fetch from database
+        if (specialNotes || notes || description || managementNotes) {
+          setSummaryData({
+            specialNotes: formatNoteText(specialNotes),
+            generalNotes: formatNoteText(notes),
+            facts: formatNoteText(description),
+            managerNotes: formatNoteText(managementNotes)
+          });
+        } else {
+          const legacyId = client.id.toString().replace('legacy_', '');
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('special_notes, notes, description, management_notes')
+            .eq('id', legacyId)
+            .single();
+          
+          if (!error && data) {
+            setSummaryData({
+              specialNotes: formatNoteText(data.special_notes || ''),
+              generalNotes: formatNoteText(data.notes || ''),
+              facts: formatNoteText(data.description || ''),
+              managerNotes: formatNoteText(data.management_notes || '')
+            });
+          }
+        }
+      } else {
+        // For new leads, try to use client data first, then fetch from database
+        const specialNotes = client.special_notes || '';
+        const generalNotes = client.general_notes || '';
+        const facts = client.facts || '';
+        const managerNotes = (client as any).manager_notes || '';
+        
+        // If we have all data from client, use it; otherwise fetch from database
+        if (specialNotes || generalNotes || facts || managerNotes) {
+          setSummaryData({
+            specialNotes: formatNoteText(specialNotes),
+            generalNotes: formatNoteText(generalNotes),
+            facts: formatNoteText(facts),
+            managerNotes: formatNoteText(managerNotes)
+          });
+        } else {
+          const { data, error } = await supabase
+            .from('leads')
+            .select('special_notes, general_notes, facts, manager_notes')
+            .eq('id', client.id)
+            .single();
+          
+          if (!error && data) {
+            setSummaryData({
+              specialNotes: formatNoteText(data.special_notes || ''),
+              generalNotes: formatNoteText(data.general_notes || ''),
+              facts: formatNoteText(data.facts || ''),
+              managerNotes: formatNoteText(data.manager_notes || '')
+            });
+          }
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching summary data:', error);
+    }
+  };
+
   // Fetch legacy expert data on component mount
   useEffect(() => {
     fetchLegacyExpertData();
@@ -632,6 +1184,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     fetchAssignedExpert();
     fetchLegacyEligibilityData();
     fetchNotesFromDatabase(); // Fetch notes directly from database
+    fetchSummaryData(); // Fetch summary data
+    fetchSavedAiSummary(); // Fetch saved AI summary
   }, [client.id]);
 
   // Sync notes when client data changes (e.g., after refresh)
@@ -668,6 +1222,26 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       }
     }
   }, [client.eligibility_status, client.eligibility_status_timestamp, client.section_eligibility, client.section_eligibility_last_edited_by, client.section_eligibility_last_edited_at]);
+
+  // Refresh summary data when client updates
+  useEffect(() => {
+    fetchSummaryData();
+  }, [client.special_notes, client.general_notes, client.facts, client.manager_notes, client.notes, client.description, client.management_notes]);
+
+  // Load saved AI summary when client.ai_summary changes
+  useEffect(() => {
+    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+    const aiSummaryFromClient = (client as any).ai_summary;
+    
+    if (aiSummaryFromClient) {
+      setSavedAiSummary(aiSummaryFromClient);
+      // If we're in AI summary view and don't have a current summary, use the saved one
+      if (showAISummary && !aiSummary) {
+        setAiSummary(aiSummaryFromClient);
+        setUseSavedSummary(true);
+      }
+    }
+  }, [client.ai_summary, showAISummary, aiSummary]);
 
   // Expert Notes
   const [expertNotes, setExpertNotes] = useState<Note[]>(client.expert_notes || []);
@@ -775,6 +1349,19 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
   const [currentUserDisplayName, setCurrentUserDisplayName] = useState<string | null>(null);
   const [assignedExpertId, setAssignedExpertId] = useState<number | null>(null);
   const [assignedExpertDisplayName, setAssignedExpertDisplayName] = useState<string | null>(null);
+
+  // Summary data state
+  const [summaryData, setSummaryData] = useState<{
+    specialNotes: string;
+    generalNotes: string;
+    facts: string;
+    managerNotes: string;
+  }>({
+    specialNotes: '',
+    generalNotes: '',
+    facts: '',
+    managerNotes: ''
+  });
 
   // Save section/eligibility to DB
   const handleSectionChange = async (value: string) => {
@@ -1603,7 +2190,7 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
 
 
   return (
-    <div className="p-2 sm:p-4 md:p-6 space-y-4 sm:space-y-6">
+    <div className="p-2 sm:p-4 md:p-6">
       {/* Header */}
       <div className="flex items-center gap-3 mb-8">
         <div className="p-2 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 rounded-lg">
@@ -1615,8 +2202,13 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Expert Information */}
-      <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+      {/* Main Content Grid - Left side with all boxes, Right side with summary */}
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        {/* Left Column - All existing boxes */}
+        <div className="lg:col-span-2 space-y-4 sm:space-y-6">
+
+          {/* Expert Information */}
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
         <div className="pl-6 pt-2 pb-2 w-2/5">
           <h4 className="text-lg font-semibold text-black">Expert Information</h4>
           <div className="border-b border-gray-200 mt-2"></div>
@@ -1688,10 +2280,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Section Eligibility and Document Upload Row */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Section Eligibility */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+          {/* Section Eligibility and Document Upload Row */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            {/* Section Eligibility */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="pl-6 pt-2 pb-2 w-2/5">
             <h4 className="text-lg font-semibold text-black">Section Eligibility</h4>
             <div className="border-b border-gray-200 mt-2"></div>
@@ -1763,8 +2355,8 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
 
-        {/* Document Upload Section */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+            {/* Document Upload Section */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="pl-6 pt-2 pb-2 w-2/5">
             <h4 className="text-lg font-semibold text-black">Document Upload</h4>
             <div className="border-b border-gray-200 mt-2"></div>
@@ -1874,10 +2466,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Expert Notes Row */}
-      <div className="grid grid-cols-1 gap-6">
-        {/* Expert Opinion Notes */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+          {/* Expert Notes Row */}
+          <div className="grid grid-cols-1 gap-6">
+            {/* Expert Opinion Notes */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="pl-6 pt-2 pb-2 w-2/5">
             <div className="flex items-center justify-between">
               <h4 className="text-lg font-semibold text-black">Expert Notes</h4>
@@ -2003,10 +2595,10 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
         </div>
       </div>
 
-      {/* Handler Notes Row */}
-      <div className="grid grid-cols-1 gap-6">
-        {/* Handler Opinion Section */}
-        <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
+          {/* Handler Notes Row */}
+          <div className="grid grid-cols-1 gap-6">
+            {/* Handler Opinion Section */}
+            <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden">
           <div className="pl-6 pt-2 pb-2 w-2/5">
             <div className="flex items-center justify-between">
               <h4 className="text-lg font-semibold text-black">Handler Notes</h4>
@@ -2099,8 +2691,168 @@ const ExpertTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
           </div>
         </div>
       </div>
+        </div>
 
+        {/* Right Column - Summary Box */}
+        <div className="lg:col-span-1">
+          <div className="bg-white border border-gray-200 rounded-2xl shadow-lg hover:shadow-xl transition-all duration-200 overflow-hidden h-full sticky top-6 flex flex-col">
+            <div className="pl-6 pt-2 pb-2 flex-shrink-0">
+              <div className="flex items-center justify-between pr-6">
+                <h4 className="text-lg font-semibold text-black">Lead Summary</h4>
+                <div className="flex items-center gap-2">
+                  {/* Toggle between AI Summary and Individual Fields */}
+                  <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+                    <button
+                      onClick={() => {
+                        setShowAISummary(false);
+                        setUseSavedSummary(false);
+                      }}
+                      className={`btn btn-sm ${!showAISummary ? 'btn-primary' : 'btn-ghost'}`}
+                      style={!showAISummary ? { backgroundColor: '#3b28c7', color: 'white', border: 'none' } : {}}
+                      title="Show individual fields"
+                    >
+                      Fields
+                    </button>
+                    <button
+                      onClick={() => {
+                        setShowAISummary(true);
+                        if (savedAiSummary) {
+                          setUseSavedSummary(true);
+                          setAiSummary(savedAiSummary);
+                        } else if (aiSummary) {
+                          setUseSavedSummary(false);
+                        }
+                      }}
+                      className={`btn btn-sm ${showAISummary ? 'btn-primary' : 'btn-ghost'}`}
+                      style={showAISummary ? { backgroundColor: '#3b28c7', color: 'white', border: 'none' } : {}}
+                      title="Show AI Summary"
+                    >
+                      AI Summary
+                    </button>
+                  </div>
+                  {!showAISummary && (
+                    <button
+                      onClick={generateAISummary}
+                      disabled={isGeneratingSummary}
+                      className="btn btn-sm btn-outline"
+                      style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                      title="Generate AI Summary"
+                    >
+                      {isGeneratingSummary ? (
+                        <>
+                          <span className="loading loading-spinner loading-xs"></span>
+                          Generating...
+                        </>
+                      ) : (
+                        <>
+                          <SparklesIcon className="w-4 h-4" />
+                          Generate
+                        </>
+                      )}
+                    </button>
+                  )}
+                </div>
+              </div>
+              <div className="border-b border-gray-200 mt-2"></div>
+            </div>
+            <div className="p-6 flex-1 overflow-y-auto">
+              {showAISummary ? (
+                <div className="space-y-4">
+                  <div className="bg-gradient-to-br from-purple-50 to-blue-50 rounded-lg p-4 border border-purple-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <SparklesIcon className="w-5 h-5 text-purple-600" />
+                        <h5 className="text-sm font-semibold text-purple-900">
+                          {useSavedSummary ? 'Saved AI Summary' : 'AI Generated Summary'}
+                        </h5>
+                      </div>
+                      {useSavedSummary && (
+                        <button
+                          onClick={generateAISummary}
+                          disabled={isGeneratingSummary}
+                          className="btn btn-xs btn-outline"
+                          style={{ borderColor: '#3b28c7', color: '#3b28c7' }}
+                          title="Generate new AI Summary"
+                        >
+                          {isGeneratingSummary ? (
+                            <>
+                              <span className="loading loading-spinner loading-xs"></span>
+                              Generating...
+                            </>
+                          ) : (
+                            <>
+                              <SparklesIcon className="w-3 h-3" />
+                              Regenerate
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                    <div className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">
+                      {aiSummary || (savedAiSummary || 'No AI summary available. Click "Generate" to create one.')}
+                    </div>
+                    {useSavedSummary && savedAiSummary && (
+                      <div className="mt-3 pt-3 border-t border-purple-200 text-xs text-purple-600">
+                        This is a saved summary. Click "Regenerate" to create a new one.
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ) : (
+                <div className="space-y-6">
+              {/* Special Notes */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Special Notes</label>
+                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                  {summaryData.specialNotes ? (
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.specialNotes}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No special notes</p>
+                  )}
+                </div>
+              </div>
 
+              {/* General Notes */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">General Notes</label>
+                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                  {summaryData.generalNotes ? (
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.generalNotes}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No general notes</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Facts of Case */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Facts of Case</label>
+                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                  {summaryData.facts ? (
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.facts}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No facts available</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Manager Notes */}
+              <div className="space-y-2">
+                <label className="text-sm font-semibold text-gray-700 uppercase tracking-wide">Manager Notes</label>
+                <div className="bg-gray-50 rounded-lg p-4 min-h-[80px] border border-gray-200">
+                  {summaryData.managerNotes ? (
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap leading-relaxed">{summaryData.managerNotes}</p>
+                  ) : (
+                    <p className="text-sm text-gray-400 italic">No manager notes</p>
+                  )}
+                </div>
+              </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
 
       {/* Document Modal */}
       <DocumentModal
