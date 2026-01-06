@@ -580,6 +580,10 @@ const NewCasesPage: React.FC = () => {
         const createdFilters = createdStageIds.length ? createdStageIds : [0];
         const schedulerFilters = schedulerStageIds.length ? schedulerStageIds : [10];
 
+        // Get all employee display names and IDs to exclude from scheduler field
+        const employeeDisplayNames = employees.map(emp => emp.display_name).filter(Boolean);
+        const employeeIds = employees.map(emp => emp.id.toString()).filter(Boolean);
+
         const baseSelect = `
           *,
           misc_category!category_id(
@@ -593,17 +597,38 @@ const NewCasesPage: React.FC = () => {
           )
         `;
 
+        // Build exclusion conditions for scheduler field
+        // Exclude leads where scheduler matches any employee display_name or id
+        const schedulerExclusions: string[] = [];
+        employeeDisplayNames.forEach(name => {
+          schedulerExclusions.push(`scheduler.neq.${name}`);
+        });
+        employeeIds.forEach(id => {
+          schedulerExclusions.push(`scheduler.neq.${id}`);
+        });
+
+        // Base query builder that excludes inactive leads
+        const buildBaseQuery = (query: any) => {
+          return query
+            .neq('stage', 91) // Exclude inactive/dropped leads
+            .is('unactivated_at', null); // Exclude leads that have been unactivated
+        };
+
         const [createdResult, schedulerResult] = await Promise.all([
-          supabase
-            .from('leads')
-            .select(baseSelect)
-            .in('stage', createdFilters)
+          buildBaseQuery(
+            supabase
+              .from('leads')
+              .select(baseSelect)
+              .in('stage', createdFilters)
+          )
             .order('created_at', { ascending: false }),
-          supabase
-            .from('leads')
-            .select(baseSelect)
-            .in('stage', schedulerFilters)
-            .or('scheduler.is.null,scheduler.eq.')
+          buildBaseQuery(
+            supabase
+              .from('leads')
+              .select(baseSelect)
+              .in('stage', schedulerFilters)
+              .or('scheduler.is.null,scheduler.eq.')
+          )
             .order('created_at', { ascending: false }),
         ]);
 
@@ -614,10 +639,31 @@ const NewCasesPage: React.FC = () => {
           console.error('Error fetching scheduler leads:', schedulerResult.error);
         }
 
-        const allLeads = [
+        let allLeads = [
           ...(createdResult.data || []),
           ...(schedulerResult.data || []),
         ];
+
+        // Filter out leads where scheduler matches any employee display_name or id
+        if (employeeDisplayNames.length > 0 || employeeIds.length > 0) {
+          allLeads = allLeads.filter(lead => {
+            const scheduler = lead.scheduler;
+            if (!scheduler) return true; // Keep leads with no scheduler
+            
+            // Check if scheduler matches any employee display name
+            if (employeeDisplayNames.includes(scheduler)) {
+              return false;
+            }
+            
+            // Check if scheduler matches any employee ID
+            if (employeeIds.includes(scheduler.toString())) {
+              return false;
+            }
+            
+            return true;
+          });
+        }
+
         const uniqueLeads = allLeads.filter((lead, index, self) =>
           index === self.findIndex(l => l.id === lead.id)
         );
@@ -669,7 +715,7 @@ const NewCasesPage: React.FC = () => {
       }
     };
     fetchLeads();
-  }, [allCategories, createdStageIds, schedulerStageIds, stageIdsResolved, stageMapping]);
+  }, [allCategories, createdStageIds, schedulerStageIds, stageIdsResolved, stageMapping, employees]);
 
   // Fetch employees
   useEffect(() => {

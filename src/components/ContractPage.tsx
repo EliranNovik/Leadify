@@ -4189,20 +4189,6 @@ const ContractPage: React.FC = () => {
     </div>
   );
 
-  if (!client) return (
-    <div className="min-h-screen bg-white flex items-center justify-center">
-      <div className="text-center">
-        <p className="text-red-500 text-lg">Client not found.</p>
-        <button
-          onClick={() => navigate('/clients')}
-          className="mt-4 btn btn-primary"
-        >
-          Back to Clients
-        </button>
-      </div>
-    </div>
-  );
-
   if (!contract) return (
     <div className="min-h-screen bg-white flex items-center justify-center">
       <div className="text-center max-w-md">

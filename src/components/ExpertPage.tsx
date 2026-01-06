@@ -100,6 +100,83 @@ const getContrastingTextColor = (hexColor?: string | null) => {
   return luminance > 0.55 ? '#111827' : '#ffffff';
 };
 
+// Helper function to decode HTML entities
+const decodeHtmlEntities = (text: string): string => {
+  if (!text) return '';
+  
+  // Create a temporary DOM element to decode HTML entities
+  const textarea = document.createElement('textarea');
+  textarea.innerHTML = text;
+  return textarea.value;
+};
+
+// Helper function to strip HTML tags from text
+const stripHtmlTags = (text: string): string => {
+  if (!text) return '';
+  
+  // First decode HTML entities
+  let decoded = decodeHtmlEntities(text);
+  
+  // Decode HTML entities again in case there were double-encoded entities
+  decoded = decodeHtmlEntities(decoded);
+  
+  // Convert common HTML line breaks and block elements to newlines before stripping tags
+  // Order matters: process block-level elements first, then inline breaks
+  decoded = decoded.replace(/<\/p>/gi, '\n\n'); // Paragraphs get double newline
+  decoded = decoded.replace(/<\/div>/gi, '\n'); // Divs get single newline
+  decoded = decoded.replace(/<\/tr>/gi, '\n'); // Table rows get newline
+  decoded = decoded.replace(/<\/td>/gi, ' '); // Table cells get space
+  decoded = decoded.replace(/<\/th>/gi, ' '); // Table headers get space
+  decoded = decoded.replace(/<\/li>/gi, '\n'); // List items get newline
+  decoded = decoded.replace(/<\/h[1-6]>/gi, '\n\n'); // Headings get double newline
+  decoded = decoded.replace(/<br\s*\/?>/gi, '\n'); // Line breaks get newline
+  decoded = decoded.replace(/<\/blockquote>/gi, '\n\n'); // Blockquotes get double newline
+  
+  // Remove HTML tags using regex (non-greedy match)
+  const withoutTags = decoded.replace(/<[^>]*>/g, '');
+  
+  // Decode HTML entities one more time to catch any remaining entities
+  let finalDecoded = decodeHtmlEntities(withoutTags);
+  
+  // Convert underscores to spaces for better readability
+  finalDecoded = finalDecoded.replace(/_/g, ' ');
+  
+  // Clean up whitespace while preserving line breaks
+  // Replace multiple spaces/tabs with single space (but not newlines)
+  finalDecoded = finalDecoded.replace(/[ \t]+/g, ' '); // Collapse horizontal whitespace to single space
+  // Remove spaces at the start of lines
+  finalDecoded = finalDecoded.replace(/^[ \t]+/gm, '');
+  // Remove spaces at the end of lines
+  finalDecoded = finalDecoded.replace(/[ \t]+$/gm, '');
+  // Collapse 3+ consecutive newlines to max 2 newlines
+  finalDecoded = finalDecoded.replace(/\n{3,}/g, '\n\n');
+  
+  return finalDecoded.trim();
+};
+
+// Helper function to clean up text formatting
+const formatNoteText = (text: string): string => {
+  if (!text) return '';
+  
+  // Replace \r\n with \n, then \r with \n for proper line breaks
+  // Also handle escaped \r characters (\\r)
+  return text
+    .replace(/\\r\\n/g, '\n')  // Handle escaped \r\n
+    .replace(/\\r/g, '\n')     // Handle escaped \r
+    .replace(/\r\n/g, '\n')    // Handle actual \r\n
+    .replace(/\r/g, '\n')      // Handle actual \r
+    .trim();
+};
+
+// Helper function to detect Hebrew text and apply RTL alignment
+const getTextAlignment = (text: string): string => {
+  if (!text) return 'text-left';
+  
+  // Check if text contains Hebrew characters (Unicode range 0590-05FF)
+  const hebrewRegex = /[\u0590-\u05FF]/;
+  return hebrewRegex.test(text) ? 'text-right' : 'text-left';
+};
+
 interface LeadForExpert {
   id: number | string;
   lead_number: string;
@@ -2107,9 +2184,24 @@ const ExpertPage: React.FC = () => {
                                 <h4 className="text-lg font-semibold text-black">Facts of Case</h4>
                               </div>
                               <div className="p-6">
-                                {lead.facts ? (
-                                  <div className="text-sm text-gray-900 whitespace-pre-wrap">{lead.facts}</div>
-                                ) : (
+                                {lead.facts ? (() => {
+                                  // Process facts: strip HTML tags, format line breaks, convert "n/" to newlines
+                                  let processedFacts = typeof lead.facts === 'string' ? lead.facts : String(lead.facts || '');
+                                  // Convert "n/" to line break
+                                  processedFacts = processedFacts.replace(/n\//g, '\n');
+                                  // Strip HTML tags
+                                  processedFacts = stripHtmlTags(processedFacts);
+                                  // Format note text (handle line breaks)
+                                  processedFacts = formatNoteText(processedFacts);
+                                  // Get text alignment for Hebrew text
+                                  const alignment = getTextAlignment(processedFacts);
+                                  
+                                  return (
+                                    <div className={`text-sm text-gray-900 whitespace-pre-wrap break-words ${alignment}`}>
+                                      {processedFacts}
+                                    </div>
+                                  );
+                                })() : (
                                   <p className="text-gray-500">No facts available</p>
                                 )}
                               </div>
