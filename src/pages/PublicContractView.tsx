@@ -386,15 +386,14 @@ const PublicContractView: React.FC = () => {
   }, [contractId, token]);
 
 
-  // Track incomplete fields - ONLY date and signature fields are required
+  // Track incomplete fields - ONLY signature fields are required
   useEffect(() => {
     if (!template?.content || contract?.status === 'signed') return;
     
     const incomplete = new Set<string>();
     const contentStr = JSON.stringify(template.content);
     
-    // Find all field IDs - ONLY check date and signature fields
-    const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
+    // Find all field IDs - ONLY check signature fields (date fields are optional)
     const signatureMatches = contentStr.match(/\{\{signature:([^}]+)\}\}/g) || [];
     
     // Helper function to recursively extract text content from template structure
@@ -447,8 +446,9 @@ const PublicContractView: React.FC = () => {
       return results;
     };
     
-    // Get all date field IDs
+    // Get all date field IDs (for applicant field detection - date fields are optional now)
     const dateFieldIds = new Set<string>();
+    const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
     dateMatches.forEach(match => {
       const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
       if (id) {
@@ -526,25 +526,7 @@ const PublicContractView: React.FC = () => {
       return hasChanges ? merged : prev;
     });
     
-    // VALIDATION: ONLY date and signature fields are required
-    // Date fields are ALWAYS required
-    dateMatches.forEach(match => {
-      const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
-      if (id && id.trim() !== '') {
-        // Remove from applicantFieldIds if somehow added there
-        if (sortedApplicantIds.includes(id)) {
-          const updatedApplicantIds = sortedApplicantIds.filter(aid => aid !== id);
-          setApplicantFieldIds(updatedApplicantIds);
-        }
-        
-        // Date fields are required - check if filled
-        const dateValue = clientFields[id];
-        if (!dateValue || (typeof dateValue === 'string' && dateValue.trim() === '')) {
-          incomplete.add(id);
-        }
-      }
-    });
-    
+    // VALIDATION: ONLY signature fields are required (date fields are optional)
     // Signature fields are ALWAYS required
     signatureMatches.forEach(match => {
       const id = match.match(/\{\{signature:([^}]+)\}\}/)?.[1];
@@ -563,7 +545,7 @@ const PublicContractView: React.FC = () => {
       }
     });
     
-    // Set incomplete fields - this will only contain date and signature fields
+    // Set incomplete fields - this will only contain signature fields
     setIncompleteFields(incomplete);
     
     // Auto-scroll and highlight logic
@@ -1187,8 +1169,7 @@ const PublicContractView: React.FC = () => {
                     onBlur={() => {
                       setHighlightedFieldId(null);
                     }}
-                    required
-                    aria-label="Select date (required)"
+                    aria-label="Select date (optional)"
                     data-input-type="date"
                     style={{ 
                       minWidth: 180, 
@@ -1198,39 +1179,7 @@ const PublicContractView: React.FC = () => {
                       cursor: 'text'
                     }}
                   />
-                  {/* Date fields are always required - show badge if empty */}
-                  {isEmpty && (
-                    <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 pointer-events-none ${
-                      isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                    }`}>
-                      <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                      <span className="relative">Required</span>
-                    </div>
-                  )}
-                  {/* Date field popup - always show if empty */}
-                  {isEmpty && (() => {
-                    const isTextRTL = isRTL(text);
-                    return (
-                      <div 
-                        className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap"
-                        style={{
-                          [isTextRTL ? 'right' : 'left']: '100%',
-                          [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
-                          opacity: isHighlighted ? 1 : 0,
-                          transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
-                        }}
-                      >
-                        Please select a date (required)
-                        <div 
-                          className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
-                          style={{
-                            [isTextRTL ? 'left' : 'right']: '100%',
-                            [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
-                          }}
-                        ></div>
-                      </div>
-                    );
-                  })()}
+                  {/* Date fields are optional - no required badge or popup */}
                 </span>
               );
             }
@@ -1375,8 +1324,7 @@ const PublicContractView: React.FC = () => {
                       onBlur={() => {
                         setHighlightedFieldId(null);
                       }}
-                      required
-                      aria-label="Select date (required)"
+                      aria-label="Select date (optional)"
                       data-input-type="date"
                       style={{ 
                         minWidth: 180, 
@@ -1386,37 +1334,7 @@ const PublicContractView: React.FC = () => {
                         cursor: 'text'
                       }}
                     />
-                    {isEmpty && (
-                      <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 pointer-events-none ${
-                        isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                      }`}>
-                        <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                        <span className="relative">Required</span>
-                      </div>
-                    )}
-                    {isEmpty && (() => {
-                      const isTextRTL = isRTL(text);
-                      return (
-                        <div 
-                          className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-5 transition-all duration-300 pointer-events-none whitespace-nowrap"
-                          style={{
-                            [isTextRTL ? 'right' : 'left']: '100%',
-                            [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
-                            opacity: isHighlighted ? 1 : 0,
-                            transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
-                          }}
-                        >
-                          Please select a date (required)
-                          <div 
-                            className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
-                            style={{
-                              [isTextRTL ? 'left' : 'right']: '100%',
-                              [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
-                            }}
-                          ></div>
-                        </div>
-                      );
-                    })()}
+                    {/* Date fields are optional - no required badge or popup */}
                   </span>
                 );
               }
