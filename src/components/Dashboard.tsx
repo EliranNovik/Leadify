@@ -3139,7 +3139,7 @@ const Dashboard: React.FC = () => {
           categoryNameToDataMap.set(normalizedName, category);
         }
       });
-
+      
       // Helper function to resolve category and get department (same as CollectionDueReport)
       const resolveCategoryAndDepartment = (
         categoryValue?: string | null,
@@ -4114,12 +4114,13 @@ const Dashboard: React.FC = () => {
     }
   };
 
-  const getMobilePeriodData = (period: MobilePeriodType, category: string) => {
+  const getMobilePeriodData = (period: MobilePeriodType, category: string, dataType: 'agreement' | 'invoiced' = 'agreement') => {
     const defaultValue = { count: 0, amount: 0, expected: 0 };
+    const dataSource = dataType === 'agreement' ? agreementData : invoicedData;
     const categoryIndex = scoreboardCategories.indexOf(category);
-    const todayData = agreementData['Today']?.[categoryIndex] || defaultValue;
-    const last30Data = agreementData['Last 30d']?.[categoryIndex] || defaultValue;
-    const monthArray = agreementData[selectedMonth] || [];
+    const todayData = dataSource['Today']?.[categoryIndex] || defaultValue;
+    const last30Data = dataSource['Last 30d']?.[categoryIndex] || defaultValue;
+    const monthArray = dataSource[selectedMonth] || [];
     const monthIndex =
       category === 'Total'
         ? departmentNames.length
@@ -6755,37 +6756,12 @@ const Dashboard: React.FC = () => {
                     </div>
                   ) : (
                     <div className="md:hidden space-y-4">
-                      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-3">
-                        <div className="flex items-center justify-between mb-3">
+                      {/* Agreement Signed Section */}
                           <div>
-                            <div className="text-sm font-semibold text-slate-800">Compare periods</div>
-                            <p className="text-xs text-gray-500">Add or remove rows to compare each department</p>
+                        <div className="flex items-center gap-2 mb-3">
+                          <div className="text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
                           </div>
-                          {mobilePeriodRows.length > 1 && (
-                            <button
-                              className="btn btn-ghost btn-xs"
-                              onClick={() => setMobilePeriodRows([{ id: 'row-today', period: 'today' }])}
-                            >
-                              Reset
-                            </button>
-                          )}
-                        </div>
-                        <div className="flex flex-wrap gap-2">
-                          {mobilePeriodOptions.map((option) => {
-                            const isActive = mobilePeriodRows.some((row) => row.period === option.period);
-                            return (
-                              <button
-                                key={option.period}
-                                className={`btn btn-xs ${isActive ? 'btn-primary' : 'btn-outline'}`}
-                                onClick={() => toggleMobilePeriodRow(option.period)}
-                              >
-                                {isActive ? `Remove ${option.label}` : `Add ${option.label}`}
-                              </button>
-                            );
-                          })}
-                        </div>
-                        {mobilePeriodRows.some((row) => row.period === 'currentMonth') && (
-                          <div className="flex items-center gap-2 mt-3 text-xs text-gray-600">
+                        <div className="flex items-center gap-2 mb-3 px-3 text-xs text-gray-600">
                             <span className="font-semibold text-gray-700">Month:</span>
                             <select
                               className="select select-xs select-bordered w-auto"
@@ -6797,32 +6773,20 @@ const Dashboard: React.FC = () => {
                               ))}
                             </select>
                           </div>
-                        )}
 
-                        <div className="-mx-2 overflow-x-auto pb-2 mt-2">
-                          <div className="flex flex-col gap-3 px-2 min-w-max">
-                            {mobilePeriodRows.map((row) => {
-                              const periodInfo = getMobilePeriodInfo(row.period);
-                              return (
-                                <div key={row.id} className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                        {/* Today Box */}
+                        <div className="mb-4">
+                          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
                                   <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
                                     <div className="flex items-center gap-2">
-                                      <div className={`w-2 h-2 rounded-full ${periodInfo.dotColor}`}></div>
-                                      <span className="font-semibold text-slate-800 uppercase tracking-wide">{periodInfo.label}</span>
+                                <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                                <span className="font-semibold text-slate-800 uppercase tracking-wide">Today</span>
                                     </div>
-                                    {mobilePeriodRows.length > 1 && (
-                                      <button
-                                        className="btn btn-ghost btn-xs"
-                                        onClick={() => toggleMobilePeriodRow(row.period)}
-                                      >
-                                        Remove
-                                      </button>
-                                    )}
                                   </div>
-                                  <div className="flex gap-3 px-4 py-3 flex-nowrap">
+                            <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
                                     {mobileCategories.map((category) => {
-                                      const periodData = getMobilePeriodData(row.period, category);
-                                      const cardKey = `${row.id}-${category}`;
+                                const periodData = getMobilePeriodData('today', category, 'agreement');
+                                const cardKey = `agreement-today-${category}`;
                                       const isFlipped = flippedCards.has(cardKey);
                                       const percentage = periodData.expected > 0
                                         ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
@@ -6846,13 +6810,13 @@ const Dashboard: React.FC = () => {
                                             >
                                               <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
                                                 <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
-                                                <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">{periodInfo.label}</span>
+                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Today</span>
                                               </div>
                                               <div className="p-4">
-                                                <div className={`bg-gradient-to-br ${periodInfo.gradient} rounded-lg p-4 border border-opacity-20 shadow-md`}>
+                                          <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg p-4 border border-opacity-20 shadow-md">
                                                   <div className="flex items-center gap-2 mb-3">
-                                                    <div className={`w-2.5 h-2.5 ${periodInfo.dotColor} rounded-full shadow-sm`}></div>
-                                                    <span className="text-xs font-semibold text-white uppercase tracking-wide">{periodInfo.label}</span>
+                                              <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full shadow-sm"></div>
+                                              <span className="text-xs font-semibold text-white uppercase tracking-wide">Today</span>
                                                   </div>
                                                   <div className="space-y-2">
                                                     <div>
@@ -6863,42 +6827,280 @@ const Dashboard: React.FC = () => {
                                                       <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
                                                       <div className="text-xs font-medium text-white/90">Amount</div>
                                                     </div>
-                                                    {row.period === 'target' ? (
-                                                      <div className="pt-2 border-t border-white/20">
-                                                        <div className="flex items-center justify-between mb-1">
-                                                          <span className="text-xs font-medium text-white/90">Progress</span>
-                                                          <span className="text-xs font-bold text-white">{percentage}%</span>
                                                         </div>
-                                                        <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden">
-                                                          <div className="h-full bg-white rounded-full transition-all duration-500" style={{ width: `${percentage}%` }}></div>
                                                         </div>
-                                                        <div className="text-xs font-medium text-white/80 mt-1">Target: ₪{periodData.expected ? Math.ceil(periodData.expected).toLocaleString() : '0'}</div>
                                                       </div>
-                                                    ) : (
-                                                      periodData.expected > 0 && (
-                                                        <div className="pt-2 border-t border-white/20">
-                                                          <div className="flex items-center justify-between mb-1">
-                                                            <span className="text-xs font-medium text-white/90">Target</span>
-                                                            <span className="text-xs font-bold text-white">₪{Math.ceil(periodData.expected).toLocaleString()}</span>
+                                      </div>
+                                      <div
+                                        className="absolute inset-0 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
+                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                      >
+                                        <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
+                                          <h4 className="text-sm font-semibold text-white">{category}</h4>
+                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Today</span>
+                                        </div>
+                                        <div className="p-4 h-full">
+                                          <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                            {chartData && chartData.length > 0 ? (
+                                              <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                                  <XAxis
+                                                    dataKey="date"
+                                                    tick={{ fontSize: 10, fill: 'white' }}
+                                                    axisLine={{ stroke: 'white' }}
+                                                    tickLine={{ stroke: 'white' }}
+                                                    interval={Math.floor(chartData.length / 6)}
+                                                  />
+                                                  <YAxis
+                                                    tick={{ fontSize: 10, fill: 'white' }}
+                                                    axisLine={{ stroke: 'white' }}
+                                                    tickLine={{ stroke: 'white' }}
+                                                    width={40}
+                                                  />
+                                                  <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
+                                                  <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
+                                                </LineChart>
+                                              </ResponsiveContainer>
+                                            ) : (
+                                              <div className="flex items-center justify-center h-full text-white/70 text-xs">
+                                                No trend data yet
                                                           </div>
-                                                          <div className="w-full bg-white/20 rounded-full h-2 overflow-hidden mt-1">
-                                                            <div className="h-full bg-white rounded-full transition-all duration-500" style={{ width: `${percentage}%` }}></div>
+                                            )}
                                                           </div>
                                                         </div>
-                                                      )
+                                      </div>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        </div>
+
+                        {/* Last 30d and Month Box */}
+                        <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                          <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-purple-500"></div>
+                              <span className="font-semibold text-slate-800 uppercase tracking-wide">Last 30d & {selectedMonth}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
+                            {mobileCategories.map((category) => {
+                              const last30Data = getMobilePeriodData('last30d', category, 'agreement');
+                              const monthData = getMobilePeriodData('currentMonth', category, 'agreement');
+                              const targetData = getMobilePeriodData('target', category, 'agreement');
+                              const cardKey = `agreement-combined-${category}`;
+                              const isFlipped = flippedCards.has(cardKey);
+                              const chartData = departmentChartData[category] || [];
+
+                              return (
+                                <div
+                                  key={cardKey}
+                                  className="relative h-80 min-w-[260px] flex-shrink-0"
+                                  style={{ perspective: '1000px' }}
+                                >
+                                  <div
+                                    className="relative w-full h-full transition-transform duration-700 cursor-pointer"
+                                    style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
+                                    onClick={() => handleCardFlip(cardKey)}
+                                  >
+                                    <div
+                                      className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
+                                      style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
+                                    >
+                                      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                        <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Last 30d & {selectedMonth}</span>
+                                      </div>
+                                      <div className="p-4">
+                                        <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-opacity-20 shadow-md">
+                                          <div className="flex items-center gap-2 mb-2">
+                                            <div className="w-2 h-2 bg-purple-500 rounded-full shadow-sm"></div>
+                                            <span className="text-[10px] font-semibold text-white uppercase tracking-wide">Last 30d & {selectedMonth}</span>
+                                          </div>
+                                          <div className="space-y-2">
+                                            {/* Last 30d and Current Month - Horizontal */}
+                                            <div className="flex gap-2">
+                                              {/* Last 30d */}
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-1.5 mb-1">
+                                                  <div className="w-1.5 h-1.5 bg-purple-300 rounded-full"></div>
+                                                  <span className="text-[9px] font-medium text-white/90 uppercase">Last 30d</span>
+                                                </div>
+                                                <div className="space-y-1">
+                                                  <div>
+                                                    <div className="text-base font-bold text-white">{last30Data.count}</div>
+                                                    <div className="text-[9px] font-medium text-white/80">Contracts</div>
+                                                  </div>
+                                                  <div>
+                                                    <div className="text-xs font-bold text-white">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
+                                                    <div className="text-[9px] font-medium text-white/80">Amount</div>
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              {/* Divider */}
+                                              <div className="w-px bg-white/20"></div>
+
+                                              {/* Current Month */}
+                                              <div className="flex-1">
+                                                <div className="flex items-center gap-1.5 mb-1">
+                                                  <div className="w-1.5 h-1.5 bg-blue-300 rounded-full"></div>
+                                                  <span className="text-[9px] font-medium text-white/90 uppercase">{selectedMonth}</span>
+                                                </div>
+                                                <div className="space-y-1">
+                                                  <div>
+                                                    <div className="text-base font-bold text-white">{monthData.count}</div>
+                                                    <div className="text-[9px] font-medium text-white/80">Contracts</div>
+                                                  </div>
+                                                  <div>
+                                                    <div className="text-xs font-bold text-white">₪{monthData.amount ? Math.ceil(monthData.amount).toLocaleString() : '0'}</div>
+                                                    <div className="text-[9px] font-medium text-white/80">Amount</div>
+                                                  </div>
+                                                </div>
+                                              </div>
+                                            </div>
+
+                                            <div className="pt-2 border-t border-white/20"></div>
+
+                                            {/* Target */}
+                                            <div>
+                                              <div className="flex items-center gap-2 mb-1">
+                                                <div className="w-1.5 h-1.5 bg-emerald-300 rounded-full"></div>
+                                                <span className="text-[9px] font-medium text-white/90 uppercase">Target</span>
+                                              </div>
+                                              <div className="pl-4">
+                                                <div className="text-sm font-bold text-white">₪{targetData.expected ? Math.ceil(targetData.expected).toLocaleString() : '0'}</div>
+                                                <div className="text-[9px] font-medium text-white/80">Target Amount</div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                    </div>
+                                    <div
+                                      className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
+                                      style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                    >
+                                      <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
+                                        <h4 className="text-sm font-semibold text-white">{category}</h4>
+                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Last 30d & {selectedMonth}</span>
+                                      </div>
+                                      <div className="p-4 h-full">
+                                        <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                          {chartData && chartData.length > 0 ? (
+                                            <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                              <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                                <XAxis
+                                                  dataKey="date"
+                                                  tick={{ fontSize: 10, fill: 'white' }}
+                                                  axisLine={{ stroke: 'white' }}
+                                                  tickLine={{ stroke: 'white' }}
+                                                  interval={Math.floor(chartData.length / 6)}
+                                                />
+                                                <YAxis
+                                                  tick={{ fontSize: 10, fill: 'white' }}
+                                                  axisLine={{ stroke: 'white' }}
+                                                  tickLine={{ stroke: 'white' }}
+                                                  width={40}
+                                                />
+                                                <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
+                                                <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
+                                              </LineChart>
+                                            </ResponsiveContainer>
+                                          ) : (
+                                            <div className="flex items-center justify-center h-full text-white/70 text-xs">
+                                              No trend data yet
+                                            </div>
                                                     )}
                                                   </div>
                                                 </div>
                                               </div>
                                             </div>
-                                            <div
-                                              className={`absolute inset-0 bg-gradient-to-br ${periodInfo.gradient} rounded-xl border border-opacity-30 shadow-lg overflow-hidden`}
-                                              style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                                            >
-                                              <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
-                                                <h4 className="text-sm font-semibold text-white">{category}</h4>
-                                                <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">{periodInfo.label}</span>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Invoiced Section */}
+                      {invoicedDataLoading ? (
+                        <div className="flex justify-center items-center py-12">
+                          <span className="loading loading-spinner loading-lg text-primary"></span>
+                        </div>
+                      ) : (
+                        <div>
+                          <div className="flex items-center gap-2 mb-3">
+                            <div className="text-sm font-semibold text-[#3b28c7]">Invoiced</div>
+                          </div>
+
+                          {/* Today Box */}
+                          <div className="mb-4">
+                            <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                              <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
+                                <div className="flex items-center gap-2">
+                                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
+                                  <span className="font-semibold text-slate-800 uppercase tracking-wide">Today</span>
+                                </div>
+                              </div>
+                              <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
+                                {mobileCategories.map((category) => {
+                                  const periodData = getMobilePeriodData('today', category, 'invoiced');
+                                  const cardKey = `invoiced-today-${category}`;
+                                  const isFlipped = flippedCards.has(cardKey);
+                                  const percentage = periodData.expected > 0
+                                    ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
+                                    : 0;
+                                  const chartData = departmentChartData[category] || [];
+
+                                  return (
+                                    <div
+                                      key={cardKey}
+                                      className="relative h-64 min-w-[260px] flex-shrink-0"
+                                      style={{ perspective: '1000px' }}
+                                    >
+                                      <div
+                                        className="relative w-full h-full transition-transform duration-700 cursor-pointer"
+                                        style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
+                                        onClick={() => handleCardFlip(cardKey)}
+                                      >
+                                        <div
+                                          className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
+                                          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
+                                        >
+                                          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                            <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
+                                            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Today</span>
+                                          </div>
+                                          <div className="p-4">
+                                            <div className="bg-gradient-to-br from-teal-500 to-cyan-600 rounded-lg p-4 border border-opacity-20 shadow-md">
+                                              <div className="flex items-center gap-2 mb-3">
+                                                <div className="w-2.5 h-2.5 bg-teal-500 rounded-full shadow-sm"></div>
+                                                <span className="text-xs font-semibold text-white uppercase tracking-wide">Today</span>
                                               </div>
+                                              <div className="space-y-2">
+                                                <div>
+                                                  <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
+                                                  <div className="text-xs font-medium text-white/90">Contracts</div>
+                                                </div>
+                                                <div className="pt-2 border-t border-white/20">
+                                                  <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
+                                                  <div className="text-xs font-medium text-white/90">Amount</div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div
+                                          className="absolute inset-0 bg-gradient-to-br from-teal-500 to-cyan-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
+                                          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                        >
+                                          <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
+                                            <h4 className="text-sm font-semibold text-white">{category}</h4>
+                                            <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Today</span>
+                                          </div>
                                               <div className="p-4 h-full">
                                                 <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
                                                   {chartData && chartData.length > 0 ? (
@@ -6933,6 +7135,150 @@ const Dashboard: React.FC = () => {
                                         </div>
                                       );
                                     })}
+                              </div>
+                            </div>
+                          </div>
+
+                          {/* Last 30d and Month Box */}
+                          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
+                            <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
+                            <div className="flex items-center gap-2">
+                              <div className="w-2 h-2 rounded-full bg-teal-500"></div>
+                              <span className="font-semibold text-slate-800 uppercase tracking-wide">Last 30d & {selectedMonth}</span>
+                            </div>
+                          </div>
+                          <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
+                            {mobileCategories.map((category) => {
+                              const last30Data = getMobilePeriodData('last30d', category, 'invoiced');
+                                const monthData = getMobilePeriodData('currentMonth', category, 'invoiced');
+                                const targetData = getMobilePeriodData('target', category, 'invoiced');
+                                const cardKey = `invoiced-combined-${category}`;
+                                const isFlipped = flippedCards.has(cardKey);
+                                const chartData = departmentChartData[category] || [];
+
+                                return (
+                                  <div
+                                    key={cardKey}
+                                    className="relative h-80 min-w-[260px] flex-shrink-0"
+                                    style={{ perspective: '1000px' }}
+                                  >
+                                    <div
+                                      className="relative w-full h-full transition-transform duration-700 cursor-pointer"
+                                      style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
+                                      onClick={() => handleCardFlip(cardKey)}
+                                    >
+                                      <div
+                                        className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
+                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
+                                      >
+                                        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
+                                          <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
+                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Last 30d & {selectedMonth}</span>
+                                        </div>
+                                        <div className="p-4">
+                                          <div className="bg-gradient-to-br from-teal-500 to-cyan-600 rounded-lg p-3 border border-opacity-20 shadow-md">
+                                            <div className="flex items-center gap-2 mb-2">
+                                              <div className="w-2 h-2 bg-teal-500 rounded-full shadow-sm"></div>
+                                              <span className="text-[10px] font-semibold text-white uppercase tracking-wide">Last 30d & {selectedMonth}</span>
+                                            </div>
+                                            <div className="space-y-2">
+                                              {/* Last 30d and Current Month - Horizontal */}
+                                              <div className="flex gap-2">
+                                                {/* Last 30d */}
+                                                <div className="flex-1">
+                                                  <div className="flex items-center gap-1.5 mb-1">
+                                                    <div className="w-1.5 h-1.5 bg-purple-300 rounded-full"></div>
+                                                    <span className="text-[9px] font-medium text-white/90 uppercase">Last 30d</span>
+                                                  </div>
+                                                  <div className="space-y-1">
+                                                    <div>
+                                                      <div className="text-base font-bold text-white">{last30Data.count}</div>
+                                                      <div className="text-[9px] font-medium text-white/80">Contracts</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="text-xs font-bold text-white">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
+                                                      <div className="text-[9px] font-medium text-white/80">Amount</div>
+                                                    </div>
+                                                  </div>
+                                                </div>
+
+                                                {/* Divider */}
+                                                <div className="w-px bg-white/20"></div>
+
+                                                {/* Current Month */}
+                                                <div className="flex-1">
+                                                  <div className="flex items-center gap-1.5 mb-1">
+                                                    <div className="w-1.5 h-1.5 bg-blue-300 rounded-full"></div>
+                                                    <span className="text-[9px] font-medium text-white/90 uppercase">{selectedMonth}</span>
+                                                  </div>
+                                                  <div className="space-y-1">
+                                                    <div>
+                                                      <div className="text-base font-bold text-white">{monthData.count}</div>
+                                                      <div className="text-[9px] font-medium text-white/80">Contracts</div>
+                                                    </div>
+                                                    <div>
+                                                      <div className="text-xs font-bold text-white">₪{monthData.amount ? Math.ceil(monthData.amount).toLocaleString() : '0'}</div>
+                                                      <div className="text-[9px] font-medium text-white/80">Amount</div>
+                                                    </div>
+                                                  </div>
+                                                </div>
+                                              </div>
+
+                                              <div className="pt-2 border-t border-white/20"></div>
+
+                                              {/* Target */}
+                                              <div>
+                                                <div className="flex items-center gap-2 mb-1">
+                                                  <div className="w-1.5 h-1.5 bg-emerald-300 rounded-full"></div>
+                                                  <span className="text-[9px] font-medium text-white/90 uppercase">Target</span>
+                                                </div>
+                                                <div className="pl-4">
+                                                  <div className="text-sm font-bold text-white">₪{targetData.expected ? Math.ceil(targetData.expected).toLocaleString() : '0'}</div>
+                                                  <div className="text-[9px] font-medium text-white/80">Target Amount</div>
+                                                </div>
+                                              </div>
+                                            </div>
+                                          </div>
+                                        </div>
+                                      </div>
+                                      <div
+                                        className="absolute inset-0 bg-gradient-to-br from-teal-500 to-cyan-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
+                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
+                                      >
+                                        <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
+                                          <h4 className="text-sm font-semibold text-white">{category}</h4>
+                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Last 30d & {selectedMonth}</span>
+                                        </div>
+                                        <div className="p-4 h-full">
+                                          <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
+                                            {chartData && chartData.length > 0 ? (
+                                              <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
+                                                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
+                                                  <XAxis
+                                                    dataKey="date"
+                                                    tick={{ fontSize: 10, fill: 'white' }}
+                                                    axisLine={{ stroke: 'white' }}
+                                                    tickLine={{ stroke: 'white' }}
+                                                    interval={Math.floor(chartData.length / 6)}
+                                                  />
+                                                  <YAxis
+                                                    tick={{ fontSize: 10, fill: 'white' }}
+                                                    axisLine={{ stroke: 'white' }}
+                                                    tickLine={{ stroke: 'white' }}
+                                                    width={40}
+                                                  />
+                                                  <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
+                                                  <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
+                                                </LineChart>
+                                              </ResponsiveContainer>
+                                            ) : (
+                                              <div className="flex items-center justify-center h-full text-white/70 text-xs">
+                                                No trend data yet
+                                              </div>
+                                            )}
+                                          </div>
+                                        </div>
+                                      </div>
                                   </div>
                                 </div>
                               );
@@ -6940,6 +7286,7 @@ const Dashboard: React.FC = () => {
                           </div>
                         </div>
                       </div>
+                      )}
                     </div>
                   )}
                 </div>
