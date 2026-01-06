@@ -386,15 +386,14 @@ const PublicContractView: React.FC = () => {
   }, [contractId, token]);
 
 
-  // Track incomplete fields
+  // Track incomplete fields - ONLY date and signature fields are required
   useEffect(() => {
     if (!template?.content || contract?.status === 'signed') return;
     
     const incomplete = new Set<string>();
     const contentStr = JSON.stringify(template.content);
     
-    // Find all field IDs
-    const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
+    // Find all field IDs - ONLY check date and signature fields
     const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
     const signatureMatches = contentStr.match(/\{\{signature:([^}]+)\}\}/g) || [];
     
@@ -448,7 +447,7 @@ const PublicContractView: React.FC = () => {
       return results;
     };
     
-    // First, get all date field IDs to exclude them from applicant field detection
+    // Get all date field IDs
     const dateFieldIds = new Set<string>();
     dateMatches.forEach(match => {
       const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
@@ -457,7 +456,10 @@ const PublicContractView: React.FC = () => {
       }
     });
     
-    // First, identify all applicant fields and their order using explicit IDs
+    // Find text matches for applicant field detection (but don't validate them)
+    const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
+    
+    // Identify applicant fields for UI purposes only (not for validation)
     const applicantFields: Array<{ id: string; position: number; context: string }> = [];
     const fieldContexts = findTextFieldsWithContext(template?.content || {});
     
@@ -465,12 +467,12 @@ const PublicContractView: React.FC = () => {
       const id = match.match(/\{\{text:([^}]+)\}\}/)?.[1];
       if (!id) return;
       
-      // Skip if this is a date field (shouldn't happen, but safety check)
+      // Skip if this is a date field
       if (dateFieldIds.has(id)) {
         return;
       }
       
-      // Check if this field is an applicant name field by ID (explicit only)
+      // Check if this field is an applicant name field by ID
       const idLower = id.toLowerCase();
       let isApplicantField = idLower.startsWith('text:applicant') || idLower.startsWith('applicant');
       
@@ -499,23 +501,19 @@ const PublicContractView: React.FC = () => {
       }
     });
     
-    // Sort applicant fields by position in the content (to find the first one)
+    // Sort applicant fields by position in the content
     applicantFields.sort((a, b) => a.position - b.position);
     const sortedApplicantIds = applicantFields.map(f => f.id);
     setApplicantFieldIds(sortedApplicantIds);
     
     // Initialize activeApplicantFields with detected fields if not already set
-    // Use functional update to avoid dependency on activeApplicantFields
     setActiveApplicantFields(prev => {
-      // Only update if we have new fields and the previous array is empty or different
       if (sortedApplicantIds.length === 0) return prev;
       
-      // If prev is empty and we have sortedApplicantIds, initialize with them
       if (prev.length === 0 && sortedApplicantIds.length > 0) {
         return [...sortedApplicantIds];
       }
       
-      // Otherwise, merge new fields that aren't in active list yet (keep existing active fields)
       const merged = [...prev];
       let hasChanges = false;
       sortedApplicantIds.forEach(id => {
@@ -525,79 +523,68 @@ const PublicContractView: React.FC = () => {
         }
       });
       
-      // Only return new array if there were actual changes to prevent unnecessary re-renders
       return hasChanges ? merged : prev;
     });
     
-    // Text fields are NOT required - only date and signature fields are required
-    // Skip all text field validation - they are optional
-    
-    // Date fields are ALWAYS required (never optional)
-    // Also ensure date fields are NOT in applicantFieldIds
+    // VALIDATION: ONLY date and signature fields are required
+    // Date fields are ALWAYS required
     dateMatches.forEach(match => {
       const id = match.match(/\{\{date:([^}]+)\}\}/)?.[1];
-      if (id) {
+      if (id && id.trim() !== '') {
         // Remove from applicantFieldIds if somehow added there
         if (sortedApplicantIds.includes(id)) {
           const updatedApplicantIds = sortedApplicantIds.filter(aid => aid !== id);
           setApplicantFieldIds(updatedApplicantIds);
         }
         
-        // Date fields are always required
-        if (!clientFields[id]) {
+        // Date fields are required - check if filled
+        const dateValue = clientFields[id];
+        if (!dateValue || (typeof dateValue === 'string' && dateValue.trim() === '')) {
           incomplete.add(id);
         }
       }
     });
     
+    // Signature fields are ALWAYS required
     signatureMatches.forEach(match => {
       const id = match.match(/\{\{signature:([^}]+)\}\}/)?.[1];
-      if (id) {
+      if (id && id.trim() !== '') {
         // Check if this specific signature field is filled
-        // First check clientFields[id] (field-specific), then clientSignature (global fallback)
-        const hasFieldSignature = !!(clientFields[id]);
-        const hasGlobalSignature = !!clientSignature;
+        // Check field-specific signature first, then global signature
+        // Note: Signatures are base64 data URLs, so we just check if they exist (not empty strings)
+        const fieldSignature = clientFields[id];
+        const hasFieldSignature = !!(fieldSignature && typeof fieldSignature === 'string' && fieldSignature.length > 0);
+        const hasGlobalSignature = !!(clientSignature && typeof clientSignature === 'string' && clientSignature.length > 0);
         
         // If neither signature exists, mark as incomplete
         if (!hasFieldSignature && !hasGlobalSignature) {
           incomplete.add(id);
         }
-        // Note: We don't explicitly delete here because the incomplete set is rebuilt each time
-        // If signature exists, it simply won't be added to incomplete
       }
     });
     
-    // IMPORTANT: Since text fields are now optional, incomplete only contains date and signature fields
-    // No need for complex filtering - just use the incomplete set directly
-    // (Date and signature fields are always in the template, so no need to filter)
-    const filteredIncomplete = incomplete;
+    // Set incomplete fields - this will only contain date and signature fields
+    setIncompleteFields(incomplete);
     
+    // Auto-scroll and highlight logic
     const previousIncompleteCount = incompleteFields.size;
-    setIncompleteFields(filteredIncomplete);
-    
-    // Only auto-scroll on initial load, not when fields are completed
-    // This prevents unwanted scrolling when user is filling fields (especially signature pad)
-    if (filteredIncomplete.size > 0 && !highlightedFieldId && previousIncompleteCount === filteredIncomplete.size) {
+    if (incomplete.size > 0 && !highlightedFieldId && previousIncompleteCount === incomplete.size) {
       // Auto-highlight first incomplete field on initial load only
-      // Check if previousIncompleteCount === filteredIncomplete.size to ensure this is initial load
-      // (not a field completion, which would change the count)
-      const firstIncomplete = Array.from(filteredIncomplete)[0];
+      const firstIncomplete = Array.from(incomplete)[0];
       setHighlightedFieldId(firstIncomplete);
       setTimeout(() => {
         scrollToField(firstIncomplete);
       }, 500);
-    } else if (previousIncompleteCount > filteredIncomplete.size && highlightedFieldId && !filteredIncomplete.has(highlightedFieldId)) {
+    } else if (previousIncompleteCount > incomplete.size && highlightedFieldId && !incomplete.has(highlightedFieldId)) {
       // Field was completed - just update highlight, but DON'T auto-scroll
-      // This prevents scrolling when user is actively filling fields
-      if (filteredIncomplete.size > 0) {
-        const nextIncomplete = Array.from(filteredIncomplete)[0];
-        // Only update highlight, don't scroll
+      if (incomplete.size > 0) {
+        const nextIncomplete = Array.from(incomplete)[0];
         setHighlightedFieldId(nextIncomplete);
       } else {
         setHighlightedFieldId(null);
       }
     }
-  }, [template, clientFields, clientSignature, contract?.status, incompleteFields.size, highlightedFieldId]);
+  }, [template, clientFields, clientSignature, contract?.status]);
 
   // Scroll to a specific field smoothly
   const scrollToField = (fieldId: string) => {
