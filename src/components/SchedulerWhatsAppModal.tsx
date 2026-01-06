@@ -1888,8 +1888,18 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
 
           {/* Template Dropdown - Desktop */}
           {showTemplateSelector && !isMobile && (
-            <div ref={templateSelectorRef} className="pointer-events-auto mb-2 relative z-40">
-              <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px]">
+            <div 
+              ref={templateSelectorRef} 
+              className="pointer-events-auto mb-2 relative z-40" 
+              style={{ 
+                overflow: 'visible',
+                maxHeight: 'calc(100vh - 120px)', // Account for header and input area
+                transform: 'translateY(0)',
+                top: 'auto',
+                bottom: '100%'
+              }}
+            >
+              <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
                 {/* Header with gradient background */}
                 <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600">
                   <div className="flex items-center justify-between">
@@ -1933,7 +1943,7 @@ const SchedulerWhatsAppModal: React.FC<SchedulerWhatsAppModalProps> = ({ isOpen,
                     </select>
                   </div>
                   
-                  <div className={`space-y-3 ${isMobile ? 'max-h-[calc(60vh-120px)] overflow-y-auto' : 'max-h-[500px] overflow-y-auto'}`}>
+                  <div className="flex-1 overflow-y-auto space-y-3" style={{ maxHeight: 'calc(100vh - 350px)' }}>
                     {isLoadingTemplates ? (
                       <div className="text-center text-gray-500 py-4">
                         <div className="loading loading-spinner loading-sm"></div>

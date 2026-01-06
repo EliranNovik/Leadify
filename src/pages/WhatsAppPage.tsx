@@ -5262,7 +5262,18 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                 
                 {/* Template Dropdown - Desktop */}
                 {showTemplateSelector && (
-                  <div ref={templateSelectorRef} className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]" style={{ overflow: 'visible' }}>
+                  <div 
+                    ref={templateSelectorRef} 
+                    className="absolute bottom-full left-0 right-0 mb-2 pointer-events-auto z-[9999]" 
+                    style={{ 
+                      overflow: 'visible',
+                      maxHeight: 'calc(100vh - 120px)', // Account for header and input area
+                      // Ensure it doesn't get cut off at the top on smaller screens
+                      transform: 'translateY(0)',
+                      top: 'auto',
+                      bottom: '100%'
+                    }}
+                  >
                     {/* Lock Message - Above template modal when open */}
                     {isLocked && (
                       <div className="mb-2 pointer-events-auto">
@@ -5272,7 +5283,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                         </div>
                       </div>
                     )}
-                    <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px]">
+                    <div className="bg-white rounded-2xl border border-gray-200 shadow-2xl overflow-hidden min-w-[600px] max-w-[800px] flex flex-col" style={{ maxHeight: 'calc(100vh - 200px)' }}>
                       {/* Header with gradient background */}
                       <div className="px-6 py-5 bg-gradient-to-r from-green-500 to-emerald-600">
                         <div className="flex items-center justify-between">
@@ -5316,7 +5327,7 @@ const WhatsAppPage: React.FC<WhatsAppPageProps> = ({ selectedContact: propSelect
                           </select>
                         </div>
                         
-                        <div className="max-h-[500px] overflow-y-auto space-y-3">
+                        <div className="flex-1 overflow-y-auto space-y-3" style={{ maxHeight: 'calc(100vh - 350px)' }}>
                         {isLoadingTemplates ? (
                           <div className="text-center text-gray-500 py-4">
                             <div className="loading loading-spinner loading-sm"></div>
