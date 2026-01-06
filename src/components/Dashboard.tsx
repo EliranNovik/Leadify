@@ -3299,14 +3299,21 @@ const Dashboard: React.FC = () => {
         throw newError;
       }
       console.log('✅ Invoiced Data - Fetched new payments:', newPayments?.length || 0);
-      if (newPayments && newPayments.length > 0) {
+      
+      // Filter out any payments with cancel_date (safety check)
+      const filteredNewPayments = (newPayments || []).filter(p => !p.cancel_date);
+      if (filteredNewPayments.length !== (newPayments || []).length) {
+        console.log('⚠️ Invoiced Data - Filtered out', (newPayments || []).length - filteredNewPayments.length, 'new payments with cancel_date');
+      }
+      
+      if (filteredNewPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample new payment:', {
-          id: newPayments[0].id,
-          lead_id: newPayments[0].lead_id,
-          due_date: newPayments[0].due_date,
-          value: newPayments[0].value,
-          ready_to_pay: newPayments[0].ready_to_pay,
-          paid: newPayments[0].paid
+          id: filteredNewPayments[0].id,
+          lead_id: filteredNewPayments[0].lead_id,
+          due_date: filteredNewPayments[0].due_date,
+          value: filteredNewPayments[0].value,
+          ready_to_pay: filteredNewPayments[0].ready_to_pay,
+          paid: filteredNewPayments[0].paid
         });
       }
       
@@ -3366,7 +3373,7 @@ const Dashboard: React.FC = () => {
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-       
+        .is('cancel_date', null) // Exclude cancelled payments
         .is('actual_date', null) // Only unpaid payments
         .eq('ready_to_pay', false) // ready_to_pay = FALSE
         .gte('due_date', wideFromDate) // AND date_due in range
@@ -3386,8 +3393,13 @@ const Dashboard: React.FC = () => {
         ...(legacyPaymentsNotReady || []).filter(p => !legacyPaymentsReadySet.has(p.id))
       ];
       
-      console.log('✅ Invoiced Data - Total unique legacy payments:', allLegacyPayments.length);
-      const filteredLegacyPayments = allLegacyPayments;
+      // Filter out any payments with cancel_date (safety check)
+      const filteredLegacyPayments = allLegacyPayments.filter(p => !p.cancel_date);
+      if (filteredLegacyPayments.length !== allLegacyPayments.length) {
+        console.log('⚠️ Invoiced Data - Filtered out', allLegacyPayments.length - filteredLegacyPayments.length, 'legacy payments with cancel_date');
+      }
+      
+      console.log('✅ Invoiced Data - Total unique legacy payments (after cancel_date filter):', filteredLegacyPayments.length);
       
       if (filteredLegacyPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample legacy payment:', {
@@ -3401,7 +3413,7 @@ const Dashboard: React.FC = () => {
       }
       
       // Get unique lead IDs
-      const newLeadIds = Array.from(new Set((newPayments || []).map(p => p.lead_id).filter(Boolean)));
+      const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
       const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
       
       console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
@@ -3664,7 +3676,7 @@ const Dashboard: React.FC = () => {
       // Process new payments
       let newPaymentsProcessed = 0;
       let newPaymentsSkipped = 0;
-      (newPayments || []).forEach(payment => {
+      filteredNewPayments.forEach(payment => {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) {
           newPaymentsSkipped++;
@@ -3742,7 +3754,7 @@ const Dashboard: React.FC = () => {
       });
       
       console.log('📊 Invoiced Data - New payments processing:', {
-        total: (newPayments || []).length,
+        total: filteredNewPayments.length,
         processed: newPaymentsProcessed,
         skipped: newPaymentsSkipped
       });
