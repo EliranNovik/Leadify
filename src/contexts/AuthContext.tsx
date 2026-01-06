@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { supabase, sessionManager } from '../lib/supabase';
 
 interface AuthState {
@@ -98,48 +98,51 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, []);
 
+  // Track last processed event to prevent duplicate processing
+  const lastProcessedEvent = useRef<{ event: string; userId: string | null; timestamp: number } | null>(null);
+  const processingRef = useRef(false);
+
   const handleAuthStateChange = useCallback(async (event: string, session: any) => {
-    console.log('🔐 Auth state change:', event, session?.user?.email);
+    // Prevent duplicate processing of the same event
+    const userId = session?.user?.id || null;
+    const now = Date.now();
     
-    if (event === 'SIGNED_IN' && session?.user) {
-      console.log('✅ User signed in via auth state change');
-      setAuthState(prev => ({ 
-        ...prev, 
-        user: session.user,
-        isLoading: false,
-        isInitialized: true 
-      }));
-      // Fetch user details in background
-      fetchUserDetails(session.user);
-    } else if (event === 'SIGNED_OUT') {
-      console.log('❌ User signed out');
-      setAuthState(prev => ({
-        ...prev,
-        user: null,
-        userFullName: null,
-        userInitials: null,
-        isLoading: false,
-        isInitialized: true
-      }));
-    } else if (event === 'INITIAL_SESSION') {
-      if (session?.user) {
-        console.log('🔄 Initial session detected');
-        // Check if session is expired
-        if (sessionManager.isSessionExpired(session)) {
-          console.log('🕐 Initial session is expired, signing out...');
-          await supabase.auth.signOut();
-          return;
-        }
-        setAuthState(prev => ({ 
-          ...prev, 
-          user: session.user,
-          isLoading: false,
-          isInitialized: true 
-        }));
-        // Fetch user details in background
-        fetchUserDetails(session.user);
-      } else {
-        console.log('ℹ️ No initial session found');
+    // Check if we're already processing this event
+    if (processingRef.current) {
+      return;
+    }
+    
+    // Debounce: ignore duplicate events within 500ms
+    if (lastProcessedEvent.current) {
+      const { event: lastEvent, userId: lastUserId, timestamp } = lastProcessedEvent.current;
+      if (lastEvent === event && lastUserId === userId && (now - timestamp) < 500) {
+        return; // Skip duplicate event
+      }
+    }
+    
+    processingRef.current = true;
+    lastProcessedEvent.current = { event, userId, timestamp: now };
+    
+    try {
+      // Simplified handling - let Supabase manage session lifecycle
+      if (event === 'SIGNED_IN' && session?.user) {
+        setAuthState(prev => {
+          // Only update if user actually changed
+          if (prev.user?.id === session.user.id) {
+            return prev; // No change needed
+          }
+          // Fetch user details if we don't already have them
+          if (!prev.userFullName) {
+            fetchUserDetails(session.user);
+          }
+          return { 
+            ...prev, 
+            user: session.user,
+            isLoading: false,
+            isInitialized: true 
+          };
+        });
+      } else if (event === 'SIGNED_OUT') {
         setAuthState(prev => ({
           ...prev,
           user: null,
@@ -148,200 +151,199 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isLoading: false,
           isInitialized: true
         }));
-      }
-    } else if (event === 'TOKEN_REFRESHED' && session?.user) {
-      console.log('🔄 Token refreshed');
-      setAuthState(prev => ({ 
-        ...prev, 
-        user: session.user,
-        isLoading: false,
-        isInitialized: true 
-      }));
-    } else if (event === 'USER_UPDATED' && session?.user) {
-      console.log('🔄 User updated');
-      setAuthState(prev => ({ 
-        ...prev, 
-        user: session.user,
-        isLoading: false,
-        isInitialized: true 
-      }));
-    }
-  }, [fetchUserDetails]);
-
-  // Set up session monitoring to ensure users are logged out when session expires
-  useEffect(() => {
-    if (!authState.user || !authState.isInitialized) return;
-
-    let isSigningIn = false;
-    
-    // Set up periodic session check with automatic refresh
-    const checkInterval = setInterval(async () => {
-      // Skip monitoring if we're in the middle of a sign-in process
-      if (isSigningIn) {
-        console.log('⏸️ Skipping session check - sign-in in progress');
-        return;
-      }
-      
-      try {
-        const session = await sessionManager.getSession();
-        if (!session) {
-          console.log('🕐 Session expired and refresh failed, signing out user...');
-          // Force sign out - this will trigger the auth state change
-          await supabase.auth.signOut();
-        } else {
-          console.log('✅ Session is valid, continuing monitoring');
-        }
-      } catch (error) {
-        console.error('Error during session monitoring:', error);
-        // Only sign out if it's not a temporary auth error
-        if (error instanceof Error && !error.message?.includes('auth') && !error.message?.includes('session')) {
-          await supabase.auth.signOut();
-        }
-      }
-    }, 5 * 60 * 1000); // Check every 5 minutes
-
-    // Listen for sign-in events to set the protection flag
-    const handleSignInStart = () => {
-      isSigningIn = true;
-      console.log('🔐 Sign-in started - protecting session monitoring');
-    };
-    
-    const handleSignInEnd = () => {
-      isSigningIn = false;
-      console.log('✅ Sign-in completed - resuming session monitoring');
-    };
-
-    // Add event listeners for Microsoft sign-in
-    window.addEventListener('msal:signInStart', handleSignInStart);
-    window.addEventListener('msal:signInSuccess', handleSignInEnd);
-    window.addEventListener('msal:signInFailure', handleSignInEnd);
-
-    return () => {
-      clearInterval(checkInterval);
-      window.removeEventListener('msal:signInStart', handleSignInStart);
-      window.removeEventListener('msal:signInSuccess', handleSignInEnd);
-      window.removeEventListener('msal:signInFailure', handleSignInEnd);
-    };
-  }, [authState.user, authState.isInitialized]);
-
-  useEffect(() => {
-    const initializeAuth = async () => {
-      try {
-        // Check if we're coming from a magic link (check both hash fragments and URL params)
-        const hashParams = new URLSearchParams(window.location.hash.substring(1));
-        const urlParams = new URLSearchParams(window.location.search);
-        
-        // Check hash fragments first (most common for magic links)
-        let accessToken = hashParams.get('access_token');
-        let refreshToken = hashParams.get('refresh_token');
-        let type = hashParams.get('type');
-        
-        // If not in hash, check URL parameters
-        if (!accessToken || !refreshToken) {
-          accessToken = urlParams.get('access_token');
-          refreshToken = urlParams.get('refresh_token');
-          type = urlParams.get('type');
-        }
-        
-        // Also check for other magic link indicators
-        const hasMagicLinkParams = accessToken || refreshToken || type === 'magiclink' || 
-          window.location.href.includes('access_token') || 
-          window.location.href.includes('refresh_token');
-        
-        if (accessToken && refreshToken) {
-          console.log('🔗 Magic link detected, processing authentication...');
-          // Set the session manually for magic link
-          const { data, error } = await supabase.auth.setSession({
-            access_token: accessToken,
-            refresh_token: refreshToken
-          });
-          
-          if (error) {
-            console.error('Error setting session from magic link:', error);
-          } else if (data?.session?.user) {
-            console.log('✅ Magic link authentication successful');
-            setAuthState(prev => ({ 
+      } else if (event === 'INITIAL_SESSION') {
+        if (session?.user) {
+          setAuthState(prev => {
+            // Only update if user actually changed
+            if (prev.user?.id === session.user.id && prev.isInitialized) {
+              return prev; // No change needed
+            }
+            // Fetch user details if we don't already have them
+            if (!prev.userFullName) {
+              fetchUserDetails(session.user);
+            }
+            return { 
               ...prev, 
-              user: data.session!.user,
+              user: session.user,
               isLoading: false,
               isInitialized: true 
-            }));
-            fetchUserDetails(data.session!.user);
-            // Clean up the URL
-            window.history.replaceState({}, document.title, window.location.pathname);
-            return;
-          }
-        } else if (hasMagicLinkParams) {
-          console.log('🔗 Magic link parameters detected but incomplete, letting Supabase handle it...');
-          // Force Supabase to process the URL by calling getSession
-          try {
-            const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
-            if (sessionError) {
-              console.error('Error getting session from magic link:', sessionError);
-            } else if (sessionData?.session?.user) {
-              console.log('✅ Magic link processed by Supabase');
-              setAuthState(prev => ({ 
-                ...prev, 
-                user: sessionData.session.user,
-                isLoading: false,
-                isInitialized: true 
-              }));
-              fetchUserDetails(sessionData.session.user);
-              // Clean up the URL
-              window.history.replaceState({}, document.title, window.location.pathname);
-              return;
+            };
+          });
+        } else {
+          setAuthState(prev => {
+            // Only update if we had a user before
+            if (!prev.user) {
+              return prev; // No change needed
             }
-          } catch (error) {
-            console.error('Error processing magic link:', error);
-          }
-        }
-        
-        // Set up auth state change listener FIRST
-        const { data: { subscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
-        
-        // Try to get session with proper session management
-        try {
-          const session = await sessionManager.getSession();
-          
-          if (session?.user) {
-            console.log('✅ Existing session found');
-            setAuthState(prev => ({ ...prev, user: session.user }));
-            // Don't wait for user details to load - let it happen in background
-            fetchUserDetails(session.user);
-          } else {
-            console.log('ℹ️ No existing session found');
-            setAuthState(prev => ({
+            return {
               ...prev,
               user: null,
               userFullName: null,
-              userInitials: null
-            }));
+              userInitials: null,
+              isLoading: false,
+              isInitialized: true
+            };
+          });
+        }
+      } else if (event === 'TOKEN_REFRESHED' && session?.user) {
+        // Just update user, don't refetch details - only if user changed
+        setAuthState(prev => {
+          if (prev.user?.id === session.user.id) {
+            return prev; // No change needed
           }
-        } catch (sessionError) {
-          console.log('ℹ️ Session check failed');
-          setAuthState(prev => ({
-            ...prev,
-            user: null,
-            userFullName: null,
-            userInitials: null
-          }));
+          return { 
+            ...prev, 
+            user: session.user
+          };
+        });
+      } else if (event === 'USER_UPDATED' && session?.user) {
+        // Only update if user actually changed
+        setAuthState(prev => {
+          if (prev.user?.id === session.user.id) {
+            return prev; // No change needed
+          }
+          return { 
+            ...prev, 
+            user: session.user
+          };
+        });
+      }
+    } finally {
+      // Reset processing flag after a short delay to allow legitimate state changes
+      setTimeout(() => {
+        processingRef.current = false;
+      }, 100);
+    }
+  }, [fetchUserDetails]);
+
+  // Removed aggressive session monitoring - let Supabase handle it automatically
+  // Multiple tabs and refreshes are handled by Supabase's built-in session management
+
+  useEffect(() => {
+    let subscription: any = null;
+    let isMounted = true;
+    let storageListener: ((e: StorageEvent) => void) | null = null;
+    
+    const initializeAuth = async () => {
+      try {
+        // Set up auth state change listener - Supabase handles magic links automatically
+        const { data: { subscription: authSubscription } } = supabase.auth.onAuthStateChange(handleAuthStateChange);
+        subscription = authSubscription;
+        
+        // Listen for localStorage changes from other tabs
+        storageListener = (e: StorageEvent) => {
+          // Only react to Supabase auth token changes
+          if (e.key && e.key.includes('supabase.auth.token') && e.newValue !== e.oldValue) {
+            // Session changed in another tab, refresh our session
+            if (isMounted) {
+              supabase.auth.getSession().then(({ data: { session }, error }) => {
+                if (!error && session?.user && isMounted) {
+                  handleAuthStateChange('SIGNED_IN', session);
+                } else if (!session && isMounted) {
+                  handleAuthStateChange('SIGNED_OUT', null);
+                }
+              });
+            }
+          }
+        };
+        
+        window.addEventListener('storage', storageListener);
+        
+        // Get initial session - Supabase handles refresh and magic links automatically
+        // For new tabs, wait a bit longer to allow localStorage to sync across tabs
+        // Check localStorage directly to see if there's a session token
+        const hasStoredSession = typeof window !== 'undefined' && 
+          Object.keys(localStorage).some(key => key.includes('supabase.auth.token'));
+        
+        if (!hasStoredSession) {
+          // No stored session, minimal delay
+          await new Promise(resolve => setTimeout(resolve, 50));
+        } else {
+          // Stored session exists - this might be a new tab syncing, wait longer
+          await new Promise(resolve => setTimeout(resolve, 300));
         }
         
-        setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+        // Try to get session with retry logic, especially for new tabs
+        let session = null;
+        let error = null;
+        let attempts = 0;
+        const maxAttempts = hasStoredSession ? 3 : 1; // Retry more if session exists in storage
         
-        return () => {
-          subscription.unsubscribe();
-        };
+        while (attempts < maxAttempts && !session && isMounted) {
+          const result = await supabase.auth.getSession();
+          session = result.data?.session;
+          error = result.error;
+          
+          if (session?.user || error) {
+            break; // Got session or error, stop retrying
+          }
+          
+          attempts++;
+          if (attempts < maxAttempts && isMounted) {
+            // Wait before retry with progressive delay
+            await new Promise(resolve => setTimeout(resolve, 200 * attempts));
+          }
+        }
+        
+        if (!isMounted) return;
+        
+        if (error) {
+          console.error('Error getting session:', error);
+          // Don't block app on error - might be temporary
+          setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+          return;
+        }
+        
+        if (session?.user) {
+          setAuthState(prev => {
+            // Only update if user actually changed
+            if (prev.user?.id === session.user.id && prev.isInitialized) {
+              return prev; // No change needed
+            }
+            // Fetch user details if we don't already have them
+            if (!prev.userFullName) {
+              fetchUserDetails(session.user);
+            }
+            return { ...prev, user: session.user, isLoading: false, isInitialized: true };
+          });
+        } else {
+          setAuthState(prev => {
+            // Only update if we had a user before
+            if (!prev.user && prev.isInitialized) {
+              return prev; // No change needed
+            }
+            return {
+              ...prev,
+              user: null,
+              userFullName: null,
+              userInitials: null,
+              isLoading: false,
+              isInitialized: true
+            };
+          });
+        }
       } catch (error) {
         console.error('Auth initialization error:', error);
         // Even if auth fails, don't block the app
-        setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+        if (isMounted) {
+          setAuthState(prev => ({ ...prev, isLoading: false, isInitialized: true }));
+        }
       }
     };
     
     // Start auth initialization immediately
     initializeAuth();
-  }, [handleAuthStateChange]);
+    
+    return () => {
+      isMounted = false;
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+      if (storageListener) {
+        window.removeEventListener('storage', storageListener);
+      }
+    };
+  }, [handleAuthStateChange]); // Removed fetchUserDetails from deps to prevent re-initialization
 
   return (
     <AuthContext.Provider value={authState}>

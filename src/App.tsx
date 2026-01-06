@@ -13,7 +13,7 @@ import Header from './components/Header';
 import AIChatWindow from './components/AIChatWindow';
 import EmailThreadModal from './components/EmailThreadModal';
 import ContactSelectorModal from './components/ContactSelectorModal';
-import { supabase, sessionManager } from './lib/supabase';
+import { supabase } from './lib/supabase';
 import { CelebrationProvider } from './contexts/CelebrationContext';
 import MoneyRainCelebration from './components/MoneyRainCelebration';
 import PWAInstallPrompt from './components/PWAInstallPrompt';

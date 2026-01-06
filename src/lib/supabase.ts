@@ -7,17 +7,19 @@ if (!supabaseUrl || !supabaseAnonKey) {
   throw new Error('Missing Supabase environment variables');
 }
 
-// Configure Supabase client with proper session management
+// Configure Supabase client with proper session management for multi-tab support
 export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   auth: {
-    // Enable auto refresh tokens for better UX
+    // Enable auto refresh tokens - Supabase handles this automatically
     autoRefreshToken: true,
-    // Persist session in localStorage
+    // Persist session in localStorage (shared across tabs)
     persistSession: true,
     // Detect session in URL (for magic links, etc.)
     detectSessionInUrl: true,
     // Flow type for authentication
     flowType: 'pkce',
+    // Storage key for session - use default to ensure consistency
+    storage: typeof window !== 'undefined' ? window.localStorage : undefined,
     // Disable debug mode to reduce console noise
     debug: false,
   },
@@ -29,137 +31,49 @@ export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
   },
 });
 
+// Sync session across tabs - Supabase handles this automatically via localStorage
+// No additional listeners needed - Supabase's built-in session management handles multi-tab scenarios
+
 // Expose supabase client globally for debugging (remove in production)
 if (typeof window !== 'undefined') {
   (window as any).supabase = supabase;
 }
 
-// Session manager for handling session expiration and refresh
+// Simplified session manager - let Supabase handle auto-refresh
 export const sessionManager = {
   async getSession() {
     try {
+      // Simply get the session - Supabase handles refresh automatically
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error) {
         console.error('Error getting session:', error);
-        throw error;
-      }
-      
-      // If no session, return null
-      if (!session) {
+        // Don't sign out on error - might be temporary network issue
         return null;
       }
-      
-      // Check if session is expired
-      if (this.isSessionExpired(session)) {
-        console.log('🕐 Session expired, attempting refresh...');
-        
-        // Only attempt refresh if we have a refresh token
-        if (this.hasRefreshToken(session)) {
-          const refreshedSession = await this.refreshSession();
-          if (refreshedSession && !this.isSessionExpired(refreshedSession)) {
-            console.log('✅ Session refreshed successfully');
-            return refreshedSession;
-          }
-        }
-        
-        console.log('❌ Session refresh failed or no refresh token, signing out...');
-        await supabase.auth.signOut();
-        return null;
-      }
-      
       return session;
     } catch (error) {
       console.error('Error getting session:', error);
-      // If there's an error getting the session, sign out to be safe
-      await supabase.auth.signOut();
+      // Don't sign out on error - might be temporary network issue
       return null;
     }
   },
 
   isSessionExpired(session: any): boolean {
-    if (!session?.expires_at) return true;
+    if (!session?.expires_at) return false; // If no expiration, assume valid
     
     try {
       const expiresAt = typeof session.expires_at === 'number' 
         ? session.expires_at * 1000 
         : new Date(session.expires_at).getTime();
       
-      // Add a 30-second buffer to account for clock skew and processing time
-      const buffer = 30 * 1000; // 30 seconds
-      return Date.now() >= (expiresAt - buffer);
+      // Only consider expired if past expiration time (no buffer)
+      return Date.now() >= expiresAt;
     } catch (e) {
-      console.error('Could not parse session expiration:', e);
-      // If we can't parse the expiration, treat as expired to be safe
-      return true;
-    }
-  },
-
-  hasRefreshToken(session: any): boolean {
-    return !!(session?.refresh_token);
-  },
-
-  getTimeUntilExpiry(session: any): number | null {
-    if (!session?.expires_at) return null;
-    
-    try {
-      const expiresAt = typeof session.expires_at === 'number' 
-        ? session.expires_at * 1000 
-        : new Date(session.expires_at).getTime();
-      return Math.max(0, expiresAt - Date.now());
-    } catch (e) {
-      // Could not determine session expiration, treating as expired
-      return 0;
-    }
-  },
-
-  async refreshSession() {
-    try {
-      const { data: { session }, error } = await supabase.auth.refreshSession();
-      if (error) throw error;
-      return session;
-    } catch (error) {
-      return null;
+      // If we can't parse, assume valid (let Supabase handle it)
+      return false;
     }
   }
 };
-
-// Auto-refresh session when it's about to expire
-let refreshTimeout: NodeJS.Timeout | null = null;
-
-const scheduleRefresh = async () => {
-  const session = await sessionManager.getSession();
-  if (!session) return;
-
-  const timeUntilExpiry = sessionManager.getTimeUntilExpiry(session);
-  if (!timeUntilExpiry || timeUntilExpiry <= 0) return;
-
-  // Refresh 5 minutes before expiry
-  const refreshDelay = Math.max(0, timeUntilExpiry - 5 * 60 * 1000);
-  
-  if (refreshTimeout) clearTimeout(refreshTimeout);
-  
-  refreshTimeout = setTimeout(async () => {
-    const refreshedSession = await sessionManager.refreshSession();
-    if (refreshedSession) {
-      // Session refreshed successfully
-      scheduleRefresh(); // Schedule next refresh
-    } else {
-      // Session expired and refresh failed, redirecting to login
-    }
-  }, refreshDelay);
-};
-
-// Set up session monitoring
-supabase.auth.onAuthStateChange((event, session) => {
-  if (event === 'SIGNED_IN' && session) {
-    scheduleRefresh();
-  } else if (event === 'SIGNED_OUT') {
-    if (refreshTimeout) {
-      clearTimeout(refreshTimeout);
-      refreshTimeout = null;
-    }
-  }
-});
 
 // Types for our database tables
 export interface Lead {

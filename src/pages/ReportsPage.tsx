@@ -7387,12 +7387,11 @@ const ProfitabilityReport = () => <div className="p-6">Profitability Finances Co
 const CollectionDueReport = () => {
   const navigate = useNavigate();
   const today = new Date();
-  const firstDayOfMonth = new Date(today.getFullYear(), today.getMonth(), 1).toISOString().split('T')[0];
-  const lastDayOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0).toISOString().split('T')[0];
+  const todayStr = today.toISOString().split('T')[0];
 
   const [filters, setFilters] = usePersistedFilters('reports_collectionDue_filters', {
-    fromDate: firstDayOfMonth,
-    toDate: lastDayOfMonth,
+    fromDate: todayStr,
+    toDate: todayStr,
     category: '',
     order: '',
     department: '',

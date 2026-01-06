@@ -142,16 +142,7 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
     // For legacy leads, use 'description' field instead of 'facts'
     const facts = isLegacy ? getFieldValue(client, 'description') : getFieldValue(client, 'facts');
     
-    console.log('🔍 DEBUG getFacts() called:', {
-      isLegacy,
-      clientId: client?.id,
-      facts,
-      'client.description': client?.description,
-      'getFieldValue result': facts
-    });
-    
     if (!facts) {
-      console.log('🔍 DEBUG getFacts() - returning empty array (facts is falsy)');
       return [];
     }
     
@@ -171,7 +162,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
             return { key, value: processedValue };
           });
         
-        console.log('🔍 DEBUG getFacts() - returning parsed JSON:', nonNullFacts);
         return nonNullFacts;
       }
       
@@ -180,7 +170,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       let processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : String(facts || '');
       processedFacts = stripHtmlTags(processedFacts);
       const result = [{ key: 'facts', value: processedFacts }];
-      console.log('🔍 DEBUG getFacts() - returning plain text (JSON was not object):', result);
       return result;
     } catch (error) {
       // If JSON parsing fails, treat as plain text
@@ -188,7 +177,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
       let processedFacts = typeof facts === 'string' ? facts.replace(/n\//g, '\n') : String(facts || '');
       processedFacts = stripHtmlTags(processedFacts);
       const result = [{ key: 'facts', value: processedFacts }];
-      console.log('🔍 DEBUG getFacts() - returning plain text (JSON parse failed):', result, 'error:', error);
       return result;
     }
   };
@@ -1319,14 +1307,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                       const tableName = isLegacy ? 'leads_lead' : 'leads';
                       const formattedFacts = formatNoteText(editedFacts);
                       
-                      console.log('🔍 DEBUG SAVE FACTS START:', {
-                        isLegacy,
-                        clientId: client.id,
-                        editedFacts,
-                        formattedFacts,
-                        tableName
-                      });
-                      
                       if (isLegacy) {
                         // For legacy leads, convert ID to integer
                         const legacyIdStr = client.id.toString().replace('legacy_', '');
@@ -1336,11 +1316,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           console.error('Invalid legacy ID:', legacyIdStr);
                           throw new Error('Invalid legacy ID');
                         }
-                        
-                        console.log('🔍 DEBUG SAVE - Updating description column:', {
-                          legacyId,
-                          description: formattedFacts
-                        });
                         
                         const { data, error } = await supabase
                           .from(tableName)
@@ -1354,27 +1329,8 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           .single();
                         
                         if (error) {
-                          console.error('❌ DEBUG SAVE - Database error:', error);
                           throw error;
                         }
-                        
-                        console.log('✅ DEBUG SAVE - Database returned:', {
-                          data,
-                          description: data?.description
-                        });
-                        
-                        // Verify by fetching again
-                        const { data: verifyData, error: verifyError } = await supabase
-                          .from(tableName)
-                          .select('description')
-                          .eq('id', legacyId)
-                          .single();
-                        
-                        console.log('🔍 DEBUG SAVE - Verification fetch:', {
-                          verifyData,
-                          verifyError,
-                          description: verifyData?.description
-                        });
                       } else {
                         // For new leads, use UUID directly
                         const { data, error } = await supabase
@@ -1405,16 +1361,12 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                         }
                       });
                       
-                      console.log('🔍 DEBUG SAVE - Setting state to:', factsArray);
                       setFactsOfCase(factsArray);
                       setIsEditingFacts(false);
-                      
-                      console.log('🔍 DEBUG SAVE - Before onClientUpdate, current client.description:', client?.description);
                       
                       // Refresh client data in parent component
                       if (onClientUpdate) {
                         await onClientUpdate();
-                        console.log('🔍 DEBUG SAVE - After onClientUpdate, client.description should be updated');
                       }
                     } catch (error) {
                       console.error('Error updating facts:', error);
@@ -1440,10 +1392,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                 <div className="space-y-3">
                   <div className="min-h-[80px]">
                     {(() => {
-                      console.log('🔍 DEBUG RENDER - factsOfCase state:', factsOfCase, 'length:', factsOfCase?.length);
-                      console.log('🔍 DEBUG RENDER - client.description:', client?.description);
-                      console.log('🔍 DEBUG RENDER - isEditingFacts:', isEditingFacts);
-                      
                       if (factsOfCase.length > 0) {
                         // Process facts: HTML tags are already stripped in getFacts(), just format for display
                         const processedFacts = factsOfCase.map((fact, index) => {
@@ -1464,7 +1412,6 @@ const InfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) => {
                           </p>
                         );
                       } else {
-                        console.log('🔍 DEBUG RENDER - Showing "No case facts added"');
                         return <span className="text-gray-500">No case facts added</span>;
                       }
                     })()}
