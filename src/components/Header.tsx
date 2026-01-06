@@ -2738,18 +2738,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               });
               const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
-              
-              console.log('🔍 Header - Employees loaded:', {
-                totalUsers: allEmployeesData?.length || 0,
-                processedEmployees: processedEmployees.length,
-                uniqueEmployees: uniqueEmployees.length,
-                sampleEmployee: uniqueEmployees[0] ? {
-                  id: uniqueEmployees[0].id,
-                  name: uniqueEmployees[0].display_name,
-                  email: uniqueEmployees[0].email
-                } : null
-              });
-              
               setAllEmployees(uniqueEmployees);
             }
             } else {
@@ -3602,22 +3590,84 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   };
 
   // Fetch new leads count
-  const fetchNewLeadsCount = async () => {
+  const fetchNewLeadsCount = useCallback(async () => {
     try {
       await ensureStageIds();
 
-      const createdFilters = createdStageIdsRef.current.length ? createdStageIdsRef.current : [0, 11];
+      // Match NewCasesPage exactly: default to [0] for created, [10] for scheduler
+      const createdFilters = createdStageIdsRef.current.length ? createdStageIdsRef.current : [0];
       const schedulerFilters = schedulerStageIdsRef.current.length ? schedulerStageIdsRef.current : [10];
 
+      // Get all employee display names and IDs to exclude from scheduler field
+      // ALWAYS fetch employees to ensure we have the latest data (matching NewCasesPage logic)
+      // This is critical for accurate filtering
+      let employeesToCheck = allEmployees;
+      
+      // Always fetch fresh employee data to match NewCasesPage behavior
+      try {
+        const { data: employeesData, error: employeesError } = await supabase
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            email,
+            employee_id,
+            is_active,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
+          .not('employee_id', 'is', null)
+          .eq('is_active', true);
+        
+        if (!employeesError && employeesData) {
+          const processedEmployees = (employeesData || [])
+            .filter(user => user.tenants_employee && user.email)
+            .map(user => {
+              const employee = user.tenants_employee as any;
+              return {
+                id: employee.id,
+                display_name: employee.display_name
+              };
+            });
+          
+          const uniqueEmployeesMap = new Map();
+          processedEmployees.forEach(emp => {
+            if (!uniqueEmployeesMap.has(emp.id)) {
+              uniqueEmployeesMap.set(emp.id, emp);
+            }
+          });
+          employeesToCheck = Array.from(uniqueEmployeesMap.values());
+        }
+        } catch (error) {
+          console.error('Error fetching employees for count:', error);
+        }
+
+      const employeeDisplayNames = employeesToCheck.map(emp => emp.display_name).filter(Boolean);
+      const employeeIds = employeesToCheck.map(emp => emp.id.toString()).filter(Boolean);
+
+      // Base query builder that excludes inactive leads
+      const buildBaseQuery = (query: any) => {
+        return query
+          .neq('stage', 91) // Exclude inactive/dropped leads
+          .is('unactivated_at', null); // Exclude leads that have been unactivated
+      };
+
       const [createdResult, schedulerResult] = await Promise.all([
-        supabase
-          .from('leads')
-          .select('id')
-          .in('stage', createdFilters),
-        supabase
-          .from('leads')
-          .select('id, scheduler')
-          .in('stage', schedulerFilters),
+        buildBaseQuery(
+          supabase
+            .from('leads')
+            .select('id, scheduler') // IMPORTANT: Include scheduler field to filter by it
+            .in('stage', createdFilters)
+        ),
+        buildBaseQuery(
+          supabase
+            .from('leads')
+            .select('id, scheduler')
+            .in('stage', schedulerFilters)
+            .or('scheduler.is.null,scheduler.eq.')
+        ),
       ]);
 
       if (createdResult.error) {
@@ -3629,18 +3679,47 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Don't throw, just log and continue with empty data
       }
 
-      const createdIds = (createdResult.data || []).map(lead => lead.id);
-      const schedulerIds = (schedulerResult.data || [])
-        .filter(lead => !lead.scheduler || String(lead.scheduler).trim().length === 0)
-        .map(lead => lead.id);
+      // Combine all leads first (matching NewCasesPage logic)
+      let allLeads = [
+        ...(createdResult.data || []),
+        ...(schedulerResult.data || []),
+      ];
 
-      const uniqueIds = new Set([...createdIds, ...schedulerIds]);
+      // Filter out leads where scheduler matches any employee display_name or id
+      // This must match the exact logic in NewCasesPage.tsx
+      if (employeeDisplayNames.length > 0 || employeeIds.length > 0) {
+        allLeads = allLeads.filter(lead => {
+          const scheduler = lead.scheduler;
+          if (!scheduler || scheduler === '' || scheduler === '---') {
+            return true; // Keep leads with no scheduler
+          }
+          
+          // Check if scheduler matches any employee display name
+          if (employeeDisplayNames.includes(scheduler)) {
+            return false;
+          }
+          
+          // Check if scheduler matches any employee ID
+          if (employeeIds.includes(scheduler.toString())) {
+            return false;
+          }
+          
+          return true;
+        });
+      }
+
+      // Remove duplicates (matching NewCasesPage logic)
+      const uniqueLeads = allLeads.filter((lead, index, self) =>
+        index === self.findIndex(l => l.id === lead.id)
+      );
+
+      const uniqueIds = new Set(uniqueLeads.map(lead => lead.id));
       setNewLeadsCount(uniqueIds.size);
     } catch (error) {
       console.error('Error fetching new leads count:', error);
       setNewLeadsCount(0);
     }
-  };
+  }, [allEmployees]);
 
   // Fetch RMQ messages and WhatsApp leads messages when user is loaded
   useEffect(() => {
@@ -3714,11 +3793,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   }, [currentUserEmployee, userFullName, fetchEmailUnreadCount]);
 
   // Fetch new leads count when component mounts and every 30 seconds
+  // Also refetch when employees are loaded (needed for filtering)
+  // IMPORTANT: Wait for employees to be loaded before calculating count
   useEffect(() => {
-    fetchNewLeadsCount();
-    const interval = setInterval(fetchNewLeadsCount, 30000);
+    // Only fetch if we have employees loaded OR if we're still waiting (to avoid blocking)
+    // The fetchNewLeadsCount function will fetch employees if needed, but it's better to wait
+    if (allEmployees.length > 0 || currentUser) {
+      fetchNewLeadsCount();
+    }
+    const interval = setInterval(() => {
+      if (allEmployees.length > 0 || currentUser) {
+        fetchNewLeadsCount();
+      }
+    }, 30000);
     return () => clearInterval(interval);
-  }, []);
+  }, [allEmployees, fetchNewLeadsCount, currentUser]);
 
   useEffect(() => {
     if (isSearchActive && searchContainerRef.current) {

@@ -463,10 +463,12 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
     try {
       const currentUserName = await getCurrentUserName();
       const paymentId = selectedPaymentForReadyToPay.id;
+      const currentDate = new Date().toISOString().split('T')[0]; // Get current date in YYYY-MM-DD format
       
       let error;
       if (isLegacyLead) {
         // For legacy leads, update finances_paymentplanrow
+        // Update both date and due_date to current date when marking as ready to pay
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
@@ -474,6 +476,8 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
             ready_to_pay_text: readyToPayText,
             ready_to_pay_date: new Date().toISOString(),
             ready_to_pay_by: currentUserName,
+            due_date: currentDate, // Update due_date to current date
+            date: currentDate, // Update date column to current date
           })
           .eq('id', paymentId);
         error = legacyError;
@@ -486,6 +490,7 @@ const FinanceTab: React.FC<HandlerTabProps> = ({ leads, refreshDashboardData }) 
             ready_to_pay_text: readyToPayText,
             ready_to_pay_date: new Date().toISOString(),
             ready_to_pay_by: currentUserName,
+            due_date: currentDate, // Update due_date to current date
           })
           .eq('id', paymentId);
         error = newError;

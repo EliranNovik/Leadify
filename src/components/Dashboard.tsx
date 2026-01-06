@@ -3139,6 +3139,65 @@ const Dashboard: React.FC = () => {
           categoryNameToDataMap.set(normalizedName, category);
         }
       });
+
+      // Helper function to resolve category and get department (same as CollectionDueReport)
+      const resolveCategoryAndDepartment = (
+        categoryValue?: string | null,
+        categoryId?: string | number | null,
+        miscCategory?: any
+      ): { departmentId: number | null; departmentName: string } => {
+        let resolvedMiscCategory = miscCategory;
+        
+        // If miscCategory join failed but we have categoryId, try to find by ID in allCategoriesData
+        if (!resolvedMiscCategory && categoryId !== null && categoryId !== undefined && allCategoriesData) {
+          const numericId = typeof categoryId === 'number' ? categoryId : Number(categoryId);
+          if (!Number.isNaN(numericId)) {
+            const foundById = (allCategoriesData || []).find((cat: any) => cat.id === numericId);
+            if (foundById) {
+              resolvedMiscCategory = foundById;
+            }
+          }
+        }
+        
+        // If we still don't have a category but have categoryValue, try to look it up in the map by name
+        if (!resolvedMiscCategory && categoryValue && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
+          const normalizedName = categoryValue.trim().toLowerCase();
+          const mappedCategory = categoryNameToDataMap.get(normalizedName);
+          if (mappedCategory) {
+            resolvedMiscCategory = mappedCategory;
+          }
+        }
+        
+        // If we still don't have a category, return defaults
+        if (!resolvedMiscCategory) {
+          return { departmentId: null, departmentName: '—' };
+        }
+
+        // Handle array case (shouldn't happen, but be safe)
+        const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
+        if (!categoryRecord) {
+          return { departmentId: null, departmentName: '—' };
+        }
+
+        // Extract main category (handle both array and object cases)
+        let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
+          ? categoryRecord.misc_maincategory[0]
+          : categoryRecord.misc_maincategory;
+
+        if (!mainCategory) {
+          return { departmentId: null, departmentName: categoryRecord.name || '—' };
+        }
+
+        // Extract department from main category
+        const department = mainCategory.tenant_departement 
+          ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement)
+          : null;
+
+        const departmentId = department?.id || mainCategory.department_id || null;
+        const departmentName = department?.name || mainCategory.name || categoryRecord.name || '—';
+
+        return { departmentId, departmentName };
+      };
       
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
@@ -3357,6 +3416,7 @@ const Dashboard: React.FC = () => {
           .select(`
             id,
             handler,
+            category_id,
             category,
             misc_category!category_id(
               id, name, parent_id,
@@ -3387,7 +3447,23 @@ const Dashboard: React.FC = () => {
           .from('leads_lead')
           .select(`
             id,
-            case_handler_id
+            case_handler_id,
+            category_id,
+            category,
+            misc_category!category_id(
+              id,
+              name,
+              parent_id,
+              misc_maincategory!parent_id(
+                id,
+                name,
+                department_id,
+                tenant_departement!department_id(
+                  id,
+                  name
+                )
+              )
+            )
           `)
           .in('id', legacyLeadIds);
 
@@ -3595,18 +3671,12 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Get department ID from the category (matching Agreement Signed table logic)
-        let departmentId = null;
-        if (lead.misc_category?.misc_maincategory?.department_id) {
-          departmentId = lead.misc_category.misc_maincategory.department_id;
-        } else if (lead.category && categoryNameToDataMap) {
-          // If misc_category join failed (category_id is null), try to look up by category name
-          const normalizedCategoryName = lead.category.trim().toLowerCase();
-          const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
-          if (mappedCategory?.misc_maincategory?.department_id) {
-            departmentId = mappedCategory.misc_maincategory.department_id;
-          }
-        }
+        // Get department from category -> main category -> department (using helper function)
+        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+          lead.category, // category text field
+          lead.category_id, // category ID
+          lead.misc_category // joined misc_category data
+        );
 
         // Only include payments that have a department in our department list
         if (!departmentId || !departmentIds.includes(departmentId)) {
@@ -3616,14 +3686,15 @@ const Dashboard: React.FC = () => {
         
         newPaymentsProcessed++;
 
-        // Use value + value_vat for total amount from payment_plans table (matching CollectionDueReport logic)
+        // Use value (without VAT) for total amount from payment_plans table (matching CollectionDueReport logic)
         const value = Number(payment.value || 0);
-        let vat = Number(payment.value_vat || 0);
-        if (!vat && (payment.currency || '₪') === '₪') {
-          vat = Math.round(value * 0.18 * 100) / 100;
-        }
-        const amount = value + vat;
-        const amountInNIS = convertToNIS(amount, payment.currency === '₪' ? 1 : payment.currency === '€' ? 2 : payment.currency === '$' ? 3 : payment.currency === '£' ? 4 : 1);
+        // Normalize currency: convert symbols to codes for convertToNIS
+        let currencyForConversion = payment.currency || 'NIS';
+        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+        else if (currencyForConversion === '$') currencyForConversion = 'USD';
+        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+        const amountInNIS = convertToNIS(value, currencyForConversion);
 
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
         if (!dueDate) return;
@@ -3691,19 +3762,12 @@ const Dashboard: React.FC = () => {
           return;
         }
 
-        // Get handlerId from lead's case_handler_id (EXACTLY matching CollectionDueReport)
-        const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
-        
-        // Get department NAME from employee's department (EXACTLY matching CollectionDueReport - uses department NAME, not ID)
-        const employeeDepartmentName = handlerId !== null && !Number.isNaN(handlerId)
-          ? (handlerIdToDepartmentNameMap.get(handlerId) || '—')
-          : '—';
-        
-        // Normalize the department name (remove " - Sales" suffix) and map to consolidated department ID
-        const normalizedDeptName = normalizeDepartmentName(employeeDepartmentName);
-        const departmentId = allDepartmentNamesToIdMap.get(employeeDepartmentName) || 
-                            allDepartmentNamesToIdMap.get(normalizedDeptName) || 
-                            null;
+        // Get department from category -> main category -> department (using helper function, matching CollectionDueReport)
+        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+          lead.category, // category text field (for legacy leads)
+          lead.category_id, // category ID
+          lead.misc_category // joined misc_category data
+        );
 
         // Only include payments that have a department in our department list (or '—' which we'll skip)
         if (!departmentId || !departmentIds.includes(departmentId)) {
@@ -3713,26 +3777,39 @@ const Dashboard: React.FC = () => {
         
         legacyPaymentsProcessed++;
 
-        // Use value_base for legacy payments as specified in CollectionDueReport - exclude VAT
-        const value = Number(payment.value_base || 0);
+        // Use value (without VAT) for legacy payments as specified in CollectionDueReport
+        const value = Number(payment.value || payment.value_base || 0);
         
         // Get currency from accounting_currencies relation
         const accountingCurrency: any = payment.accounting_currencies 
           ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
           : null;
         
-        let currencyId = 1; // Default to NIS
+        // Normalize currency: convert symbols to codes for convertToNIS
+        let currencyForConversion = 'NIS'; // Default to NIS
         if (accountingCurrency?.name) {
-          if (accountingCurrency.name === 'NIS' || accountingCurrency.name === '₪') currencyId = 1;
-          else if (accountingCurrency.name === 'EUR' || accountingCurrency.name === '€') currencyId = 2;
-          else if (accountingCurrency.name === 'USD' || accountingCurrency.name === '$') currencyId = 3;
-          else if (accountingCurrency.name === 'GBP' || accountingCurrency.name === '£') currencyId = 4;
+          currencyForConversion = accountingCurrency.name;
+        } else if (accountingCurrency?.iso_code) {
+          currencyForConversion = accountingCurrency.iso_code;
         } else if (payment.currency_id) {
-          currencyId = payment.currency_id;
+          // Map currency_id to code
+          switch (payment.currency_id) {
+            case 1: currencyForConversion = 'NIS'; break;
+            case 2: currencyForConversion = 'EUR'; break;
+            case 3: currencyForConversion = 'USD'; break;
+            case 4: currencyForConversion = 'GBP'; break;
+            default: currencyForConversion = 'NIS'; break;
+          }
         }
         
-        // Exclude VAT - use value_base only (without VAT), same as CollectionDueReport
-        const amountInNIS = convertToNIS(value, currencyId);
+        // Normalize symbols to codes
+        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+        else if (currencyForConversion === '$') currencyForConversion = 'USD';
+        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+        
+        // Convert to NIS (value without VAT), same as CollectionDueReport
+        const amountInNIS = convertToNIS(value, currencyForConversion);
 
         // Use due_date for date filtering (same as CollectionDueReport)
         const dueDate = payment.due_date ? (typeof payment.due_date === 'string' ? payment.due_date.split('T')[0] : new Date(payment.due_date).toISOString().split('T')[0]) : null;
@@ -3778,8 +3855,6 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].count += 1;
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
-        
-        legacyPaymentsProcessed++; // Track processed payments
       });
       
       console.log('📊 Invoiced Data - Legacy payments processing:', {

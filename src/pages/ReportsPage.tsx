@@ -7416,6 +7416,7 @@ const CollectionDueReport = () => {
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
+  const [categoryNameToDataMap, setCategoryNameToDataMap] = useState<Map<string, any>>(new Map());
   
   // Drawer state for lead details
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -7458,7 +7459,7 @@ const CollectionDueReport = () => {
         setCategories(catData.map(cat => ({ id: cat.id.toString(), name: cat.name })));
       }
 
-      // Fetch all categories with their parent main category names using JOINs (for drawer)
+      // Fetch all categories with their parent main category names and departments using JOINs
       const { data: categoriesData, error: categoriesError } = await supabase
         .from('misc_category')
         .select(`
@@ -7467,13 +7468,28 @@ const CollectionDueReport = () => {
           parent_id,
           misc_maincategory!parent_id (
             id,
-            name
+            name,
+            department_id,
+            tenant_departement!department_id (
+              id,
+              name
+            )
           )
         `)
         .order('name', { ascending: true });
       
       if (!categoriesError && categoriesData) {
         setAllCategories(categoriesData);
+        
+        // Create a map from category name (normalized) to category data (including main category and department)
+        const nameToDataMap = new Map<string, any>();
+        categoriesData.forEach((category: any) => {
+          if (category.name) {
+            const normalizedName = category.name.trim().toLowerCase();
+            nameToDataMap.set(normalizedName, category);
+          }
+        });
+        setCategoryNameToDataMap(nameToDataMap);
       }
     };
     fetchOptions();
@@ -7505,6 +7521,53 @@ const CollectionDueReport = () => {
       default:
         return raw;
     }
+  };
+
+  // Helper function to resolve category and get department (similar to SignedSalesReportPage)
+  const resolveCategoryAndDepartment = (
+    categoryValue?: string | null,
+    categoryId?: string | number | null,
+    miscCategory?: any
+  ): { departmentId: string | null; departmentName: string } => {
+    // If we have categoryValue but no miscCategory, try to look it up in the map
+    let resolvedMiscCategory = miscCategory;
+    if (!miscCategory && categoryValue && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
+      const normalizedName = categoryValue.trim().toLowerCase();
+      const mappedCategory = categoryNameToDataMap.get(normalizedName);
+      if (mappedCategory) {
+        resolvedMiscCategory = mappedCategory;
+      }
+    }
+    
+    // If we still don't have a category, return defaults
+    if (!resolvedMiscCategory) {
+      return { departmentId: null, departmentName: '—' };
+    }
+
+    // Handle array case (shouldn't happen, but be safe)
+    const categoryRecord = Array.isArray(resolvedMiscCategory) ? resolvedMiscCategory[0] : resolvedMiscCategory;
+    if (!categoryRecord) {
+      return { departmentId: null, departmentName: '—' };
+    }
+
+    // Extract main category (handle both array and object cases)
+    let mainCategory = Array.isArray(categoryRecord.misc_maincategory)
+      ? categoryRecord.misc_maincategory[0]
+      : categoryRecord.misc_maincategory;
+
+    if (!mainCategory) {
+      return { departmentId: null, departmentName: categoryRecord.name || '—' };
+    }
+
+    // Extract department from main category
+    const department = mainCategory.tenant_departement 
+      ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement)
+      : null;
+
+    const departmentId = department?.id?.toString() || null;
+    const departmentName = department?.name || mainCategory.name || categoryRecord.name || '—';
+
+    return { departmentId, departmentName };
   };
 
   // Helper function to get category name from ID with main category (similar to CalendarPage)
@@ -7732,7 +7795,7 @@ const CollectionDueReport = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow
-      // Filter by 'date' column for date range and only include payments with due_date NOT NULL
+      // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
       console.log('🔍 Collection Due Report - Fetching legacy payment plans from finances_paymentplanrow...');
       let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
@@ -7752,8 +7815,9 @@ const CollectionDueReport = () => {
           order,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
-        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null); // Exclude cancelled payments (only fetch if cancel_date IS NULL)
+        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
+        .is('cancel_date', null) // Exclude cancelled payments
+        .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
       
       // Debug: Check for payments with due_by_id = 14 before filtering
       console.log('🔍 DEBUG Employee 14 - About to apply date filters to legacy payments query');
@@ -7889,6 +7953,7 @@ const CollectionDueReport = () => {
             handler,
             case_handler_id,
             category_id,
+            category,
             misc_category!category_id(
               id,
               name,
@@ -7927,6 +7992,7 @@ const CollectionDueReport = () => {
             id,
             case_handler_id,
             category_id,
+            category,
             misc_category!category_id(
               id,
               name,
@@ -8026,36 +8092,10 @@ const CollectionDueReport = () => {
       const allHandlerIds: number[] = []; // For legacy leads - case_handler_id or due_by_id is numeric
       
       if (filters.employeeType === 'actual_employee_due') {
-        // Collect ready_to_pay_by from new payments
-        console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments...');
-        (newPayments || []).forEach((payment: any) => {
-          const handlerId = normalizeHandlerId(payment.ready_to_pay_by);
-          if (handlerId !== null) {
-            allHandlerIds.push(handlerId);
-            console.log('✅ Added ready_to_pay_by:', handlerId);
-          }
-        });
-        
-        // Collect due_by_id from legacy payments
-        console.log('🔍 Collection Due Report - Collecting due_by_id from legacy payments...');
-        filteredLegacyPayments.forEach((payment: any) => {
-          const handlerId = normalizeHandlerId(payment.due_by_id);
-          if (handlerId !== null) {
-            allHandlerIds.push(handlerId);
-            if (handlerId === 14) {
-              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy payment due_by_id:', {
-                paymentId: payment.id,
-                leadId: payment.lead_id,
-                due_by_id: payment.due_by_id
-              });
-            }
-            console.log('✅ Added due_by_id:', handlerId);
-          }
-        });
-      } else {
-        // Collect handler names from new leads (default)
+        // Collect handler names/IDs from leads (actual employee due mode)
+        // Collect handler names from new leads
         if (newLeadsMap.size > 0) {
-          console.log('🔍 Collection Due Report - Collecting handler names from new leads...');
+          console.log('🔍 Collection Due Report - Collecting handler names from new leads (actual employee due)...');
           newLeadsMap.forEach((lead, leadId) => {
             console.log('📊 New lead handler info:', {
               leadId,
@@ -8066,13 +8106,20 @@ const CollectionDueReport = () => {
             if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
               allHandlerNames.add(lead.handler.trim());
               console.log('✅ Added handler name:', lead.handler.trim());
+            } else if (lead.case_handler_id) {
+              // Fallback to case_handler_id if handler text is not available
+              const handlerId = normalizeHandlerId(lead.case_handler_id);
+              if (handlerId !== null) {
+                allHandlerIds.push(handlerId);
+                console.log('✅ Added case_handler_id:', handlerId);
+              }
             }
           });
         }
         
-        // Collect case_handler_id from legacy leads (default)
+        // Collect case_handler_id from legacy leads
         if (legacyLeadsMap.size > 0) {
-          console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads...');
+          console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads (actual employee due)...');
           legacyLeadsMap.forEach((lead: any, leadId: any) => {
             console.log('📊 Legacy lead handler info:', {
               leadId,
@@ -8091,6 +8138,34 @@ const CollectionDueReport = () => {
             }
           });
         }
+      } else {
+        // Default (case_handler): Collect ready_to_pay_by from new payments and due_by_id from legacy payments
+        // Collect ready_to_pay_by from new payments
+        console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments (default)...');
+        (newPayments || []).forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.ready_to_pay_by);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            console.log('✅ Added ready_to_pay_by:', handlerId);
+          }
+        });
+        
+        // Collect due_by_id from legacy payments
+        console.log('🔍 Collection Due Report - Collecting due_by_id from legacy payments (default)...');
+        filteredLegacyPayments.forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            if (handlerId === 14) {
+              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy payment due_by_id:', {
+                paymentId: payment.id,
+                leadId: payment.lead_id,
+                due_by_id: payment.due_by_id
+              });
+            }
+            console.log('✅ Added due_by_id:', handlerId);
+          }
+        });
       }
       console.log('📊 Collection Due Report - All collected handler names (new):', Array.from(allHandlerNames));
       console.log('📊 Collection Due Report - All collected handler IDs (legacy):', allHandlerIds);
@@ -8184,27 +8259,14 @@ const CollectionDueReport = () => {
         const lead = newLeadsMap.get(payment.lead_id);
         if (!lead) return;
 
-        // Get handler - use ready_to_pay_by if "Actual Employee Due" is selected, otherwise use handler from lead
+        // Get handler based on filter selection
+        // Default (case_handler): Use ready_to_pay_by from payment_plans table
+        // Actual employee due: Use handler from lead (handler text or case_handler_id)
         let handlerId: number | null = null;
         let handlerName = '—';
         
         if (filters.employeeType === 'actual_employee_due') {
-          // Use ready_to_pay_by from payment if "Actual Employee Due" is selected
-          handlerId = normalizeHandlerId(payment.ready_to_pay_by);
-          if (handlerId === 14) {
-            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
-              paymentId: payment.id,
-              leadId: payment.lead_id,
-              ready_to_pay_by: payment.ready_to_pay_by
-            });
-          }
-          if (handlerId !== null) {
-            handlerName = handlerMap.get(handlerId) || '—';
-            if (handlerId === 14) {
-              console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
-            }
-          }
-        } else {
+          // Use handler from lead if "Actual Employee Due" is selected
           // For new leads, handler is stored as text (display_name) in the 'handler' column
           if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
             const handlerNameFromLead = lead.handler.trim();
@@ -8219,15 +8281,38 @@ const CollectionDueReport = () => {
               // Handler name not found in map, use the name directly
               handlerName = handlerNameFromLead;
             }
+          } else if (lead.case_handler_id) {
+            // Fallback to case_handler_id if handler text is not available
+            handlerId = normalizeHandlerId(lead.case_handler_id);
+            if (handlerId !== null) {
+              handlerName = handlerMap.get(handlerId) || '—';
+            }
+          }
+        } else {
+          // Default (case_handler): Use ready_to_pay_by from payment_plans table
+          handlerId = normalizeHandlerId(payment.ready_to_pay_by);
+          if (handlerId === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              ready_to_pay_by: payment.ready_to_pay_by
+            });
+          }
+          if (handlerId !== null) {
+            handlerName = handlerMap.get(handlerId) || '—';
+            if (handlerId === 14) {
+              console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
+            }
           }
         }
 
         // Get department from category -> main category -> department
-        const category = lead.misc_category;
-        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
-        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
-        const departmentId = department?.id?.toString() || null;
-        const departmentName = department?.name || mainCategory?.name || category?.name || '—';
+        // Use helper function to handle cases where category is stored as text instead of ID
+        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+          lead.category, // category text field
+          lead.category_id, // category ID
+          lead.misc_category // joined misc_category data
+        );
 
         const value = Number(payment.value || 0);
         let vat = Number(payment.value_vat || 0);
@@ -8438,26 +8523,14 @@ const CollectionDueReport = () => {
           });
         }
         
-        // Get handler - use case_handler_id or due_by_id based on filter selection
+        // Get handler based on filter selection
+        // Default (case_handler): Use due_by_id from finances_paymentplanrow table
+        // Actual employee due: Use case_handler_id from lead
         let handlerId: number | null = null;
         let handlerName = '—';
         
         if (filters.employeeType === 'actual_employee_due') {
-          // Use due_by_id from payment if "Actual Employee Due" is selected
-          handlerId = normalizeHandlerId(payment.due_by_id);
-          if (handlerId === 14 || payment.due_by_id === 14) {
-            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy payment due_by_id:', {
-              paymentId: payment.id,
-              leadId: payment.lead_id,
-              due_by_id: payment.due_by_id,
-              normalizedHandlerId: handlerId
-            });
-          }
-          if (isLead183061) {
-            console.log('🔍 DEBUG Lead 183061 - Using due_by_id mode, handlerId:', handlerId);
-          }
-        } else {
-          // Use case_handler_id from lead if "Case Handler" is selected (default)
+          // Use case_handler_id from lead if "Actual Employee Due" is selected
           // If lead doesn't exist, we can't get case_handler_id, so skip this payment
           if (!lead) {
             if (isLead183061) {
@@ -8489,7 +8562,21 @@ const CollectionDueReport = () => {
             });
           }
           if (isLead183061) {
-            console.log('🔍 DEBUG Lead 183061 - Using case_handler_id mode, handlerId:', handlerId, 'from case_handler_id:', lead.case_handler_id);
+            console.log('🔍 DEBUG Lead 183061 - Using case_handler_id mode (actual employee due), handlerId:', handlerId, 'from case_handler_id:', lead.case_handler_id);
+          }
+        } else {
+          // Default (case_handler): Use due_by_id from finances_paymentplanrow table
+          handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId === 14 || payment.due_by_id === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy payment due_by_id:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              due_by_id: payment.due_by_id,
+              normalizedHandlerId: handlerId
+            });
+          }
+          if (isLead183061) {
+            console.log('🔍 DEBUG Lead 183061 - Using due_by_id mode (default), handlerId:', handlerId);
           }
         }
         
@@ -8520,11 +8607,12 @@ const CollectionDueReport = () => {
         }
 
         // Get department from category -> main category -> department
-        const category = lead.misc_category;
-        const mainCategory = category ? (Array.isArray(category.misc_maincategory) ? category.misc_maincategory[0] : category.misc_maincategory) : null;
-        const department = mainCategory?.tenant_departement ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement) : null;
-        const departmentId = department?.id?.toString() || null;
-        const departmentName = department?.name || mainCategory?.name || category?.name || '—';
+        // Use helper function to handle cases where category is stored as text instead of ID
+        const { departmentId, departmentName } = resolveCategoryAndDepartment(
+          lead.category, // category text field (for legacy leads)
+          lead.category_id, // category ID
+          lead.misc_category // joined misc_category data
+        );
 
         // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
         const value = Number(payment.value || payment.value_base || 0);
@@ -8650,45 +8738,10 @@ const CollectionDueReport = () => {
         }
       }
 
-      // Filter by category/department/employee/order if specified
+      // Only filter by ready_to_pay and due_date - no other filters applied
+      // All payments marked as ready to pay with due_date in the date range are shown
       let filteredPayments = payments;
-      console.log('🔍 Collection Due Report - Before filters, payments:', filteredPayments.length);
-      const paymentsWith14BeforeFilter = filteredPayments.filter(p => p.handlerId === 14);
-      console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 before filtering:', paymentsWith14BeforeFilter.length);
-      
-      // Filter by order if specified
-      if (filters.order && filters.order !== '') {
-        console.log('🔍 Collection Due Report - Filtering by order:', filters.order);
-        filteredPayments = filteredPayments.filter(p => p.orderCode === filters.order);
-        console.log('🔍 Collection Due Report - After order filter:', filteredPayments.length);
-        const paymentsWith14AfterOrder = filteredPayments.filter(p => p.handlerId === 14);
-        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after order filter:', paymentsWith14AfterOrder.length);
-      }
-      
-      if (filters.category) {
-        console.log('🔍 Collection Due Report - Filtering by category:', filters.category);
-        filteredPayments = filteredPayments.filter(p => p.departmentId === filters.category);
-        console.log('🔍 Collection Due Report - After category filter:', filteredPayments.length);
-        const paymentsWith14AfterCategory = filteredPayments.filter(p => p.handlerId === 14);
-        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after category filter:', paymentsWith14AfterCategory.length);
-      }
-      if (filters.department) {
-        console.log('🔍 Collection Due Report - Filtering by department:', filters.department);
-        filteredPayments = filteredPayments.filter(p => p.departmentId === filters.department);
-        console.log('🔍 Collection Due Report - After department filter:', filteredPayments.length);
-        const paymentsWith14AfterDept = filteredPayments.filter(p => p.handlerId === 14);
-        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after department filter:', paymentsWith14AfterDept.length);
-      }
-      if (filters.employee) {
-        console.log('🔍 Collection Due Report - Filtering by employee:', filters.employee);
-        const empId = Number(filters.employee);
-        filteredPayments = filteredPayments.filter(p => p.handlerId === empId);
-        console.log('🔍 Collection Due Report - After employee filter:', filteredPayments.length);
-        const paymentsWith14AfterEmployee = filteredPayments.filter(p => p.handlerId === 14);
-        console.log('🔍 DEBUG Employee 14 - Payments with handlerId 14 after employee filter:', paymentsWith14AfterEmployee.length);
-      }
-      
-      console.log('✅ Collection Due Report - Final filtered payments:', filteredPayments.length);
+      console.log('✅ Collection Due Report - Payments (filtered only by ready_to_pay and due_date):', filteredPayments.length);
 
       // Create a map of leadId -> payment value and currency for drawer display (from filtered payments)
       const paymentValueMapLocal = new Map<string, { value: number; currency: string }>();
@@ -8752,7 +8805,15 @@ const CollectionDueReport = () => {
         }
         const entry = employeeMap.get(key)!;
         entry.cases.add(payment.leadId); // Set automatically prevents duplicate lead IDs
-        entry.total += payment.value; // Use value without VAT
+        // Convert value to NIS before adding to total
+        // Normalize currency: convert symbols to codes for convertToNIS
+        let currencyForConversion = payment.currency || 'NIS';
+        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+        else if (currencyForConversion === '$') currencyForConversion = 'USD';
+        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+        const valueInNIS = convertToNIS(payment.value, currencyForConversion);
+        entry.total += valueInNIS; // Use value converted to NIS
         
         if (payment.handlerId === 14) {
           console.log('🔍 DEBUG Employee 14 - Updated entry:', {
@@ -8907,26 +8968,18 @@ const CollectionDueReport = () => {
       console.log('📊 Collection Due Report - Employee data:', employeeDataArray);
       console.log('📊 Collection Due Report - Employee map entries:', Array.from(employeeMap.entries()).map(([key, entry]) => ({ key, handlerId: entry.handlerId, handlerName: entry.handlerName })));
 
-      // Group by department - use employee's department from tenants_employee
-      // First, create a map from handlerId to department name from the employeeMap
-      const handlerIdToDepartmentMap = new Map<number | null, string>();
-      employeeMap.forEach((entry) => {
-        if (entry.handlerId !== null) {
-          handlerIdToDepartmentMap.set(entry.handlerId, entry.departmentName);
-        }
-      });
-
+      // Group by department - use lead's category department (not employee's department)
+      // Match leads by category to department, same as signed agreements table in Dashboard
       const departmentMap = new Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
       filteredPayments.forEach(payment => {
-        // Get department from employee's department_id, not from payment's category
-        const employeeDepartment = payment.handlerId !== null 
-          ? (handlerIdToDepartmentMap.get(payment.handlerId) || '—')
-          : '—';
-        const key = employeeDepartment;
+        // Get department from lead's category -> main category -> department
+        // This is already extracted in payment.departmentId and payment.departmentName
+        const departmentName = payment.departmentName || '—';
+        const key = departmentName;
         
         if (!departmentMap.has(key)) {
           departmentMap.set(key, {
-            departmentName: employeeDepartment,
+            departmentName: departmentName,
             cases: new Set(),
             applicantsLeads: new Set(),
             applicants: 0,
@@ -8935,7 +8988,15 @@ const CollectionDueReport = () => {
         }
         const entry = departmentMap.get(key)!;
         entry.cases.add(payment.leadId);
-        entry.total += payment.value; // Use value without VAT
+        // Convert value to NIS before adding to total
+        // Normalize currency: convert symbols to codes for convertToNIS
+        let currencyForConversion = payment.currency || 'NIS';
+        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+        else if (currencyForConversion === '$') currencyForConversion = 'USD';
+        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+        const valueInNIS = convertToNIS(payment.value, currencyForConversion);
+        entry.total += valueInNIS; // Use value converted to NIS
 
         // Add applicants count only once per lead
         if (!entry.applicantsLeads.has(payment.leadId)) {

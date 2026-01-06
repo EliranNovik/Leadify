@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { BanknotesIcon, MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, RectangleStackIcon } from '@heroicons/react/24/solid';
 import { PencilSquareIcon, XMarkIcon, ArrowLeftIcon, XCircleIcon, ExclamationTriangleIcon } from '@heroicons/react/24/outline';
 import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
+import { convertToNIS } from '../lib/currencyConversion';
 
 type MainCategory = {
   id: string;
@@ -351,8 +352,34 @@ const loadPayments = async () => {
   };
 
   const totals = useMemo(() => {
-    const estimated = rows.reduce((sum, row) => sum + row.amount, 0);
-    const collected = rows.reduce((sum, row) => (row.collected ? sum + row.amount : sum), 0);
+    // Match CollectionDueReport logic: convert value (without VAT) to NIS
+    const estimated = rows.reduce((sum, row) => {
+      // Normalize currency: convert symbols to codes for convertToNIS
+      let currencyForConversion = row.currency || 'NIS';
+      if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+      else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+      else if (currencyForConversion === '$') currencyForConversion = 'USD';
+      else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+      
+      // Convert value to NIS (same as CollectionDueReport line 8815)
+      const valueInNIS = convertToNIS(row.value, currencyForConversion);
+      return sum + valueInNIS;
+    }, 0);
+    const collected = rows.reduce((sum, row) => {
+      if (row.collected) {
+        // Normalize currency: convert symbols to codes for convertToNIS
+        let currencyForConversion = row.currency || 'NIS';
+        if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+        else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+        else if (currencyForConversion === '$') currencyForConversion = 'USD';
+        else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+        
+        // Convert value to NIS (same as CollectionDueReport)
+        const valueInNIS = convertToNIS(row.value, currencyForConversion);
+        return sum + valueInNIS;
+      }
+      return sum;
+    }, 0);
     return {
       estimated,
       collected,
@@ -590,6 +617,7 @@ const loadPayments = async () => {
                 <th>Lead Name</th>
                 <th>Client</th>
                 <th>Amount</th>
+                <th>Amount (in NIS)</th>
                 <th>Order</th>
                 <th>Collected</th>
                 <th>Date</th>
@@ -602,7 +630,7 @@ const loadPayments = async () => {
             <tbody>
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={10} className="text-center py-6 text-gray-500">No payments found for the selected filters.</td>
+                  <td colSpan={11} className="text-center py-6 text-gray-500">No payments found for the selected filters.</td>
                 </tr>
               )}
               {(() => {
@@ -630,7 +658,30 @@ const loadPayments = async () => {
                     </Link>
                   </td>
                   <td>{row.clientName || row.leadName || '—'}</td>
-                  <td className="font-semibold">{formatCurrency(row.amount, row.currency)}</td>
+                  <td className="font-semibold">
+                    {formatCurrency(row.value, row.currency)}
+                    {row.vat > 0 && (
+                      <span className="text-gray-600 ml-1">
+                        + {formatCurrency(row.vat, row.currency)}
+                      </span>
+                    )}
+                  </td>
+                  <td className="font-semibold">
+                    {(() => {
+                      // Normalize currency: convert symbols to codes for convertToNIS
+                      let currencyForConversion = row.currency || 'NIS';
+                      if (currencyForConversion === '₪') currencyForConversion = 'NIS';
+                      else if (currencyForConversion === '€') currencyForConversion = 'EUR';
+                      else if (currencyForConversion === '$') currencyForConversion = 'USD';
+                      else if (currencyForConversion === '£') currencyForConversion = 'GBP';
+                      
+                      // Convert value to NIS
+                      const valueInNIS = convertToNIS(row.value, currencyForConversion);
+                      const vatInNIS = convertToNIS(row.vat, currencyForConversion);
+                      const totalInNIS = valueInNIS + vatInNIS;
+                      return formatCurrency(totalInNIS, '₪');
+                    })()}
+                  </td>
                   <td>{row.orderLabel || '—'}</td>
                   <td>
                     {row.collected ? (
@@ -741,70 +792,85 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     .from('payment_plans')
     .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
 
-  // If "due date included" is selected, filter by sent to finance criteria
+  // If "due date included" is selected, use the same logic as CollectionDueReport
   if (filters.due === 'due_only') {
     query = query
       .eq('ready_to_pay', true) // Sent to finance
       .eq('paid', false) // Only unpaid payments
-      .not('due_date', 'is', null); // Must have due_date
+      .not('due_date', 'is', null) // Must have due_date
+      .is('cancel_date', null); // Exclude cancelled
+    
+    // Filter by due_date in date range (same as CollectionDueReport)
+    if (filters.fromDate) {
+      const fromDateTime = `${filters.fromDate}T00:00:00`;
+      query = query.gte('due_date', fromDateTime);
+    }
+    if (filters.toDate) {
+      const toDateTime = `${filters.toDate}T23:59:59`;
+      query = query.lte('due_date', toDateTime);
+    }
+  } else {
+    // When "due date included" is NOT selected, filter by cancel_date and apply date range filtering
+    query = query.is('cancel_date', null);
+    
+    // For date range filtering, we need to handle payment plans where:
+    // 1. due_date falls within the range, OR
+    // 2. paid_at falls within the range (for collected payments)
+    // Since Supabase filtering by due_date excludes NULL values, we'll fetch all plans
+    // and apply comprehensive date filtering client-side to catch all relevant payment plans
   }
-
-  // For date range filtering, we need to handle payment plans where:
-  // 1. due_date falls within the range, OR
-  // 2. paid_at falls within the range (for collected payments)
-  // Since Supabase filtering by due_date excludes NULL values, we'll fetch all plans
-  // and apply comprehensive date filtering client-side to catch all relevant payment plans
-  
-  // Note: We're not filtering by date in the query to avoid excluding NULL due_date values
-  // We'll filter client-side below for better accuracy
 
   const { data, error } = await query;
   if (error) throw error;
 
-  const activePlans = (data || []).filter((plan: any) => !plan.cancel_date);
-  
-  // Apply comprehensive client-side date filtering
-  // Include payment plans where due_date or paid_at falls within the date range
-  const dateFilteredPlans = activePlans.filter((plan: any) => {
-    if (!filters.fromDate && !filters.toDate) return true;
-    
-    const dueDate = plan.due_date ? new Date(plan.due_date) : null;
-    const paidAt = plan.paid_at ? new Date(plan.paid_at) : null;
-    const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
-    const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
-    
-    // Check if due_date is in range (primary filter)
-    if (dueDate) {
-      if (fromDate && dueDate < fromDate) return false;
-      if (toDate && dueDate > toDate) return false;
-      return true;
-    }
-    
-    // If due_date is NULL, check paid_at (for collected payments)
-    if (paidAt) {
-      if (fromDate && paidAt < fromDate) return false;
-      if (toDate && paidAt > toDate) return false;
-      return true;
-    }
-    
-    // If both due_date and paid_at are NULL, include it (don't exclude payment plans with no date info)
-    // This handles cases where payment plans might not have dates set yet
-    return true;
-  });
+  // When "due date included" is selected, all filtering is done in the query
+  // When NOT selected, we need to apply client-side date filtering
+  const dateFilteredPlans = filters.due === 'due_only' 
+    ? (data || []) // All filtering already done in query (due_date range, ready_to_pay, paid, cancel_date)
+    : (data || []).filter((plan: any) => {
+        // Filter out cancelled plans
+        if (plan.cancel_date) return false;
+        
+        // Apply date range filtering
+        if (!filters.fromDate && !filters.toDate) return true;
+        if (!filters.fromDate && !filters.toDate) return true;
+        
+        const dueDate = plan.due_date ? new Date(plan.due_date) : null;
+        const paidAt = plan.paid_at ? new Date(plan.paid_at) : null;
+        const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
+        const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
+        
+        // Check if due_date is in range (primary filter)
+        if (dueDate) {
+          if (fromDate && dueDate < fromDate) return false;
+          if (toDate && dueDate > toDate) return false;
+          return true;
+        }
+        
+        // If due_date is NULL, check paid_at (for collected payments)
+        if (paidAt) {
+          if (fromDate && paidAt < fromDate) return false;
+          if (toDate && paidAt > toDate) return false;
+          return true;
+        }
+        
+        // If both due_date and paid_at are NULL, include it (don't exclude payment plans with no date info)
+        // This handles cases where payment plans might not have dates set yet
+        return true;
+      });
   
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, false);
 
+  // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
+  // IMPORTANT: All payment values come from payment_plans table, NOT from leads table
   return dateFilteredPlans
-    .filter((plan: any) => {
-      // Filter out payments for leads that don't have metadata
-      const key = plan.lead_id?.toString?.() || '';
-      return leadMeta.has(key);
-    })
     .map((plan: any) => {
     const key = plan.lead_id?.toString?.() || '';
     const meta = leadMeta.get(key) || null;
+    // Get value from payment_plans table (plan.value from payment_plans query)
     const value = Number(plan.value || 0);
+    // Get VAT from payment_plans table (plan.value_vat from payment_plans query)
     let vat = Number(plan.value_vat || 0);
     if (!vat && (plan.currency || '₪') === '₪') {
       vat = Math.round(value * 0.18 * 100) / 100;
@@ -846,30 +912,40 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   let query = supabase
     .from('finances_paymentplanrow')
     .select(
-      'id, lead_id, client_id, value, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
+      'id, lead_id, client_id, value, value_base, vat_value, currency_id, due_date, date, order, notes, actual_date, cancel_date, ready_to_pay, accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)',
     );
 
-  // Always filter by 'date' column for date range
-  if (filters.fromDate) {
-    const fromDateTime = `${filters.fromDate}T00:00:00`;
-    console.log('🔍 [fetchLegacyPayments] Filtering by date >=', fromDateTime);
-    query = query.gte('date', fromDateTime);
-  }
-  if (filters.toDate) {
-    const toDateTime = `${filters.toDate}T23:59:59`;
-    console.log('🔍 [fetchLegacyPayments] Filtering by date <=', toDateTime);
-    query = query.lte('date', toDateTime);
-  }
-
-  // For legacy, also filter by due_date when "due date included" is selected (for date range)
+  // If "due date included" is selected, use the same logic as CollectionDueReport
   if (filters.due === 'due_only') {
+    // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
+    query = query
+      .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
+      .is('cancel_date', null) // Exclude cancelled payments
+      .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
+    
+    // Filter by 'due_date' column for date range (this is what determines when payment is due)
+    // For legacy leads, only fetch payment rows if due_date is available (due_date means ready to pay)
     if (filters.fromDate) {
       const fromDateTime = `${filters.fromDate}T00:00:00`;
+      console.log('🔍 [fetchLegacyPayments] Filtering by due_date >=', fromDateTime);
       query = query.gte('due_date', fromDateTime);
     }
     if (filters.toDate) {
       const toDateTime = `${filters.toDate}T23:59:59`;
+      console.log('🔍 [fetchLegacyPayments] Filtering by due_date <=', toDateTime);
       query = query.lte('due_date', toDateTime);
+    }
+  } else {
+    // When "due date included" is NOT selected, filter by 'date' column for date range
+    if (filters.fromDate) {
+      const fromDateTime = `${filters.fromDate}T00:00:00`;
+      console.log('🔍 [fetchLegacyPayments] Filtering by date >=', fromDateTime);
+      query = query.gte('date', fromDateTime);
+    }
+    if (filters.toDate) {
+      const toDateTime = `${filters.toDate}T23:59:59`;
+      console.log('🔍 [fetchLegacyPayments] Filtering by date <=', toDateTime);
+      query = query.lte('date', toDateTime);
     }
   }
 
@@ -887,23 +963,17 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     date: p.date,
     due_date: p.due_date,
     cancel_date: p.cancel_date,
+    actual_date: p.actual_date,
   })));
 
-  let activePlans = (data || []).filter((plan: any) => !plan.cancel_date);
-  console.log(`✅ [fetchLegacyPayments] After filtering cancel_date: ${activePlans.length} active plans`);
+  // When "due date included" is selected, all filtering is done in the query
+  // (due_date not null, actual_date is null, cancel_date is null, and date range on due_date)
+  // When NOT selected, we need to filter out cancelled plans
+  const activePlans = filters.due === 'due_only' 
+    ? (data || []) // All filtering already done in query
+    : (data || []).filter((plan: any) => !plan.cancel_date);
   
-  // If "due date included" is selected, filter by ready_to_pay = true OR (ready_to_pay = false AND due_date exists in finances_paymentplanrow)
-  if (filters.due === 'due_only') {
-    const beforeReadyToPayFilter = activePlans.length;
-    activePlans = activePlans.filter((plan: any) => {
-      const isReadyToPay = plan.ready_to_pay === true || plan.ready_to_pay === 'true' || plan.ready_to_pay === 1;
-      const hasDueDate = plan.due_date !== null && plan.due_date !== undefined;
-      
-      // Include if: ready_to_pay = true OR (ready_to_pay = false AND due_date exists)
-      return isReadyToPay || (!isReadyToPay && hasDueDate);
-    });
-    console.log(`✅ [fetchLegacyPayments] After ready_to_pay filter: ${activePlans.length} plans (was ${beforeReadyToPayFilter})`);
-  }
+  console.log(`✅ [fetchLegacyPayments] Active plans: ${activePlans.length}`);
   
   // Debug: Check for lead 34379 specifically
   const plansFor34379 = activePlans.filter((plan: any) => 
@@ -956,24 +1026,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
   }
 
-  const filteredByMetadata = activePlans.filter((plan: any) => {
-      // Filter out payments for leads that don't have metadata
-      // Always use lead_id for filtering (client_id is a contact_id, not a lead_id)
-      const leadIdKey = plan.lead_id?.toString?.() || '';
-      const hasMeta = leadIdKey && leadMeta.has(leadIdKey);
-      
-      if (!hasMeta && (leadIdKey === '34379' || plan.lead_id === 34379)) {
-        console.warn(`⚠️ [fetchLegacyPayments] Payment plan ${plan.id} filtered out:`, {
-          lead_id: plan.lead_id,
-          client_id: plan.client_id,
-          leadIdKey,
-          hasMeta,
-        });
-      }
-      return hasMeta;
-    });
-  
-  return filteredByMetadata
+  // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
+  return activePlans
     .map((plan: any) => {
     // For per-contact payment plans: use lead_id for lead metadata, client_id for contact name
     const leadIdKey = plan.lead_id?.toString?.() || '';
@@ -997,7 +1051,11 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
         caseNumber: meta?.caseNumber,
       });
     }
-    const value = Number(plan.value || 0);
+    // IMPORTANT: Get value from finances_paymentplanrow table, NOT from leads_lead table
+    // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
+    // Same logic as CollectionDueReport - plan.value and plan.value_base come from finances_paymentplanrow query
+    const value = Number(plan.value || plan.value_base || 0);
+    // Get VAT from finances_paymentplanrow table (plan.vat_value from finances_paymentplanrow query)
     let vat = Number(plan.vat_value || 0);
     const currency = plan.accounting_currencies?.name || mapCurrencyId(plan.currency_id);
     if ((!vat || vat === 0) && currency === '₪') {

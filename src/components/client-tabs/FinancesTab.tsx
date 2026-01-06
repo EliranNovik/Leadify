@@ -3127,14 +3127,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const paymentRow = {
             cdate: new Date().toISOString().split('T')[0], // Current date
             udate: new Date().toISOString().split('T')[0], // Current date
-            date: dueDateStr,
+            date: dueDateStr, // Keep the calculated date
             value,
             vat_value: autoPlanData.includeVat
               ? Math.round(value * 0.18 * 100) / 100
               : 0,
             lead_id: legacyId, // Convert to number (bigint)
             notes: '',
-            due_date: dueDateStr,
+            due_date: null, // MUST be null for legacy leads - only set when marking as ready to pay
             due_percent: `${paymentPercent}%`, // Store the due percentage as text with % sign
             order: orderValue, // Convert text order to numeric for database
             currency_id: currencyId,

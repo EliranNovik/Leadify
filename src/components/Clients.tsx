@@ -8770,6 +8770,8 @@ useEffect(() => {
         };
 
         // Insert new payment plans into finances_paymentplanrow table
+        // IMPORTANT: For legacy leads, date and due_date must be null during creation
+        // They will only be set when marking as ready to pay
         const paymentPlansToInsert = payments.map((payment, index) => {
           // Determine currency_id based on the payment currency
           let currencyId = 1; // Default to NIS
@@ -8783,10 +8785,12 @@ useEffect(() => {
             }
           }
           
-          return {
+          // Build the payment plan object, explicitly omitting date and due_date
+          // to prevent database defaults from setting them
+          const paymentPlan: any = {
             cdate: new Date().toISOString().split('T')[0], // Current date
             udate: new Date().toISOString().split('T')[0], // Current date
-            date: payment.dueDate || payment.date || null,
+            // date will be set from payment.dueDate or payment.date below
             value: (() => {
               const val = typeof payment.value === 'number' ? payment.value : parseFloat(payment.value);
               return isNaN(val) ? 0 : val;
@@ -8797,7 +8801,6 @@ useEffect(() => {
             })(),
             lead_id: legacyId.toString(), // Ensure it's a string
             notes: payment.notes || '',
-            due_date: payment.dueDate || payment.date || null,
             due_percent: (() => {
               const percent = payment.duePercent || '0';
               return percent.includes('%') ? percent : percent + '%';
@@ -8812,14 +8815,68 @@ useEffect(() => {
             })(), // Ensure currency_id is valid
             client_id: null, // Will be null for legacy leads
           };
+          
+          // CRITICAL: Set date from payment input, but due_date must be null for legacy leads
+          // date should keep its value from payment.dueDate or payment.date
+          // due_date will only be set when marking as ready to pay
+          paymentPlan.date = payment.dueDate || payment.date || null;
+          paymentPlan.due_date = null;
+          
+          // Double-check before returning - only check due_date
+          if (paymentPlan.due_date !== null) {
+            console.error('ERROR: due_date is not null!', {
+              date: paymentPlan.date,
+              due_date: paymentPlan.due_date,
+              payment: payment
+            });
+            // Force to null
+            paymentPlan.due_date = null;
+          }
+          
+          return paymentPlan;
         });
 
-        console.log('Payment plans to insert:', paymentPlansToInsert);
+        // Verify that due_date is null for legacy leads (date should have a value)
+        paymentPlansToInsert.forEach((plan, idx) => {
+          if (plan.due_date !== null) {
+            console.warn(`⚠️ Payment plan ${idx} has non-null due_date:`, {
+              date: plan.date,
+              due_date: plan.due_date,
+              plan: plan
+            });
+            // Force set due_date to null
+            plan.due_date = null;
+          }
+        });
+        
+        // Final verification - log each plan to ensure due_date is null (date should have a value)
+        console.log('Payment plans to insert (verified null due_date):', paymentPlansToInsert.map(p => ({
+          lead_id: p.lead_id,
+          date: p.date,
+          due_date: p.due_date,
+          value: p.value
+        })));
         
         const { data: insertedPayments, error: paymentInsertError } = await supabase
           .from('finances_paymentplanrow')
           .insert(paymentPlansToInsert)
-          .select('id');
+          .select('id, date, due_date');
+        
+        // Verify what was actually saved - only check due_date
+        if (insertedPayments) {
+          insertedPayments.forEach((payment, idx) => {
+            if (payment.due_date !== null) {
+              console.error(`❌ ERROR: Payment ${idx} was saved with non-null due_date!`, {
+                id: payment.id,
+                date: payment.date,
+                due_date: payment.due_date,
+                message: 'Database may have a DEFAULT value or trigger that needs to be removed'
+              });
+            } else {
+              console.log(`✅ Payment ${idx} correctly saved with null due_date (date: ${payment.date})`);
+            }
+          });
+        }
 
         if (paymentInsertError) {
           console.error('Payment insert error details:', paymentInsertError);
