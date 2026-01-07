@@ -884,14 +884,24 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         
         if (isLegacyLead) {
           // For legacy leads, fetch from finances_paymentplanrow table
-          const legacyId = client.id.toString().replace('legacy_', '');
+          const legacyIdStr = client.id.toString().replace('legacy_', '');
+          const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
+          
+          if (!legacyId || isNaN(legacyId)) {
+            console.error('Invalid legacy lead ID:', client.id);
+            setIsLoadingFinancePlan(false);
+            isFetchingRef.current = false;
+            return;
+          }
           
           // For legacy leads, fetch payments by BOTH lead_id AND client_id (contact_id)
           // This ensures subleads with the same contact don't show each other's finance plans
           // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
           
-          // First, fetch by lead_id to get all payments for this lead
+          // Build query to fetch payments for this specific lead/sublead
+          // CRITICAL: We must filter by BOTH lead_id AND client_id to prevent showing payments from other leads
+          // First, fetch by lead_id to get all payments for this specific lead
           let { data: legacyData, error: legacyError } = await supabase
             .from('finances_paymentplanrow')
             .select(`
@@ -905,18 +915,65 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 display_name
               )
             `)
-            .eq('lead_id', legacyId)
+            .eq('lead_id', legacyId) // Use numeric lead_id to ensure correct matching for this specific lead
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
-          // Filter results to only include payments where:
-          // 1. client_id matches one of the contacts for this lead, OR
-          // 2. client_id is null/empty (legacy payments without contact assignment)
+          // CRITICAL: Filter in JavaScript to ensure we ONLY show payments for contacts associated with THIS lead
+          // This prevents payments from other leads (subleads) that share the same contact_id from appearing
+          // Even though we filter by lead_id in the query, we need this additional filter to be absolutely sure
           if (legacyData && !legacyError) {
+            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments', {
+              legacyId,
+              contactIds,
+              totalPayments: legacyData.length,
+              payments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
+            });
+            
             legacyData = legacyData.filter((plan: any) => {
               const planClientId = plan.client_id ? Number(plan.client_id) : null;
-              // Include if client_id matches a contact for this lead, or if client_id is null/empty
-              return planClientId === null || contactIds.includes(planClientId);
+              const planLeadId = plan.lead_id ? Number(plan.lead_id) : null;
+              
+              // CRITICAL: Double-check that lead_id matches (should already be filtered, but be extra safe)
+              if (planLeadId !== legacyId) {
+                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
+                return false;
+              }
+              
+              // Include payment if:
+              // 1. client_id is null (legacy payments without contact assignment)
+              // 2. client_id matches a contact_id for THIS lead (new payment plans with correct contact_id)
+              // 3. client_id matches the lead_id (backward compatibility for old payment plans that used lead_id as client_id)
+              //    Since we already filter by lead_id in the query, if client_id === lead_id, it's definitely for this lead
+              let shouldInclude = false;
+              
+              if (planClientId === null) {
+                // Legacy payments without contact assignment
+                shouldInclude = true;
+              } else if (contactIds.includes(planClientId)) {
+                // New payment plans with correct contact_id
+                shouldInclude = true;
+              } else if (planClientId === legacyId) {
+                // Backward compatibility: Old payment plans that used lead_id as client_id
+                // Since we already filter by lead_id in the query, if client_id === lead_id, it's definitely for this lead
+                console.log('✅ Including payment with lead_id as client_id (backward compatibility):', { 
+                  planId: plan.id, 
+                  planClientId, 
+                  legacyId
+                });
+                shouldInclude = true;
+              }
+              
+              if (!shouldInclude) {
+                console.log('🔍 Excluding payment (client_id mismatch):', { planId: plan.id, planClientId, contactIds, legacyId });
+              }
+              return shouldInclude;
+            });
+            
+            console.log('✅ fetchPaymentPlans (legacy): Filtered payments', {
+              legacyId,
+              filteredCount: legacyData.length,
+              filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
           }
           
@@ -928,7 +985,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Match by BOTH lead_id AND client_id (contact_id) to ensure subleads with same contact don't show each other's plans
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
           
-          // First, fetch by lead_id to get all payments for this lead
+          // Build query to fetch payments for this specific lead/sublead
+          // CRITICAL: We must filter by BOTH lead_id AND client_id to prevent showing payments from other leads
+          // First, fetch by lead_id to get all payments for this specific lead
           let { data: regularData, error: regularError } = await supabase
             .from('payment_plans')
             .select(`
@@ -938,18 +997,46 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 display_name
               )
             `)
-            .eq('lead_id', client.id)
+            .eq('lead_id', client.id) // Use the specific lead_id for this lead/sublead
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
-          // Filter results to only include payments where:
-          // 1. client_id matches one of the contacts for this lead, OR
-          // 2. client_id is null/empty (payments without contact assignment)
+          // CRITICAL: Filter in JavaScript to ensure we ONLY show payments for contacts associated with THIS lead
+          // This prevents payments from other leads (subleads) that share the same contact_id from appearing
+          // Even though we filter by lead_id in the query, we need this additional filter to be absolutely sure
           if (regularData && !regularError) {
+            console.log('🔍 fetchPaymentPlans (new): Filtering payments', {
+              leadId: client.id,
+              contactIds,
+              totalPayments: regularData.length,
+              payments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
+            });
+            
             regularData = regularData.filter((plan: any) => {
               const planClientId = plan.client_id ? Number(plan.client_id) : null;
-              // Include if client_id matches a contact for this lead, or if client_id is null/empty
-              return planClientId === null || contactIds.includes(planClientId);
+              const planLeadId = plan.lead_id ? String(plan.lead_id) : null;
+              
+              // CRITICAL: Double-check that lead_id matches (should already be filtered, but be extra safe)
+              if (planLeadId !== String(client.id)) {
+                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: client.id, planId: plan.id });
+                return false;
+              }
+              
+              // Include payment if:
+              // 1. client_id is null (payments without contact assignment)
+              // 2. client_id matches a contact_id for THIS lead (new payment plans with correct contact_id)
+              // Note: For new leads, we don't need backward compatibility since they should always use contact_id
+              const shouldInclude = planClientId === null || contactIds.includes(planClientId);
+              if (!shouldInclude) {
+                console.log('🔍 Excluding payment (client_id mismatch):', { planId: plan.id, planClientId, contactIds });
+              }
+              return shouldInclude;
+            });
+            
+            console.log('✅ fetchPaymentPlans (new): Filtered payments', {
+              leadId: client.id,
+              filteredCount: regularData.length,
+              filteredPayments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
           }
           
@@ -2129,67 +2216,43 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return null;
     }
     
+    // CRITICAL: Always look up the contact in the contacts array first
+    // This ensures we use the contact_id (from leads_contact table) instead of the lead_id
+    const normalizedContactName = contactName.trim();
+    const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
+    
+    if (contact?.id) {
+      console.log('🔍 getClientIdForContact: Contact found in contacts array', { 
+        contactName: normalizedContactName, 
+        contactId: contact.id, 
+        isMain: contact.isMain,
+        allContacts: contacts.map(c => ({ name: c.name, id: c.id }))
+      });
+      return contact.id; // Return the contact_id from leads_contact table
+    }
+    
+    // Fallback: If contact not found in array, try legacy lead ID (for backward compatibility)
+    // But this should rarely happen if contacts are loaded correctly
     if (isLegacyLead) {
-      // For legacy leads, check if it's the main contact
-      // Use trim() to handle whitespace issues
-      const normalizedContactName = contactName.trim();
       const normalizedClientName = (client?.name || '').trim();
-      
       if (normalizedContactName === normalizedClientName) {
         const legacyId = client?.id?.toString().replace('legacy_', '');
         const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
-        console.log('🔍 getClientIdForContact: Main contact matched', { contactName: normalizedContactName, clientId: numericLegacyId });
+        console.warn('⚠️ getClientIdForContact: Main contact not found in contacts array, using lead_id as fallback', { 
+          contactName: normalizedContactName, 
+          clientId: numericLegacyId,
+          availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
+        });
         return numericLegacyId && !isNaN(numericLegacyId) ? numericLegacyId : null;
       }
-      
-      // For additional contacts, find the contact ID
-      // Also use trim() for comparison
-      const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
-      if (contact?.id) {
-        console.log('🔍 getClientIdForContact: Additional contact found', { contactName: normalizedContactName, contactId: contact.id, allContacts: contacts.map(c => ({ name: c.name, id: c.id })) });
-        return contact.id;
-      }
-      
-      console.warn('🔍 getClientIdForContact: Contact not found', { 
-        contactName: normalizedContactName, 
-        clientName: normalizedClientName,
-        availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
-      });
-      return null;
-    } else {
-      // For new leads, also find the contact ID from the contacts array
-      const normalizedContactName = contactName.trim();
-      const normalizedClientName = (client?.name || '').trim();
-      
-      // Check if it's the main contact (for new leads, main contact might not have a separate contact_id)
-      // But we can check if the contact name matches the client name
-      if (normalizedContactName === normalizedClientName) {
-        // For main contact in new leads, we might not have a separate contact_id
-        // Return null for now - we'll use client_name for new leads
-        // But if there's a contact_id available, we should use it
-        // Check if there's a contact with isMain=true and has an id
-        const mainContact = contacts.find(c => c.isMain === true);
-        if (mainContact?.id) {
-          return typeof mainContact.id === 'number' ? mainContact.id : parseInt(String(mainContact.id), 10);
-        }
-        return null;
-      }
-      
-      // For additional contacts, find the contact ID
-      const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
-      if (contact?.id) {
-        const contactId = typeof contact.id === 'number' ? contact.id : parseInt(String(contact.id), 10);
-        console.log('🔍 getClientIdForContact: New lead contact found', { contactName: normalizedContactName, contactId, allContacts: contacts.map(c => ({ name: c.name, id: c.id })) });
-        return contactId;
-      }
-      
-      console.warn('🔍 getClientIdForContact: New lead contact not found', { 
-        contactName: normalizedContactName, 
-        clientName: normalizedClientName,
-        availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
-      });
-      return null;
     }
+    
+    console.warn('🔍 getClientIdForContact: Contact not found', { 
+      contactName: normalizedContactName, 
+      clientName: client?.name,
+      availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
+    });
+    return null;
   };
   
   // Helper function to get contact name from client_id for legacy payments
@@ -3005,7 +3068,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       
       if (isLegacyLead) {
         // For legacy leads, save to finances_paymentplanrow table
-        const legacyId = client?.id?.toString().replace('legacy_', '');
+        const legacyIdStr = client?.id?.toString().replace('legacy_', '');
+        const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
+        
+        if (!legacyId || isNaN(legacyId)) {
+          throw new Error('Invalid legacy lead ID');
+        }
         
         // Determine currency_id based on the payment currency
         let currencyId = 1; // Default to NIS
@@ -3046,7 +3114,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           date: newPaymentData.dueDate || null, // Set to null if empty
           value: Number(newPaymentData.value),
           vat_value: (currency === '₪' && newPaymentData.includeVat !== false) ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 : 0,
-          lead_id: legacyId,
+          lead_id: legacyId, // Use numeric lead_id to ensure correct matching for subleads
           notes: newPaymentData.notes || '',
           due_date: newPaymentData.dueDate || null, // Set to null if empty
           due_percent: (() => {
@@ -3077,8 +3145,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 
           : 0;
         
+        // Ensure we're using the correct lead_id for this specific lead/sublead
+        const leadIdForPayment = client?.id;
+        if (!leadIdForPayment) {
+          throw new Error('Invalid lead ID');
+        }
+        
         const paymentData: any = {
-          lead_id: client?.id,
+          lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
           due_percent: Number(newPaymentData.duePercent) || Number(100),
           percent: Number(newPaymentData.duePercent) || Number(100),
           due_date: newPaymentData.dueDate || null, // Set to null if empty
@@ -3092,6 +3166,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         };
         
         // Add client_id if available (int8 column for contact_id)
+        // This ensures payments are correctly associated with the specific contact for this lead
         if (clientIdForContact !== null) {
           paymentData.client_id = clientIdForContact;
         }
@@ -3308,8 +3383,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const defaultOrder = i === 0 ? 'First Payment' : i === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
           const orderText = paymentOrders[i] || defaultOrder;
           
+          // Ensure we're using the correct lead_id for this specific lead/sublead
+          const leadIdForPayment = client?.id;
+          if (!leadIdForPayment) {
+            throw new Error('Invalid lead ID');
+          }
+          
           const paymentData: any = {
-            lead_id: client?.id,
+            lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
             due_percent: paymentPercent,
             due_date: dueDateStr,
             value,
@@ -3322,6 +3403,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           };
           
           // Add client_id if available (int8 column for contact_id)
+          // This ensures payments are correctly associated with the specific contact for this lead
           if (clientIdForContact !== null) {
             paymentData.client_id = clientIdForContact;
           }

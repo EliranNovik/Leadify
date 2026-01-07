@@ -37,6 +37,8 @@ type SignedLeadRow = {
   totalNIS: number;
   totalNISDisplay: string;
   hasPaymentPlan?: boolean;
+  subcontractorFee?: number;
+  subcontractorFeeNIS?: number;
 };
 
 type RoleKey = 'scheduler' | 'manager' | 'closer' | 'expert' | 'handler';
@@ -1227,6 +1229,7 @@ const resolveLegacyLanguage = (lead: any) => {
               balance_currency,
               proposal_total,
               proposal_currency,
+              subcontractor_fee,
               language,
               misc_category!category_id(
                 id,
@@ -1300,6 +1303,7 @@ const resolveLegacyLanguage = (lead: any) => {
               total_base,
               currency_id,
               meeting_total_currency_id,
+              subcontractor_fee,
               category,
               category_id,
               language_id,
@@ -1456,6 +1460,9 @@ const resolveLegacyLanguage = (lead: any) => {
           lead.balance_currency
         );
         const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
+        // Get subcontractor_fee and convert to NIS
+        const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+        const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
         // Get sign date from stage 60 record (date)
         const signDate = newLeadStageDates.get(String(lead.id)) || lead.date_signed || null;
 
@@ -1493,6 +1500,8 @@ const resolveLegacyLanguage = (lead: any) => {
           totalOriginalDisplay: formatCurrencyDisplay(resolvedAmount, currencyMeta.displaySymbol),
           totalNIS: amountNIS,
           totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
+          subcontractorFee,
+          subcontractorFeeNIS,
         };
       });
 
@@ -1505,8 +1514,18 @@ const resolveLegacyLanguage = (lead: any) => {
           return matchesLanguageFilter(languageName);
         })
         .map(lead => {
-          // Use total directly (VAT already excluded in database)
-          const resolvedAmount = parseNumericAmount(lead.total) || 0;
+          // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+          const currencyId = lead.currency_id;
+          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+          let resolvedAmount = 0;
+          if (numericCurrencyId === 1) {
+            // If total exists and has a value, use total; otherwise use total_base
+            const totalValue = parseNumericAmount(lead.total);
+            resolvedAmount = (totalValue && totalValue !== 0) ? totalValue : (parseNumericAmount(lead.total_base) || 0);
+          } else {
+            // Use total for other currencies
+            resolvedAmount = parseNumericAmount(lead.total) || 0;
+          }
           // Get sign date from stage 60 record (date)
           const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
           const currencyMeta = buildCurrencyMeta(
@@ -1515,6 +1534,9 @@ const resolveLegacyLanguage = (lead: any) => {
             lead.accounting_currencies
           );
           const amountNIS = convertToNIS(resolvedAmount, currencyMeta.conversionValue);
+          // Get subcontractor_fee and convert to NIS
+          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
 
           const schedulerName = resolveLegacyEmployeeName(lead.meeting_scheduler_id);
           const managerName = resolveLegacyEmployeeName(lead.meeting_manager_id);
@@ -1557,6 +1579,8 @@ const resolveLegacyLanguage = (lead: any) => {
             totalOriginalDisplay: formatCurrencyDisplay(resolvedAmount, currencyMeta.displaySymbol),
             totalNIS: amountNIS,
             totalNISDisplay: formatCurrencyDisplay(amountNIS, '₪'),
+            subcontractorFee,
+            subcontractorFeeNIS,
           };
         });
 
@@ -1640,6 +1664,14 @@ const resolveLegacyLanguage = (lead: any) => {
   };
 
   const totalInNIS = useMemo(() => rows.reduce((sum, row) => sum + (row.totalNIS || 0), 0), [rows]);
+  const totalInNISWithFeeDeducted = useMemo(() => 
+    rows.reduce((sum, row) => {
+      const total = row.totalNIS || 0;
+      const fee = row.subcontractorFeeNIS || 0;
+      return sum + (total - fee);
+    }, 0), 
+    [rows]
+  );
 
   // Filter reports based on search query
   const filteredReports = useMemo(() => {
@@ -1935,11 +1967,17 @@ const resolveLegacyLanguage = (lead: any) => {
               <div className="flex flex-col md:flex-row md:items-center md:gap-4">
                 <div className="bg-white border border-base-200 shadow-lg rounded-2xl px-6 py-4 flex items-center gap-5 w-full md:max-w-[280px]">
                   <div className="flex flex-col gap-1">
-                    <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed</span>
-                    <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNIS).toLocaleString('en-US')}`}</span>
+                    <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (After Fee)</span>
+                    <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNISWithFeeDeducted).toLocaleString('en-US')}`}</span>
                   </div>
                   <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 flex items-center justify-center text-white text-xl font-bold shadow-lg">
                     {rows.length}
+                  </div>
+                </div>
+                <div className="bg-white border border-base-200 shadow-lg rounded-2xl px-6 py-4 flex items-center gap-5 w-full md:max-w-[280px]">
+                  <div className="flex flex-col gap-1">
+                    <span className="text-xs uppercase tracking-wider text-gray-500">Total Signed (Before Fee)</span>
+                    <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNIS).toLocaleString('en-US')}`}</span>
                   </div>
                 </div>
               </div>
@@ -2026,7 +2064,15 @@ const resolveLegacyLanguage = (lead: any) => {
                         <td className="text-xs md:text-sm">{renderRoleCell(row, 'expert')}</td>
                         <td className="text-xs md:text-sm">{renderRoleCell(row, 'handler')}</td>
                         <td className="text-xs md:text-sm">{row.totalOriginalDisplay}</td>
-                        <td className="text-xs md:text-sm">{row.totalNISDisplay}</td>
+                        <td className="text-xs md:text-sm">
+                          {(() => {
+                            const totalAfterFee = (row.totalNIS || 0) - (row.subcontractorFeeNIS || 0);
+                            const feeDisplay = row.subcontractorFeeNIS && row.subcontractorFeeNIS > 0 
+                              ? ` (fee: ₪ ${Math.round(row.subcontractorFeeNIS).toLocaleString('en-US')})`
+                              : '';
+                            return `${formatCurrencyDisplay(totalAfterFee, '₪')}${feeDisplay}`;
+                          })()}
+                        </td>
                       </tr>
                     ))}
                   </tbody>

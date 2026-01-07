@@ -63,8 +63,8 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
 
   // VAT options
   const vatOptions = [
-    { value: 'excluded', label: 'VAT excluded' },
-    { value: 'included', label: 'VAT included' }
+    { value: 'excluded', label: 'No VAT (0%)' },
+    { value: 'included', label: 'VAT excluded' }
   ];
 
   // Helper function to get symbol from ISO code (used in multiple places)
@@ -216,6 +216,20 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           currencyId = nisCurrency?.id?.toString() || '1';
         }
         
+        // For legacy leads: determine which value to use based on currency_id
+        let proposalTotalValue = 0;
+        if (isLegacyLead) {
+          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+          if (numericCurrencyId === 1) {
+            proposalTotalValue = Number((selectedClient as any).total_base || selectedClient.balance || selectedClient.total || 0);
+          } else {
+            proposalTotalValue = Number(selectedClient.total || selectedClient.balance || 0);
+          }
+        } else {
+          proposalTotalValue = Number(selectedClient.balance || selectedClient.proposal_total || 0);
+        }
+        
         console.log('🔍 Initializing form data:', {
           clientId,
           currencyId,
@@ -224,13 +238,16 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           selectedClientCurrencyId: selectedClient.currency_id,
           selectedClientAccountingCurrencies: (selectedClient as any).accounting_currencies,
           selectedClientBalanceCurrency: selectedClient.balance_currency,
-          selectedClientProposalCurrency: selectedClient.proposal_currency
+          selectedClientProposalCurrency: selectedClient.proposal_currency,
+          proposalTotalValue,
+          total_base: (selectedClient as any).total_base,
+          total: selectedClient.total
         });
         
         setFormData({
           currencyId: currencyId,
           currency: '', // Will be computed from currencyId when needed
-          proposal_total: selectedClient.balance || selectedClient.proposal_total || selectedClient.total || 0,
+          proposal_total: proposalTotalValue,
           proposal_vat: vatStatus,
           subcontractor_fee: selectedClient.subcontractor_fee ?? 0,
           potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
@@ -310,14 +327,26 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // Map proposal_vat to 'vat' column (text): 'included' → 'true', 'excluded' → 'false' (same as new leads)
         const vatColumnValue = formData.proposal_vat === 'included' ? 'true' : 'false';
         
+        // For legacy leads: if currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total
         const updateData: any = {
-          total: formData.proposal_total,
           currency_id: currencyId,
           no_of_applicants: formData.number_of_applicants_meeting,
           subcontractor_fee: formData.subcontractor_fee,
           potential_total: formData.potential_value.toString(),
           vat: vatColumnValue // Save VAT status in 'vat' column for legacy leads
         };
+        
+        // Save to total_base if currency_id is 1, otherwise save to total
+        if (currencyId === 1) {
+          updateData.total_base = formData.proposal_total;
+          // Also update total if total_base is being used (for consistency)
+          // Only update total if it's currently 0 or null, to avoid overwriting existing total
+          if (!selectedClient.total || Number(selectedClient.total) === 0) {
+            updateData.total = formData.proposal_total;
+          }
+        } else {
+          updateData.total = formData.proposal_total;
+        }
         
         const { error } = await supabase
           .from('leads_lead')
@@ -490,7 +519,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
                 />
                 {shouldShowVAT && vatAmount > 0 && (
                   <span className="text-sm text-gray-600 whitespace-nowrap">
-                    +{vatAmount.toFixed(2)} VAT
+                    {formData.proposal_vat === 'included' ? 'incl.' : '+'}{vatAmount.toFixed(2)} VAT
                   </span>
                 )}
               </div>

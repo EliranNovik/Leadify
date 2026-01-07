@@ -2780,8 +2780,17 @@ const Dashboard: React.FC = () => {
               // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, use total directly (matching SignedSalesReportPage.tsx)
-              amount = parseFloat(lead.total) || 0;
+              // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+              const currencyId = lead.currency_id;
+              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+              if (numericCurrencyId === 1) {
+                // If total exists and has a value, use total; otherwise use total_base
+                const totalValue = parseFloat(lead.total);
+                amount = (totalValue && totalValue !== 0) ? totalValue : (parseFloat(lead.total_base) || 0);
+              } else {
+                // Use total for other currencies
+                amount = parseFloat(lead.total) || 0;
+              }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
@@ -2882,8 +2891,17 @@ const Dashboard: React.FC = () => {
               // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, use total directly (matching SignedSalesReportPage.tsx)
-              amount = parseFloat(lead.total) || 0;
+              // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+              const currencyId = lead.currency_id;
+              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+              if (numericCurrencyId === 1) {
+                // If total exists and has a value, use total; otherwise use total_base
+                const totalValue = parseFloat(lead.total);
+                amount = (totalValue && totalValue !== 0) ? totalValue : (parseFloat(lead.total_base) || 0);
+              } else {
+                // Use total for other currencies
+                amount = parseFloat(lead.total) || 0;
+              }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
             const recordDate = record.date;
