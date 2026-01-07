@@ -167,7 +167,33 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         
         if (isLegacyLead) {
           // Legacy leads: currency_id is already in the client data
-          currencyId = selectedClient.currency_id?.toString() || '';
+          // Try multiple ways to get currency_id
+          currencyId = (selectedClient.currency_id?.toString() || 
+                       (selectedClient as any).currency_id?.toString() || 
+                       '').trim();
+          
+          // If currency_id is not available, try to find it from accounting_currencies join
+          if (!currencyId && (selectedClient as any).accounting_currencies) {
+            const currencyRecord = Array.isArray((selectedClient as any).accounting_currencies)
+              ? (selectedClient as any).accounting_currencies[0]
+              : (selectedClient as any).accounting_currencies;
+            if (currencyRecord?.id) {
+              currencyId = currencyRecord.id.toString();
+            }
+          }
+          
+          // Last fallback: try to find currency by symbol
+          if (!currencyId) {
+            const currentCurrencySymbol = selectedClient.balance_currency || 
+                                         (selectedClient as any).meeting_total_currency || 
+                                         '₪';
+            const normalizedSymbol = getCurrencySymbol(currentCurrencySymbol);
+            const matchingCurrency = currencies.find(c => {
+              const symbol = getSymbolFromISO(c.iso_code);
+              return symbol === normalizedSymbol;
+            });
+            currencyId = matchingCurrency?.id?.toString() || '';
+          }
         } else {
           // New leads: use currency_id if available
           if (selectedClient.currency_id) {
@@ -184,11 +210,21 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           }
         }
         
+        // Default to currency ID 1 (NIS/ILS) if still empty
+        if (!currencyId && currencies.length > 0) {
+          const nisCurrency = currencies.find(c => c.iso_code === 'ILS' || c.iso_code === 'NIS');
+          currencyId = nisCurrency?.id?.toString() || '1';
+        }
+        
         console.log('🔍 Initializing form data:', {
           clientId,
           currencyId,
           isLegacyLead,
-          currenciesCount: currencies.length
+          currenciesCount: currencies.length,
+          selectedClientCurrencyId: selectedClient.currency_id,
+          selectedClientAccountingCurrencies: (selectedClient as any).accounting_currencies,
+          selectedClientBalanceCurrency: selectedClient.balance_currency,
+          selectedClientProposalCurrency: selectedClient.proposal_currency
         });
         
         setFormData({

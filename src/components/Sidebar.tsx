@@ -31,6 +31,7 @@ import {
   EnvelopeIcon,
 } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
+import { useAuthContext } from '../contexts/AuthContext';
 
 interface SidebarProps {
   userName?: string;
@@ -130,12 +131,14 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   const location = useLocation();
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
   const { isAdmin } = useAdminRole();
+  const { user: authUser, isInitialized } = useAuthContext();
   
   // State for user role and department from database
   const [userRoleFromDB, setUserRoleFromDB] = React.useState<string>('User');
   const [userDepartment, setUserDepartment] = React.useState<string>('');
   const [userOfficialName, setUserOfficialName] = React.useState<string>('');
   const [isSuperUser, setIsSuperUser] = React.useState<boolean>(false);
+  const [isLoadingUserInfo, setIsLoadingUserInfo] = React.useState<boolean>(true);
   
   // Helper function to get role display name
   const getRoleDisplayName = (role: string): string => {
@@ -170,12 +173,67 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   
   // Fetch user role and department from database using new employee relationship
   React.useEffect(() => {
-    const fetchUserInfo = async () => {
+    // Wait for auth to be initialized before fetching
+    if (!isInitialized) {
+      return;
+    }
+
+    const fetchUserInfo = async (retryCount = 0) => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
-        if (user) {
-          // Get current user's data with employee relationship
-          const { data: userData, error: userError } = await supabase
+        setIsLoadingUserInfo(true);
+        
+        // Get the current auth user
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        
+        if (authError) {
+          console.error('Error getting auth user:', authError);
+          setIsLoadingUserInfo(false);
+          return;
+        }
+
+        if (!user) {
+          // No user logged in
+          setIsLoadingUserInfo(false);
+          return;
+        }
+
+        // Get current user's data with employee relationship
+        let userData = null;
+        let userError = null;
+
+        // Try by auth_id first
+        const { data: userDataByAuthId, error: errorByAuthId } = await supabase
+          .from('users')
+          .select(`
+            id,
+            full_name,
+            email,
+            employee_id,
+            is_superuser,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              official_name,
+              bonuses_role,
+              department_id,
+              tenant_departement!department_id(
+                id,
+                name
+              )
+            )
+          `)
+          .eq('auth_id', user.id)
+          .maybeSingle();
+
+        if (errorByAuthId) {
+          console.error('Error fetching user by auth_id:', errorByAuthId);
+        } else if (userDataByAuthId) {
+          userData = userDataByAuthId;
+        }
+
+        // If not found by auth_id, try by email
+        if (!userData && user.email) {
+          const { data: userDataByEmail, error: errorByEmail } = await supabase
             .from('users')
             .select(`
               id,
@@ -195,71 +253,90 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 )
               )
             `)
-            .eq('auth_id', user.id)
-            .single();
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          if (errorByEmail) {
+            console.error('Error fetching user by email:', errorByEmail);
+          } else if (userDataByEmail) {
+            userData = userDataByEmail;
+          }
+        }
 
-          // If not found by auth_id, try by email
-          if ((userError || !userData) && user.email) {
-            const { data: userByEmail } = await supabase
-              .from('users')
-              .select(`
-                id,
-                full_name,
-                email,
-                employee_id,
-                is_superuser,
-                tenants_employee!employee_id(
-                  id,
-                  display_name,
-                  official_name,
-                  bonuses_role,
-                  department_id,
-                  tenant_departement!department_id(
-                    id,
-                    name
-                  )
-                )
-              `)
-              .eq('email', user.email)
-              .maybeSingle();
+        if (userData) {
+          // Set superuser status
+          setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
+
+          if (userData.tenants_employee) {
+            // Handle both array and single object responses
+            const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
             
-            if (userByEmail) {
-              userData = userByEmail;
-            }
-          }
-
-          if (userData) {
-            // Set superuser status
-            setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
-
-            if (userData.tenants_employee) {
-              // Handle both array and single object responses
-              const empData = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+            if (empData) {
+              // Set official name (use official_name if available, fallback to display_name or full_name)
+              const officialName = empData.official_name || empData.display_name || userData.full_name || user.email || '';
+              setUserOfficialName(officialName);
               
-              if (empData) {
-                // Set official name (use official_name if available, fallback to display_name or full_name)
-                const officialName = empData.official_name || empData.display_name || userData.full_name || '';
-                setUserOfficialName(officialName);
-                
-                // Set role with proper mapping
-                const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
-                setUserRoleFromDB(roleDisplay);
-                
-                // Set department
-                const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
-                const deptName = deptData?.name || 'General';
-                setUserDepartment(deptName);
-              }
+              // Set role with proper mapping
+              const roleDisplay = getRoleDisplayName(empData.bonuses_role || '');
+              setUserRoleFromDB(roleDisplay);
+              
+              // Set department
+              const deptData = Array.isArray(empData.tenant_departement) ? empData.tenant_departement[0] : empData.tenant_departement;
+              const deptName = deptData?.name || 'General';
+              setUserDepartment(deptName);
+            } else {
+              // No employee data, use basic user info
+              setUserOfficialName(userData.full_name || user.email || '');
+              setUserRoleFromDB('User');
             }
+          } else {
+            // No employee relationship, use basic user info
+            setUserOfficialName(userData.full_name || user.email || '');
+            setUserRoleFromDB('User');
           }
+        } else {
+          // User not found in database, use auth user info
+          console.warn('User not found in database, using auth user info');
+          setUserOfficialName(user.email || '');
+          setUserRoleFromDB('User');
         }
       } catch (error) {
         console.error('Error fetching user info:', error);
+        // Retry up to 3 times with exponential backoff
+        if (retryCount < 3) {
+          const delay = Math.pow(2, retryCount) * 1000; // 1s, 2s, 4s
+          setTimeout(() => fetchUserInfo(retryCount + 1), delay);
+          return;
+        }
+      } finally {
+        setIsLoadingUserInfo(false);
       }
     };
     
     fetchUserInfo();
-  }, []);
+
+    // Listen for auth state changes to refetch user info
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
+        if (session?.user) {
+          // Refetch user info when session is refreshed or user signs in
+          fetchUserInfo();
+        }
+      } else if (event === 'SIGNED_OUT') {
+        // Clear user info on sign out
+        setUserOfficialName('');
+        setUserRoleFromDB('User');
+        setUserDepartment('');
+        setIsSuperUser(false);
+      }
+    });
+
+    return () => {
+      if (subscription) {
+        subscription.unsubscribe();
+      }
+    };
+  }, [isInitialized, authUser?.id]); // Re-fetch when auth is initialized or user changes
 
   // Responsive: shrink gap on small desktop heights
   const [isSmallGap, setIsSmallGap] = React.useState(false);
@@ -473,16 +550,22 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
               {/* User info - only visible when sidebar is expanded */}
               {isSidebarHovered && (
                 <div className="flex flex-col min-w-0">
-                  <span className="text-white font-medium text-sm truncate">
-                    {userOfficialName || userName}
-                  </span>
-                  <span className="text-white/70 text-xs truncate">
-                    {userRoleFromDB}
-                  </span>
-                  {userDepartment && (
-                    <span className="text-white/50 text-xs truncate">
-                      {userDepartment}
-                    </span>
+                  {isLoadingUserInfo ? (
+                    <span className="text-white/70 text-xs truncate">Loading...</span>
+                  ) : (
+                    <>
+                      <span className="text-white font-medium text-sm truncate">
+                        {userOfficialName || authUser?.email || userName}
+                      </span>
+                      <span className="text-white/70 text-xs truncate">
+                        {userRoleFromDB}
+                      </span>
+                      {userDepartment && (
+                        <span className="text-white/50 text-xs truncate">
+                          {userDepartment}
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               )}
@@ -631,16 +714,22 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
                 
                 {/* User info - always visible on mobile */}
                 <div className="flex flex-col min-w-0">
-                  <span className="text-base-content font-medium text-sm truncate">
-                    {userOfficialName || userName}
-                  </span>
-                  <span className="text-base-content/70 text-xs truncate">
-                    {userRoleFromDB}
-                  </span>
-                  {userDepartment && (
-                    <span className="text-base-content/50 text-xs truncate">
-                      {userDepartment}
-                    </span>
+                  {isLoadingUserInfo ? (
+                    <span className="text-base-content/70 text-xs truncate">Loading...</span>
+                  ) : (
+                    <>
+                      <span className="text-base-content font-medium text-sm truncate">
+                        {userOfficialName || authUser?.email || userName}
+                      </span>
+                      <span className="text-base-content/70 text-xs truncate">
+                        {userRoleFromDB}
+                      </span>
+                      {userDepartment && (
+                        <span className="text-base-content/50 text-xs truncate">
+                          {userDepartment}
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
               </div>

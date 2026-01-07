@@ -2482,7 +2482,7 @@ const Dashboard: React.FC = () => {
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads_lead')
             .select(`
-              id, total, currency_id,
+              id, total, total_base, currency_id,
               misc_category(
                 id, name, parent_id,
                 misc_maincategory(
@@ -2491,14 +2491,37 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', leadIds)
+            .in('id', leadIds);
           
           if (leadsError) {
             throw leadsError;
           }
+          // Deduplicate stage records: keep only the latest date for each lead_id
+          const leadRecordsMap = new Map<number, any>();
+          stageRecords.forEach(stageRecord => {
+            if (!stageRecord.lead_id) return;
+            const leadId = stageRecord.lead_id;
+            const recordDate = stageRecord.date || stageRecord.cdate;
+            if (!recordDate) return;
+            
+            const existingRecord = leadRecordsMap.get(leadId);
+            if (!existingRecord) {
+              leadRecordsMap.set(leadId, stageRecord);
+            } else {
+              const existingDate = existingRecord.date || existingRecord.cdate;
+              if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+                // This record has a later date, replace the existing one
+                leadRecordsMap.set(leadId, stageRecord);
+              }
+            }
+          });
+          
+          // Convert map back to array
+          const deduplicatedStageRecords = Array.from(leadRecordsMap.values());
+          
           // Join the legacy data
           const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
-          const legacyRecords = stageRecords.map(stageRecord => {
+          const legacyRecords = deduplicatedStageRecords.map(stageRecord => {
             const lead = leadsMap.get(stageRecord.lead_id);
             // Use date as the sign date (preferred) or cdate as fallback
             const recordDate = stageRecord.date || stageRecord.cdate;
@@ -2515,10 +2538,33 @@ const Dashboard: React.FC = () => {
         
         // Process new leads - create records ONLY from stage records (leads_leadstage for stage 60)
         // Do NOT include contracts - match SignedSalesReportPage behavior
+        // Deduplicate new lead stage records: keep only the latest date for each newlead_id
+        const newLeadRecordsMap = new Map<string, any>();
+        (newLeadStageRecords || []).forEach(record => {
+          if (!record.newlead_id) return;
+          const newLeadId = String(record.newlead_id);
+          const recordDate = record.date || record.cdate;
+          if (!recordDate) return;
+          
+          const existingRecord = newLeadRecordsMap.get(newLeadId);
+          if (!existingRecord) {
+            newLeadRecordsMap.set(newLeadId, record);
+          } else {
+            const existingDate = existingRecord.date || existingRecord.cdate;
+            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+              // This record has a later date, replace the existing one
+              newLeadRecordsMap.set(newLeadId, record);
+            }
+          }
+        });
+        
+        // Convert map back to array
+        const deduplicatedNewLeadStageRecords = Array.from(newLeadRecordsMap.values());
+        
         const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
         
-        // Create records from new lead stage records (only source - no contracts)
-        (newLeadStageRecords || []).forEach(record => {
+        // Create records from deduplicated new lead stage records (only source - no contracts)
+        deduplicatedNewLeadStageRecords.forEach(record => {
           if (!record.newlead_id) return;
           const lead = newLeadsMap.get(String(record.newlead_id));
           if (!lead) return;
@@ -2607,7 +2653,7 @@ const Dashboard: React.FC = () => {
           const { data: monthLeadsData, error: monthLeadsError } = await supabase
             .from('leads_lead')
             .select(`
-              id, total, currency_id,
+              id, total, total_base, currency_id,
               misc_category(
                 id, name, parent_id,
                 misc_maincategory(
@@ -2616,14 +2662,37 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', monthLeadIds)
+            .in('id', monthLeadIds);
           
           if (monthLeadsError) {
             throw monthLeadsError;
           }
+          // Deduplicate month stage records: keep only the latest date for each lead_id
+          const monthLeadRecordsMap = new Map<number, any>();
+          monthStageRecords.forEach(stageRecord => {
+            if (!stageRecord.lead_id) return;
+            const leadId = stageRecord.lead_id;
+            const recordDate = stageRecord.date || stageRecord.cdate;
+            if (!recordDate) return;
+            
+            const existingRecord = monthLeadRecordsMap.get(leadId);
+            if (!existingRecord) {
+              monthLeadRecordsMap.set(leadId, stageRecord);
+            } else {
+              const existingDate = existingRecord.date || existingRecord.cdate;
+              if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+                // This record has a later date, replace the existing one
+                monthLeadRecordsMap.set(leadId, stageRecord);
+              }
+            }
+          });
+          
+          // Convert map back to array
+          const deduplicatedMonthStageRecords = Array.from(monthLeadRecordsMap.values());
+          
           // Join the legacy data
           const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
-          const monthLegacyRecords = monthStageRecords.map(stageRecord => {
+          const monthLegacyRecords = deduplicatedMonthStageRecords.map(stageRecord => {
             const lead = monthLeadsMap.get(stageRecord.lead_id);
             // Use date as the sign date (preferred) or cdate as fallback
             const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
@@ -2639,9 +2708,32 @@ const Dashboard: React.FC = () => {
         }
         
         // Process new leads for month (only from leads_leadstage - no contracts)
+        // Deduplicate month new lead stage records: keep only the latest date for each newlead_id
+        const monthNewLeadRecordsMap = new Map<string, any>();
+        (monthNewLeadStageRecords || []).forEach(record => {
+          if (!record.newlead_id) return;
+          const newLeadId = String(record.newlead_id);
+          const recordDate = record.date || record.cdate;
+          if (!recordDate) return;
+          
+          const existingRecord = monthNewLeadRecordsMap.get(newLeadId);
+          if (!existingRecord) {
+            monthNewLeadRecordsMap.set(newLeadId, record);
+          } else {
+            const existingDate = existingRecord.date || existingRecord.cdate;
+            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+              // This record has a later date, replace the existing one
+              monthNewLeadRecordsMap.set(newLeadId, record);
+            }
+          }
+        });
+        
+        // Convert map back to array
+        const deduplicatedMonthNewLeadStageRecords = Array.from(monthNewLeadRecordsMap.values());
+        
         const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
         
-        (monthNewLeadStageRecords || []).forEach(record => {
+        deduplicatedMonthNewLeadStageRecords.forEach(record => {
           if (!record.newlead_id) return;
           const lead = monthNewLeadsMap.get(String(record.newlead_id));
           if (!lead) return;
@@ -2682,13 +2774,13 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // Use actual amounts (including VAT)
+            // Use actual amounts (VAT already excluded in database)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, use balance or proposal_total (actual value with VAT included)
+              // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, use total (actual value with VAT included)
+              // For legacy leads, use total directly (matching SignedSalesReportPage.tsx)
               amount = parseFloat(lead.total) || 0;
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
@@ -2784,13 +2876,13 @@ const Dashboard: React.FC = () => {
               return;
             }
             
-            // Use actual amounts (including VAT)
+            // Use actual amounts (VAT already excluded in database)
             let amount = 0;
             if (record.isNewLead) {
-              // For new leads, use balance or proposal_total (actual value with VAT included)
+              // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads, use total (actual value with VAT included)
+              // For legacy leads, use total directly (matching SignedSalesReportPage.tsx)
               amount = parseFloat(lead.total) || 0;
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);

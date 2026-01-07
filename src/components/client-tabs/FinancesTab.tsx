@@ -886,27 +886,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // For legacy leads, fetch from finances_paymentplanrow table
           const legacyId = client.id.toString().replace('legacy_', '');
           
-          // For legacy leads, fetch payments by both lead_id (text) and client_id (bigint)
-          // lead_id matches the legacy lead ID (as text), client_id matches the contact ID (as bigint)
-          const numericId = parseInt(legacyId);
-          const isNumericIdValid = !isNaN(numericId);
-          
-          // Build OR condition: lead_id matches OR client_id matches main lead ID or contact IDs
+          // For legacy leads, fetch payments by BOTH lead_id AND client_id (contact_id)
+          // This ensures subleads with the same contact don't show each other's finance plans
           // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
-          const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null) : [];
+          const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
           
-          // Build OR condition properly - each condition separated by comma
-          let orCondition = `lead_id.eq.${legacyId}`;
-          if (isNumericIdValid) {
-            orCondition += `,client_id.eq.${numericId}`;
-          }
-          // Add contact IDs to OR condition
-          contactIds.forEach(contactId => {
-            if (contactId != null && !isNaN(Number(contactId))) {
-              orCondition += `,client_id.eq.${contactId}`;
-            }
-          });
-          
+          // First, fetch by lead_id to get all payments for this lead
           let { data: legacyData, error: legacyError } = await supabase
             .from('finances_paymentplanrow')
             .select(`
@@ -920,16 +905,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 display_name
               )
             `)
-            .or(orCondition)
+            .eq('lead_id', legacyId)
             .is('cancel_date', null)
             .order('date', { ascending: true });
+          
+          // Filter results to only include payments where:
+          // 1. client_id matches one of the contacts for this lead, OR
+          // 2. client_id is null/empty (legacy payments without contact assignment)
+          if (legacyData && !legacyError) {
+            legacyData = legacyData.filter((plan: any) => {
+              const planClientId = plan.client_id ? Number(plan.client_id) : null;
+              // Include if client_id matches a contact for this lead, or if client_id is null/empty
+              return planClientId === null || contactIds.includes(planClientId);
+            });
+          }
           
           data = legacyData;
           error = legacyError;
         } else {
           // For regular leads, fetch from payment_plans table
           // Filter out canceled payments (cancel_date is null for active payments)
-          const { data: regularData, error: regularError } = await supabase
+          // Match by BOTH lead_id AND client_id (contact_id) to ensure subleads with same contact don't show each other's plans
+          const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
+          
+          // First, fetch by lead_id to get all payments for this lead
+          let { data: regularData, error: regularError } = await supabase
             .from('payment_plans')
             .select(`
               *,
@@ -941,6 +941,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .eq('lead_id', client.id)
             .is('cancel_date', null)
             .order('date', { ascending: true });
+          
+          // Filter results to only include payments where:
+          // 1. client_id matches one of the contacts for this lead, OR
+          // 2. client_id is null/empty (payments without contact assignment)
+          if (regularData && !regularError) {
+            regularData = regularData.filter((plan: any) => {
+              const planClientId = plan.client_id ? Number(plan.client_id) : null;
+              // Include if client_id matches a contact for this lead, or if client_id is null/empty
+              return planClientId === null || contactIds.includes(planClientId);
+            });
+          }
           
           data = regularData;
           error = regularError;

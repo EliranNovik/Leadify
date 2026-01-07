@@ -36,6 +36,7 @@ type SignedLeadRow = {
   totalOriginalDisplay: string;
   totalNIS: number;
   totalNISDisplay: string;
+  hasPaymentPlan?: boolean;
 };
 
 type RoleKey = 'scheduler' | 'manager' | 'closer' | 'expert' | 'handler';
@@ -807,14 +808,18 @@ const SignedSalesReportPage: React.FC = () => {
           });
           setCategoryNameToDataMap(nameToDataMap);
           
-          const formattedCategories = categoriesResult.data.map((category: any) => {
+          // Extract only main categories (unique main category names)
+          const mainCategorySet = new Set<string>();
+          categoriesResult.data.forEach((category: any) => {
             const mainName = Array.isArray(category.misc_maincategory)
               ? category.misc_maincategory[0]?.name
               : category.misc_maincategory?.name;
-            return mainName ? `${mainName} › ${category.name}` : category.name;
+            if (mainName && mainName.trim() !== '') {
+              mainCategorySet.add(mainName.trim());
+            }
           });
-          const uniqueCategoryLabels = Array.from(new Set(formattedCategories.filter(Boolean)));
-          setCategoryOptions(uniqueCategoryLabels);
+          const uniqueMainCategories = Array.from(mainCategorySet).sort((a, b) => a.localeCompare(b));
+          setCategoryOptions(uniqueMainCategories);
         } else if (categoriesResult.error) {
           console.error('Error fetching categories for signed report:', categoriesResult.error);
         }
@@ -895,7 +900,13 @@ const SignedSalesReportPage: React.FC = () => {
     if (!filters.category) return true;
     const normalizedCategory = normalizeString(filters.category);
     const normalizedValue = normalizeString(categoryValue);
-    return normalizedValue === normalizedCategory || normalizedValue.includes(normalizedCategory);
+    
+    // Extract main category from the full category string (format: "Main Category › Sub Category")
+    const mainCategoryMatch = normalizedValue.match(/^([^›]+)/);
+    const mainCategory = mainCategoryMatch ? mainCategoryMatch[1].trim() : normalizedValue;
+    
+    // Match if the main category matches the filter
+    return mainCategory === normalizedCategory;
   };
 
   const matchesLanguageFilter = (languageValue: string) => {
@@ -1286,6 +1297,7 @@ const resolveLegacyLanguage = (lead: any) => {
               meeting_manager_id,
               meeting_lawyer_id,
               total,
+              total_base,
               currency_id,
               meeting_total_currency_id,
               category,
@@ -1493,9 +1505,8 @@ const resolveLegacyLanguage = (lead: any) => {
           return matchesLanguageFilter(languageName);
         })
         .map(lead => {
-          const amountRaw = parseNumericAmount(lead.total);
-          // Use raw amount directly (VAT already excluded in database)
-          const resolvedAmount = amountRaw || 0;
+          // Use total directly (VAT already excluded in database)
+          const resolvedAmount = parseNumericAmount(lead.total) || 0;
           // Get sign date from stage 60 record (date)
           const signDate = legacyStageDates.get(Number(lead.id)) || lead.cdate || null;
           const currencyMeta = buildCurrencyMeta(
@@ -1563,11 +1574,59 @@ const resolveLegacyLanguage = (lead: any) => {
       });
       
       // Convert map to array and sort by sign date (newest first)
-      const combinedRows = Array.from(combinedRowsMap.values()).sort((a, b) => {
+      let combinedRows = Array.from(combinedRowsMap.values()).sort((a, b) => {
         const aTime = a.signDate ? new Date(a.signDate).getTime() : 0;
         const bTime = b.signDate ? new Date(b.signDate).getTime() : 0;
         return bTime - aTime;
       });
+
+      // Check for payment plans for all leads
+      const newLeadIds = combinedRows.filter(row => row.leadType === 'new').map(row => row.id);
+      const legacyLeadIds = combinedRows.filter(row => row.leadType === 'legacy').map(row => row.id.replace('legacy-', ''));
+
+      // Fetch payment plans for new leads
+      const leadsWithPaymentPlans = new Set<string>();
+      if (newLeadIds.length > 0) {
+        const { data: newPaymentPlans, error: newPaymentError } = await supabase
+          .from('payment_plans')
+          .select('lead_id')
+          .in('lead_id', newLeadIds)
+          .is('cancel_date', null);
+        
+        if (!newPaymentError && newPaymentPlans) {
+          newPaymentPlans.forEach(plan => {
+            if (plan.lead_id) {
+              leadsWithPaymentPlans.add(String(plan.lead_id));
+            }
+          });
+        }
+      }
+
+      // Fetch payment plans for legacy leads
+      if (legacyLeadIds.length > 0) {
+        const legacyLeadIdsAsStrings = legacyLeadIds.map(id => String(id));
+        const { data: legacyPaymentPlans, error: legacyPaymentError } = await supabase
+          .from('finances_paymentplanrow')
+          .select('lead_id')
+          .in('lead_id', legacyLeadIdsAsStrings)
+          .is('cancel_date', null);
+        
+        if (!legacyPaymentError && legacyPaymentPlans) {
+          legacyPaymentPlans.forEach(plan => {
+            if (plan.lead_id) {
+              // Add both string and number versions to handle type mismatches
+              leadsWithPaymentPlans.add(`legacy-${plan.lead_id}`);
+              leadsWithPaymentPlans.add(`legacy-${String(plan.lead_id)}`);
+            }
+          });
+        }
+      }
+
+      // Update rows with hasPaymentPlan flag
+      combinedRows = combinedRows.map(row => ({
+        ...row,
+        hasPaymentPlan: leadsWithPaymentPlans.has(row.id)
+      }));
 
       console.log(`✅ Final result: ${combinedRows.length} unique signed leads (${newLeadRows.length} new + ${legacyLeadRows.length} legacy)`);
       setRows(combinedRows);
@@ -1950,10 +2009,17 @@ const resolveLegacyLanguage = (lead: any) => {
                         </td>
                         <td className="text-xs md:text-sm">{formatDate(row.createdDate)}</td>
                         <td className="max-w-[220px] text-xs md:text-sm">
-                          <span className="truncate block">{row.category}</span>
+                          <span className="block line-clamp-2 break-words">{row.category}</span>
                         </td>
                         <td className="text-xs md:text-sm font-semibold text-black">{row.stage}</td>
-                        <td className="text-xs md:text-sm">{formatDate(row.signDate)}</td>
+                        <td className="text-xs md:text-sm">
+                          <div className="flex flex-col gap-1">
+                            <span>{formatDate(row.signDate)}</span>
+                            {!row.hasPaymentPlan && (
+                              <span className="badge badge-sm text-[10px] px-2 py-0.5 bg-red-500 text-white">No Payment Plan!</span>
+                            )}
+                          </div>
+                        </td>
                         <td className="text-xs md:text-sm">{renderRoleCell(row, 'scheduler')}</td>
                         <td className="text-xs md:text-sm">{renderRoleCell(row, 'manager')}</td>
                         <td className="text-xs md:text-sm">{renderRoleCell(row, 'closer')}</td>
