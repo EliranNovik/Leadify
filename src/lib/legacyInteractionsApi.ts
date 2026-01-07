@@ -14,6 +14,7 @@ interface LegacyInteraction {
   direction: string | null;
   employee_id: string | null;
   description: string | null;
+  contact_id: number | null;
 }
 
 interface EmployeeRecord {
@@ -37,6 +38,8 @@ export interface TransformedLegacyInteraction {
   status?: string;
   subject?: string;
   recipient_name?: string | null; // Recipient name for "To:" display
+  contact_id?: number | null; // Contact ID from leads_leadinteractions.contact_id
+  contact_name?: string; // Contact name fetched from lead_leadcontact -> leads_contact
 }
 
 const cleanLegacyText = (text?: string | null): string => {
@@ -59,6 +62,7 @@ const transformLegacyInteraction = (
   interaction: LegacyInteraction,
   employeeMap: Record<string, EmployeeRecord>,
   clientName: string,
+  contactMap: Record<number, string> = {},
 ): TransformedLegacyInteraction => {
   let interactionDate = interaction.date || interaction.cdate?.split('T')[0] || '';
   let interactionTime = interaction.time || interaction.cdate?.split('T')[1]?.substring(0, 5) || '';
@@ -108,34 +112,50 @@ const transformLegacyInteraction = (
 
   const length = interaction.minutes ? `${interaction.minutes} min` : '';
 
-  let employeeName = clientName || 'Client';
-  if (direction === 'out') {
-    let employeeId: string | number | null = null;
-    if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
-      employeeId = interaction.creator_id;
-    } else if (interaction.employee_id && interaction.employee_id !== '\\N' && interaction.employee_id !== 'EMPTY') {
-      employeeId = interaction.employee_id;
-    }
+  // Get contact name if contact_id is present
+  const contactName = interaction.contact_id && contactMap[interaction.contact_id] 
+    ? contactMap[interaction.contact_id] 
+    : null;
 
-    if (employeeId) {
-      // Convert to string for map lookup (map keys are strings)
-      const employeeIdStr = String(employeeId);
-      if (employeeMap[employeeIdStr]) {
-        const record = employeeMap[employeeIdStr];
-        employeeName = record.display_name || record.official_name || employeeIdStr;
-      } else {
-        // If not found in map, try to convert to number and look up again (in case of type mismatch)
-        const employeeIdNum = typeof employeeId === 'string' ? parseInt(employeeId, 10) : employeeId;
-        if (!isNaN(employeeIdNum as number) && employeeMap[String(employeeIdNum)]) {
-          const record = employeeMap[String(employeeIdNum)];
-          employeeName = record.display_name || record.official_name || String(employeeIdNum);
-        } else {
-          employeeName = employeeIdStr;
-        }
-      }
+  // Get employee name from creator_id or employee_id (the person who saved/created the interaction)
+  let employeeNameFromId: string | null = null;
+  let employeeId: string | number | null = null;
+  if (interaction.creator_id && interaction.creator_id !== '\\N' && interaction.creator_id !== 'EMPTY') {
+    employeeId = interaction.creator_id;
+  } else if (interaction.employee_id && interaction.employee_id !== '\\N' && interaction.employee_id !== 'EMPTY') {
+    employeeId = interaction.employee_id;
+  }
+
+  if (employeeId) {
+    // Convert to string for map lookup (map keys are strings)
+    const employeeIdStr = String(employeeId);
+    if (employeeMap[employeeIdStr]) {
+      const record = employeeMap[employeeIdStr];
+      employeeNameFromId = record.display_name || record.official_name || employeeIdStr;
     } else {
-      employeeName = 'Unknown';
+      // If not found in map, try to convert to number and look up again (in case of type mismatch)
+      const employeeIdNum = typeof employeeId === 'string' ? parseInt(employeeId, 10) : employeeId;
+      if (!isNaN(employeeIdNum as number) && employeeMap[String(employeeIdNum)]) {
+        const record = employeeMap[String(employeeIdNum)];
+        employeeNameFromId = record.display_name || record.official_name || String(employeeIdNum);
+      } else {
+        employeeNameFromId = employeeIdStr;
+      }
     }
+  }
+
+  // Determine employee (sender) and recipient based on direction
+  let employeeName: string; // The sender/employee field
+  let recipientName: string | null; // The recipient for "To:" display
+  
+  if (direction === 'out') {
+    // Outgoing: employee is the sender, contact/client is the recipient
+    employeeName = employeeNameFromId || 'Unknown';
+    recipientName = contactName || clientName || 'Client';
+  } else {
+    // Incoming: contact/client is the sender, employee is the recipient
+    employeeName = contactName || clientName || 'Client';
+    recipientName = employeeNameFromId || 'Team';
   }
 
   // Determine if this is a manual interaction (not from call_logs table)
@@ -156,19 +176,7 @@ const transformLegacyInteraction = (
   }
   // For calls, SMS, notes, email_manual, and whatsapp_manual, don't set status to avoid showing "sent" badge
   
-  // Determine recipient_name based on direction (same logic as manual interactions)
-  // For outgoing: recipient is the client (we contacted them)
-  // For incoming: recipient is the employee (client contacted us)
-  // Note: We don't have contact_name in legacy interactions, so we'll use clientName as fallback
-  // The actual recipient_name will need to be set when processing, similar to manual interactions
-  let recipientName: string | null = null;
-  if (direction === 'out') {
-    // Outgoing: we contacted client, so recipient is client
-    recipientName = clientName || 'Client';
-  } else {
-    // Incoming: client contacted us, so recipient is employee
-    recipientName = employeeName || 'Team';
-  }
+  // recipientName is already set above based on direction
   
   return {
     id: `legacy_${interaction.id}`,
@@ -187,6 +195,8 @@ const transformLegacyInteraction = (
     status: interactionStatus,
     subject: cleanLegacyText((interaction.description || '').replace(/^METHOD:(sms|office)\|/, '')), // Remove METHOD: prefix from subject
     recipient_name: recipientName, // Set recipient_name for "To:" display
+    contact_id: interaction.contact_id || null, // Include contact_id if available
+    contact_name: contactName || undefined, // Include contact_name if available
   };
 };
 
@@ -202,7 +212,7 @@ export const fetchLegacyInteractions = async (
   const { data, error } = await supabase
     .from('leads_leadinteractions')
     .select(
-      'id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description',
+      'id, cdate, kind, date, time, minutes, content, creator_id, direction, employee_id, description, contact_id',
     )
     .eq('lead_id', numericId)
     .order('cdate', { ascending: false })
@@ -268,8 +278,32 @@ export const fetchLegacyInteractions = async (
     }
   }
 
+  // Fetch contact names for interactions that have contact_id
+  const contactIds = interactions
+    .map(i => i.contact_id)
+    .filter((id): id is number => id !== null && id !== undefined);
+  
+  let contactMap: Record<number, string> = {};
+  if (contactIds.length > 0) {
+    // Fetch contact names from lead_leadcontact -> leads_contact
+    // contact_id in leads_leadinteractions references lead_leadcontact.id
+    const { data: leadContactsData, error: leadContactsError } = await supabase
+      .from('lead_leadcontact')
+      .select('id, contact_id, leads_contact:contact_id(name)')
+      .in('id', contactIds);
+
+    if (!leadContactsError && leadContactsData) {
+      leadContactsData.forEach((leadContact: any) => {
+        const contactName = leadContact.leads_contact?.name;
+        if (contactName && leadContact.id) {
+          contactMap[leadContact.id] = contactName;
+        }
+      });
+    }
+  }
+
   return interactions.map((interaction) =>
-    transformLegacyInteraction(interaction, employeeMap, clientName || 'Client'),
+    transformLegacyInteraction(interaction, employeeMap, clientName || 'Client', contactMap),
   );
 };
 

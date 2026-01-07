@@ -1699,6 +1699,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
     // Final safety filter: Remove any email interactions with no meaningful body content
     const filtered = interactions.filter((interaction: any) => {
       if (interaction.kind === 'email') {
+        // Check if this is a manual interaction (by ID prefix) - always include manual interactions
+        const isManualInteraction = interaction.id?.toString().startsWith('manual_');
+        if (isManualInteraction) {
+          return true; // Always include manual interactions regardless of content
+        }
+        
         const content = interaction.content || '';
         const subject = interaction.subject || '';
         
@@ -2651,6 +2657,12 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         // CRITICAL: Filter out email interactions with no meaningful body content from cache
         cachedInteractions = cachedInteractions.filter((interaction: any) => {
           if (interaction.kind === 'email') {
+            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
+            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
+            if (isManualInteraction) {
+              return true; // Always include manual interactions regardless of content
+            }
+            
             const content = interaction.content || '';
             const subject = interaction.subject || '';
             
@@ -3379,26 +3391,95 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
 
         // 1. Manual interactions - fast client-side processing
         const manualInteractions = (client.manual_interactions || []).map((i: any) => {
-          // Set sender as employee and store recipient separately
-          let employeeDisplay = '';
-          let recipientName = '';
+          // Use recipient_name if already set (from when interaction was saved)
+          // Otherwise, calculate it based on direction
+          let recipientName = i.recipient_name;
           
+          if (!recipientName) {
+            // Fallback: calculate recipient_name based on direction
+            if (i.direction === 'out') {
+              // Outgoing: we contacted client/contact - recipient is contact/client
+              recipientName = i.contact_name || client.name;
+            } else {
+              // Incoming: client/contact contacted us - recipient is the employee who saved it
+              // Note: i.employee is the sender (contact/client) for incoming, not the recipient
+              // Use userFullName as fallback since we don't have the saved employee name here
+              recipientName = userFullName || 'You';
+            }
+          }
+          
+          // Set sender (employee field) based on direction
+          let employeeDisplay = '';
           if (i.direction === 'out') {
-            // We contacted client - employee is sender
+            // Outgoing: employee is sender
             employeeDisplay = i.employee || userFullName || 'You';
-            recipientName = i.contact_name || client.name;
           } else {
-            // Client contacted us - client/contact is sender
+            // Incoming: client/contact is sender
             employeeDisplay = i.contact_name || client.name;
-            recipientName = i.employee || userFullName || 'You';
+          }
+          
+          // CRITICAL: Ensure raw_date exists - construct from date and time if missing
+          let rawDate = i.raw_date;
+          if (!rawDate && i.date && i.time) {
+            // Try to parse date and time to create ISO string
+            try {
+              // Handle different date formats (DD/MM/YYYY, YYYY-MM-DD, etc.)
+              const dateStr = i.date;
+              const timeStr = i.time;
+              
+              // Try DD/MM/YYYY format first (common in en-GB)
+              let parsedDate: Date | null = null;
+              if (dateStr.includes('/')) {
+                const [day, month, year] = dateStr.split('/');
+                const fullYear = year.length === 2 ? `20${year}` : year;
+                parsedDate = new Date(`${fullYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}T${timeStr}`);
+              } else if (dateStr.includes('-')) {
+                // Try YYYY-MM-DD format
+                parsedDate = new Date(`${dateStr}T${timeStr}`);
+              } else {
+                // Try to parse as-is
+                parsedDate = new Date(`${dateStr} ${timeStr}`);
+              }
+              
+              if (parsedDate && !isNaN(parsedDate.getTime())) {
+                rawDate = parsedDate.toISOString();
+              } else {
+                // Fallback: use current date if parsing fails
+                rawDate = new Date().toISOString();
+              }
+            } catch (error) {
+              console.warn('Failed to parse date/time for manual interaction:', { date: i.date, time: i.time, error });
+              // Fallback: use current date if parsing fails
+              rawDate = new Date().toISOString();
+            }
+          } else if (!rawDate) {
+            // If no date/time at all, use current date as fallback
+            rawDate = new Date().toISOString();
           }
           
           return {
             ...i,
             employee: employeeDisplay,
             recipient_name: recipientName, // Store recipient for display
+            raw_date: rawDate, // Ensure raw_date is always set
           };
         });
+        
+        // Debug: Log manual interactions processing
+        if (manualInteractions.length > 0) {
+          console.log(`📋 [InteractionsTab] Processed ${manualInteractions.length} manual interactions:`, {
+            leadId: isLegacyLead ? legacyId : client.id,
+            interactions: manualInteractions.map(i => ({
+              id: i.id,
+              kind: i.kind,
+              hasRawDate: !!i.raw_date,
+              raw_date: i.raw_date,
+              date: i.date,
+              time: i.time
+            }))
+          });
+        }
+        
         // 2. Email interactions - prioritise freshly fetched emails, fallback to client prop
         const clientEmails = emailsResult.data || [];
         
@@ -3678,28 +3759,32 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
             normalizedContent = normalizeManualContent(i.content);
           }
           
-          // If recipient_name is already set (from transformLegacyInteraction), use it
-          if (i.recipient_name) {
-            return {
-              ...i,
-              content: normalizedContent, // Store normalized content
-            };
-          }
-          
-          // Calculate recipient_name based on direction (same logic as manual interactions)
-          let recipientName = '';
-          if (i.direction === 'out') {
-            // Outgoing: we contacted client, so recipient is client
-            recipientName = client.name;
-          } else {
-            // Incoming: client contacted us, so recipient is employee
-            recipientName = i.employee || userFullName || 'Team';
+          // Use recipient_name from transformation if available
+          // The transformation already handles contact_name and employee name correctly
+          // For outgoing: recipient is contact/client
+          // For incoming: recipient is the employee who saved the interaction
+          let recipientName = i.recipient_name;
+          if (!recipientName) {
+            // Fallback: calculate recipient_name based on direction
+            if (i.direction === 'out') {
+              // Outgoing: use contact_name if available, otherwise client name
+              recipientName = i.contact_name || client.name;
+            } else {
+              // Incoming: client/contact contacted us, so recipient is the employee who saved it
+              // Note: i.employee is the sender (contact/client) for incoming, not the recipient
+              // We need to use the employee who created/saved the interaction
+              // Since we don't have that info here, use a generic fallback
+              recipientName = userFullName || 'Team';
+            }
           }
           
           return {
             ...i,
-            recipient_name: recipientName, // Store recipient for display
+            recipient_name: recipientName, // Store recipient for display (uses contact_name if available)
             content: normalizedContent, // Store normalized content
+            // Preserve contact_id and contact_name from transformation
+            contact_id: i.contact_id,
+            contact_name: i.contact_name,
           };
         });
         
@@ -3737,6 +3822,13 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           // CRITICAL: Filter out email interactions that have no meaningful body content
           // This is a safety check in case emails slipped through the earlier filtering
           if (interaction.kind === 'email') {
+            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
+            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
+            if (isManualInteraction) {
+              // Always include manual interactions regardless of content length
+              return true;
+            }
+            
             const content = interaction.content || '';
             const subject = interaction.subject || '';
             
@@ -3803,6 +3895,14 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         
         uniqueById.forEach((interaction: any) => {
           if (interaction.kind === 'email' && interaction.id) {
+            // Check if this is a manual interaction (by ID prefix) - always include manual interactions
+            const isManualInteraction = interaction.id?.toString().startsWith('manual_');
+            if (isManualInteraction) {
+              // Always include manual interactions - add to nonEmailInteractions to bypass email deduplication
+              nonEmailInteractions.push(interaction);
+              return;
+            }
+            
             // Check if this is a legacy email (from leads_leadinteractions)
             // Legacy emails have content field, not body_html/body_preview
             const isLegacyEmail = interaction.id?.toString().startsWith('legacy_');
@@ -5646,7 +5746,8 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
         }
         
         // Insert into leads_leadinteractions table
-        const insertPayload = {
+        // Only include contact_id if a specific contact was selected (not the main lead with id -1)
+        const insertPayload: any = {
           id: nextId,
           cdate: now.toISOString(),
           udate: now.toISOString(),
@@ -5661,6 +5762,24 @@ const InteractionsTab: React.FC<ClientTabProps> = ({
           description: descriptionValue,
           employee_id: employeeId ? String(employeeId) : null,
         };
+        
+        // Add contact_id if a specific contact was selected (not -1 which represents the main lead)
+        // Note: newContact.contact_id is leads_contact.id, but we need lead_leadcontact.id for the foreign key
+        if (newContact.contact_id && newContact.contact_id !== -1) {
+          // Look up the lead_leadcontact.id from leads_contact.id and lead_id
+          const { data: leadContactData, error: leadContactError } = await supabase
+            .from('lead_leadcontact')
+            .select('id')
+            .eq('lead_id', numericLegacyId)
+            .eq('contact_id', newContact.contact_id)
+            .single();
+          
+          if (!leadContactError && leadContactData?.id) {
+            insertPayload.contact_id = leadContactData.id;
+          } else {
+            console.warn('⚠️ Could not find lead_leadcontact.id for contact_id:', newContact.contact_id, 'lead_id:', numericLegacyId);
+          }
+        }
         
         console.log('💾 Inserting legacy interaction:', {
           method: normalizedMethod,
