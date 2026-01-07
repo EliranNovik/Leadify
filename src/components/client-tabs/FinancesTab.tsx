@@ -49,6 +49,17 @@ interface FinancesTabProps extends ClientTabProps {
 
 const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPaymentMarkedPaid, onCreateFinancePlan, hideTimelineHistory = false }) => {
   const navigate = useNavigate();
+
+  // Helper function to format date as dd/mm/yyyy
+  const formatDateDDMMYYYY = (dateString: string | null | undefined): string => {
+    if (!dateString) return '';
+    const date = new Date(dateString);
+    if (date.toString() === 'Invalid Date') return '';
+    const day = String(date.getDate()).padStart(2, '0');
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const year = date.getFullYear();
+    return `${day}/${month}/${year}`;
+  };
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
   const [isLoadingFinancePlan, setIsLoadingFinancePlan] = useState<boolean>(true);
@@ -386,11 +397,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       let error;
       if (isLegacyLead) {
         // For legacy leads, update finances_paymentplanrow table
+        // Also clear due_date and due_by_id since they indicate ready_to_pay status
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
             ready_to_pay: false,
             ready_to_pay_by: null,
+            due_date: null,
+            due_by_id: null,
           })
           .eq('id', payment.id);
         error = legacyError;
@@ -943,6 +957,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           let payments = [];
           
           if (isLegacyLead) {
+            // Fetch employee display names for due_by_id values
+            const dueByIds = new Set<number>();
+            data.forEach((plan: any) => {
+              if (plan.due_by_id) {
+                dueByIds.add(plan.due_by_id);
+              }
+            });
+            
+            const dueByEmployeeMap = new Map<number, string>();
+            if (dueByIds.size > 0) {
+              const { data: employeesData } = await supabase
+                .from('tenants_employee')
+                .select('id, display_name')
+                .in('id', Array.from(dueByIds));
+              
+              if (employeesData) {
+                employeesData.forEach((emp: any) => {
+                  if (emp.id && emp.display_name) {
+                    dueByEmployeeMap.set(emp.id, emp.display_name);
+                  }
+                });
+              }
+            }
+            
             // Transform legacy data to match the finance plan structure
             // First, process all payments to calculate totals and get currency info
             const processedPayments = data.map(plan => {
@@ -1027,6 +1065,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               });
             }
 
+            // For legacy leads: if due_date and due_by_id are set, treat as ready_to_pay
+            // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
+            const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
+            const isReadyToPay = plan.ready_to_pay || hasDueDateAndDueBy;
+            // For legacy leads, prioritize due_by_id over ready_to_pay_by
+            const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
+            // For legacy leads, get employee name from due_by_id using the map we fetched
+            const readyToPayByDisplayName = hasDueDateAndDueBy 
+              ? (dueByEmployeeMap.get(plan.due_by_id) || null)
+              : (plan.tenants_employee?.display_name || null);
+            
             return {
               id: plan.id,
               duePercent: calculatedDuePercent,
@@ -1042,11 +1091,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paid_by: undefined, // Legacy doesn't track who paid
               currency,
               isLegacy: true, // Flag to identify legacy payments
-              ready_to_pay: plan.ready_to_pay || false, // Include ready_to_pay field
+              ready_to_pay: isReadyToPay,
               ready_to_pay_text: (plan as any).ready_to_pay_text || null,
               ready_to_pay_date: (plan as any).ready_to_pay_date || null,
-              ready_to_pay_by: plan.ready_to_pay_by || null,
-              ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+              ready_to_pay_by: readyToPayBy,
+              ready_to_pay_by_display_name: readyToPayByDisplayName,
             };
           });
           } else {
@@ -1417,6 +1466,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         let payments = [];
         
         if (isLegacyLead) {
+          // Fetch employee display names for due_by_id values
+          const dueByIds = new Set<number>();
+          data.forEach((plan: any) => {
+            if (plan.due_by_id) {
+              dueByIds.add(plan.due_by_id);
+            }
+          });
+          
+          const dueByEmployeeMap = new Map<number, string>();
+          if (dueByIds.size > 0) {
+            const { data: employeesData } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', Array.from(dueByIds));
+            
+            if (employeesData) {
+              employeesData.forEach((emp: any) => {
+                if (emp.id && emp.display_name) {
+                  dueByEmployeeMap.set(emp.id, emp.display_name);
+                }
+              });
+            }
+          }
+          
           // Transform legacy data with proper currency and VAT handling
           // First, process all payments to calculate totals and get currency info
           const processedPayments = data.map(plan => {
@@ -1489,6 +1562,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // Calculate percentage based on this contact's total, not the global total
             const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
             
+            // For legacy leads: if due_date and due_by_id are set, treat as ready_to_pay
+            // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
+            const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
+            const isReadyToPay = plan.ready_to_pay || hasDueDateAndDueBy;
+            // For legacy leads, prioritize due_by_id over ready_to_pay_by
+            const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
+            // For legacy leads, get employee name from due_by_id using the map we fetched
+            const readyToPayByDisplayName = hasDueDateAndDueBy 
+              ? (dueByEmployeeMap.get(plan.due_by_id) || null)
+              : (plan.tenants_employee?.display_name || null);
+            
             return {
               id: plan.id,
               duePercent: calculatedDuePercent,
@@ -1504,9 +1588,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paid_by: null,
               currency,
               isLegacy: true,
-              ready_to_pay: plan.ready_to_pay || false,
-              ready_to_pay_by: plan.ready_to_pay_by || null,
-              ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+              ready_to_pay: isReadyToPay,
+              ready_to_pay_by: readyToPayBy,
+              ready_to_pay_by_display_name: readyToPayByDisplayName,
             };
           });
         } else {
@@ -4265,7 +4349,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       required
     />
   ) : (
-    <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
+    <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
   )}
 </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
@@ -4907,7 +4991,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               required
                                             />
                                           ) : (
-                                            <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
+                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
                                           )}
                                         </div>
                                         <div className="flex items-center justify-between py-3">
@@ -5066,7 +5150,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
-                                            <span className="text-sm font-bold text-gray-900">{p.dueDate && new Date(p.dueDate).toString() !== 'Invalid Date' ? new Date(p.dueDate).toLocaleDateString() : ''}</span>
+                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
@@ -5340,12 +5424,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               {/* Due Date */}
                               <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                 <span className="text-sm font-bold text-gray-900">
-                                  {(() => {
-                                    const legacyDue = p.date || p.due_date;
-                                    return legacyDue && new Date(legacyDue).toString() !== 'Invalid Date'
-                                      ? new Date(legacyDue).toLocaleDateString()
-                                      : '';
-                                  })()}
+                                  {formatDateDDMMYYYY(p.date || p.due_date)}
                                 </span>
                               </td>
                               

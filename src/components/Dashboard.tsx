@@ -2492,7 +2492,6 @@ const Dashboard: React.FC = () => {
               )
             `)
             .in('id', leadIds)
-            .or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
           
           if (leadsError) {
             throw leadsError;
@@ -2618,7 +2617,6 @@ const Dashboard: React.FC = () => {
               )
             `)
             .in('id', monthLeadIds)
-            .or('status.eq.0,status.is.null'); // Include active leads (status 0) or leads with null status (subleads)
           
           if (monthLeadsError) {
             throw monthLeadsError;
@@ -3270,11 +3268,10 @@ const Dashboard: React.FC = () => {
         ],
       };
       
-      // Fetch new payment plans - only unpaid ones that are ready to pay (same as CollectionDueReport)
-      // Note: CollectionDueReport filters by ready_to_pay=true AND paid=false
+      // Fetch new payment plans - show all payments with due_date (both paid and unpaid)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true and paid=false (matching CollectionDueReport)...');
+      console.log('🔍 Invoiced Data - Fetching new payment plans with ready_to_pay=true (showing all, paid and unpaid)...');
       let newPaymentsQuery = supabase
         .from('payment_plans')
         .select(`
@@ -3289,7 +3286,6 @@ const Dashboard: React.FC = () => {
           paid
         `)
         .eq('ready_to_pay', true)
-        .eq('paid', false) // Match CollectionDueReport exactly - only unpaid payments
         .not('due_date', 'is', null)
         .is('cancel_date', null);
       
@@ -3341,7 +3337,7 @@ const Dashboard: React.FC = () => {
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null) // Exclude cancelled payments
+        .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid
         .eq('ready_to_pay', true); // ready_to_pay = TRUE
       
       const { data: legacyPaymentsReady, error: legacyReadyError } = await legacyPaymentsReadyQuery;
@@ -3373,8 +3369,7 @@ const Dashboard: React.FC = () => {
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
         .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null) // Exclude cancelled payments
-        .is('actual_date', null) // Only unpaid payments
+        .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid
         .eq('ready_to_pay', false) // ready_to_pay = FALSE
         .gte('due_date', wideFromDate) // AND date_due in range
         .lte('due_date', wideToDate);

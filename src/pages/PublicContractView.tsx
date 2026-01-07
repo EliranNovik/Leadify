@@ -198,9 +198,6 @@ const PublicContractView: React.FC = () => {
   const [clientFields, setClientFields] = useState<{ [key: string]: string }>({});
   const [clientSignature, setClientSignature] = useState<string | null>(null);
   const [thankYou, setThankYou] = useState(false);
-  const [incompleteFields, setIncompleteFields] = useState<Set<string>>(new Set());
-  const [highlightedFieldId, setHighlightedFieldId] = useState<string | null>(null);
-  const [showScrollGuide, setShowScrollGuide] = useState(true);
   const [applicantFieldIds, setApplicantFieldIds] = useState<string[]>([]);
   const [activeApplicantFields, setActiveApplicantFields] = useState<string[]>([]); // Fields that are currently visible (can be added/removed)
   const [dynamicApplicantFieldCounter, setDynamicApplicantFieldCounter] = useState(0); // Counter for generating new field IDs
@@ -386,15 +383,11 @@ const PublicContractView: React.FC = () => {
   }, [contractId, token]);
 
 
-  // Track incomplete fields - ONLY signature fields are required
+  // Track applicant fields for UI purposes only
   useEffect(() => {
     if (!template?.content || contract?.status === 'signed') return;
     
-    const incomplete = new Set<string>();
     const contentStr = JSON.stringify(template.content);
-    
-    // Find all field IDs - ONLY check signature fields (date fields are optional)
-    const signatureMatches = contentStr.match(/\{\{signature:([^}]+)\}\}/g) || [];
     
     // Helper function to recursively extract text content from template structure
     const extractTextFromContent = (content: any, depth = 0): string => {
@@ -446,7 +439,7 @@ const PublicContractView: React.FC = () => {
       return results;
     };
     
-    // Get all date field IDs (for applicant field detection - date fields are optional now)
+    // Get all date field IDs (for applicant field detection)
     const dateFieldIds = new Set<string>();
     const dateMatches = contentStr.match(/\{\{date:([^}]+)\}\}/g) || [];
     dateMatches.forEach(match => {
@@ -456,10 +449,10 @@ const PublicContractView: React.FC = () => {
       }
     });
     
-    // Find text matches for applicant field detection (but don't validate them)
+    // Find text matches for applicant field detection
     const textMatches = contentStr.match(/\{\{text:([^}]+)\}\}/g) || [];
     
-    // Identify applicant fields for UI purposes only (not for validation)
+    // Identify applicant fields for UI purposes
     const applicantFields: Array<{ id: string; position: number; context: string }> = [];
     const fieldContexts = findTextFieldsWithContext(template?.content || {});
     
@@ -525,129 +518,11 @@ const PublicContractView: React.FC = () => {
       
       return hasChanges ? merged : prev;
     });
-    
-    // VALIDATION: ONLY signature fields are required (date fields are optional)
-    // Signature fields are ALWAYS required
-    signatureMatches.forEach(match => {
-      const id = match.match(/\{\{signature:([^}]+)\}\}/)?.[1];
-      if (id && id.trim() !== '') {
-        // Check if this specific signature field is filled
-        // Check field-specific signature first, then global signature
-        // Note: Signatures are base64 data URLs, so we just check if they exist (not empty strings)
-        const fieldSignature = clientFields[id];
-        const hasFieldSignature = !!(fieldSignature && typeof fieldSignature === 'string' && fieldSignature.length > 0);
-        const hasGlobalSignature = !!(clientSignature && typeof clientSignature === 'string' && clientSignature.length > 0);
-        
-        // If neither signature exists, mark as incomplete
-        if (!hasFieldSignature && !hasGlobalSignature) {
-          incomplete.add(id);
-        }
-      }
-    });
-    
-    // Set incomplete fields - this will only contain signature fields
-    setIncompleteFields(incomplete);
-    
-    // Auto-scroll and highlight logic
-    const previousIncompleteCount = incompleteFields.size;
-    if (incomplete.size > 0 && !highlightedFieldId && previousIncompleteCount === incomplete.size) {
-      // Auto-highlight first incomplete field on initial load only
-      const firstIncomplete = Array.from(incomplete)[0];
-      setHighlightedFieldId(firstIncomplete);
-      setTimeout(() => {
-        scrollToField(firstIncomplete);
-      }, 500);
-    } else if (previousIncompleteCount > incomplete.size && highlightedFieldId && !incomplete.has(highlightedFieldId)) {
-      // Field was completed - just update highlight, but DON'T auto-scroll
-      if (incomplete.size > 0) {
-        const nextIncomplete = Array.from(incomplete)[0];
-        setHighlightedFieldId(nextIncomplete);
-      } else {
-        setHighlightedFieldId(null);
-      }
-    }
-  }, [template, clientFields, clientSignature, contract?.status]);
-
-  // Scroll to a specific field smoothly
-  const scrollToField = (fieldId: string) => {
-    const fieldElement = document.querySelector(`[data-field-id="${fieldId}"]`);
-    if (fieldElement) {
-      fieldElement.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      // Add a temporary highlight pulse
-      fieldElement.classList.add('field-highlight-pulse');
-      setTimeout(() => {
-        fieldElement.classList.remove('field-highlight-pulse');
-      }, 2000);
-    }
-  };
-
-  // Handle scroll to highlight field in viewport
-  useEffect(() => {
-    if (contract?.status === 'signed') return;
-    
-    const handleScroll = () => {
-      const incompleteArray = Array.from(incompleteFields);
-      if (incompleteArray.length === 0) return;
-      
-      // Find which incomplete field is most visible in viewport
-      let mostVisibleField: string | null = null;
-      let maxVisibility = 0;
-      
-      incompleteArray.forEach(fieldId => {
-        const fieldElement = document.querySelector(`[data-field-id="${fieldId}"]`);
-        if (fieldElement) {
-          const rect = fieldElement.getBoundingClientRect();
-          const windowHeight = window.innerHeight;
-          
-          // Calculate visibility (how much of the field is visible)
-          const visibleTop = Math.max(0, rect.top);
-          const visibleBottom = Math.min(windowHeight, rect.bottom);
-          const visibleHeight = Math.max(0, visibleBottom - visibleTop);
-          const visibility = visibleHeight / rect.height;
-          
-          // Prefer fields that are partially visible in the upper portion of viewport
-          if (visibility > 0.3 && rect.top < windowHeight * 0.7) {
-            if (visibility > maxVisibility) {
-              maxVisibility = visibility;
-              mostVisibleField = fieldId;
-            }
-          }
-        }
-      });
-      
-      if (mostVisibleField && mostVisibleField !== highlightedFieldId) {
-        setHighlightedFieldId(mostVisibleField);
-      }
-    };
-    
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    handleScroll(); // Initial check
-    
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [incompleteFields, highlightedFieldId, contract?.status]);
+  }, [template, contract?.status]);
 
   // Add a handler for submitting the contract (signing)
   const handleSubmitContract = async () => {
     if (!contract) return;
-    
-    // Validate that all required fields are filled before submitting
-    if (incompleteFields.size > 0) {
-      const incompleteArray = Array.from(incompleteFields);
-      const firstIncomplete = incompleteArray[0];
-      
-      // Scroll to the first incomplete field
-      scrollToField(firstIncomplete);
-      setHighlightedFieldId(firstIncomplete);
-      
-      // Show alert with specific message
-      const incompleteCount = incompleteFields.size;
-      alert(
-        `Please fill in all required fields before submitting.\n\n` +
-        `${incompleteCount} required field${incompleteCount > 1 ? 's' : ''} ${incompleteCount > 1 ? 'are' : 'is'} still missing.\n\n` +
-        `The first missing field has been highlighted for you.`
-      );
-      return;
-    }
     
     setIsSubmitting(true);
     try {
@@ -846,57 +721,24 @@ const PublicContractView: React.FC = () => {
   // Reuse the renderTiptapContent logic for client view
   // Helper function to render a single applicant field (used for both template and dynamic fields)
   const renderApplicantField = useCallback((id: string, index: number, total: number) => {
-    const isEmpty = !clientFields[id]?.trim();
-    const isHighlighted = highlightedFieldId === id;
-    const needsAttention = incompleteFields.has(id);
-    const isLastApplicantField = index === total - 1;
-    const canRemoveApplicantField = total > 1;
-    
     return (
       <div key={id} className="mb-3 flex items-center gap-2">
         <span className="inline-flex items-center gap-2 flex-1">
           <input
             type="text"
-            className={`input input-bordered input-lg flex-1 bg-white border-2 transition-all duration-300 ${
-              isEmpty 
-                ? needsAttention
-                  ? isHighlighted 
-                    ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                    : 'border-orange-400 shadow-md'
-                  : 'border-orange-400 shadow-md'
-                : 'border-green-400 focus:border-blue-500'
-            } focus:border-blue-500 focus:shadow-lg`}
+            className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
             placeholder="Enter applicant name"
             value={clientFields[id] || ''}
-            onChange={e => {
-              handleClientFieldChange(id, e.target.value);
-              if (e.target.value.trim()) {
-                setIncompleteFields(prev => {
-                  const next = new Set(prev);
-                  next.delete(id);
-                  return next;
-                });
-              }
-            }}
-            onFocus={() => setHighlightedFieldId(id)}
+            onChange={e => handleClientFieldChange(id, e.target.value)}
             disabled={contract?.status === 'signed'}
             data-field-id={id}
             data-is-applicant="true"
             style={{ minWidth: 200 }}
           />
-          {/* Required badge */}
-          {needsAttention && !contract?.status && (
-            <div className={`flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg transition-all duration-300 ${
-              isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-            }`}>
-              <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-              <span className="relative">Required</span>
-            </div>
-          )}
         </span>
       </div>
     );
-  }, [clientFields, highlightedFieldId, incompleteFields, contract?.status, activeApplicantFields, applicantFieldIds, dynamicApplicantFieldCounter]);
+  }, [clientFields, contract?.status, activeApplicantFields, applicantFieldIds, dynamicApplicantFieldCounter]);
 
   // Helper function to get placeholder text based on field ID type
   const getTextFieldPlaceholder = (fieldId: string): string => {
@@ -1064,9 +906,6 @@ const PublicContractView: React.FC = () => {
             const extractedId = dateMatch[1] ? dateMatch[1].substring(1) : null;
             const id = extractedId || `date-${placeholderIndex.date++}`;
             const dateValue = clientFields[id];
-            const isEmpty = !dateValue;
-            const isHighlighted = highlightedFieldId === id;
-            
             // Date fields are NEVER applicant fields - explicitly exclude
             if (applicantFieldIds.includes(id)) {
               setApplicantFieldIds(prev => prev.filter(aid => aid !== id));
@@ -1137,39 +976,16 @@ const PublicContractView: React.FC = () => {
               parts.push(
                 <span 
                   key={id} 
-                  className="inline-block relative" 
+                  className="inline-flex items-center gap-2 relative" 
                   style={{ verticalAlign: 'middle' }}
                   data-field-id={id}
                   data-field-type="date"
                 >
                   <input
                     type="date"
-                    className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
-                      isEmpty 
-                        ? isHighlighted 
-                          ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                          : 'border-orange-400 shadow-md'
-                        : 'border-green-400 focus:border-blue-500'
-                    } focus:border-blue-500 focus:shadow-lg`}
+                    className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
                     value={formattedDate}
-                    onChange={e => {
-                      const selectedDate = e.target.value;
-                      handleClientFieldChange(id, selectedDate);
-                      if (selectedDate) {
-                        setIncompleteFields(prev => {
-                          const next = new Set(prev);
-                          next.delete(id);
-                          return next;
-                        });
-                      }
-                    }}
-                    onFocus={() => {
-                      setHighlightedFieldId(id);
-                    }}
-                    onBlur={() => {
-                      setHighlightedFieldId(null);
-                    }}
-                    aria-label="Select date (optional)"
+                    onChange={e => handleClientFieldChange(id, e.target.value)}
                     data-input-type="date"
                     style={{ 
                       minWidth: 180, 
@@ -1179,7 +995,11 @@ const PublicContractView: React.FC = () => {
                       cursor: 'text'
                     }}
                   />
-                  {/* Date fields are optional - no required badge or popup */}
+                  {contract?.status !== 'signed' && (
+                    <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
+                      Fill before submitting
+                    </span>
+                  )}
                 </span>
               );
             }
@@ -1215,9 +1035,6 @@ const PublicContractView: React.FC = () => {
                                        (trimmedBefore.toLowerCase().endsWith('date:') || trimmedBefore.toLowerCase().endsWith('date: '));
             // If this is actually a date field, render it as a date input instead
             if (isActuallyDateField) {
-              const isEmpty = !clientFields[id];
-              const isHighlighted = highlightedFieldId === id;
-              
               // Remove from applicant fields if it's there (using base ID)
               if (applicantFieldIds.includes(baseId)) {
                 setApplicantFieldIds(prev => prev.filter(aid => aid !== baseId));
@@ -1292,39 +1109,16 @@ const PublicContractView: React.FC = () => {
                 parts.push(
                   <span 
                     key={id} 
-                    className="inline-block relative" 
+                    className="inline-flex items-center gap-2 relative" 
                     style={{ verticalAlign: 'middle' }}
                     data-field-id={id}
                     data-field-type="date"
                   >
                     <input
                       type="date"
-                      className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
-                        isEmpty 
-                          ? isHighlighted 
-                            ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                            : 'border-orange-400 shadow-md'
-                          : 'border-green-400 focus:border-blue-500'
-                      } focus:border-blue-500 focus:shadow-lg`}
+                      className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
                       value={formattedDate}
-                      onChange={e => {
-                        const selectedDate = e.target.value;
-                        handleClientFieldChange(id, selectedDate);
-                        if (selectedDate) {
-                          setIncompleteFields(prev => {
-                            const next = new Set(prev);
-                            next.delete(id);
-                            return next;
-                          });
-                        }
-                      }}
-                      onFocus={() => {
-                        setHighlightedFieldId(id);
-                      }}
-                      onBlur={() => {
-                        setHighlightedFieldId(null);
-                      }}
-                      aria-label="Select date (optional)"
+                      onChange={e => handleClientFieldChange(id, e.target.value)}
                       data-input-type="date"
                       style={{ 
                         minWidth: 180, 
@@ -1334,17 +1128,17 @@ const PublicContractView: React.FC = () => {
                         cursor: 'text'
                       }}
                     />
-                    {/* Date fields are optional - no required badge or popup */}
+                    {contract?.status !== 'signed' && (
+                      <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
+                        Fill before submitting
+                      </span>
+                    )}
                   </span>
                 );
               }
               lastIndex = match.index + match[1].length;
               continue; // Skip the rest of the text field processing
             }
-            
-            const isEmpty = !clientFields[id]?.trim();
-            const isHighlighted = highlightedFieldId === id;
-            const needsAttention = incompleteFields.has(id);
             
             // Determine if this is specifically an applicant field by checking the ID pattern
             // Use the base ID to check if it's an applicant field, but use unique instance ID for state
@@ -1401,66 +1195,13 @@ const PublicContractView: React.FC = () => {
                 >
                   <input
                     type="text"
-                    className={`input input-bordered input-lg flex-1 bg-white border-2 transition-all duration-300 ${
-                      isEmpty 
-                        ? needsAttention
-                          ? isHighlighted 
-                            ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                            : 'border-orange-400 shadow-md'
-                          : 'border-orange-400 shadow-md'
-                        : 'border-green-400 focus:border-blue-500'
-                    } focus:border-blue-500 focus:shadow-lg`}
+                    className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
                     placeholder="Enter applicant name"
                     value={clientFields[id] || ''}
-                    onChange={e => {
-                      handleClientFieldChange(id, e.target.value);
-                      if (e.target.value.trim()) {
-                        setIncompleteFields(prev => {
-                          const next = new Set(prev);
-                          next.delete(id);
-                          return next;
-                        });
-                      }
-                    }}
-                    onFocus={() => {
-                      setHighlightedFieldId(id);
-                    }}
+                    onChange={e => handleClientFieldChange(id, e.target.value)}
                     disabled={contract?.status === 'signed'}
                     style={{ minWidth: 200 }}
                   />
-                  {/* Required badge */}
-                  {needsAttention && !contract?.status && (
-                    <div className={`flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg transition-all duration-300 flex-shrink-0 ${
-                      isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                    }`}>
-                      <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                      <span className="relative">Required</span>
-                    </div>
-                  )}
-                  {/* Popup for applicant fields */}
-                  {isEmpty && !contract?.status && (() => {
-                    const isTextRTL = isRTL(text);
-                    return (
-                      <div 
-                        className="absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap"
-                        style={{
-                          [isTextRTL ? 'right' : 'left']: '100%',
-                          [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
-                          opacity: isHighlighted ? 1 : 0,
-                          transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
-                        }}
-                      >
-                        Please fill in applicant name (required)
-                        <div 
-                          className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
-                          style={{
-                            [isTextRTL ? 'left' : 'right']: '100%',
-                            [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
-                          }}
-                        ></div>
-                      </div>
-                    );
-                  })()}
                 </div>
               );
               
@@ -1474,12 +1215,6 @@ const PublicContractView: React.FC = () => {
                 // Render dynamic fields inline right after this field
                 dynamicFieldsAfter.forEach((dynamicFieldId) => {
                   const dynamicIndex = activeApplicantFields.indexOf(dynamicFieldId);
-                  const dynamicIsEmpty = !clientFields[dynamicFieldId]?.trim();
-                  const dynamicIsHighlighted = highlightedFieldId === dynamicFieldId;
-                  const dynamicNeedsAttention = incompleteFields.has(dynamicFieldId);
-                  const dynamicIsLast = dynamicIndex === activeApplicantFields.length - 1;
-                  const dynamicCanRemove = activeApplicantFields.length > 1;
-                  
                   parts.push(
                     <div 
                       key={dynamicFieldId} 
@@ -1490,39 +1225,13 @@ const PublicContractView: React.FC = () => {
                     >
                       <input
                         type="text"
-                        className={`input input-bordered input-lg flex-1 bg-white border-2 transition-all duration-300 ${
-                          dynamicIsEmpty 
-                            ? dynamicNeedsAttention
-                              ? dynamicIsHighlighted 
-                                ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                                : 'border-orange-400 shadow-md'
-                              : 'border-orange-400 shadow-md'
-                            : 'border-green-400 focus:border-blue-500'
-                        } focus:border-blue-500 focus:shadow-lg`}
+                        className="input input-bordered input-lg flex-1 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
                         placeholder="Enter applicant name"
                         value={clientFields[dynamicFieldId] || ''}
-                        onChange={e => {
-                          handleClientFieldChange(dynamicFieldId, e.target.value);
-                          if (e.target.value.trim()) {
-                            setIncompleteFields(prev => {
-                              const next = new Set(prev);
-                              next.delete(dynamicFieldId);
-                              return next;
-                            });
-                          }
-                        }}
-                        onFocus={() => setHighlightedFieldId(dynamicFieldId)}
+                        onChange={e => handleClientFieldChange(dynamicFieldId, e.target.value)}
                         disabled={contract?.status === 'signed'}
                         style={{ minWidth: 200 }}
                       />
-                      {dynamicNeedsAttention && !contract?.status && (
-                        <div className={`flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg transition-all duration-300 flex-shrink-0 ${
-                          dynamicIsHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                        }`}>
-                          <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                          <span className="relative">Required</span>
-                        </div>
-                      )}
                     </div>
                   );
                 });
@@ -1542,96 +1251,17 @@ const PublicContractView: React.FC = () => {
                 data-is-applicant={isApplicantField ? 'true' : 'false'}
               >
                 <input
-                  className={`input input-bordered input-lg mx-2 bg-white border-2 transition-all duration-300 ${
-                    isEmpty 
-                      ? isHighlighted 
-                        ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                        : 'border-orange-400 shadow-md'
-                      : 'border-green-400 focus:border-blue-500'
-                  } focus:border-blue-500 focus:shadow-lg`}
+                  className="input input-bordered input-lg mx-2 bg-white border-2 focus:border-blue-500 focus:shadow-lg"
                   placeholder={isApplicantField ? 'Enter applicant name' : getTextFieldPlaceholder(id)}
                   value={clientFields[id] || ''}
-                  onChange={e => {
-                    handleClientFieldChange(id, e.target.value);
-                    if (e.target.value.trim()) {
-                      setIncompleteFields(prev => {
-                        const next = new Set(prev);
-                        next.delete(id);
-                        return next;
-                      });
-                    }
-                  }}
-                  onFocus={() => {
-                    setHighlightedFieldId(id);
-                  }}
+                  onChange={e => handleClientFieldChange(id, e.target.value)}
                   disabled={contract?.status === 'signed'}
                   style={{ minWidth: 150, display: 'inline-block', verticalAlign: 'middle' }}
                 />
-                {/* Add/Remove buttons for applicant fields - always visible for applicant fields */}
-                {/* Required badge - for all required fields including all applicant fields */}
-                {needsAttention && !contract?.status && (
-                  <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 ${
-                    isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                  }`}>
-                    <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                    <span className="relative">Required</span>
-                  </div>
-                )}
-                {/* Popup for applicant fields explaining to fill all applicants */}
-                {isApplicantField && isEmpty && !contract?.status && (() => {
-                  const isTextRTL = isRTL(text);
-                  return (
-                    <div 
-                      className={`absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap`}
-                      style={{
-                        [isTextRTL ? 'right' : 'left']: '100%',
-                        [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
-                        opacity: isHighlighted ? 1 : 0,
-                        transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
-                      }}
-                    >
-                      Please fill in applicant {applicantFieldIndex >= 0 ? applicantFieldIndex + 1 : ''} name (required)
-                      <div 
-                        className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
-                        style={{
-                          [isTextRTL ? 'left' : 'right']: '100%',
-                          [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
-                        }}
-                      ></div>
-                    </div>
-                  );
-                })()}
-                {/* Regular popup for non-applicant required fields */}
-                {needsAttention && !isApplicantField && (() => {
-                  const isTextRTL = isRTL(text);
-                  return (
-                    <div 
-                      className={`absolute top-1/2 transform -translate-y-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap`}
-                      style={{
-                        [isTextRTL ? 'right' : 'left']: '100%',
-                        [isTextRTL ? 'marginRight' : 'marginLeft']: '8px',
-                        opacity: isHighlighted ? 1 : 0,
-                        transform: `translateY(-50%) translateX(${isHighlighted ? '0' : (isTextRTL ? '-8px' : '8px')})`
-                      }}
-                    >
-                      Please fill in this field
-                      <div 
-                        className="absolute top-1/2 transform -translate-y-1/2 border-4 border-transparent"
-                        style={{
-                          [isTextRTL ? 'left' : 'right']: '100%',
-                          [isTextRTL ? 'borderLeftColor' : 'borderRightColor']: '#111827'
-                        }}
-                      ></div>
-                    </div>
-                  );
-                })()}
               </span>
             );
           } else if (sigMatch) {
             const id = sigMatch[1] ? sigMatch[1].substring(1) : `signature-${++placeholderIndex.signature}`;
-            const isEmpty = !clientSignature && !clientFields[id];
-            const isHighlighted = highlightedFieldId === id;
-            const needsAttention = incompleteFields.has(id);
             
             parts.push(
               <span 
@@ -1641,13 +1271,7 @@ const PublicContractView: React.FC = () => {
                 data-field-id={id}
               >
                 <span 
-                  className={`border-2 rounded-lg bg-gray-50 p-3 transition-all duration-300 ${
-                    isEmpty 
-                      ? isHighlighted 
-                        ? 'border-blue-500 shadow-lg shadow-blue-500/50 ring-2 ring-blue-500 ring-opacity-50' 
-                        : 'border-orange-400 shadow-md'
-                      : 'border-green-400'
-                  }`} 
+                  className="border-2 rounded-lg bg-gray-50 p-3 border-gray-300" 
                   style={{ display: 'inline-block' }}
                 >
                   {contract?.status === 'signed' && clientSignature ? (
@@ -1674,12 +1298,6 @@ const PublicContractView: React.FC = () => {
                           setClientSignature(dataUrl);
                           // Save to clientFields with the correct ID
                           setClientFields(prev => ({ ...prev, [id]: dataUrl }));
-                          // Remove from incomplete fields
-                          setIncompleteFields(prev => {
-                            const next = new Set(prev);
-                            next.delete(id);
-                            return next;
-                          });
                         }
                       }}
                     />
@@ -1702,30 +1320,11 @@ const PublicContractView: React.FC = () => {
                     }} 
                   />
                 </div>
-                {needsAttention && !contract?.status && (
-                  <div className={`absolute -right-2 -top-2 flex items-center gap-1 bg-orange-500 text-white text-xs font-semibold px-2 py-1 rounded-full shadow-lg z-20 transition-all duration-300 ${
-                    isHighlighted ? 'scale-110 animate-pulse' : 'scale-100'
-                  }`}>
-                    <span className="w-2 h-2 bg-white rounded-full animate-ping absolute"></span>
-                    <span className="relative">Required</span>
-                  </div>
+                {contract?.status !== 'signed' && (
+                  <span className="badge badge-warning badge-sm text-xs whitespace-nowrap">
+                    Fill before submitting
+                  </span>
                 )}
-                {needsAttention && (() => {
-                  const isTextRTL = isRTL(text);
-                  return (
-                    <div 
-                      className="absolute right-0 top-full mt-2 md:bottom-full md:top-auto md:mb-2 md:left-1/2 md:transform md:-translate-x-1/2 bg-gray-900 text-white text-xs rounded-lg py-2 px-3 shadow-xl z-30 transition-all duration-300 pointer-events-none whitespace-nowrap"
-                      style={{ 
-                        maxWidth: 'calc(100vw - 40px)',
-                        opacity: isHighlighted ? 1 : 0,
-                        [isTextRTL ? 'right' : 'left']: isTextRTL ? '0' : 'auto'
-                      }}
-                    >
-                      Please sign in the box below
-                      <div className="absolute -top-1 left-4 md:top-full md:left-1/2 md:transform md:-translate-x-1/2 md:-mt-1 border-4 border-transparent border-b-gray-900 md:border-t-gray-900 md:border-b-transparent"></div>
-                    </div>
-                  );
-                })()}
               </span>
             );
           } else if (placeholder === '\n') {
@@ -2065,24 +1664,12 @@ const PublicContractView: React.FC = () => {
         {contract.status !== 'signed' && !thankYou && (
           <div className="mt-8">
             <button
-              className={`btn btn-success btn-lg w-full print-hide ${
-                incompleteFields.size > 0 ? 'opacity-50 cursor-not-allowed' : ''
-              }`}
+              className="btn btn-success btn-lg w-full print-hide"
               onClick={handleSubmitContract}
-              disabled={isSubmitting || incompleteFields.size > 0}
-              title={
-                incompleteFields.size > 0
-                  ? `Please fill in all ${incompleteFields.size} required field${incompleteFields.size > 1 ? 's' : ''} before submitting`
-                  : 'Submit contract'
-              }
+              disabled={isSubmitting}
             >
               {isSubmitting ? 'Submitting...' : 'Submit Contract'}
             </button>
-            {incompleteFields.size > 0 && (
-              <p className="text-sm text-orange-600 mt-2 text-center">
-                {incompleteFields.size} required field{incompleteFields.size > 1 ? 's' : ''} still need{incompleteFields.size === 1 ? 's' : ''} to be filled
-              </p>
-            )}
           </div>
         )}
       </div>

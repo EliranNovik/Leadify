@@ -7794,7 +7794,9 @@ const CollectionDueReport = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow
-      // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
+      // IMPORTANT: For legacy leads, we ONLY filter by due_date (not ready_to_pay flag)
+      // If due_date exists, the payment is ready to pay, regardless of ready_to_pay flag value
+      // This ensures we include ALL payments with due_date set, whether ready_to_pay is true or false
       console.log('🔍 Collection Due Report - Fetching legacy payment plans from finances_paymentplanrow...');
       let legacyPaymentsQuery = supabase
         .from('finances_paymentplanrow')
@@ -7814,9 +7816,8 @@ const CollectionDueReport = () => {
           order,
           accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
         `)
-        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
-        .is('cancel_date', null) // Exclude cancelled payments
-        .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
+        .not('due_date', 'is', null) // ONLY filter by due_date - fetch all payments with due_date set (regardless of ready_to_pay flag)
+        .is('cancel_date', null); // Exclude cancelled payments only - show both paid and unpaid payments
       
       // Debug: Check for payments with due_by_id = 14 before filtering
       console.log('🔍 DEBUG Employee 14 - About to apply date filters to legacy payments query');
@@ -8603,6 +8604,19 @@ const CollectionDueReport = () => {
               leadId: payment.lead_id
             });
           }
+        }
+
+        // Skip payment if lead is not found - we need lead data for category/department resolution
+        if (!lead) {
+          console.warn('⚠️ Collection Due Report - Legacy lead not found for payment (cannot get category/department):', {
+            payment_lead_id: payment.lead_id,
+            payment_lead_id_type: typeof payment.lead_id,
+            leadIdKey,
+            leadIdNum,
+            available_keys: Array.from(legacyLeadsMap.keys()).slice(0, 5),
+            note: 'Skipping payment because we need lead data for category/department resolution'
+          });
+          return;
         }
 
         // Get department from category -> main category -> department
