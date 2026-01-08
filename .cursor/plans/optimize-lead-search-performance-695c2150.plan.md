@@ -1,4 +1,30 @@
-<!-- 695c2150-fc15-48a8-ba38-4f82ba3dc4f1 5dc2eb44-f829-47a0-a72d-86680cbea6a7 -->
+---
+name: Optimize Lead Search Performance
+overview: ""
+todos:
+  - id: 58a33158-b959-436b-9626-aaf0e1902712
+    content: Populate meetingFormData.manager, helper, and expert from selectedClient when schedule meeting drawer opens (convert IDs to display names)
+    status: pending
+  - id: 56856c8f-5034-44f5-b146-781e34333df8
+    content: Ensure all three (manager, helper, expert) are saved as display names to meetings table, not IDs
+    status: pending
+  - id: d650cec6-3267-41dd-a036-13cba3bc647b
+    content: Create SQL file with indexes for leads, leads_contact, and lead_leadcontact tables optimized for search queries
+    status: pending
+  - id: aeb37d33-a3a2-476d-99e0-06146ffd8047
+    content: Create PostgreSQL function search_leads_unified() that performs unified search across all tables in a single query
+    status: pending
+  - id: e285e92c-05d5-4522-bf3c-97b225cdb44c
+    content: Replace complex searchLeads() function in legacyLeadsApi.ts with simple RPC call to unified search function
+    status: pending
+  - id: 3d9f853f-a18a-4a71-9971-19b6c3b0ef7d
+    content: Create phone number normalization helper function for better phone matching (optional enhancement)
+    status: pending
+  - id: 39129b66-bdb4-468d-ade7-76c40223bf07
+    content: Test search function with various query types and validate performance targets (<100ms execution time)
+    status: pending
+---
+
 # Optimize Lead Search Performance
 
 ## Problem Analysis
@@ -158,13 +184,3 @@ The unified function should return a result set with columns:
 - Frontend receives results in <200ms total
 - Returns exactly 10 results (or fewer if not enough matches)
 - No sequential queries - all done in one database round-trip
-
-### To-dos
-
-- [ ] Populate meetingFormData.manager, helper, and expert from selectedClient when schedule meeting drawer opens (convert IDs to display names)
-- [ ] Ensure all three (manager, helper, expert) are saved as display names to meetings table, not IDs
-- [ ] Create SQL file with indexes for leads, leads_contact, and lead_leadcontact tables optimized for search queries
-- [ ] Create PostgreSQL function search_leads_unified() that performs unified search across all tables in a single query
-- [ ] Replace complex searchLeads() function in legacyLeadsApi.ts with simple RPC call to unified search function
-- [ ] Create phone number normalization helper function for better phone matching (optional enhancement)
-- [ ] Test search function with various query types and validate performance targets (<100ms execution time)

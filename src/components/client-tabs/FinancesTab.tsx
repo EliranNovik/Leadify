@@ -907,8 +907,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
           
           // Build query to fetch payments for this specific lead
-          // CRITICAL: Filter by lead_id to get all payments for this specific lead
-          // We'll show ALL payments for this lead, even if contact matching fails
+          // CRITICAL: FIRST match by lead_id to id in leads_lead
+          // THEN match by client_id to contact_id (done in filter below)
           let { data: legacyData, error: legacyError } = await supabase
             .from('finances_paymentplanrow')
             .select(`
@@ -926,6 +926,55 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
+          // Track if we're using fallback data (fetched by client_id instead of lead_id)
+          let isUsingFallback = false;
+          
+          // FALLBACK: If no payment plans found by lead_id, also try fetching by client_id (contact_id)
+          // This handles cases where payment plans have correct client_id but wrong/missing lead_id
+          if ((!legacyData || legacyData.length === 0) && !legacyError && contactIds.length > 0) {
+            console.log('🔍 fetchPaymentPlans (legacy): No results by lead_id, trying fallback by client_id', {
+              legacyId,
+              contactIds
+            });
+            
+            const { data: fallbackData, error: fallbackError } = await supabase
+              .from('finances_paymentplanrow')
+              .select(`
+                *,
+                accounting_currencies!finances_paymentplanrow_currency_id_fkey (
+                  name,
+                  iso_code
+                ),
+                tenants_employee:ready_to_pay_by (
+                  id,
+                  display_name
+                )
+              `)
+              .in('client_id', contactIds) // Fetch by client_id matching contact_id
+              .is('cancel_date', null)
+              .order('date', { ascending: true });
+            
+            if (fallbackData && fallbackData.length > 0 && !fallbackError) {
+              console.log('⚠️ fetchPaymentPlans (legacy): Found payment plans by client_id fallback (lead_id may be incorrect in DB):', {
+                legacyId,
+                contactIds,
+                fallbackCount: fallbackData.length,
+                fallbackPayments: fallbackData.map((p: any) => ({ 
+                  id: p.id, 
+                  lead_id: p.lead_id, 
+                  client_id: p.client_id,
+                  expectedLeadId: legacyId,
+                  leadIdMatches: p.lead_id ? Number(p.lead_id) === legacyId : 'null'
+                }))
+              });
+              
+              // Use fallback data
+              legacyData = fallbackData;
+              legacyError = fallbackError;
+              isUsingFallback = true;
+            }
+          }
+          
           console.log('🔍 fetchPaymentPlans (legacy): Query result', {
             legacyId,
             dataCount: legacyData?.length || 0,
@@ -933,43 +982,137 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             rawPayments: legacyData?.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id, date: p.date })) || []
           });
           
-          // CRITICAL: Only filter by lead_id to ensure we show ALL payments for this lead
-          // Even if contact matching fails, we should still display all payments
-          // The contact name resolution will handle showing appropriate names (or "Contact #X" if not found)
-          if (legacyData && !legacyError) {
-            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments by lead_id only', {
+          // DIAGNOSTIC: Check if there are ANY payment plans for this lead_id (including canceled ones)
+          // This helps diagnose why no payments are being returned
+          if ((!legacyData || legacyData.length === 0) && !legacyError) {
+            const { data: diagnosticData } = await supabase
+              .from('finances_paymentplanrow')
+              .select('id, lead_id, client_id, cancel_date, date')
+              .eq('lead_id', legacyId)
+              .order('date', { ascending: true })
+              .limit(10);
+            
+            console.log('🔍 DIAGNOSTIC: All payment plans for lead_id (including canceled):', {
               legacyId,
               contactIds,
+              diagnosticCount: diagnosticData?.length || 0,
+              diagnosticPayments: diagnosticData?.map((p: any) => ({ 
+                id: p.id, 
+                lead_id: p.lead_id, 
+                client_id: p.client_id, 
+                cancel_date: p.cancel_date,
+                date: p.date,
+                clientIdMatches: p.client_id ? contactIds.includes(Number(p.client_id)) : 'null'
+              })) || []
+            });
+            
+            // DIAGNOSTIC: Check if payment plans exist with client_id matching contact_id but different/missing lead_id
+            // This helps identify if payment plans are stored with wrong lead_id
+            if (contactIds.length > 0) {
+              const { data: diagnosticByClientId } = await supabase
+                .from('finances_paymentplanrow')
+                .select('id, lead_id, client_id, cancel_date, date')
+                .in('client_id', contactIds)
+                .order('date', { ascending: true })
+                .limit(20);
+              
+              console.log('🔍 DIAGNOSTIC: Payment plans by client_id (contact_id):', {
+                legacyId,
+                contactIds,
+                diagnosticByClientIdCount: diagnosticByClientId?.length || 0,
+                diagnosticByClientIdPayments: diagnosticByClientId?.map((p: any) => ({ 
+                  id: p.id, 
+                  lead_id: p.lead_id, 
+                  client_id: p.client_id, 
+                  cancel_date: p.cancel_date,
+                  date: p.date,
+                  leadIdMatches: p.lead_id ? Number(p.lead_id) === legacyId : 'null',
+                  shouldHaveLeadId: legacyId
+                })) || []
+              });
+            }
+          }
+          
+          // CRITICAL: Filter payments based on matching logic
+          // If using primary query (by lead_id): Match by lead_id FIRST, then by client_id
+          // If using fallback query (by client_id): Only match by client_id (lead_id may be wrong/missing)
+          if (legacyData && !legacyError) {
+            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments', {
+              legacyId,
+              contactIds,
+              isUsingFallback,
               totalPayments: legacyData.length,
               payments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
             
             legacyData = legacyData.filter((plan: any) => {
               const planLeadId = plan.lead_id ? Number(plan.lead_id) : null;
-              
-              // CRITICAL: Only filter by lead_id - show ALL payments for this lead
-              // This ensures payments are displayed even if contact matching fails
-              if (planLeadId !== legacyId) {
-                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
-                return false;
-              }
-              
-              // Include ALL payments for this lead_id, regardless of client_id
-              // Contact name will be resolved later, and will show "Contact #X" if not found
               const planClientId = plan.client_id ? Number(plan.client_id) : null;
-              console.log('✅ Including payment for lead:', { 
-                planId: plan.id, 
-                planLeadId,
-                planClientId,
-                legacyId,
-                contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
-              });
               
-              return true;
+              if (isUsingFallback) {
+                // FALLBACK MODE: Data was fetched by client_id, so only filter by client_id
+                // Include payment if client_id matches a contact_id for THIS lead
+                const shouldInclude = planClientId !== null && contactIds.includes(planClientId);
+                
+                if (!shouldInclude) {
+                  console.log('🔍 Excluding payment (fallback - client_id mismatch):', { 
+                    planId: plan.id, 
+                    planLeadId,
+                    planClientId,
+                    legacyId,
+                    contactIds
+                  });
+                } else {
+                  console.log('✅ Including payment (fallback - matched by client_id):', { 
+                    planId: plan.id, 
+                    planLeadId,
+                    planClientId,
+                    legacyId,
+                    note: planLeadId !== legacyId ? '⚠️ lead_id does not match (using fallback)' : 'lead_id matches'
+                  });
+                }
+                
+                return shouldInclude;
+              } else {
+                // PRIMARY MODE: Data was fetched by lead_id, so filter by BOTH lead_id and client_id
+                // CRITICAL: FIRST match by lead_id to id in leads_lead
+                if (planLeadId !== legacyId) {
+                  console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
+                  return false;
+                }
+                
+                // CRITICAL: THEN match by client_id to contact_id
+                // Include payment if:
+                // 1. client_id is null (payments without contact assignment)
+                // 2. client_id matches a contact_id for THIS lead (payments with correct contact_id)
+                const shouldInclude = planClientId === null || contactIds.includes(planClientId);
+                
+                if (!shouldInclude) {
+                  console.log('🔍 Excluding payment (client_id mismatch):', { 
+                    planId: plan.id, 
+                    planLeadId,
+                    planClientId,
+                    legacyId,
+                    contactIds,
+                    contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
+                  });
+                } else {
+                  console.log('✅ Including payment for lead:', { 
+                    planId: plan.id, 
+                    planLeadId,
+                    planClientId,
+                    legacyId,
+                    contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
+                  });
+                }
+                
+                return shouldInclude;
+              }
             });
             
-            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (showing all for lead)', {
+            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (matched by lead_id then client_id)', {
               legacyId,
+              contactIds,
               filteredCount: legacyData.length,
               filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
