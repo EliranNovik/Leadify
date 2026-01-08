@@ -796,9 +796,9 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   if (filters.due === 'due_only') {
     query = query
       .eq('ready_to_pay', true) // Sent to finance
-      .eq('paid', false) // Only unpaid payments
       .not('due_date', 'is', null) // Must have due_date
       .is('cancel_date', null); // Exclude cancelled
+      // Note: Removed .eq('paid', false) to show both paid and unpaid payments
     
     // Filter by due_date in date range (same as CollectionDueReport)
     if (filters.fromDate) {
@@ -920,8 +920,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     // For legacy leads: if due_date exists, it means ready to pay (no need to check ready_to_pay flag)
     query = query
       .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL) - for legacy leads, due_date means ready to pay
-      .is('cancel_date', null) // Exclude cancelled payments
-      .is('actual_date', null); // Only unpaid payments (actual_date IS NULL means not paid yet)
+      .is('cancel_date', null); // Exclude cancelled payments
+      // Note: Removed .is('actual_date', null) to show both paid and unpaid payments
     
     // Filter by 'due_date' column for date range (this is what determines when payment is due)
     // For legacy leads, only fetch payment rows if due_date is available (due_date means ready to pay)

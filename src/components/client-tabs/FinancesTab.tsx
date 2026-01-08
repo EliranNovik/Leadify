@@ -894,14 +894,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             return;
           }
           
-          // For legacy leads, fetch payments by BOTH lead_id AND client_id (contact_id)
-          // This ensures subleads with the same contact don't show each other's finance plans
+          // For legacy leads, fetch payments by lead_id
           // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
           
-          // Build query to fetch payments for this specific lead/sublead
-          // CRITICAL: We must filter by BOTH lead_id AND client_id to prevent showing payments from other leads
-          // First, fetch by lead_id to get all payments for this specific lead
+          console.log('🔍 fetchPaymentPlans (legacy): Starting fetch', {
+            legacyId,
+            clientId: client.id,
+            contactsCount: currentContacts.length,
+            contactIds,
+            contactNames: currentContacts.map(c => ({ id: c.id, name: c.name }))
+          });
+          
+          // Build query to fetch payments for this specific lead
+          // CRITICAL: Filter by lead_id to get all payments for this specific lead
+          // We'll show ALL payments for this lead, even if contact matching fails
           let { data: legacyData, error: legacyError } = await supabase
             .from('finances_paymentplanrow')
             .select(`
@@ -919,11 +926,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
-          // CRITICAL: Filter in JavaScript to ensure we ONLY show payments for contacts associated with THIS lead
-          // This prevents payments from other leads (subleads) that share the same contact_id from appearing
-          // Even though we filter by lead_id in the query, we need this additional filter to be absolutely sure
+          console.log('🔍 fetchPaymentPlans (legacy): Query result', {
+            legacyId,
+            dataCount: legacyData?.length || 0,
+            error: legacyError,
+            rawPayments: legacyData?.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id, date: p.date })) || []
+          });
+          
+          // CRITICAL: Only filter by lead_id to ensure we show ALL payments for this lead
+          // Even if contact matching fails, we should still display all payments
+          // The contact name resolution will handle showing appropriate names (or "Contact #X" if not found)
           if (legacyData && !legacyError) {
-            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments', {
+            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments by lead_id only', {
               legacyId,
               contactIds,
               totalPayments: legacyData.length,
@@ -931,46 +945,30 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             });
             
             legacyData = legacyData.filter((plan: any) => {
-              const planClientId = plan.client_id ? Number(plan.client_id) : null;
               const planLeadId = plan.lead_id ? Number(plan.lead_id) : null;
               
-              // CRITICAL: Double-check that lead_id matches (should already be filtered, but be extra safe)
+              // CRITICAL: Only filter by lead_id - show ALL payments for this lead
+              // This ensures payments are displayed even if contact matching fails
               if (planLeadId !== legacyId) {
                 console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
                 return false;
               }
               
-              // Include payment if:
-              // 1. client_id is null (legacy payments without contact assignment)
-              // 2. client_id matches a contact_id for THIS lead (new payment plans with correct contact_id)
-              // 3. client_id matches the lead_id (backward compatibility for old payment plans that used lead_id as client_id)
-              //    Since we already filter by lead_id in the query, if client_id === lead_id, it's definitely for this lead
-              let shouldInclude = false;
+              // Include ALL payments for this lead_id, regardless of client_id
+              // Contact name will be resolved later, and will show "Contact #X" if not found
+              const planClientId = plan.client_id ? Number(plan.client_id) : null;
+              console.log('✅ Including payment for lead:', { 
+                planId: plan.id, 
+                planLeadId,
+                planClientId,
+                legacyId,
+                contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
+              });
               
-              if (planClientId === null) {
-                // Legacy payments without contact assignment
-                shouldInclude = true;
-              } else if (contactIds.includes(planClientId)) {
-                // New payment plans with correct contact_id
-                shouldInclude = true;
-              } else if (planClientId === legacyId) {
-                // Backward compatibility: Old payment plans that used lead_id as client_id
-                // Since we already filter by lead_id in the query, if client_id === lead_id, it's definitely for this lead
-                console.log('✅ Including payment with lead_id as client_id (backward compatibility):', { 
-                  planId: plan.id, 
-                  planClientId, 
-                  legacyId
-                });
-                shouldInclude = true;
-              }
-              
-              if (!shouldInclude) {
-                console.log('🔍 Excluding payment (client_id mismatch):', { planId: plan.id, planClientId, contactIds, legacyId });
-              }
-              return shouldInclude;
+              return true;
             });
             
-            console.log('✅ fetchPaymentPlans (legacy): Filtered payments', {
+            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (showing all for lead)', {
               legacyId,
               filteredCount: legacyData.length,
               filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
@@ -1163,13 +1161,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               });
             }
 
-            // For legacy leads: if due_date and due_by_id are set, treat as ready_to_pay
+            // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
+            // IMPORTANT: Show X button (revert) if due_date exists, even if due_by_id is missing
+            const hasDueDate = !!plan.due_date;
             const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
-            const isReadyToPay = plan.ready_to_pay || hasDueDateAndDueBy;
+            const isReadyToPay = plan.ready_to_pay || hasDueDate; // Changed: use hasDueDate instead of hasDueDateAndDueBy
             // For legacy leads, prioritize due_by_id over ready_to_pay_by
             const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
             // For legacy leads, get employee name from due_by_id using the map we fetched
+            // If due_by_id is missing, we won't have a display name, but button should still show
             const readyToPayByDisplayName = hasDueDateAndDueBy 
               ? (dueByEmployeeMap.get(plan.due_by_id) || null)
               : (plan.tenants_employee?.display_name || null);
@@ -1660,13 +1661,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             // Calculate percentage based on this contact's total, not the global total
             const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
             
-            // For legacy leads: if due_date and due_by_id are set, treat as ready_to_pay
+            // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
+            // IMPORTANT: Show X button (revert) if due_date exists, even if due_by_id is missing
+            const hasDueDate = !!plan.due_date;
             const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
-            const isReadyToPay = plan.ready_to_pay || hasDueDateAndDueBy;
+            const isReadyToPay = plan.ready_to_pay || hasDueDate; // Changed: use hasDueDate instead of hasDueDateAndDueBy
             // For legacy leads, prioritize due_by_id over ready_to_pay_by
             const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
             // For legacy leads, get employee name from due_by_id using the map we fetched
+            // If due_by_id is missing, we won't have a display name, but button should still show
             const readyToPayByDisplayName = hasDueDateAndDueBy 
               ? (dueByEmployeeMap.get(plan.due_by_id) || null)
               : (plan.tenants_employee?.display_name || null);
