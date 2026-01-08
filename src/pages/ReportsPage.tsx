@@ -7704,7 +7704,7 @@ const CollectionDueReport = () => {
         console.log('📊 Collection Due Report - DEBUG: ready_to_pay values:', debugNewPayments?.map(p => ({ id: p.id, ready_to_pay: p.ready_to_pay, due_date: p.due_date })));
       }
       
-      // Fetch new payment plans - only unpaid ones that are ready to pay
+      // Fetch new payment plans - ready to pay (both paid and unpaid)
       console.log('🔍 Collection Due Report - Fetching new payment plans...');
       let newPaymentsQuery = supabase
         .from('payment_plans')
@@ -7722,9 +7722,9 @@ const CollectionDueReport = () => {
           payment_order
         `)
         .eq('ready_to_pay', true)
-        .eq('paid', false) // Only unpaid payments
         .not('due_date', 'is', null)
         .is('cancel_date', null);
+        // Note: Removed .eq('paid', false) to show both paid and unpaid payments
 
       if (filters.fromDate) {
         const fromDateTime = `${filters.fromDate}T00:00:00`;
