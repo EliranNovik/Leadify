@@ -108,7 +108,12 @@ const resolveSourceCodeFromIdentifier = (identifier) => {
  * @returns {Promise<number|null>} Language ID or null if not found
  */
 async function lookupLanguageId(languageText) {
-  if (!languageText) return null;
+  if (!languageText) {
+    console.log('⚠️ lookupLanguageId: Empty language text provided');
+    return null;
+  }
+  
+  console.log(`🔍 lookupLanguageId: Looking up language: "${languageText}"`);
   
   try {
     // First, try to get all languages to check for Hebrew text matches
@@ -134,7 +139,7 @@ async function lookupLanguageId(languageText) {
     }
     
     if (allError) {
-      console.error('Error fetching all languages:', allError);
+      console.error('❌ Error fetching all languages:', allError);
       // Fallback to simple query
       const { data, error } = await supabase
         .from('misc_language')
@@ -143,7 +148,7 @@ async function lookupLanguageId(languageText) {
         .limit(5);
       
       if (error) {
-        console.error('Error looking up language:', error);
+        console.error('❌ Error looking up language:', error);
         return null;
       }
       
@@ -174,11 +179,54 @@ async function lookupLanguageId(languageText) {
       return null;
     }
     
+    console.log(`📋 Found ${allLanguages.length} languages in database`);
+    
     // Normalize the input for comparison
     const normalizedInput = languageText.trim();
     
     // Check if input contains Hebrew characters (Unicode range 0590-05FF)
     const hasHebrewChars = /[\u0590-\u05FF]/.test(normalizedInput);
+    
+    // Special handling for "Hebrew" - map to language with iso_code "HE" or "he"
+    // The database has Hebrew stored as name: "HE", iso_code: "he"
+    if (normalizedInput.toUpperCase() === 'HEBREW' || normalizedInput.toLowerCase() === 'hebrew') {
+      const hebrewMatch = allLanguages.find(
+        lang => {
+          const isoUpper = (lang.iso_code?.toUpperCase() || '').trim();
+          const nameUpper = (lang.name?.toUpperCase() || '').trim();
+          // Match if iso_code is "HE" or name is "HE" (the database stores Hebrew as name: "HE", iso_code: "he")
+          if (isoUpper === 'HE' || nameUpper === 'HE') {
+            return true;
+          }
+          return false;
+        }
+      );
+      
+      if (hebrewMatch) {
+        console.log(`✅ Found Hebrew language: "${languageText}" -> ${hebrewMatch.id} (${hebrewMatch.name}, ${hebrewMatch.iso_code})`);
+        return hebrewMatch.id;
+      }
+    }
+    
+    // Also handle Hebrew text "עברית" - map to iso_code "HE" or "he"
+    if (normalizedInput === 'עברית' || normalizedInput.trim() === 'עברית') {
+      const hebrewTextMatch = allLanguages.find(
+        lang => {
+          const isoUpper = (lang.iso_code?.toUpperCase() || '').trim();
+          const nameUpper = (lang.name?.toUpperCase() || '').trim();
+          // Match if iso_code is "HE" or name is "HE"
+          if (isoUpper === 'HE' || nameUpper === 'HE') {
+            return true;
+          }
+          return false;
+        }
+      );
+      
+      if (hebrewTextMatch) {
+        console.log(`✅ Found Hebrew language (Hebrew text): "${languageText}" -> ${hebrewTextMatch.id} (${hebrewTextMatch.name}, ${hebrewTextMatch.iso_code})`);
+        return hebrewTextMatch.id;
+      }
+    }
     
     // Try exact match first (case-insensitive for name and iso_code)
     const exactMatch = allLanguages.find(
@@ -198,7 +246,7 @@ async function lookupLanguageId(languageText) {
     );
     
     if (exactMatch) {
-      console.log(`✅ Found language (exact match): ${languageText} -> ${exactMatch.id} (${exactMatch.name})`);
+      console.log(`✅ Found language (exact match): "${languageText}" -> ${exactMatch.id} (${exactMatch.name}, ${exactMatch.iso_code})`);
       return exactMatch.id;
     }
     
@@ -218,11 +266,31 @@ async function lookupLanguageId(languageText) {
     );
     
     if (partialMatch) {
-      console.log(`✅ Found language (partial match): ${languageText} -> ${partialMatch.id} (${partialMatch.name})`);
+      console.log(`✅ Found language (partial match): "${languageText}" -> ${partialMatch.id} (${partialMatch.name}, ${partialMatch.iso_code})`);
       return partialMatch.id;
     }
     
-    console.log(`⚠️ Language not found: ${languageText}`);
+    // Log all available languages for debugging
+    console.log(`⚠️ Language not found: "${languageText}"`);
+    console.log(`📋 Available languages in database:`, allLanguages.map(l => ({ id: l.id, name: l.name, iso_code: l.iso_code })));
+    
+    // Try one more time with a more flexible match for "Hebrew"
+    if (normalizedInput.toLowerCase().includes('hebrew') || normalizedInput.toUpperCase() === 'HE') {
+      const flexibleHebrewMatch = allLanguages.find(
+        lang => {
+          const nameLower = lang.name?.toLowerCase() || '';
+          const isoUpper = lang.iso_code?.toUpperCase() || '';
+          return nameLower.includes('hebrew') || isoUpper === 'HE';
+        }
+      );
+      
+      if (flexibleHebrewMatch) {
+        console.log(`✅ Found Hebrew language (flexible match): "${languageText}" -> ${flexibleHebrewMatch.id} (${flexibleHebrewMatch.name}, ${flexibleHebrewMatch.iso_code})`);
+        return flexibleHebrewMatch.id;
+      }
+    }
+    
+    console.log(`⚠️ Returning null for language: "${languageText}" - SQL function will try to look it up`);
     return null;
   } catch (error) {
     console.error('Exception looking up language:', error);
@@ -236,30 +304,50 @@ async function lookupLanguageId(languageText) {
  * @returns {Promise<number|null>} Country ID or null if not found
  */
 async function lookupCountryId(countryIsoCode) {
-  if (!countryIsoCode) return null;
+  if (!countryIsoCode) {
+    console.log('⚠️ lookupCountryId: Empty country ISO code provided');
+    return null;
+  }
+  
+  const normalizedIsoCode = countryIsoCode.trim().toUpperCase();
+  console.log(`🔍 lookupCountryId: Looking up country with ISO code: "${normalizedIsoCode}"`);
   
   try {
-    // Try to find by ISO code (case-insensitive)
-    const { data, error } = await supabase
+    // Fetch all countries and filter client-side for reliable case-insensitive matching
+    // This is more reliable than using .ilike which might have issues
+    const { data: allCountries, error } = await supabase
       .from('misc_country')
       .select('id, name, iso_code')
-      .ilike('iso_code', countryIsoCode.trim())
-      .limit(1);
+      .limit(300); // Get all countries (should be less than 300)
     
     if (error) {
-      console.error('Error looking up country:', error);
+      console.error('❌ Error fetching countries:', error);
       return null;
     }
     
-    if (!data || data.length === 0) {
-      console.log(`⚠️ Country not found: ${countryIsoCode}`);
+    if (!allCountries || allCountries.length === 0) {
+      console.log(`⚠️ No countries found in database`);
       return null;
     }
     
-    console.log(`✅ Found country: ${countryIsoCode} -> ${data[0].id} (${data[0].name})`);
-    return data[0].id;
+    // Find exact match (case-insensitive)
+    const match = allCountries.find(
+      country => {
+        const countryIso = (country.iso_code || '').trim().toUpperCase();
+        return countryIso === normalizedIsoCode;
+      }
+    );
+    
+    if (match) {
+      console.log(`✅ Found country: "${normalizedIsoCode}" -> ${match.id} (${match.name}, ${match.iso_code})`);
+      return match.id;
+    }
+    
+    console.log(`⚠️ Country not found for ISO code: "${normalizedIsoCode}"`);
+    console.log(`📋 Available country ISO codes (first 10):`, allCountries.slice(0, 10).map(c => c.iso_code));
+    return null;
   } catch (error) {
-    console.error('Exception looking up country:', error);
+    console.error('❌ Exception looking up country:', error);
     return null;
   }
 }
@@ -352,13 +440,23 @@ const webhookController = {
       // Accept both 'facts' and 'desc' as aliases - prioritize desc if present
       const factsValue = (bodyData?.desc || bodyData?.facts) || null;
       
-      // Accept both 'country' and 'ISO' as aliases for country ISO code
-      const countryIsoCode = (bodyData?.country || bodyData?.ISO) || null;
+      // Extract country ISO code - check top-level fields first, then parse from facts field
+      let countryIsoCode = (bodyData?.country || bodyData?.ISO) || null;
+      
+      // If country not found in top-level fields, try to extract from facts field
+      if (!countryIsoCode && factsValue) {
+        // Look for patterns like "Country: IL" or "Country:IL" or "Country IL"
+        const countryMatch = factsValue.match(/Country\s*:?\s*([A-Z]{2})/i);
+        if (countryMatch && countryMatch[1]) {
+          countryIsoCode = countryMatch[1].toUpperCase();
+          console.log('🌍 Extracted country from facts field:', countryIsoCode);
+        }
+      }
       
       // Extract language (can be full text, ISO code, or Hebrew text)
       const languageText = bodyData?.language || 'English';
       
-      // Extract source URL - check url, ref_url, or if source looks like a URL
+      // Extract source URL - check url, ref_url, or if source looks like a URL, then parse from facts
       let sourceUrl = null;
       if (bodyData?.url) {
         sourceUrl = bodyData.url;
@@ -367,6 +465,13 @@ const webhookController = {
       } else if (bodyData?.source && (bodyData.source.startsWith('http://') || bodyData.source.startsWith('https://'))) {
         // If source field is a URL, use it as source_url
         sourceUrl = bodyData.source;
+      } else if (factsValue) {
+        // Try to extract URL from facts field (look for "Source URL: ..." pattern)
+        const urlMatch = factsValue.match(/Source\s+URL\s*:?\s*(https?:\/\/[^\s\n]+)/i);
+        if (urlMatch && urlMatch[1]) {
+          sourceUrl = urlMatch[1].trim();
+          console.log('🔗 Extracted source URL from facts field:', sourceUrl);
+        }
       }
 
       const formData = {
@@ -677,12 +782,13 @@ const webhookController = {
         languageText: formData.language,
         languageId,
         countryIsoCode: formData.country,
-        countryId
+        countryId,
+        sourceUrl: formData.source_url
       });
 
       // Create new lead using the source validation function
       // Pass language_id and country_id directly if we found them
-      const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', {
+      const rpcParams = {
         p_lead_name: formData.name,
         p_lead_email: formData.email,
         p_lead_phone: formData.phone || null,
@@ -696,10 +802,15 @@ const webhookController = {
         p_language_id: languageId || null,
         p_country_id: countryId || null,
         p_source_url: formData.source_url || null
-      });
+      };
+      
+      console.log('📤 Calling create_lead_with_source_validation with params:', JSON.stringify(rpcParams, null, 2));
+      
+      const { data: newLead, error: insertError } = await supabase.rpc('create_lead_with_source_validation', rpcParams);
 
       if (insertError) {
-        console.error('Error creating lead:', insertError);
+        console.error('❌ Error creating lead:', insertError);
+        console.error('❌ Error details:', JSON.stringify(insertError, null, 2));
         return res.status(500).json({ 
           error: 'Failed to create lead',
           details: insertError.message 

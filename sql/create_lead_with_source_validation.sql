@@ -154,20 +154,29 @@ BEGIN
     -- Try to match by name first (case-insensitive), then by iso_code
     -- Note: misc_language table doesn't have an 'active' column, so we don't filter by it
     IF p_lead_language IS NOT NULL THEN
-      SELECT ml.id, ml.name INTO v_language_id, v_language_name
-      FROM misc_language ml
-      WHERE (
-          UPPER(ml.name) = UPPER(p_lead_language)
-          OR UPPER(ml.iso_code) = UPPER(p_lead_language)
-        )
-      LIMIT 1;
+      -- Special handling: Map "Hebrew" (full text) to language with iso_code "HE" or name "HE"
+      IF UPPER(TRIM(p_lead_language)) = 'HEBREW' THEN
+        SELECT ml.id, ml.name INTO v_language_id, v_language_name
+        FROM misc_language ml
+        WHERE (UPPER(TRIM(ml.iso_code)) = 'HE' OR UPPER(TRIM(ml.name)) = 'HE')
+        LIMIT 1;
+      ELSE
+        -- Normal lookup: exact match on name or iso_code
+        SELECT ml.id, ml.name INTO v_language_id, v_language_name
+        FROM misc_language ml
+        WHERE (
+            UPPER(TRIM(ml.name)) = UPPER(TRIM(p_lead_language))
+            OR UPPER(TRIM(ml.iso_code)) = UPPER(TRIM(p_lead_language))
+          )
+        LIMIT 1;
+      END IF;
     END IF;
     
     -- If language not found, default to 'EN'
     IF v_language_id IS NULL THEN
       SELECT ml.id, ml.name INTO v_language_id, v_language_name
       FROM misc_language ml
-      WHERE (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
+      WHERE (UPPER(TRIM(ml.name)) = 'EN' OR UPPER(TRIM(ml.iso_code)) = 'EN')
       LIMIT 1;
     END IF;
     
