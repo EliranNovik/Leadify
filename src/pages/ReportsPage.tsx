@@ -4703,7 +4703,7 @@ const SchedulerSuperPipelineReport = () => {
       const allLeads: any[] = [];
 
       // Scheduler pipeline allowed stages: up to stage 40 (Waiting for Mtng sum)
-      const allowedStageIds = ['10', '15', '20', '21', '30', '40'];
+      const allowedStageIds = ['10', '11', '15', '20', '21', '30', '40'];
 
       // Fetch new leads
       let newLeadsQuery = supabase
@@ -4729,7 +4729,6 @@ const SchedulerSuperPipelineReport = () => {
           management_notes
         `)
         .gte('probability', 80) // Only probability >= 80%
-        .not('probability', 'is', null) // Exclude null probabilities
         .not('scheduler', 'is', null) // Only leads with scheduler assigned
         .in('stage', allowedStageIds); // Only scheduler stages up to 40
 
@@ -4824,7 +4823,7 @@ const SchedulerSuperPipelineReport = () => {
 
       // Fetch legacy leads
       // Scheduler pipeline allowed legacy stages: up to stage 40 (Waiting for Mtng sum)
-      const allowedLegacyStageIds = [10, 15, 20, 21, 30, 40];
+      const allowedLegacyStageIds = [10, 11, 15, 20, 21, 30, 40];
       
       let legacyLeadsQuery = supabase
         .from('leads_lead')
@@ -7868,6 +7867,70 @@ const CollectionDueReport = () => {
         p.lead_id?.toString() === '183061' || p.lead_id === 183061
       ) || [];
       console.log('🔍 DEBUG Lead 183061 - Payments found in query result (after due_date filter):', paymentsFor183061.length);
+      
+      // DEBUG: Check specifically for lead 209192
+      const paymentsFor209192 = legacyPayments?.filter((p: any) => 
+        p.lead_id?.toString() === '209192' || p.lead_id === 209192
+      ) || [];
+      console.log('🔍 DEBUG Lead 209192 - Payments found in query result (after due_date filter):', paymentsFor209192.length);
+      if (paymentsFor209192.length > 0) {
+        console.log('🔍 DEBUG Lead 209192 - Payment details:', paymentsFor209192.map((p: any) => ({
+          id: p.id,
+          lead_id: p.lead_id,
+          date: p.date,
+          due_date: p.due_date,
+          value: p.value,
+          value_base: p.value_base,
+          cancel_date: p.cancel_date,
+          ready_to_pay: p.ready_to_pay,
+          actual_date: p.actual_date,
+          due_by_id: p.due_by_id
+        })));
+      } else {
+        console.warn('⚠️ DEBUG Lead 209192 - NO payments found in query result! Checking if lead exists in database...');
+        // Query directly to see if payments exist and what their due_date values are
+        const { data: directCheck209192, error: directError209192 } = await supabase
+          .from('finances_paymentplanrow')
+          .select('id, lead_id, date, due_date, cancel_date, value, value_base, ready_to_pay, actual_date, due_by_id')
+          .eq('lead_id', 209192)
+          .is('cancel_date', null)
+          .limit(20);
+        if (directError209192) {
+          console.error('❌ DEBUG Lead 209192 - Error checking directly:', directError209192);
+        } else {
+          console.log('🔍 DEBUG Lead 209192 - Direct query result (all payments for this lead):', directCheck209192?.length || 0);
+          if (directCheck209192 && directCheck209192.length > 0) {
+            console.log('🔍 DEBUG Lead 209192 - All payment details:', directCheck209192.map((p: any) => ({
+              id: p.id,
+              date: p.date,
+              due_date: p.due_date,
+              due_date_in_range: p.due_date && filters.fromDate && filters.toDate 
+                ? (p.due_date >= `${filters.fromDate}T00:00:00` && p.due_date <= `${filters.toDate}T23:59:59`)
+                : 'N/A',
+              value: p.value,
+              value_base: p.value_base,
+              cancel_date: p.cancel_date,
+              actual_date: p.actual_date,
+              ready_to_pay: p.ready_to_pay,
+              due_by_id: p.due_by_id
+            })));
+            
+            // Check which payments would match the date filter
+            const fromDateTime = filters.fromDate ? `${filters.fromDate}T00:00:00` : null;
+            const toDateTime = filters.toDate ? `${filters.toDate}T23:59:59` : null;
+            const matchingPayments = directCheck209192.filter((p: any) => {
+              if (!p.due_date) return false;
+              if (fromDateTime && p.due_date < fromDateTime) return false;
+              if (toDateTime && p.due_date > toDateTime) return false;
+              return true;
+            });
+            console.log('🔍 DEBUG Lead 209192 - Payments matching date filter:', matchingPayments.length);
+            console.log('🔍 DEBUG Lead 209192 - Date filter range:', { fromDate: filters.fromDate, toDate: filters.toDate, fromDateTime, toDateTime });
+          } else {
+            console.warn('⚠️ DEBUG Lead 209192 - No payments found in database for this lead');
+          }
+        }
+      }
       if (paymentsFor183061.length > 0) {
         console.log('🔍 DEBUG Lead 183061 - Payment details:', paymentsFor183061.map((p: any) => ({
           id: p.id,

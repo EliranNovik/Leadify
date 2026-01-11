@@ -3321,7 +3321,24 @@ const Dashboard: React.FC = () => {
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
       
       // Calculate Last 30d: always use rolling 30 days from today (not affected by month boundaries)
+      // IMPORTANT: Last 30d should be inclusive of both start and end dates
+      // If today is Jan 11, 30 days ago is Dec 12, so range is Dec 12 to Jan 11 (inclusive) = 31 days total
       const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
+      
+      // Debug: Log the date range for Last 30d to verify it matches Collection Due Report
+      console.log('🔍 Invoiced Data - Last 30d date range:', {
+        effectiveThirtyDaysAgo,
+        todayStr,
+        range: `${effectiveThirtyDaysAgo} to ${todayStr} (inclusive)`,
+        note: 'This should match Collection Due Report date range'
+      });
+      
+      // Debug: Log the date range for Last 30d
+      console.log('🔍 Invoiced Data - Last 30d date range:', {
+        effectiveThirtyDaysAgo,
+        todayStr,
+        range: `${effectiveThirtyDaysAgo} to ${todayStr} (inclusive)`
+      });
       // Calculate date ranges for invoiced data
       const yesterday = new Date(today);
       yesterday.setDate(yesterday.getDate() - 1);
@@ -3424,79 +3441,62 @@ const Dashboard: React.FC = () => {
       }
       
       // Fetch legacy payment plans from finances_paymentplanrow
-      // Logic: First fetch where ready_to_pay = TRUE, then additionally fetch where ready_to_pay = FALSE AND date_due in range
+      // IMPORTANT: Match Collection Due Report - NO ready_to_pay filter, only filter by due_date IS NOT NULL
+      // Use pagination to fetch ALL records (Supabase limit is 1000 per query)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
-      console.log('🔍 Invoiced Data - Fetching legacy payment plans (ready_to_pay=TRUE OR ready_to_pay=FALSE with date_due)...');
+      console.log('🔍 Invoiced Data - Fetching legacy payment plans (matching Collection Due Report - all with due_date, no ready_to_pay filter, using pagination)...');
       
-      // First, fetch payments where ready_to_pay = TRUE (regardless of date_due)
-      let legacyPaymentsReadyQuery = supabase
-        .from('finances_paymentplanrow')
-        .select(`
-          id,
-          lead_id,
-          value,
-          value_base,
-          vat_value,
-          currency_id,
-          due_date,
-          date,
-          cancel_date,
-          ready_to_pay,
-          actual_date,
-          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-        `)
-        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid
-        .eq('ready_to_pay', true); // ready_to_pay = TRUE
+      let allLegacyPayments: any[] = [];
+      const batchSize = 1000; // Supabase limit
+      let offset = 0;
+      let hasMore = true;
+      let batchNumber = 0;
       
-      const { data: legacyPaymentsReady, error: legacyReadyError } = await legacyPaymentsReadyQuery;
-      if (legacyReadyError) {
-        console.error('❌ Invoiced Data - Error fetching legacy payments (ready_to_pay=TRUE):', legacyReadyError);
-        throw legacyReadyError;
+      while (hasMore) {
+        batchNumber++;
+        const { data: batch, error: batchError } = await supabase
+          .from('finances_paymentplanrow')
+          .select(`
+            id,
+            lead_id,
+            value,
+            value_base,
+            vat_value,
+            currency_id,
+            due_date,
+            date,
+            cancel_date,
+            ready_to_pay,
+            actual_date,
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+          `)
+          .not('due_date', 'is', null) // ONLY filter by due_date - fetch all payments with due_date set (regardless of ready_to_pay flag)
+          .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid payments
+          .order('id', { ascending: true }) // Order by id for consistent pagination
+          .range(offset, offset + batchSize - 1);
+        
+        if (batchError) {
+          console.error('❌ Invoiced Data - Error fetching legacy payments batch:', batchError);
+          throw batchError;
+        }
+        
+        if (batch && batch.length > 0) {
+          allLegacyPayments = [...allLegacyPayments, ...batch];
+          console.log(`✅ Invoiced Data - Fetched batch ${batchNumber}: ${batch.length} payments (total so far: ${allLegacyPayments.length})`);
+          
+          // If we got fewer than batchSize, we've reached the end
+          if (batch.length < batchSize) {
+            hasMore = false;
+          } else {
+            offset += batchSize;
+          }
+        } else {
+          hasMore = false;
+        }
       }
-      console.log('✅ Invoiced Data - Fetched legacy payments (ready_to_pay=TRUE):', legacyPaymentsReady?.length || 0);
       
-      // Second, fetch payments where ready_to_pay = FALSE AND date_due is in range
-      // Calculate date range for "additional" fetch (use a wide range to cover all periods we need)
-      const wideFromDate = '2020-01-01T00:00:00'; // Wide range to cover all periods
-      const wideToDate = '2030-12-31T23:59:59';
-      
-      let legacyPaymentsNotReadyQuery = supabase
-        .from('finances_paymentplanrow')
-        .select(`
-          id,
-          lead_id,
-          value,
-          value_base,
-          vat_value,
-          currency_id,
-          due_date,
-          date,
-          cancel_date,
-          ready_to_pay,
-          actual_date,
-          accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
-        `)
-        .not('due_date', 'is', null) // Only fetch if due_date has a date (not NULL)
-        .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid
-        .eq('ready_to_pay', false) // ready_to_pay = FALSE
-        .gte('due_date', wideFromDate) // AND date_due in range
-        .lte('due_date', wideToDate);
-      
-      const { data: legacyPaymentsNotReady, error: legacyNotReadyError } = await legacyPaymentsNotReadyQuery;
-      if (legacyNotReadyError) {
-        console.error('❌ Invoiced Data - Error fetching legacy payments (ready_to_pay=FALSE with date_due):', legacyNotReadyError);
-        throw legacyNotReadyError;
-      }
-      console.log('✅ Invoiced Data - Fetched legacy payments (ready_to_pay=FALSE with date_due):', legacyPaymentsNotReady?.length || 0);
-      
-      // Combine both sets of payments, removing duplicates by id
-      const legacyPaymentsReadySet = new Set((legacyPaymentsReady || []).map(p => p.id));
-      const allLegacyPayments = [
-        ...(legacyPaymentsReady || []),
-        ...(legacyPaymentsNotReady || []).filter(p => !legacyPaymentsReadySet.has(p.id))
-      ];
+      console.log('✅ Invoiced Data - Fetched all legacy payments (all with due_date, matching Collection Due Report):', allLegacyPayments.length);
       
       // Filter out any payments with cancel_date (safety check)
       const filteredLegacyPayments = allLegacyPayments.filter(p => !p.cancel_date);
@@ -3504,7 +3504,7 @@ const Dashboard: React.FC = () => {
         console.log('⚠️ Invoiced Data - Filtered out', allLegacyPayments.length - filteredLegacyPayments.length, 'legacy payments with cancel_date');
       }
       
-      console.log('✅ Invoiced Data - Total unique legacy payments (after cancel_date filter):', filteredLegacyPayments.length);
+      console.log('✅ Invoiced Data - Total legacy payments (after cancel_date filter):', filteredLegacyPayments.length);
       
       if (filteredLegacyPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample legacy payment:', {
@@ -3560,43 +3560,56 @@ const Dashboard: React.FC = () => {
       let legacyLeadsMap = new Map();
       if (legacyLeadIds.length > 0) {
         console.log('🔍 Invoiced Data - Fetching legacy leads metadata...');
-        const { data: legacyLeads, error: legacyLeadsError } = await supabase
-          .from('leads_lead')
-          .select(`
-            id,
-            case_handler_id,
-            category_id,
-            category,
-            misc_category!category_id(
+        
+        // Supabase's .in() has a limit of 1000 items, so we need to fetch in batches
+        const leadIdBatchSize = 1000;
+        let allLegacyLeads: any[] = [];
+        
+        for (let i = 0; i < legacyLeadIds.length; i += leadIdBatchSize) {
+          const batchLeadIds = legacyLeadIds.slice(i, i + leadIdBatchSize);
+          const { data: legacyLeadsBatch, error: legacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
               id,
-              name,
-              parent_id,
-              misc_maincategory!parent_id(
+              case_handler_id,
+              category_id,
+              category,
+              misc_category!category_id(
                 id,
                 name,
-                department_id,
-                tenant_departement!department_id(
+                parent_id,
+                misc_maincategory!parent_id(
                   id,
-                  name
+                  name,
+                  department_id,
+                  tenant_departement!department_id(
+                    id,
+                    name
+                  )
                 )
               )
-            )
-          `)
-          .in('id', legacyLeadIds);
+            `)
+            .in('id', batchLeadIds);
 
-        if (legacyLeadsError) {
-          console.error('❌ Invoiced Data - Error fetching legacy leads:', legacyLeadsError);
-        } else {
-          console.log('✅ Invoiced Data - Fetched legacy leads:', legacyLeads?.length || 0);
-          if (legacyLeads) {
-            legacyLeads.forEach(lead => {
-              const key = lead.id?.toString() || String(lead.id);
-              legacyLeadsMap.set(key, lead);
-              if (typeof lead.id === 'number') {
-                legacyLeadsMap.set(lead.id, lead);
-              }
-            });
+          if (legacyLeadsError) {
+            console.error('❌ Invoiced Data - Error fetching legacy leads batch:', legacyLeadsError);
+          } else {
+            if (legacyLeadsBatch) {
+              allLegacyLeads = [...allLegacyLeads, ...legacyLeadsBatch];
+              console.log(`✅ Invoiced Data - Fetched legacy leads batch: ${legacyLeadsBatch.length} leads (total so far: ${allLegacyLeads.length})`);
+            }
           }
+        }
+
+        console.log('✅ Invoiced Data - Fetched legacy leads:', allLegacyLeads.length);
+        if (allLegacyLeads.length > 0) {
+          allLegacyLeads.forEach(lead => {
+            const key = lead.id?.toString() || String(lead.id);
+            legacyLeadsMap.set(key, lead);
+            if (typeof lead.id === 'number') {
+              legacyLeadsMap.set(lead.id, lead);
+            }
+          });
         }
       }
       
