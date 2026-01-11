@@ -3263,7 +3263,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           vat_value: (currency === '₪' && newPaymentData.includeVat !== false) ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 : 0,
           lead_id: legacyId, // Use numeric lead_id to ensure correct matching for subleads
           notes: newPaymentData.notes || '',
-          due_date: newPaymentData.dueDate || null, // Set to null if empty
+          due_date: null, // MUST be null for legacy leads - only set when marking as ready to pay
           due_percent: (() => {
             const percent = newPaymentData.duePercent || '0';
             const percentStr = percent.toString();
@@ -3357,6 +3357,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
     setIsSavingPaymentRow(true);
     try {
+      // CRITICAL: Ensure contacts are loaded before getting client_id
+      // This prevents using stale or empty contacts array
+      const currentContacts = await fetchContacts();
+      console.log('🔍 handleCreateAutoPlan: Loaded contacts', {
+        contactsCount: currentContacts.length,
+        contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
+      });
+
       const currentUserName = await getCurrentUserName();
       const totalAmount = Number(autoPlanData.totalAmount);
 
@@ -3406,14 +3414,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           selectedContactName, 
           autoPlanDataContact: autoPlanData.contact,
           clientName: client?.name,
-          contactsCount: contacts.length,
-          contacts: contacts.map(c => ({ name: c.name, id: c.id }))
+          contactsCount: currentContacts.length,
+          contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
         });
-        const clientIdForContact = getClientIdForContact(selectedContactName);
-        console.log('🔍 handleCreateAutoPlan: client_id result', { clientIdForContact, selectedContactName });
         
-        if (clientIdForContact === null && selectedContactName !== client?.name) {
-          console.error('⚠️ handleCreateAutoPlan: Failed to get client_id for contact', { selectedContactName });
+        // Use currentContacts array (from fetchContacts) instead of state
+        const normalizedContactName = selectedContactName.trim();
+        const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
+        const clientIdForContact = contact?.id ? Number(contact.id) : null;
+        
+        console.log('🔍 handleCreateAutoPlan: client_id result', { 
+          clientIdForContact, 
+          selectedContactName,
+          contactId: contact?.id,
+          contactFound: !!contact
+        });
+        
+        if (clientIdForContact === null) {
+          console.error('⚠️ handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', { 
+            selectedContactName,
+            availableContacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
+          });
           toast.error(`Failed to find contact ID for "${selectedContactName}". Please ensure the contact exists.`);
           setIsSavingPaymentRow(false);
           return;
@@ -3494,14 +3515,37 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const today = new Date();
 
         // Get client_id for the selected contact (for new leads)
+        // Use currentContacts array (from fetchContacts) instead of state to ensure we have the latest data
         const selectedContactName = autoPlanData.contact || client?.name || '';
-        const clientIdForContact = getClientIdForContact(selectedContactName);
         console.log('🔍 handleCreateAutoPlan (new leads): Getting client_id for contact', { 
           selectedContactName, 
-          clientIdForContact,
-          contactsCount: contacts.length,
-          contacts: contacts.map(c => ({ name: c.name, id: c.id }))
+          contactsCount: currentContacts.length,
+          contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
         });
+        
+        // Look up contact in currentContacts array to get contact_id (not lead_id)
+        const normalizedContactName = selectedContactName.trim();
+        const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
+        const clientIdForContact = contact?.id ? Number(contact.id) : null;
+        
+        console.log('🔍 handleCreateAutoPlan (new leads): client_id result', {
+          clientIdForContact,
+          selectedContactName,
+          contactId: contact?.id,
+          contactFound: !!contact,
+          isInteger: clientIdForContact !== null && Number.isInteger(clientIdForContact)
+        });
+        
+        if (clientIdForContact === null || !Number.isInteger(clientIdForContact)) {
+          console.error('⚠️ handleCreateAutoPlan (new leads): Failed to get client_id (contact_id) for contact', {
+            selectedContactName,
+            clientIdForContact,
+            availableContacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
+          });
+          toast.error(`Failed to find contact ID for "${selectedContactName}". Please ensure the contact exists.`);
+          setIsSavingPaymentRow(false);
+          return;
+        }
 
         // Ensure paymentOrders array is properly initialized
         const paymentOrders = autoPlanData.paymentOrders || [];

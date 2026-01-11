@@ -11289,16 +11289,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
                 let balanceValue: any;
                 if (isLegacy) {
-                  // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+                  // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                   const currencyId = (selectedClient as any).currency_id;
                   // Convert to number for comparison (handle both string and number types)
-                  const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                  // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
+                  let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                  if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                    numericCurrencyId = 1; // Default to NIS
+                  }
                   if (numericCurrencyId === 1) {
-                    // If total exists and has a value, use total; otherwise use total_base
-                    const totalValue = (selectedClient as any).total;
-                    balanceValue = (totalValue && Number(totalValue) !== 0) ? totalValue : ((selectedClient as any).total_base || selectedClient.balance);
+                    // For currency_id 1, show total_base (only, no fallback)
+                    balanceValue = (selectedClient as any).total_base ?? null;
                   } else {
-                    balanceValue = (selectedClient as any).total || selectedClient.balance;
+                    // For other currencies, show total column (only, no fallback)
+                    balanceValue = (selectedClient as any).total ?? null;
                   }
                 } else {
                   balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
@@ -11657,20 +11661,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               <div className="text-center">
                 <div className="text-white text-base font-bold whitespace-nowrap truncate">
                   {(() => {
-                    // For new leads, use balance column. For legacy: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+                    // For new leads, use balance column. For legacy: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                     const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
                     let baseAmount: number;
                     if (isLegacyLead) {
-                      // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+                      // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                       const currencyId = (selectedClient as any)?.currency_id;
                       // Convert to number for comparison (handle both string and number types)
-                      const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                      // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
+                      let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                      if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                        numericCurrencyId = 1; // Default to NIS
+                      }
                       if (numericCurrencyId === 1) {
-                        // If total exists and has a value, use total; otherwise use total_base
-                        const totalValue = (selectedClient as any)?.total;
-                        baseAmount = (totalValue && Number(totalValue) !== 0) ? Number(totalValue) : Number((selectedClient as any)?.total_base || selectedClient?.balance || 0);
+                        // For currency_id 1, show total_base (only, no fallback)
+                        baseAmount = Number((selectedClient as any)?.total_base ?? 0);
                       } else {
-                        baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                        // For other currencies, show total column (only, no fallback)
+                        baseAmount = Number((selectedClient as any)?.total ?? 0);
                       }
                     } else {
                       baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
@@ -11719,15 +11727,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       
                       // Only calculate VAT if we should show it
                       if (shouldShowVAT) {
-                        // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+                        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                         const currencyId = (selectedClient as any)?.currency_id;
                         let totalAmount: number;
-                        if (currencyId === 1) {
-                          // If total exists and has a value, use total; otherwise use total_base
-                          const totalValue = (selectedClient as any)?.total;
-                          totalAmount = (totalValue && Number(totalValue) !== 0) ? Number(totalValue) : Number((selectedClient as any)?.total_base || selectedClient?.balance || 0);
+                        // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
+                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                          numericCurrencyId = 1; // Default to NIS
+                        }
+                        if (numericCurrencyId === 1) {
+                          // For currency_id 1, use total_base (only, no fallback)
+                          totalAmount = Number((selectedClient as any)?.total_base ?? 0);
                         } else {
-                          totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                          // For other currencies, use total column (only, no fallback)
+                          totalAmount = Number((selectedClient as any)?.total ?? 0);
                         }
                         vatAmount = totalAmount * 0.18;
                       }
@@ -12444,14 +12457,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
                         let baseAmount: number;
                         if (isLegacyLead) {
-                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                           const currencyId = (selectedClient as any)?.currency_id;
-                          if (currencyId === 1) {
-                            // If total exists and has a value, use total; otherwise use total_base
-                            const totalValue = (selectedClient as any)?.total;
-                            baseAmount = (totalValue && Number(totalValue) !== 0) ? Number(totalValue) : Number((selectedClient as any)?.total_base || selectedClient?.balance || 0);
+                          // Convert to number for comparison (handle both string and number types)
+                          // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
+                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                            numericCurrencyId = 1; // Default to NIS
+                          }
+                          if (numericCurrencyId === 1) {
+                            // For currency_id 1, show total_base (only, no fallback)
+                            baseAmount = Number((selectedClient as any)?.total_base ?? 0);
                           } else {
-                            baseAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                            // For other currencies, show total column (only, no fallback)
+                            baseAmount = Number((selectedClient as any)?.total ?? 0);
                           }
                         } else {
                           baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
@@ -12495,7 +12514,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           
                           // Only calculate VAT if we should show it
                           if (shouldShowVAT) {
-                            const totalAmount = Number(selectedClient?.total || selectedClient?.balance || 0);
+                            // Use same logic as baseAmount: total_base for currency_id === 1, total for others
+                            const currencyId = (selectedClient as any)?.currency_id;
+                            let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                            if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                              numericCurrencyId = 1; // Default to NIS
+                            }
+                            const totalAmount = numericCurrencyId === 1
+                              ? Number((selectedClient as any)?.total_base ?? 0)
+                              : Number((selectedClient as any)?.total ?? 0);
                             vatAmount = totalAmount * 0.18;
                           }
                         } else {

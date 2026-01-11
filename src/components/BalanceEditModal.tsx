@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef } from 'react';
 import { XMarkIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
+import { convertToNIS } from '../lib/currencyConversion';
 
 interface BalanceEditModalProps {
   isOpen: boolean;
@@ -327,7 +328,7 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // Map proposal_vat to 'vat' column (text): 'included' → 'true', 'excluded' → 'false' (same as new leads)
         const vatColumnValue = formData.proposal_vat === 'included' ? 'true' : 'false';
         
-        // For legacy leads: if currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total
+        // For legacy leads: if currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total and convert to NIS for total_base
         const updateData: any = {
           currency_id: currencyId,
           no_of_applicants: formData.number_of_applicants_meeting,
@@ -336,16 +337,18 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           vat: vatColumnValue // Save VAT status in 'vat' column for legacy leads
         };
         
-        // Save to total_base if currency_id is 1, otherwise save to total
+        // Save logic for legacy leads:
+        // If currency_id is 1 (NIS): Save only to total_base
+        // If currency_id is other than 1: Save to total, and calculate NIS equivalent and save to total_base
         if (currencyId === 1) {
+          // For NIS (currency_id = 1), save only to total_base
           updateData.total_base = formData.proposal_total;
-          // Also update total if total_base is being used (for consistency)
-          // Only update total if it's currently 0 or null, to avoid overwriting existing total
-          if (!selectedClient.total || Number(selectedClient.total) === 0) {
-            updateData.total = formData.proposal_total;
-          }
         } else {
+          // For other currencies, save the amount to total
           updateData.total = formData.proposal_total;
+          // Calculate NIS equivalent and save to total_base
+          const nisAmount = convertToNIS(formData.proposal_total, currencyId);
+          updateData.total_base = nisAmount;
         }
         
         const { error } = await supabase
