@@ -3,9 +3,9 @@
 
 // Currency conversion rates (you can make this dynamic by fetching from an API)
 export const currencyRates = {
-  'USD': 3.7,  // 1 USD = 3.7 NIS (approximate)
-  'EUR': 4.0,  // 1 EUR = 4.0 NIS (approximate)
-  'GBP': 4.7,  // 1 GBP = 4.7 NIS (approximate)
+  'USD': 3.2,  // 1 USD = 3.7 NIS (approximate)
+  'EUR': 3.7,  // 1 EUR = 4.0 NIS (approximate)
+  'GBP': 4.4,  // 1 GBP = 4.7 NIS (approximate)
   'NIS': 1,    // 1 NIS = 1 NIS
   '₪': 1,      // 1 ₪ = 1 NIS
   'ILS': 1     // 1 ILS = 1 NIS
