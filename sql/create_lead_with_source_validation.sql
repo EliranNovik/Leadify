@@ -1,5 +1,5 @@
 -- Drop existing function if it exists
-DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, integer, text, text);
+DROP FUNCTION IF EXISTS create_lead_with_source_validation(text, text, text, text, text, text, text, integer, text, text, bigint, bigint, text);
 
 -- Create function to create a new lead with source validation and default values
 CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
@@ -12,7 +12,10 @@ CREATE OR REPLACE FUNCTION create_lead_with_source_validation(
   p_created_by text DEFAULT NULL,
   p_source_code integer DEFAULT NULL,
   p_balance_currency text DEFAULT 'NIS',
-  p_proposal_currency text DEFAULT 'NIS'
+  p_proposal_currency text DEFAULT 'NIS',
+  p_language_id bigint DEFAULT NULL,
+  p_country_id bigint DEFAULT NULL,
+  p_source_url text DEFAULT NULL
 )
 RETURNS TABLE(
   id uuid,
@@ -40,6 +43,7 @@ DECLARE
   v_max_number bigint;
   v_language_id bigint;
   v_language_name text;
+  v_country_id bigint;
 BEGIN
   -- Sync leads_contact sequence to prevent duplicate key errors
   PERFORM setval(
@@ -128,30 +132,49 @@ BEGIN
     v_creator_full_name := p_created_by;
   END IF;
   
-  -- Look up language_id from misc_language table (not languages table)
-  -- Try to match by name first (case-insensitive), then by iso_code
-  -- Note: misc_language table doesn't have an 'active' column, so we don't filter by it
-  IF p_lead_language IS NOT NULL THEN
-    SELECT ml.id, ml.name INTO v_language_id, v_language_name
-    FROM misc_language ml
-    WHERE (
-        UPPER(ml.name) = UPPER(p_lead_language)
-        OR UPPER(ml.iso_code) = UPPER(p_lead_language)
-      )
-    LIMIT 1;
-  END IF;
+  -- Set country_id if provided, otherwise leave as NULL
+  v_country_id := p_country_id;
   
-  -- If language not found, default to 'EN'
-  IF v_language_id IS NULL THEN
-    SELECT ml.id, ml.name INTO v_language_id, v_language_name
+  -- Handle language_id: if provided directly, use it; otherwise look up from text
+  IF p_language_id IS NOT NULL THEN
+    -- Use the provided language_id directly
+    v_language_id := p_language_id;
+    -- Get the language name for the language field
+    SELECT ml.name INTO v_language_name
     FROM misc_language ml
-    WHERE (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
+    WHERE ml.id = p_language_id
     LIMIT 1;
-  END IF;
-  
-  -- If still no language found, use the passed language value or default to 'English'
-  IF v_language_name IS NULL THEN
-    v_language_name := COALESCE(p_lead_language, 'English');
+    
+    -- If language name not found, use the passed language text or default
+    IF v_language_name IS NULL THEN
+      v_language_name := COALESCE(p_lead_language, 'English');
+    END IF;
+  ELSE
+    -- Look up language_id from misc_language table (not languages table)
+    -- Try to match by name first (case-insensitive), then by iso_code
+    -- Note: misc_language table doesn't have an 'active' column, so we don't filter by it
+    IF p_lead_language IS NOT NULL THEN
+      SELECT ml.id, ml.name INTO v_language_id, v_language_name
+      FROM misc_language ml
+      WHERE (
+          UPPER(ml.name) = UPPER(p_lead_language)
+          OR UPPER(ml.iso_code) = UPPER(p_lead_language)
+        )
+      LIMIT 1;
+    END IF;
+    
+    -- If language not found, default to 'EN'
+    IF v_language_id IS NULL THEN
+      SELECT ml.id, ml.name INTO v_language_id, v_language_name
+      FROM misc_language ml
+      WHERE (UPPER(ml.name) = 'EN' OR UPPER(ml.iso_code) = 'EN')
+      LIMIT 1;
+    END IF;
+    
+    -- If still no language found, use the passed language value or default to 'English'
+    IF v_language_name IS NULL THEN
+      v_language_name := COALESCE(p_lead_language, 'English');
+    END IF;
   END IF;
   
   -- Insert the new lead with user tracking and source information
@@ -163,8 +186,10 @@ BEGIN
     topic,
     language,
     language_id,
+    country_id,
     source,
     source_id,
+    source_url,
     category_id,
     stage,
     status,
@@ -181,8 +206,10 @@ BEGIN
     v_final_topic,
     v_language_name,
     v_language_id,
+    v_country_id,
     v_source_name,
     v_source_id,
+    p_source_url,
     v_final_category_id,
     0::BIGINT, -- Stage 0 = Created
     'active',
