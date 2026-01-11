@@ -926,54 +926,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
-          // Track if we're using fallback data (fetched by client_id instead of lead_id)
-          let isUsingFallback = false;
-          
-          // FALLBACK: If no payment plans found by lead_id, also try fetching by client_id (contact_id)
-          // This handles cases where payment plans have correct client_id but wrong/missing lead_id
-          if ((!legacyData || legacyData.length === 0) && !legacyError && contactIds.length > 0) {
-            console.log('🔍 fetchPaymentPlans (legacy): No results by lead_id, trying fallback by client_id', {
-              legacyId,
-              contactIds
-            });
-            
-            const { data: fallbackData, error: fallbackError } = await supabase
-              .from('finances_paymentplanrow')
-              .select(`
-                *,
-                accounting_currencies!finances_paymentplanrow_currency_id_fkey (
-                  name,
-                  iso_code
-                ),
-                tenants_employee:ready_to_pay_by (
-                  id,
-                  display_name
-                )
-              `)
-              .in('client_id', contactIds) // Fetch by client_id matching contact_id
-              .is('cancel_date', null)
-              .order('date', { ascending: true });
-            
-            if (fallbackData && fallbackData.length > 0 && !fallbackError) {
-              console.log('⚠️ fetchPaymentPlans (legacy): Found payment plans by client_id fallback (lead_id may be incorrect in DB):', {
-                legacyId,
-                contactIds,
-                fallbackCount: fallbackData.length,
-                fallbackPayments: fallbackData.map((p: any) => ({ 
-                  id: p.id, 
-                  lead_id: p.lead_id, 
-                  client_id: p.client_id,
-                  expectedLeadId: legacyId,
-                  leadIdMatches: p.lead_id ? Number(p.lead_id) === legacyId : 'null'
-                }))
-              });
-              
-              // Use fallback data
-              legacyData = fallbackData;
-              legacyError = fallbackError;
-              isUsingFallback = true;
-            }
-          }
+          // No fallback by client_id - we must match by lead_id only
+          // Multiple leads can share the same contact, so matching by client_id would include payments from other leads
           
           console.log('🔍 fetchPaymentPlans (legacy): Query result', {
             legacyId,
@@ -1033,86 +987,37 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
           }
           
-          // CRITICAL: Filter payments based on matching logic
-          // If using primary query (by lead_id): Match by lead_id FIRST, then by client_id
-          // If using fallback query (by client_id): Only match by client_id (lead_id may be wrong/missing)
+          // CRITICAL: Only filter by lead_id - don't filter by client_id
+          // Multiple leads can share the same contact (client_id), so we must match by lead_id first
+          // Grouping by client_id is done later for display purposes only
           if (legacyData && !legacyError) {
-            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments', {
+            console.log('🔍 fetchPaymentPlans (legacy): Filtering payments by lead_id only', {
               legacyId,
-              contactIds,
-              isUsingFallback,
               totalPayments: legacyData.length,
               payments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
             
             legacyData = legacyData.filter((plan: any) => {
               const planLeadId = plan.lead_id ? Number(plan.lead_id) : null;
-              const planClientId = plan.client_id ? Number(plan.client_id) : null;
               
-              if (isUsingFallback) {
-                // FALLBACK MODE: Data was fetched by client_id, so only filter by client_id
-                // Include payment if client_id matches a contact_id for THIS lead
-                const shouldInclude = planClientId !== null && contactIds.includes(planClientId);
-                
-                if (!shouldInclude) {
-                  console.log('🔍 Excluding payment (fallback - client_id mismatch):', { 
-                    planId: plan.id, 
-                    planLeadId,
-                    planClientId,
-                    legacyId,
-                    contactIds
-                  });
-                } else {
-                  console.log('✅ Including payment (fallback - matched by client_id):', { 
-                    planId: plan.id, 
-                    planLeadId,
-                    planClientId,
-                    legacyId,
-                    note: planLeadId !== legacyId ? '⚠️ lead_id does not match (using fallback)' : 'lead_id matches'
-                  });
-                }
-                
-                return shouldInclude;
-              } else {
-                // PRIMARY MODE: Data was fetched by lead_id, so filter by BOTH lead_id and client_id
-                // CRITICAL: FIRST match by lead_id to id in leads_lead
-                if (planLeadId !== legacyId) {
-                  console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
-                  return false;
-                }
-                
-                // CRITICAL: THEN match by client_id to contact_id
-                // Include payment if:
-                // 1. client_id is null (payments without contact assignment)
-                // 2. client_id matches a contact_id for THIS lead (payments with correct contact_id)
-                const shouldInclude = planClientId === null || contactIds.includes(planClientId);
-                
-                if (!shouldInclude) {
-                  console.log('🔍 Excluding payment (client_id mismatch):', { 
-                    planId: plan.id, 
-                    planLeadId,
-                    planClientId,
-                    legacyId,
-                    contactIds,
-                    contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
-                  });
-                } else {
-                  console.log('✅ Including payment for lead:', { 
-                    planId: plan.id, 
-                    planLeadId,
-                    planClientId,
-                    legacyId,
-                    contactMatched: planClientId ? contactIds.includes(planClientId) : 'null client_id'
-                  });
-                }
-                
-                return shouldInclude;
+              // Match by lead_id only - don't filter by client_id
+              if (planLeadId !== legacyId) {
+                console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
+                return false;
               }
+              
+              console.log('✅ Including payment for lead (matched by lead_id):', { 
+                planId: plan.id, 
+                planLeadId,
+                planClientId: plan.client_id,
+                legacyId
+              });
+              
+              return true;
             });
             
-            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (matched by lead_id then client_id)', {
+            console.log('✅ fetchPaymentPlans (legacy): Filtered payments (matched by lead_id only)', {
               legacyId,
-              contactIds,
               filteredCount: legacyData.length,
               filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
@@ -1142,39 +1047,36 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .is('cancel_date', null)
             .order('date', { ascending: true });
           
-          // CRITICAL: Filter in JavaScript to ensure we ONLY show payments for contacts associated with THIS lead
-          // This prevents payments from other leads (subleads) that share the same contact_id from appearing
-          // Even though we filter by lead_id in the query, we need this additional filter to be absolutely sure
+          // CRITICAL: Only filter by lead_id - don't filter by client_id
+          // Multiple leads can share the same contact (client_id), so we must match by lead_id first
+          // Grouping by client_id is done later for display purposes only
           if (regularData && !regularError) {
-            console.log('🔍 fetchPaymentPlans (new): Filtering payments', {
+            console.log('🔍 fetchPaymentPlans (new): Filtering payments by lead_id only', {
               leadId: client.id,
-              contactIds,
               totalPayments: regularData.length,
               payments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
             
             regularData = regularData.filter((plan: any) => {
-              const planClientId = plan.client_id ? Number(plan.client_id) : null;
               const planLeadId = plan.lead_id ? String(plan.lead_id) : null;
               
-              // CRITICAL: Double-check that lead_id matches (should already be filtered, but be extra safe)
+              // Match by lead_id only - don't filter by client_id
               if (planLeadId !== String(client.id)) {
                 console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: client.id, planId: plan.id });
                 return false;
               }
               
-              // Include payment if:
-              // 1. client_id is null (payments without contact assignment)
-              // 2. client_id matches a contact_id for THIS lead (new payment plans with correct contact_id)
-              // Note: For new leads, we don't need backward compatibility since they should always use contact_id
-              const shouldInclude = planClientId === null || contactIds.includes(planClientId);
-              if (!shouldInclude) {
-                console.log('🔍 Excluding payment (client_id mismatch):', { planId: plan.id, planClientId, contactIds });
-              }
-              return shouldInclude;
+              console.log('✅ Including payment for lead (matched by lead_id):', { 
+                planId: plan.id, 
+                planLeadId,
+                planClientId: plan.client_id,
+                leadId: client.id
+              });
+              
+              return true;
             });
             
-            console.log('✅ fetchPaymentPlans (new): Filtered payments', {
+            console.log('✅ fetchPaymentPlans (new): Filtered payments (matched by lead_id only)', {
               leadId: client.id,
               filteredCount: regularData.length,
               filteredPayments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
