@@ -971,7 +971,7 @@ const PipelinePage: React.FC = () => {
           // Define allowed stage IDs based on pipeline mode
           const allowedStageIds = pipelineMode === 'closer' 
             ? ['20', '21', '30', '40', '50', '55', '60'] // Closer: exclude stage 70 (payment request sent)
-            : ['10', '15', '20', '21', '30', '40']; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
+            : ['10', '11', '15', '20', '21', '30', '40']; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
           
           console.log('🔍 Pipeline Debug - Fetching leads', {
             pipelineMode,
@@ -1372,7 +1372,7 @@ const PipelinePage: React.FC = () => {
           // Define allowed stage IDs based on pipeline mode
           const allowedLegacyStageIds = pipelineMode === 'closer'
             ? [20, 21, 30, 40, 50, 55, 60] // Closer: exclude stage 70 (payment request sent)
-            : [10, 15, 20, 21, 30, 40]; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
+            : [10, 11, 15, 20, 21, 30, 40]; // Scheduler: exclude stage 50 (Mtng sum+Agreement sent) and above
           
           let legacyLeadsQuery = supabase
             .from('leads_lead')
