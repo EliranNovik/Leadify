@@ -102,6 +102,21 @@ const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { prof
         </div>
       </div>
     </div>
+    {/* Issued by and timestamp at bottom */}
+    {(proforma.issuedBy || proforma.issuedDate) && (
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280', fontFamily: 'Inter, Arial, sans-serif' }}>
+        {proforma.issuedBy && (
+          <div style={{ marginBottom: 4 }}>
+            <span style={{ fontWeight: 600 }}>Issued by:</span> <span>{proforma.issuedBy}</span>
+          </div>
+        )}
+        {proforma.issuedDate && (
+          <div>
+            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}, {new Date(proforma.issuedDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+        )}
+      </div>
+    )}
   </div>
   );
 });
@@ -153,12 +168,43 @@ const ProformaLegacyViewPage: React.FC = () => {
     const fetchProforma = async () => {
       setLoading(true);
       setError(null);
+      
+      // Variables to store issued by information
+      let issuedBy: string | null = null;
+      let issuedDate: string | null = null;
+      
       // Try fetching from the view first
       let { data, error } = await supabase
         .from('proforma_with_rows')
         .select('*')
         .eq('id', id)
         .single();
+      
+      // Fetch cxd_by_id, creator_id, cxd_date, and cdate from proformainvoice table (for both view and direct fetch paths)
+      const { data: proformaData, error: proformaError } = await supabase
+        .from('proformainvoice')
+        .select('cxd_by_id, creator_id, cxd_date, cdate')
+        .eq('id', id)
+        .single();
+      
+      if (!proformaError && proformaData) {
+        // Use cdate (creation date) as issued date (cxd_date is cancellation date, which is NULL for active proformas)
+        issuedDate = proformaData.cdate || null;
+        
+        // Try cxd_by_id first (cancelled by), then creator_id (created by) to get employee display_name
+        const employeeId = proformaData.cxd_by_id || proformaData.creator_id;
+        if (employeeId) {
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('display_name')
+            .eq('id', employeeId)
+            .single();
+          
+          if (!employeeError && employeeData?.display_name) {
+            issuedBy = employeeData.display_name;
+          }
+        }
+      }
         
       // If view fetch succeeds, also fetch client data if missing
       if (!error && data && data.lead_id && (!data.client_email || !data.client_phone)) {
@@ -276,7 +322,7 @@ const ProformaLegacyViewPage: React.FC = () => {
           `)
           .eq('id', id)
           .single();
-          
+        
         if (directError) {
           setError(`Error fetching proforma: ${directError.message}`);
           setLoading(false);
@@ -405,8 +451,16 @@ const ProformaLegacyViewPage: React.FC = () => {
           client_phone: clientPhone,
           currency_name: 'Israeli Shekel',
           currency_code: directData.currency_id ? getCurrencySymbol(directData.currency_id.toString()) : '₪',
-          lead_number: directData.lead_id?.toString() || ''
+          lead_number: directData.lead_id?.toString() || '',
+          issuedBy: issuedBy,
+          issuedDate: issuedDate
         };
+      } else {
+        // Add issued by information to view data
+        if (data) {
+          data.issuedBy = issuedBy;
+          data.issuedDate = issuedDate;
+        }
       }
       
       if (error && !data) {
@@ -731,6 +785,21 @@ const ProformaLegacyViewPage: React.FC = () => {
             </div>
           </div>
         </div>
+        {/* Issued by and timestamp at bottom */}
+        {(proforma.issuedBy || proforma.issuedDate) && (
+          <div className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-500">
+            {proforma.issuedBy && (
+              <div className="mb-1">
+                <span className="font-semibold">Issued by:</span> <span>{proforma.issuedBy}</span>
+              </div>
+            )}
+            {proforma.issuedDate && (
+              <div>
+                <span className="font-semibold">Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}, {new Date(proforma.issuedDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {/* Hidden minimal invoice for PDF generation */}
       <div style={{ position: 'absolute', left: -9999, top: 0, width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">

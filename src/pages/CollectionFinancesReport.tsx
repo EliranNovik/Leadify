@@ -35,6 +35,7 @@ type PaymentRow = {
   hasProforma: boolean;
   collectedDate: string | null;
   dueDate: string | null;
+  proformaDate: string | null;
   handlerName: string;
   handlerId?: number | null;
   caseNumber: string;
@@ -316,10 +317,10 @@ const loadPayments = async () => {
       );
       console.log(`🔍 [loadPayments] Combined payments for 199849:`, combined199849.length);
       
-      const legacyProformaSet = await fetchLegacyProformaStatus(combined);
-      const withProforma = combined.map((row) =>
-        row.leadType === 'legacy' ? { ...row, hasProforma: legacyProformaSet.has(row.leadId) } : row,
-      );
+      // Note: For legacy leads, hasProforma is already correctly set in fetchLegacyPayments
+      // based on proformaDate (which matches by lead_id + client_id)
+      // So we don't need to override it here with fetchLegacyProformaStatus
+      const withProforma = combined;
       const beforeFiltering = withProforma.length;
       const filtered = withProforma.filter((row) => {
         // Category filter
@@ -677,6 +678,7 @@ const loadPayments = async () => {
                 <th>Order</th>
                 <th>Collected</th>
                 <th>Date</th>
+                <th>Proforma Date</th>
                 <th>Handler</th>
                 <th>Case</th>
                 <th>Category</th>
@@ -686,7 +688,7 @@ const loadPayments = async () => {
             <tbody>
               {rows.length === 0 && !loading && (
                 <tr>
-                  <td colSpan={11} className="text-center py-6 text-gray-500">No payments found for the selected filters.</td>
+                  <td colSpan={12} className="text-center py-6 text-gray-500">No payments found for the selected filters.</td>
                 </tr>
               )}
               {(() => {
@@ -764,6 +766,9 @@ const loadPayments = async () => {
                   </td>
                   <td>
                     {row.dueDate ? new Date(row.dueDate).toLocaleDateString() : '—'}
+                  </td>
+                  <td>
+                    {row.proformaDate ? new Date(row.proformaDate).toLocaleDateString() : '—'}
                   </td>
                   <td>
                     {handlerEdit?.rowId === row.id ? (
@@ -990,6 +995,21 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     const orderCode = normalizeOrderCode(plan.payment_order);
     const paidAt = normalizeDate(plan.paid_at);
     const dueDate = normalizeDate(plan.due_date);
+    
+    // Extract createdAt from proforma JSON for new leads
+    let proformaDate: string | null = null;
+    if (plan.proforma) {
+      try {
+        const proformaData = typeof plan.proforma === 'string' ? JSON.parse(plan.proforma) : plan.proforma;
+        if (proformaData?.createdAt) {
+          // Normalize the createdAt timestamp to a date string
+          proformaDate = normalizeDate(proformaData.createdAt);
+        }
+      } catch (e) {
+        // If parsing fails, proformaDate remains null
+      }
+    }
+    
     return {
       id: `new-${plan.id}`,
       leadId: key,
@@ -1005,6 +1025,7 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
       hasProforma,
       collectedDate: paidAt,
       dueDate,
+      proformaDate,
       handlerName: meta?.handlerName || '—',
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || (plan.lead_id ? `#${plan.lead_id}` : '—'),
@@ -1137,6 +1158,40 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     }
     console.log(`✅ [fetchLegacyPayments] Fetched ${contactMap.size} contact names for client_ids`);
   }
+  
+  // Fetch proforma dates from proformainvoice table for legacy leads
+  // Match by both lead_id AND client_id (contact_id) to get the correct proforma for each contact
+  const proformaDateMap = new Map<string, string | null>(); // Key: "lead_id_client_id"
+  if (leadIds.length > 0) {
+    const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
+    if (numericLeadIds.length > 0) {
+      const { data: proformas, error: proformasError } = await supabase
+        .from('proformainvoice')
+        .select('lead_id, client_id, cdate')
+        .in('lead_id', numericLeadIds)
+        .is('cxd_date', null); // Only get active proformas (not cancelled)
+      
+      if (!proformasError && proformas) {
+        proformas.forEach((proforma: any) => {
+          if (proforma.lead_id) {
+            const normalizedDate = normalizeDate(proforma.cdate);
+            // Create composite key: lead_id_client_id (client_id can be null)
+            const clientId = proforma.client_id ? Number(proforma.client_id) : null;
+            const compositeKey = clientId 
+              ? `${proforma.lead_id}_${clientId}` 
+              : `${proforma.lead_id}_null`;
+            
+            // If multiple proformas exist for the same lead+client combination, keep the most recent one
+            const existingDate = proformaDateMap.get(compositeKey);
+            if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+              proformaDateMap.set(compositeKey, normalizedDate);
+            }
+          }
+        });
+      }
+      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates (matched by lead_id + client_id)`);
+    }
+  }
 
   // Process all payments (same as CollectionDueReport) - don't filter by metadata existence
   return activePlans
@@ -1168,6 +1223,22 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);
     
+    // Get proforma date for this lead+client combination
+    // Match by both lead_id AND client_id (contact_id) to get the correct proforma for each contact
+    const numericLeadId = parseInt(leadIdKey, 10);
+    let proformaDate: string | null = null;
+    if (!Number.isNaN(numericLeadId)) {
+      // Create composite key: lead_id_client_id
+      // This ensures we match the correct proforma for the specific contact (client_id)
+      const compositeKey = clientId 
+        ? `${numericLeadId}_${clientId}` 
+        : `${numericLeadId}_null`;
+      proformaDate = proformaDateMap.get(compositeKey) || null;
+    }
+    
+    // Determine if there's a proforma for this specific lead+client combination
+    const hasProforma = proformaDate !== null;
+    
     // Debug for 199849
     if ((leadIdKey === '199849' || plan.lead_id === 199849)) {
       console.log(`✅ [fetchLegacyPayments] Processing payment plan for 199849:`, {
@@ -1181,6 +1252,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
         value,
         dueDate,
         actualDate,
+        proformaDate,
+        hasProforma,
         collected: Boolean(actualDate),
       });
     }
@@ -1198,9 +1271,10 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
       orderCode,
       orderLabel: mapOrderLabel(orderCode, plan.order),
       collected: Boolean(actualDate),
-      hasProforma: false,
+      hasProforma,
       collectedDate: actualDate,
       dueDate,
+      proformaDate,
       handlerName: meta?.handlerName || '—',
       handlerId: meta?.handlerId ?? null,
       caseNumber: meta?.caseNumber || `#${leadIdKey}`, // Always use lead_id for case number

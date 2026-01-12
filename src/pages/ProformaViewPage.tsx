@@ -96,6 +96,21 @@ const MinimalInvoice = React.forwardRef(({ proforma }: { proforma: any }, ref: R
         </div>
       </div>
     </div>
+    {/* Issued by and timestamp at bottom */}
+    {(proforma.createdBy || proforma.createdAt) && (
+      <div style={{ marginTop: 32, paddingTop: 24, borderTop: '1px solid #e5e7eb', fontSize: 12, color: '#6b7280', fontFamily: 'Inter, Arial, sans-serif' }}>
+        {proforma.createdBy && (
+          <div style={{ marginBottom: 4 }}>
+            <span style={{ fontWeight: 600 }}>Issued by:</span> <span>{proforma.createdBy}</span>
+          </div>
+        )}
+        {proforma.createdAt && (
+          <div>
+            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.createdAt).toLocaleDateString()}, {new Date(proforma.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+          </div>
+        )}
+      </div>
+    )}
   </div>
 ));
 
@@ -452,8 +467,21 @@ const ProformaViewPage: React.FC = () => {
             </div>
           </div>
         </div>
-        {/* Created by at bottom left inside the card */}
-        {/* Removed created by from print area as requested */}
+        {/* Issued by and timestamp at bottom */}
+        {(proforma.createdBy || proforma.createdAt) && (
+          <div className="mt-8 pt-6 border-t border-gray-200 text-xs text-gray-500">
+            {proforma.createdBy && (
+              <div className="mb-1">
+                <span className="font-semibold">Issued by:</span> <span>{proforma.createdBy}</span>
+              </div>
+            )}
+            {proforma.createdAt && (
+              <div>
+                <span className="font-semibold">Date:</span> <span>{new Date(proforma.createdAt).toLocaleDateString()}, {new Date(proforma.createdAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+              </div>
+            )}
+          </div>
+        )}
       </div>
       {/* Hidden minimal invoice for PDF generation */}
       <div style={{ position: 'absolute', left: -9999, top: 0, width: 0, height: 0, overflow: 'hidden' }} aria-hidden="true">
