@@ -1569,7 +1569,7 @@ const Clients: React.FC<ClientsProps> = ({
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
   const [unactivationReason, setUnactivationReason] = useState('');
-  const [customUnactivationReason, setCustomUnactivationReason] = useState('');
+  const [deactivateNotesDescription, setDeactivateNotesDescription] = useState('');
   
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
@@ -2576,6 +2576,7 @@ useEffect(() => {
             meeting_lawyer_id,
             expert_id,
             unactivation_reason,
+            deactivate_notes,
             no_of_applicants,
             potential_total,
             proposal,
@@ -2726,6 +2727,7 @@ useEffect(() => {
                 : 'Not assigned',
             case_handler_id: data.case_handler_id || null, // Include case_handler_id for RolesTab
             unactivation_reason: data.unactivation_reason || null, // Use unactivation_reason from legacy table
+            deactivate_notes: data.deactivate_notes || null, // Include deactivate_notes for inactive badge
             potential_total: data.potential_total || null, // Include potential_total for legacy leads
             status: data.status || null, // Include status field for unactivation check
             sales_roles_locked: data.sales_roles_locked || null, // Include sales_roles_locked for roles tab
@@ -3182,6 +3184,7 @@ useEffect(() => {
                 case_handler_id: legacyLead.case_handler_id || null, // Include case_handler_id for RolesTab
                 scheduler: schedulerName,
                 unactivation_reason: legacyLead.unactivation_reason || null,
+                deactivate_notes: legacyLead.deactivate_notes || null,
                 unactivated_by: legacyLead.unactivated_by || null,
                 unactivated_at: legacyLead.unactivated_at || null,
                 status: legacyLead.status || null,
@@ -3645,11 +3648,14 @@ useEffect(() => {
   };
 
   const handleUnactivation = async () => {
-    // Validate reason
-    const finalReason = unactivationReason === 'other' ? customUnactivationReason : unactivationReason;
+    // Validate both reason and description are provided
+    if (!unactivationReason.trim()) {
+      toast.error('Please select a reason for unactivation');
+      return;
+    }
     
-    if (!finalReason.trim()) {
-      toast.error('Please select or enter a reason for unactivation');
+    if (!deactivateNotesDescription.trim()) {
+      toast.error('Please enter a description for the deactivation');
       return;
     }
     
@@ -3683,7 +3689,8 @@ useEffect(() => {
       const updateData: any = {
         unactivated_by: currentUserFullName,
         unactivated_at: new Date().toISOString(),
-        unactivation_reason: finalReason
+        unactivation_reason: unactivationReason.trim(),
+        deactivate_notes: deactivateNotesDescription.trim()
       };
 
       // Set status based on lead type (do NOT change stage)
@@ -3706,7 +3713,7 @@ useEffect(() => {
       await onClientUpdate();
       setShowUnactivationModal(false);
       setUnactivationReason('');
-      setCustomUnactivationReason('');
+      setDeactivateNotesDescription('');
       toast.success('Lead unactivated successfully');
     } catch (error) {
       console.error('Error unactivating lead:', error);
@@ -11373,6 +11380,21 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       })()}
                     </span>
                   </div>
+                  {/* Show deactivate_notes for new leads */}
+                  {(selectedClient as any).deactivate_notes && (
+                    <div className="flex items-start gap-2">
+                      <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
+                      <span 
+                        className="text-sm text-base-content/80 flex-1"
+                        dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
+                        style={{ 
+                          textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left' 
+                        }}
+                      >
+                        {(selectedClient as any).deactivate_notes}
+                      </span>
+                    </div>
+                  )}
                   {selectedClient.unactivated_by && (
                     <div className="flex items-center gap-2">
                       <UserIcon className="w-4 h-4 text-base-content/60" />
@@ -12742,11 +12764,32 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     ? (statusValueForBadge === 10 || statusValueForBadge === '10' || Number(statusValueForBadge) === 10)
                     : (statusValueForBadge === 'inactive');
                   
+                  // Get deactivate_notes for both legacy and new leads
+                  const deactivateNotes = (selectedClient as any).deactivate_notes || null;
+                  
+                  // Detect if text contains Hebrew characters for RTL/LTR alignment
+                  const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
+                  
                   return isUnactivatedForBadge ? (
-                    <div className="mt-3">
-                      <div className="inline-flex items-center gap-2 px-4 py-2 bg-red-100 border border-red-300 rounded-lg">
-                        <div className="w-2 h-2 bg-red-500 rounded-full"></div>
-                        <span className="text-red-700 font-medium text-sm">Case is not active</span>
+                    <div className="mt-3 w-full">
+                      <div className="bg-white border border-red-200 rounded-xl shadow-sm overflow-hidden w-full">
+                        {/* Darker red header box */}
+                        <div className="bg-red-600 px-4 py-2.5 flex items-center gap-2">
+                          <ExclamationTriangleIcon className="w-5 h-5 text-white flex-shrink-0" />
+                          <span className="text-white font-semibold text-sm">Case is not active</span>
+                        </div>
+                        {/* Content area */}
+                        {deactivateNotes && (
+                          <div className="px-4 py-3 bg-red-50">
+                            <span 
+                              className="text-red-800 text-sm leading-relaxed block" 
+                              dir={hasHebrew ? 'rtl' : 'ltr'} 
+                              style={{ textAlign: hasHebrew ? 'right' : 'left' }}
+                            >
+                              {deactivateNotes}
+                            </span>
+                          </div>
+                        )}
                       </div>
                     </div>
                   ) : null;
@@ -15439,7 +15482,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="fixed inset-0 bg-black/50" onClick={() => {
             setShowUnactivationModal(false);
             setUnactivationReason('');
-            setCustomUnactivationReason('');
+            setDeactivateNotesDescription('');
           }} />
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
             <div className="flex items-center justify-between mb-6">
@@ -15449,7 +15492,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 onClick={() => {
                   setShowUnactivationModal(false);
                   setUnactivationReason('');
-                  setCustomUnactivationReason('');
+                  setDeactivateNotesDescription('');
                 }}
               >
                 <XMarkIcon className="w-6 h-6" />
@@ -15464,7 +15507,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 
                 <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
                 <select 
-                  className="select select-bordered w-full mb-3" 
+                  className="select select-bordered w-full mb-4" 
                   value={unactivationReason}
                   onChange={(e) => setUnactivationReason(e.target.value)}
                 >
@@ -15481,18 +15524,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <option value="no profitability">no profitability</option>
                   <option value="can't be reached">can't be reached</option>
                   <option value="expired">expired</option>
-                  <option value="other">Other (Enter custom reason)</option>
                 </select>
                 
-                {unactivationReason === 'other' && (
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Enter custom reason..."
-                    value={customUnactivationReason}
-                    onChange={(e) => setCustomUnactivationReason(e.target.value)}
-                  />
-                )}
+                <label className="block font-semibold mb-2 text-gray-900">Description</label>
+                <textarea
+                  className="textarea textarea-bordered w-full min-h-[100px]"
+                  placeholder="Enter description for deactivation..."
+                  value={deactivateNotesDescription}
+                  onChange={(e) => setDeactivateNotesDescription(e.target.value)}
+                />
               </div>
               
               <div className="flex gap-3 justify-end">
@@ -15501,7 +15541,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   onClick={() => {
                     setShowUnactivationModal(false);
                     setUnactivationReason('');
-                    setCustomUnactivationReason('');
+                    setDeactivateNotesDescription('');
                   }}
                 >
                   Cancel
@@ -15509,7 +15549,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <button 
                   className="btn btn-error" 
                   onClick={handleUnactivation}
-                  disabled={!unactivationReason.trim() || (unactivationReason === 'other' && !customUnactivationReason.trim())}
+                  disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
                 >
                   Unactivate Lead
                 </button>

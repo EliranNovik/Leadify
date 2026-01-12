@@ -126,6 +126,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     try {
       // Simplified handling - let Supabase manage session lifecycle
       if (event === 'SIGNED_IN' && session?.user) {
+        // Check if session is expired
+        if (sessionManager.isSessionExpired(session)) {
+          console.log('SIGNED_IN event but session is expired - logging out');
+          setAuthState({
+            user: null,
+            userFullName: null,
+            userInitials: null,
+            isLoading: false,
+            isInitialized: true
+          });
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login';
+          }
+          return;
+        }
+        
         setAuthState(prev => {
           // Only update if user actually changed
           if (prev.user?.id === session.user.id) {
@@ -143,16 +160,37 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           };
         });
       } else if (event === 'SIGNED_OUT') {
-        setAuthState(prev => ({
-          ...prev,
+        // Clear all auth state immediately
+        setAuthState({
           user: null,
           userFullName: null,
           userInitials: null,
           isLoading: false,
           isInitialized: true
-        }));
+        });
+        // Redirect to login page
+        if (typeof window !== 'undefined') {
+          window.location.href = '/login';
+        }
       } else if (event === 'INITIAL_SESSION') {
         if (session?.user) {
+          // Check if session is expired
+          if (sessionManager.isSessionExpired(session)) {
+            console.log('INITIAL_SESSION event but session is expired - logging out');
+            setAuthState({
+              user: null,
+              userFullName: null,
+              userInitials: null,
+              isLoading: false,
+              isInitialized: true
+            });
+            await supabase.auth.signOut();
+            if (typeof window !== 'undefined') {
+              window.location.href = '/login';
+            }
+            return;
+          }
+          
           setAuthState(prev => {
             // Only update if user actually changed
             if (prev.user?.id === session.user.id && prev.isInitialized) {
@@ -216,8 +254,60 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [fetchUserDetails]);
 
-  // Removed aggressive session monitoring - let Supabase handle it automatically
-  // Multiple tabs and refreshes are handled by Supabase's built-in session management
+  // Session expiration monitoring - check periodically if session is expired
+  useEffect(() => {
+    if (!authState.user) return; // No need to monitor if no user
+    
+    const checkSessionExpiration = async () => {
+      try {
+        const { data: { session }, error } = await supabase.auth.getSession();
+        
+        // If no session or error, user is logged out
+        if (!session || error || !session.user) {
+          console.log('Session expired or invalid - logging out');
+          setAuthState({
+            user: null,
+            userFullName: null,
+            userInitials: null,
+            isLoading: false,
+            isInitialized: true
+          });
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login';
+          }
+          return;
+        }
+        
+        // Check if session is expired using sessionManager
+        if (sessionManager.isSessionExpired(session)) {
+          console.log('Session expired - logging out');
+          setAuthState({
+            user: null,
+            userFullName: null,
+            userInitials: null,
+            isLoading: false,
+            isInitialized: true
+          });
+          // Sign out from Supabase to clear tokens
+          await supabase.auth.signOut();
+          if (typeof window !== 'undefined') {
+            window.location.href = '/login';
+          }
+          return;
+        }
+      } catch (error) {
+        console.error('Error checking session expiration:', error);
+      }
+    };
+    
+    // Check immediately
+    checkSessionExpiration();
+    
+    // Then check every 30 seconds
+    const interval = setInterval(checkSessionExpiration, 30000);
+    
+    return () => clearInterval(interval);
+  }, [authState.user]);
 
   useEffect(() => {
     let subscription: any = null;
@@ -295,6 +385,23 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         }
         
         if (session?.user) {
+          // Check if session is expired before setting user
+          if (sessionManager.isSessionExpired(session)) {
+            console.log('Initial session is expired - logging out');
+            setAuthState({
+              user: null,
+              userFullName: null,
+              userInitials: null,
+              isLoading: false,
+              isInitialized: true
+            });
+            await supabase.auth.signOut();
+            if (typeof window !== 'undefined') {
+              window.location.href = '/login';
+            }
+            return;
+          }
+          
           setAuthState(prev => {
             // Only update if user actually changed
             if (prev.user?.id === session.user.id && prev.isInitialized) {

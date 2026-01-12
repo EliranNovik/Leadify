@@ -276,8 +276,46 @@ const loadPayments = async () => {
     setLoading(true);
     setError(null);
     try {
+      console.log(`🔍 [loadPayments] Starting with filters:`, filters);
       const [modern, legacy] = await Promise.all([fetchModernPayments(filters), fetchLegacyPayments(filters)]);
+      console.log(`✅ [loadPayments] Fetched ${modern.length} modern payments, ${legacy.length} legacy payments`);
+      
+      // Debug: Check for lead 199849 in modern payments
+      const modern199849 = modern.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
+      );
+      console.log(`🔍 [loadPayments] Modern payments for 199849:`, modern199849.length, modern199849.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+      })));
+      
+      // Debug: Check for lead 199849 in legacy payments
+      const legacy199849 = legacy.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
+      );
+      console.log(`🔍 [loadPayments] Legacy payments for 199849:`, legacy199849.length, legacy199849.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+      })));
+      
       const combined = [...modern, ...legacy];
+      const combined199849 = combined.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
+      );
+      console.log(`🔍 [loadPayments] Combined payments for 199849:`, combined199849.length);
+      
       const legacyProformaSet = await fetchLegacyProformaStatus(combined);
       const withProforma = combined.map((row) =>
         row.leadType === 'legacy' ? { ...row, hasProforma: legacyProformaSet.has(row.leadId) } : row,
@@ -314,19 +352,35 @@ const loadPayments = async () => {
       });
       console.log(`✅ [loadPayments] After client-side filtering: ${filtered.length} plans (was ${beforeFiltering})`);
       
-      // Debug: Check for lead 34379 after filtering
-      const plansFor34379AfterFilter = filtered.filter((row) => 
-        row.leadId?.toString().includes('34379') || row.caseNumber?.includes('34379')
+      // Debug: Check for lead 199849 after filtering
+      const plansFor199849AfterFilter = filtered.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
-      console.log(`🔍 [loadPayments] Filtered plans for 34379:`, plansFor34379AfterFilter.length, plansFor34379AfterFilter.map((p: any) => ({
+      console.log(`🔍 [loadPayments] Filtered plans for 199849:`, plansFor199849AfterFilter.length, plansFor199849AfterFilter.map((p: any) => ({
         id: p.id,
         leadId: p.leadId,
         caseNumber: p.caseNumber,
         dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
         collected: p.collected,
         categoryId: p.mainCategoryId,
         orderCode: p.orderCode,
+        hasProforma: p.hasProforma,
       })));
+      
+      // Debug: Check why 199849 might have been filtered out
+      const beforeFilter199849 = withProforma.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
+      );
+      if (beforeFilter199849.length > 0 && plansFor199849AfterFilter.length === 0) {
+        console.log(`❌ [loadPayments] 199849 was filtered out! Before filter:`, beforeFilter199849[0]);
+        console.log(`🔍 [loadPayments] Filter reasons:`, {
+          categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter199849[0].mainCategoryId}` : 'No category filter',
+          collectedFilter: filters.collected !== 'all' ? `Collected filter: ${filters.collected}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
+          orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
+        });
+      }
+      
       filtered.sort((a, b) => {
         const aDate = a.collectedDate || a.dueDate || '';
         const bDate = b.collectedDate || b.dueDate || '';
@@ -334,12 +388,14 @@ const loadPayments = async () => {
       });
       
       // Debug: Final check before setting rows
-      const final34379 = filtered.filter((row) => 
-        row.leadId?.toString().includes('34379') || row.caseNumber?.includes('34379')
+      const final199849 = filtered.filter((row) => 
+        row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
-      console.log(`🔍 [loadPayments] Final rows to set: ${filtered.length} total, ${final34379.length} for 34379`);
-      if (final34379.length > 0) {
-        console.log(`✅ [loadPayments] Payment plan for 34379 WILL BE SET:`, final34379[0]);
+      console.log(`🔍 [loadPayments] Final rows to set: ${filtered.length} total, ${final199849.length} for 199849`);
+      if (final199849.length > 0) {
+        console.log(`✅ [loadPayments] Payment plan for 199849 WILL BE SET:`, final199849[0]);
+      } else {
+        console.log(`❌ [loadPayments] Payment plan for 199849 WILL NOT BE SET`);
       }
       
       setRows(filtered);
@@ -634,19 +690,24 @@ const loadPayments = async () => {
                 </tr>
               )}
               {(() => {
-                // Debug: Check rows for 34379 in render
-                const rowsFor34379 = rows.filter((row) => 
-                  row.leadId?.toString().includes('34379') || row.caseNumber?.includes('34379')
+                // Debug: Check rows for 199849 in render
+                const rowsFor199849 = rows.filter((row) => 
+                  row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
                 );
-                if (rowsFor34379.length > 0) {
-                  console.log(`✅ [RENDER] Found ${rowsFor34379.length} rows for 34379 in render:`, rowsFor34379.map((r: any) => ({
+                if (rowsFor199849.length > 0) {
+                  console.log(`✅ [RENDER] Found ${rowsFor199849.length} rows for 199849 in render:`, rowsFor199849.map((r: any) => ({
                     id: r.id,
                     leadId: r.leadId,
                     leadName: r.leadName,
                     caseNumber: r.caseNumber,
+                    dueDate: r.dueDate,
+                    collectedDate: r.collectedDate,
+                    collected: r.collected,
+                    categoryId: r.mainCategoryId,
+                    orderCode: r.orderCode,
                   })));
                 } else {
-                  console.log(`❌ [RENDER] No rows for 34379 in render. Total rows: ${rows.length}`);
+                  console.log(`❌ [RENDER] No rows for 199849 in render. Total rows: ${rows.length}`);
                 }
                 return null;
               })()}
@@ -788,12 +849,14 @@ const loadPayments = async () => {
 export default CollectionFinancesReport;
 
 async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
+  console.log(`🔍 [fetchModernPayments] Starting with filters:`, filters);
   let query = supabase
     .from('payment_plans')
     .select('id, lead_id, value, value_vat, currency, due_date, payment_order, notes, paid, paid_at, proforma, client_name, cancel_date, ready_to_pay');
 
   // If "due date included" is selected, use the same logic as CollectionDueReport
   if (filters.due === 'due_only') {
+    console.log(`🔍 [fetchModernPayments] Using 'due_only' filter mode`);
     query = query
       .eq('ready_to_pay', true) // Sent to finance
       .not('due_date', 'is', null) // Must have due_date
@@ -822,6 +885,23 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
 
   const { data, error } = await query;
   if (error) throw error;
+  
+  console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database`);
+  
+  // Debug: Check for lead 199849 in raw data
+  const raw199849 = (data || []).filter((plan: any) => 
+    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849
+  );
+  console.log(`🔍 [fetchModernPayments] Raw payment plans for 199849:`, raw199849.length, raw199849.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    due_date: p.due_date,
+    paid_at: p.paid_at,
+    paid: p.paid,
+    cancel_date: p.cancel_date,
+    ready_to_pay: p.ready_to_pay,
+    value: p.value,
+  })));
 
   // When "due date included" is selected, all filtering is done in the query
   // When NOT selected, we need to apply client-side date filtering
@@ -829,10 +909,14 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     ? (data || []) // All filtering already done in query (due_date range, ready_to_pay, paid, cancel_date)
     : (data || []).filter((plan: any) => {
         // Filter out cancelled plans
-        if (plan.cancel_date) return false;
+        if (plan.cancel_date) {
+          if (plan.lead_id?.toString() === '199849') {
+            console.log(`❌ [fetchModernPayments] 199849 filtered out: cancel_date is set`, plan.cancel_date);
+          }
+          return false;
+        }
         
         // Apply date range filtering
-        if (!filters.fromDate && !filters.toDate) return true;
         if (!filters.fromDate && !filters.toDate) return true;
         
         const dueDate = plan.due_date ? new Date(plan.due_date) : null;
@@ -842,15 +926,35 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
         
         // Check if due_date is in range (primary filter)
         if (dueDate) {
-          if (fromDate && dueDate < fromDate) return false;
-          if (toDate && dueDate > toDate) return false;
+          if (fromDate && dueDate < fromDate) {
+            if (plan.lead_id?.toString() === '199849') {
+              console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} < fromDate ${filters.fromDate}`);
+            }
+            return false;
+          }
+          if (toDate && dueDate > toDate) {
+            if (plan.lead_id?.toString() === '199849') {
+              console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} > toDate ${filters.toDate}`);
+            }
+            return false;
+          }
           return true;
         }
         
         // If due_date is NULL, check paid_at (for collected payments)
         if (paidAt) {
-          if (fromDate && paidAt < fromDate) return false;
-          if (toDate && paidAt > toDate) return false;
+          if (fromDate && paidAt < fromDate) {
+            if (plan.lead_id?.toString() === '199849') {
+              console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} < fromDate ${filters.fromDate}`);
+            }
+            return false;
+          }
+          if (toDate && paidAt > toDate) {
+            if (plan.lead_id?.toString() === '199849') {
+              console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} > toDate ${filters.toDate}`);
+            }
+            return false;
+          }
           return true;
         }
         
@@ -858,6 +962,12 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
         // This handles cases where payment plans might not have dates set yet
         return true;
       });
+  
+  // Debug: Check for lead 199849 after date filtering
+  const dateFiltered199849 = dateFilteredPlans.filter((plan: any) => 
+    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849
+  );
+  console.log(`🔍 [fetchModernPayments] Date-filtered plans for 199849:`, dateFiltered199849.length);
   
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, false);
@@ -975,11 +1085,11 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   
   console.log(`✅ [fetchLegacyPayments] Active plans: ${activePlans.length}`);
   
-  // Debug: Check for lead 34379 specifically
-  const plansFor34379 = activePlans.filter((plan: any) => 
-    plan.lead_id?.toString() === '34379' || plan.client_id?.toString() === '34379' || plan.client_id === 34379
+  // Debug: Check for lead 199849 specifically
+  const plansFor199849 = activePlans.filter((plan: any) => 
+    plan.lead_id?.toString() === '199849' || plan.lead_id === 199849 || plan.client_id?.toString() === '199849' || plan.client_id === 199849
   );
-  console.log(`🔍 [fetchLegacyPayments] Payment plans for lead/client 34379:`, plansFor34379.length, plansFor34379.map((p: any) => ({
+  console.log(`🔍 [fetchLegacyPayments] Payment plans for lead/client 199849:`, plansFor199849.length, plansFor199849.map((p: any) => ({
     id: p.id,
     lead_id: p.lead_id,
     client_id: p.client_id,
@@ -987,6 +1097,8 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     due_date: p.due_date,
     value: p.value,
     cancel_date: p.cancel_date,
+    actual_date: p.actual_date,
+    ready_to_pay: p.ready_to_pay,
   })));
   
   // Collect lead_ids for metadata fetching (client_id is a contact_id, not a lead_id)
@@ -1001,12 +1113,12 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   const leadIds = Array.from(allLeadIds);
   console.log(`🔍 [fetchLegacyPayments] Unique lead_ids found:`, leadIds.slice(0, 10), `(total: ${leadIds.length})`);
   console.log(`🔍 [fetchLegacyPayments] Unique client_ids (contact_ids) found:`, Array.from(allClientIds).slice(0, 10), `(total: ${allClientIds.size})`);
-  console.log(`🔍 [fetchLegacyPayments] Checking if 34379 is in lead IDs:`, leadIds.includes('34379'));
+  console.log(`🔍 [fetchLegacyPayments] Checking if 199849 is in lead IDs:`, leadIds.includes('199849'));
   
   // Fetch lead metadata (only for lead_ids, not client_ids)
   const leadMeta = await fetchLeadMetadata(leadIds, true);
   console.log(`✅ [fetchLegacyPayments] Fetched metadata for ${leadMeta.size} leads`);
-  console.log(`🔍 [fetchLegacyPayments] Metadata for 34379:`, leadMeta.get('34379'));
+  console.log(`🔍 [fetchLegacyPayments] Metadata for 199849:`, leadMeta.get('199849'));
   
   // Fetch contact information for client_ids (contact_ids)
   const contactMap = new Map<number, string>();
@@ -1039,18 +1151,6 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     // Get contact name for client_id (contact_id)
     const contactName = clientId && !Number.isNaN(clientId) ? contactMap.get(clientId) : null;
     
-    // Debug for 34379
-    if ((leadIdKey === '34379' || plan.lead_id === 34379)) {
-      console.log(`✅ [fetchLegacyPayments] Processing payment plan for 34379:`, {
-        planId: plan.id,
-        lead_id: plan.lead_id,
-        client_id: plan.client_id,
-        contactName,
-        metaFound: !!meta,
-        leadName: meta?.leadName,
-        caseNumber: meta?.caseNumber,
-      });
-    }
     // IMPORTANT: Get value from finances_paymentplanrow table, NOT from leads_lead table
     // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
     // Same logic as CollectionDueReport - plan.value and plan.value_base come from finances_paymentplanrow query
@@ -1067,6 +1167,23 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     const dueSource = plan.due_date || plan.date;
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);
+    
+    // Debug for 199849
+    if ((leadIdKey === '199849' || plan.lead_id === 199849)) {
+      console.log(`✅ [fetchLegacyPayments] Processing payment plan for 199849:`, {
+        planId: plan.id,
+        lead_id: plan.lead_id,
+        client_id: plan.client_id,
+        contactName,
+        metaFound: !!meta,
+        leadName: meta?.leadName,
+        caseNumber: meta?.caseNumber,
+        value,
+        dueDate,
+        actualDate,
+        collected: Boolean(actualDate),
+      });
+    }
     // Always use lead_id metadata for lead information (leadName, caseNumber, etc.)
     // Use contact name from client_id (contact_id) for clientName field
     return {
@@ -1185,7 +1302,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     
     const { data, error } = await supabase
       .from('leads_lead')
-      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id')
+      .select('id, name, anchor_full_name, lead_number, case_handler_id, category, category_id, master_id, manual_id')
       .in('id', numericIds);
     if (error) throw error;
     const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
@@ -1194,17 +1311,74 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
       .filter((id): id is number => id !== null);
     const handlerMap = await fetchHandlerNames(legacyHandlerIds);
     const contactMap = await fetchContactNameMap(normalizedIds, true);
+    
+    // Calculate sublead suffixes for all leads with master_id
+    const subLeadSuffixMap = new Map<string, number>();
+    const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
+    const masterIds = Array.from(new Set(leadsWithMaster.map((lead) => lead.master_id?.toString()).filter(Boolean)));
+    
+    if (masterIds.length > 0) {
+      // Fetch all subleads for all master_ids in one query
+      const numericMasterIds = masterIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
+      if (numericMasterIds.length > 0) {
+        const { data: allSubLeads } = await supabase
+          .from('leads_lead')
+          .select('id, master_id')
+          .in('master_id', numericMasterIds)
+          .not('master_id', 'is', null)
+          .order('master_id', { ascending: true })
+          .order('id', { ascending: true });
+        
+        if (allSubLeads) {
+          // Group by master_id and calculate suffixes
+          const subLeadsByMaster = new Map<number, any[]>();
+          allSubLeads.forEach((subLead) => {
+            const masterId = subLead.master_id;
+            if (masterId) {
+              if (!subLeadsByMaster.has(masterId)) {
+                subLeadsByMaster.set(masterId, []);
+              }
+              subLeadsByMaster.get(masterId)!.push(subLead);
+            }
+          });
+          
+          // Calculate suffixes for each master's subleads
+          subLeadsByMaster.forEach((subLeads, masterId) => {
+            subLeads.forEach((subLead, index) => {
+              const subLeadKey = subLead.id?.toString();
+              if (subLeadKey) {
+                // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                subLeadSuffixMap.set(subLeadKey, index + 2);
+              }
+            });
+          });
+        }
+      }
+    }
+    
     (data || []).forEach((lead) => {
       const key = lead.id?.toString();
       if (!key) return;
       const cat = categoryMap.get(lead.category_id ?? null);
       const contactName = contactMap.get(key);
       const handlerId = normalizeHandlerId(lead.case_handler_id);
+      
+      // Format case number with sublead suffix if applicable
+      let caseNumber: string;
+      if (lead.master_id) {
+        // It's a sublead - format as master_id/suffix
+        const suffix = subLeadSuffixMap.get(key) || 2;
+        caseNumber = `#${lead.master_id}/${suffix}`;
+      } else {
+        // It's a master lead or standalone lead
+        caseNumber = `#${lead.lead_number || lead.manual_id || lead.id}`;
+      }
+      
       map.set(key, {
         id: key,
         leadName: lead.name || lead.anchor_full_name || contactName || `Lead #${lead.id}`,
         clientName: contactName || lead.anchor_full_name || lead.name || `Lead #${lead.id}`,
-        caseNumber: `#${lead.lead_number || lead.id}`,
+        caseNumber,
         handlerName: handlerId !== null ? handlerMap.get(handlerId) || '—' : '—',
         handlerId,
         categoryName: cat?.mainCategoryName || cat?.name || lead.category || '—',
@@ -1217,7 +1391,7 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
 
   const { data, error } = await supabase
     .from('leads')
-    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category')
+    .select('id, name, lead_number, anchor_full_name, case_handler_id, category_id, category, master_id, manual_id')
     .in('id', normalizedIds);
   if (error) throw error;
   const categoryMap = await fetchCategoryMap((data || []).map((lead) => lead.category_id).filter(Boolean));
@@ -1226,17 +1400,71 @@ async function fetchLeadMetadata(ids: (number | string | null)[], isLegacy: bool
     .filter((id): id is number => id !== null);
   const handlerMap = await fetchHandlerNames(handlerIds);
   const contactMap = await fetchContactNameMap(normalizedIds, false);
+  
+  // Calculate sublead suffixes for all leads with master_id
+  const subLeadSuffixMap = new Map<string, number>();
+  const leadsWithMaster = (data || []).filter((lead) => lead.master_id);
+  const masterIds = Array.from(new Set(leadsWithMaster.map((lead) => lead.master_id?.toString()).filter(Boolean)));
+  
+  if (masterIds.length > 0) {
+    // Fetch all subleads for all master_ids in one query
+    const { data: allSubLeads } = await supabase
+      .from('leads')
+      .select('id, master_id')
+      .in('master_id', masterIds)
+      .not('master_id', 'is', null)
+      .order('master_id', { ascending: true })
+      .order('id', { ascending: true });
+    
+    if (allSubLeads) {
+      // Group by master_id and calculate suffixes
+      const subLeadsByMaster = new Map<string, any[]>();
+      allSubLeads.forEach((subLead) => {
+        const masterId = subLead.master_id?.toString();
+        if (masterId) {
+          if (!subLeadsByMaster.has(masterId)) {
+            subLeadsByMaster.set(masterId, []);
+          }
+          subLeadsByMaster.get(masterId)!.push(subLead);
+        }
+      });
+      
+      // Calculate suffixes for each master's subleads
+      subLeadsByMaster.forEach((subLeads, masterId) => {
+        subLeads.forEach((subLead, index) => {
+          const subLeadKey = subLead.id?.toString();
+          if (subLeadKey) {
+            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+            subLeadSuffixMap.set(subLeadKey, index + 2);
+          }
+        });
+      });
+    }
+  }
+  
   (data || []).forEach((lead) => {
     const key = lead.id?.toString();
     if (!key) return;
     const contactName = contactMap.get(key);
     const categoryMeta = categoryMap.get(lead.category_id ?? null);
     const handlerId = normalizeHandlerId(lead.case_handler_id);
+    
+    // Format case number with sublead suffix if applicable
+    let caseNumber: string;
+    if (lead.master_id) {
+      // It's a sublead - format as master_id/suffix
+      const suffix = subLeadSuffixMap.get(key) || 2;
+      caseNumber = `#${lead.master_id}/${suffix}`;
+    } else {
+      // It's a master lead or standalone lead
+      caseNumber = lead.lead_number ? `#${lead.lead_number}` : `#${lead.id}`;
+    }
+    
     map.set(key, {
       id: key,
       leadName: lead.name || lead.anchor_full_name || contactName || `Lead #${lead.id}`,
       clientName: contactName || lead.anchor_full_name || lead.name || `Lead #${lead.id}`,
-      caseNumber: lead.lead_number ? `#${lead.lead_number}` : `#${lead.id}`,
+      caseNumber,
       handlerName: handlerId !== null ? handlerMap.get(handlerId) || '—' : '—',
       handlerId,
       categoryName: categoryMeta?.mainCategoryName || categoryMeta?.name || lead.category || '—',
@@ -1319,13 +1547,24 @@ async function fetchContactNameMap(ids: string[], isLegacy: boolean): Promise<Ma
 }
 
 function buildLeadLink(row: PaymentRow): string {
+  // For new leads, use caseNumber (which contains lead_number) instead of leadId (which is the id)
+  if (row.leadType === 'new') {
+    const cleanNumber = row.caseNumber?.replace(/^#/, '') || '';
+    if (cleanNumber) {
+      return `/clients/${encodeURIComponent(cleanNumber)}`;
+    }
+  }
+  
+  // For legacy leads, use leadId (remove legacy_ prefix)
   const leadIdentifier = row.leadId?.toString().trim();
   if (leadIdentifier) {
-    const normalized = row.leadType === 'legacy' ? leadIdentifier.replace(/^legacy_/, '') : leadIdentifier;
+    const normalized = leadIdentifier.replace(/^legacy_/, '');
     if (normalized) {
       return `/clients/${encodeURIComponent(normalized)}`;
     }
   }
+  
+  // Fallback to caseNumber if available
   const cleanNumber = row.caseNumber?.replace(/^#/, '') || '';
   return cleanNumber ? `/clients/${encodeURIComponent(cleanNumber)}` : '/clients';
 }
