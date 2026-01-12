@@ -14,6 +14,8 @@ const ProformaLegacyCreatePage: React.FC = () => {
   const [proformaData, setProformaData] = useState<any>(null);
   const [isSaving, setIsSaving] = useState(false);
   const [userFullName, setUserFullName] = useState<string | null>(null);
+  const [clientId, setClientId] = useState<number | null>(null);
+  const [employeeId, setEmployeeId] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchLead = async () => {
@@ -22,11 +24,21 @@ const ProformaLegacyCreatePage: React.FC = () => {
       console.log('🔍 Full URL:', window.location.href);
       console.log('🔍 Location search:', location.search);
       
-      // Get ppr_id from URL parameters
+      // Get ppr_id and client_id from URL parameters
       const urlParams = new URLSearchParams(location.search);
       const pprId = urlParams.get('ppr_id');
+      const clientIdParam = urlParams.get('client_id');
       
       console.log('🔍 ProformaLegacyCreate - pprId from URL:', pprId);
+      console.log('🔍 ProformaLegacyCreate - clientId from URL:', clientIdParam);
+      
+      // Set client_id if provided
+      if (clientIdParam) {
+        const parsedClientId = parseInt(clientIdParam);
+        if (!isNaN(parsedClientId)) {
+          setClientId(parsedClientId);
+        }
+      }
       
       // Fetch payment plan row description and order if ppr_id is available
       let paymentPlanDescription = '';
@@ -263,6 +275,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
     const fetchUser = async () => {
       const { data: { user } } = await supabase.auth.getUser();
       if (user && user.email) {
+        // Fetch user full name
         const { data: userData, error } = await supabase
           .from('users')
           .select('full_name')
@@ -270,6 +283,51 @@ const ProformaLegacyCreatePage: React.FC = () => {
           .single();
         if (!error && userData?.full_name) {
           setUserFullName(userData.full_name);
+        }
+        
+        // Fetch employee ID from users table (users.employee_id -> tenants_employee.id)
+        const { data: userWithEmployee, error: userError } = await supabase
+          .from('users')
+          .select('id, email, employee_id, tenants_employee!employee_id(id, display_name)')
+          .eq('email', user.email)
+          .single();
+        
+        if (!userError && userWithEmployee?.employee_id) {
+          setEmployeeId(userWithEmployee.employee_id);
+          console.log('✅ [ProformaLegacyCreate] Employee ID found via users table:', {
+            userId: userWithEmployee.id,
+            employeeId: userWithEmployee.employee_id,
+            email: userWithEmployee.email,
+            display_name: (userWithEmployee.tenants_employee as any)?.display_name || null
+          });
+        } else {
+          console.error('❌ [ProformaLegacyCreate] Could not find employee ID via users table:', {
+            userEmail: user.email,
+            error: userError,
+            userData: userWithEmployee
+          });
+          
+          // Fallback: Try direct lookup in tenants_employee by email (in case email field exists there)
+          const { data: employeeData, error: employeeError } = await supabase
+            .from('tenants_employee')
+            .select('id, email, display_name')
+            .eq('email', user.email)
+            .maybeSingle();
+          
+          if (!employeeError && employeeData?.id) {
+            setEmployeeId(employeeData.id);
+            console.log('✅ [ProformaLegacyCreate] Employee ID found via direct tenants_employee lookup:', {
+              id: employeeData.id,
+              email: employeeData.email,
+              display_name: employeeData.display_name
+            });
+          } else {
+            console.error('❌ [ProformaLegacyCreate] Could not find employee ID via any method:', {
+              userEmail: user.email,
+              usersTableError: userError,
+              tenantsEmployeeError: employeeError
+            });
+          }
         }
       }
     };
@@ -363,6 +421,22 @@ const ProformaLegacyCreatePage: React.FC = () => {
         notes = notes ? `${proformaName}\n${notes}` : proformaName;
       }
 
+      // Warn if employeeId is not set
+      if (!employeeId) {
+        console.warn('⚠️ [ProformaLegacyCreate] Employee ID is not set! Proforma will be created without creator_id.');
+        toast.error('Warning: Could not find employee ID. Proforma will be created without creator information.');
+      }
+
+      // Debug: Log the values being passed
+      console.log('🔍 [ProformaLegacyCreate] Creating proforma with:', {
+        p_lead_id: parseInt(leadId!),
+        p_client_id: clientId,
+        p_creator_id: employeeId,
+        p_ppr_id: proformaData.pprId ? parseInt(proformaData.pprId) : null,
+        employeeIdState: employeeId,
+        hasEmployeeId: !!employeeId
+      });
+      
       // Create proforma using the function we created in SQL
       let { data, error } = await supabase.rpc('create_proforma_with_rows', {
         p_lead_id: parseInt(leadId!),
@@ -373,11 +447,18 @@ const ProformaLegacyCreatePage: React.FC = () => {
         p_sub_total: totalBase,
         p_add_vat: proformaData.addVat ? 't' : 'f',
         p_currency_id: currencyId,
-        p_client_id: null,
+        p_client_id: clientId, // Use client_id from URL parameter (contact_id)
         p_bank_account_id: null,
         p_ppr_id: proformaData.pprId ? parseInt(proformaData.pprId) : null,
+        p_creator_id: employeeId, // Use employee ID from logged-in user
         p_rows: rowsData // Pass array directly, Supabase converts to jsonb
       });
+      
+      if (error) {
+        console.error('❌ [ProformaLegacyCreate] Error creating proforma:', error);
+      } else {
+        console.log('✅ [ProformaLegacyCreate] Proforma created successfully:', data);
+      }
 
       // If we get a duplicate key error (sequence out of sync), try to fix it and retry
       if (error && error.code === '23505') {
@@ -404,9 +485,10 @@ const ProformaLegacyCreatePage: React.FC = () => {
           p_sub_total: totalBase,
           p_add_vat: proformaData.addVat ? 't' : 'f',
           p_currency_id: currencyId,
-          p_client_id: null,
+          p_client_id: clientId, // Use client_id from URL parameter (contact_id)
           p_bank_account_id: null,
           p_ppr_id: proformaData.pprId ? parseInt(proformaData.pprId) : null,
+          p_creator_id: employeeId, // Use employee ID from logged-in user
           p_rows: rowsData
         });
         

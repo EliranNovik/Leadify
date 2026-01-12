@@ -311,11 +311,60 @@ const loadPayments = async () => {
         orderCode: p.orderCode,
       })));
       
+      // Debug: Check for lead 155026 in modern payments
+      const modern155026 = modern.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      console.log(`🔍 [loadPayments] Modern payments for 155026:`, modern155026.length, modern155026.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+        hasProforma: p.hasProforma,
+      })));
+      
+      // Debug: Check for lead 155026 in legacy payments
+      const legacy155026 = legacy.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      console.log(`🔍 [loadPayments] Legacy payments for 155026:`, legacy155026.length, legacy155026.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+        hasProforma: p.hasProforma,
+      })));
+      
       const combined = [...modern, ...legacy];
       const combined199849 = combined.filter((row) => 
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
       );
       console.log(`🔍 [loadPayments] Combined payments for 199849:`, combined199849.length);
+      
+      // Debug: Check for lead 155026 in combined payments
+      const combined155026 = combined.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      console.log(`🔍 [loadPayments] Combined payments for 155026:`, combined155026.length, combined155026.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+        hasProforma: p.hasProforma,
+        leadType: p.leadType,
+      })));
       
       // Note: For legacy leads, hasProforma is already correctly set in fetchLegacyPayments
       // based on proformaDate (which matches by lead_id + client_id)
@@ -369,6 +418,23 @@ const loadPayments = async () => {
         hasProforma: p.hasProforma,
       })));
       
+      // Debug: Check for lead 155026 after filtering
+      const plansFor155026AfterFilter = filtered.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      console.log(`🔍 [loadPayments] Filtered plans for 155026:`, plansFor155026AfterFilter.length, plansFor155026AfterFilter.map((p: any) => ({
+        id: p.id,
+        leadId: p.leadId,
+        caseNumber: p.caseNumber,
+        dueDate: p.dueDate,
+        collectedDate: p.collectedDate,
+        collected: p.collected,
+        categoryId: p.mainCategoryId,
+        orderCode: p.orderCode,
+        hasProforma: p.hasProforma,
+        leadType: p.leadType,
+      })));
+      
       // Debug: Check why 199849 might have been filtered out
       const beforeFilter199849 = withProforma.filter((row) => 
         row.leadId?.toString().includes('199849') || row.caseNumber?.includes('199849')
@@ -380,6 +446,25 @@ const loadPayments = async () => {
           collectedFilter: filters.collected !== 'all' ? `Collected filter: ${filters.collected}, row collected: ${beforeFilter199849[0].collected}, hasProforma: ${beforeFilter199849[0].hasProforma}` : 'No collected filter',
           orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter199849[0].orderCode}` : 'No order filter',
         });
+      }
+      
+      // Debug: Check why 155026 might have been filtered out
+      const beforeFilter155026 = withProforma.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      if (beforeFilter155026.length > 0 && plansFor155026AfterFilter.length === 0) {
+        console.log(`❌ [loadPayments] 155026 was filtered out! Before filter:`, beforeFilter155026[0]);
+        console.log(`🔍 [loadPayments] Filter reasons for 155026:`, {
+          categoryFilter: filters.categoryId ? `Category must be ${filters.categoryId}, got ${beforeFilter155026[0].mainCategoryId}` : 'No category filter',
+          collectedFilter: filters.collected !== 'all' ? `Collected filter: ${filters.collected}, row collected: ${beforeFilter155026[0].collected}, hasProforma: ${beforeFilter155026[0].hasProforma}` : 'No collected filter',
+          orderFilter: filters.order ? `Order must be ${filters.order}, got ${beforeFilter155026[0].orderCode}` : 'No order filter',
+          dueDate: beforeFilter155026[0].dueDate,
+          collectedDate: beforeFilter155026[0].collectedDate,
+          dateRange: `fromDate: ${filters.fromDate}, toDate: ${filters.toDate}`,
+        });
+      } else if (beforeFilter155026.length === 0) {
+        console.log(`❌ [loadPayments] 155026 was NOT found in combined payments before filtering!`);
+        console.log(`🔍 [loadPayments] This means it was filtered out during fetchModernPayments or fetchLegacyPayments`);
       }
       
       filtered.sort((a, b) => {
@@ -397,6 +482,17 @@ const loadPayments = async () => {
         console.log(`✅ [loadPayments] Payment plan for 199849 WILL BE SET:`, final199849[0]);
       } else {
         console.log(`❌ [loadPayments] Payment plan for 199849 WILL NOT BE SET`);
+      }
+      
+      // Debug: Final check for 155026 before setting rows
+      const final155026 = filtered.filter((row) => 
+        row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+      );
+      console.log(`🔍 [loadPayments] Final rows to set: ${filtered.length} total, ${final155026.length} for 155026`);
+      if (final155026.length > 0) {
+        console.log(`✅ [loadPayments] Payment plan for 155026 WILL BE SET:`, final155026[0]);
+      } else {
+        console.log(`❌ [loadPayments] Payment plan for 155026 WILL NOT BE SET`);
       }
       
       setRows(filtered);
@@ -711,6 +807,28 @@ const loadPayments = async () => {
                 } else {
                   console.log(`❌ [RENDER] No rows for 199849 in render. Total rows: ${rows.length}`);
                 }
+                
+                // Debug: Check rows for 155026 in render
+                const rowsFor155026 = rows.filter((row) => 
+                  row.leadId?.toString().includes('155026') || row.caseNumber?.includes('155026')
+                );
+                if (rowsFor155026.length > 0) {
+                  console.log(`✅ [RENDER] Found ${rowsFor155026.length} rows for 155026 in render:`, rowsFor155026.map((r: any) => ({
+                    id: r.id,
+                    leadId: r.leadId,
+                    leadName: r.leadName,
+                    caseNumber: r.caseNumber,
+                    dueDate: r.dueDate,
+                    collectedDate: r.collectedDate,
+                    collected: r.collected,
+                    categoryId: r.mainCategoryId,
+                    orderCode: r.orderCode,
+                    hasProforma: r.hasProforma,
+                    leadType: r.leadType,
+                  })));
+                } else {
+                  console.log(`❌ [RENDER] No rows for 155026 in render. Total rows: ${rows.length}`);
+                }
                 return null;
               })()}
               {rows.map((row) => (
@@ -892,6 +1010,29 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
   if (error) throw error;
   
   console.log(`✅ [fetchModernPayments] Fetched ${data?.length || 0} payment plans from database`);
+  console.log(`🔍 [fetchModernPayments] Query filters applied:`, {
+    due: filters.due,
+    fromDate: filters.fromDate,
+    toDate: filters.toDate,
+    ready_to_pay: filters.due === 'due_only' ? true : undefined,
+    cancel_date: 'null',
+  });
+  
+  // Debug: Check for lead 155026 in raw data BEFORE any filtering
+  const raw155026BeforeFilter = (data || []).filter((plan: any) => 
+    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
+  );
+  console.log(`🔍 [fetchModernPayments] Raw payment plans for 155026 (BEFORE date filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    due_date: p.due_date,
+    paid_at: p.paid_at,
+    paid: p.paid,
+    cancel_date: p.cancel_date,
+    ready_to_pay: p.ready_to_pay,
+    value: p.value,
+    currency: p.currency,
+  })));
   
   // Debug: Check for lead 199849 in raw data
   const raw199849 = (data || []).filter((plan: any) => 
@@ -907,6 +1048,22 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     ready_to_pay: p.ready_to_pay,
     value: p.value,
   })));
+  
+  // Debug: Check for lead 155026 in raw data
+  const raw155026 = (data || []).filter((plan: any) => 
+    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
+  );
+  console.log(`🔍 [fetchModernPayments] Raw payment plans for 155026:`, raw155026.length, raw155026.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    due_date: p.due_date,
+    paid_at: p.paid_at,
+    paid: p.paid,
+    cancel_date: p.cancel_date,
+    ready_to_pay: p.ready_to_pay,
+    value: p.value,
+    currency: p.currency,
+  })));
 
   // When "due date included" is selected, all filtering is done in the query
   // When NOT selected, we need to apply client-side date filtering
@@ -918,16 +1075,38 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
           if (plan.lead_id?.toString() === '199849') {
             console.log(`❌ [fetchModernPayments] 199849 filtered out: cancel_date is set`, plan.cancel_date);
           }
+          if (plan.lead_id?.toString() === '155026') {
+            console.log(`❌ [fetchModernPayments] 155026 filtered out: cancel_date is set`, plan.cancel_date);
+          }
           return false;
         }
         
         // Apply date range filtering
-        if (!filters.fromDate && !filters.toDate) return true;
+        if (!filters.fromDate && !filters.toDate) {
+          if (plan.lead_id?.toString() === '155026') {
+            console.log(`✅ [fetchModernPayments] 155026 included: No date filter applied`);
+          }
+          return true;
+        }
         
         const dueDate = plan.due_date ? new Date(plan.due_date) : null;
         const paidAt = plan.paid_at ? new Date(plan.paid_at) : null;
         const fromDate = filters.fromDate ? new Date(filters.fromDate + 'T00:00:00') : null;
         const toDate = filters.toDate ? new Date(filters.toDate + 'T23:59:59') : null;
+        
+        // Debug: Log date range for 155026
+        if (plan.lead_id?.toString() === '155026') {
+          console.log(`🔍 [fetchModernPayments] 155026 date filtering check:`, {
+            due_date: plan.due_date,
+            dueDate: dueDate ? dueDate.toISOString() : null,
+            paid_at: plan.paid_at,
+            paidAt: paidAt ? paidAt.toISOString() : null,
+            fromDate: fromDate ? fromDate.toISOString() : null,
+            toDate: toDate ? toDate.toISOString() : null,
+            filters_fromDate: filters.fromDate,
+            filters_toDate: filters.toDate,
+          });
+        }
         
         // Check if due_date is in range (primary filter)
         if (dueDate) {
@@ -935,13 +1114,22 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
             if (plan.lead_id?.toString() === '199849') {
               console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} < fromDate ${filters.fromDate}`);
             }
+            if (plan.lead_id?.toString() === '155026') {
+              console.log(`❌ [fetchModernPayments] 155026 filtered out: due_date ${plan.due_date} < fromDate ${filters.fromDate}`);
+            }
             return false;
           }
           if (toDate && dueDate > toDate) {
             if (plan.lead_id?.toString() === '199849') {
               console.log(`❌ [fetchModernPayments] 199849 filtered out: due_date ${plan.due_date} > toDate ${filters.toDate}`);
             }
+            if (plan.lead_id?.toString() === '155026') {
+              console.log(`❌ [fetchModernPayments] 155026 filtered out: due_date ${plan.due_date} (${dueDate.toISOString()}) > toDate ${filters.toDate} (${toDate.toISOString()})`);
+            }
             return false;
+          }
+          if (plan.lead_id?.toString() === '155026') {
+            console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: due_date ${plan.due_date} is within range ${filters.fromDate} to ${filters.toDate}`);
           }
           return true;
         }
@@ -952,19 +1140,31 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
             if (plan.lead_id?.toString() === '199849') {
               console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} < fromDate ${filters.fromDate}`);
             }
+            if (plan.lead_id?.toString() === '155026') {
+              console.log(`❌ [fetchModernPayments] 155026 filtered out: paid_at ${plan.paid_at} < fromDate ${filters.fromDate}`);
+            }
             return false;
           }
           if (toDate && paidAt > toDate) {
             if (plan.lead_id?.toString() === '199849') {
               console.log(`❌ [fetchModernPayments] 199849 filtered out: paid_at ${plan.paid_at} > toDate ${filters.toDate}`);
             }
+            if (plan.lead_id?.toString() === '155026') {
+              console.log(`❌ [fetchModernPayments] 155026 filtered out: paid_at ${plan.paid_at} (${paidAt.toISOString()}) > toDate ${filters.toDate} (${toDate.toISOString()})`);
+            }
             return false;
+          }
+          if (plan.lead_id?.toString() === '155026') {
+            console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: paid_at ${plan.paid_at} is within range ${filters.fromDate} to ${filters.toDate}`);
           }
           return true;
         }
         
         // If both due_date and paid_at are NULL, include it (don't exclude payment plans with no date info)
         // This handles cases where payment plans might not have dates set yet
+        if (plan.lead_id?.toString() === '155026') {
+          console.log(`✅ [fetchModernPayments] 155026 PASSED date filter: No date info, including by default`);
+        }
         return true;
       });
   
@@ -973,6 +1173,22 @@ async function fetchModernPayments(filters: Filters): Promise<PaymentRow[]> {
     plan.lead_id?.toString() === '199849' || plan.lead_id === 199849
   );
   console.log(`🔍 [fetchModernPayments] Date-filtered plans for 199849:`, dateFiltered199849.length);
+  
+  // Debug: Check for lead 155026 after date filtering
+  const dateFiltered155026 = dateFilteredPlans.filter((plan: any) => 
+    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026
+  );
+  console.log(`🔍 [fetchModernPayments] Date-filtered plans for 155026:`, dateFiltered155026.length, dateFiltered155026.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    due_date: p.due_date,
+    paid_at: p.paid_at,
+    paid: p.paid,
+    cancel_date: p.cancel_date,
+    ready_to_pay: p.ready_to_pay,
+    value: p.value,
+    currency: p.currency,
+  })));
   
   const leadIds = Array.from(new Set(dateFilteredPlans.map((row) => (row.lead_id ?? '').toString()).filter(Boolean)));
   const leadMeta = await fetchLeadMetadata(leadIds, false);
@@ -1058,26 +1274,28 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     // For legacy leads, only fetch payment rows if due_date is available (due_date means ready to pay)
     if (filters.fromDate) {
       const fromDateTime = `${filters.fromDate}T00:00:00`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by due_date >=', fromDateTime);
+      console.log('🔍 [fetchLegacyPayments] Filtering by due_date >=', fromDateTime, `(fromDate: ${filters.fromDate})`);
       query = query.gte('due_date', fromDateTime);
     }
     if (filters.toDate) {
       const toDateTime = `${filters.toDate}T23:59:59`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by due_date <=', toDateTime);
+      console.log('🔍 [fetchLegacyPayments] Filtering by due_date <=', toDateTime, `(toDate: ${filters.toDate})`);
       query = query.lte('due_date', toDateTime);
     }
+    console.log(`🔍 [fetchLegacyPayments] Date range for query: ${filters.fromDate || 'no start'} to ${filters.toDate || 'no end'}`);
   } else {
     // When "due date included" is NOT selected, filter by 'date' column for date range
     if (filters.fromDate) {
       const fromDateTime = `${filters.fromDate}T00:00:00`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by date >=', fromDateTime);
+      console.log('🔍 [fetchLegacyPayments] Filtering by date >=', fromDateTime, `(fromDate: ${filters.fromDate})`);
       query = query.gte('date', fromDateTime);
     }
     if (filters.toDate) {
       const toDateTime = `${filters.toDate}T23:59:59`;
-      console.log('🔍 [fetchLegacyPayments] Filtering by date <=', toDateTime);
+      console.log('🔍 [fetchLegacyPayments] Filtering by date <=', toDateTime, `(toDate: ${filters.toDate})`);
       query = query.lte('date', toDateTime);
     }
+    console.log(`🔍 [fetchLegacyPayments] Date range for query (using 'date' column): ${filters.fromDate || 'no start'} to ${filters.toDate || 'no end'}`);
   }
 
   const { data, error } = await query;
@@ -1087,6 +1305,13 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   }
   
   console.log(`✅ [fetchLegacyPayments] Fetched ${data?.length || 0} payment plans from database`);
+  console.log(`🔍 [fetchLegacyPayments] Query filters applied:`, {
+    due: filters.due,
+    fromDate: filters.fromDate,
+    toDate: filters.toDate,
+    due_date_not_null: filters.due === 'due_only' ? true : undefined,
+    cancel_date: 'null',
+  });
   console.log('🔍 [fetchLegacyPayments] Sample payment plans:', data?.slice(0, 3).map((p: any) => ({
     id: p.id,
     lead_id: p.lead_id,
@@ -1095,6 +1320,24 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     due_date: p.due_date,
     cancel_date: p.cancel_date,
     actual_date: p.actual_date,
+  })));
+  
+  // Debug: Check for lead 155026 in raw data BEFORE any filtering
+  const raw155026BeforeFilter = (data || []).filter((plan: any) => 
+    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026 || plan.client_id?.toString() === '155026' || plan.client_id === 155026
+  );
+  console.log(`🔍 [fetchLegacyPayments] Raw payment plans for 155026 (BEFORE filtering):`, raw155026BeforeFilter.length, raw155026BeforeFilter.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    client_id: p.client_id,
+    date: p.date,
+    due_date: p.due_date,
+    value: p.value,
+    value_base: p.value_base,
+    cancel_date: p.cancel_date,
+    actual_date: p.actual_date,
+    ready_to_pay: p.ready_to_pay,
+    currency_id: p.currency_id,
   })));
 
   // When "due date included" is selected, all filtering is done in the query
@@ -1122,6 +1365,24 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     ready_to_pay: p.ready_to_pay,
   })));
   
+  // Debug: Check for lead 155026 specifically
+  const plansFor155026 = activePlans.filter((plan: any) => 
+    plan.lead_id?.toString() === '155026' || plan.lead_id === 155026 || plan.client_id?.toString() === '155026' || plan.client_id === 155026
+  );
+  console.log(`🔍 [fetchLegacyPayments] Payment plans for lead/client 155026:`, plansFor155026.length, plansFor155026.map((p: any) => ({
+    id: p.id,
+    lead_id: p.lead_id,
+    client_id: p.client_id,
+    date: p.date,
+    due_date: p.due_date,
+    value: p.value,
+    value_base: p.value_base,
+    cancel_date: p.cancel_date,
+    actual_date: p.actual_date,
+    ready_to_pay: p.ready_to_pay,
+    currency_id: p.currency_id,
+  })));
+  
   // Collect lead_ids for metadata fetching (client_id is a contact_id, not a lead_id)
   const allLeadIds = new Set<string>();
   const allClientIds = new Set<number>();
@@ -1135,11 +1396,13 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   console.log(`🔍 [fetchLegacyPayments] Unique lead_ids found:`, leadIds.slice(0, 10), `(total: ${leadIds.length})`);
   console.log(`🔍 [fetchLegacyPayments] Unique client_ids (contact_ids) found:`, Array.from(allClientIds).slice(0, 10), `(total: ${allClientIds.size})`);
   console.log(`🔍 [fetchLegacyPayments] Checking if 199849 is in lead IDs:`, leadIds.includes('199849'));
+  console.log(`🔍 [fetchLegacyPayments] Checking if 155026 is in lead IDs:`, leadIds.includes('155026'));
   
   // Fetch lead metadata (only for lead_ids, not client_ids)
   const leadMeta = await fetchLeadMetadata(leadIds, true);
   console.log(`✅ [fetchLegacyPayments] Fetched metadata for ${leadMeta.size} leads`);
   console.log(`🔍 [fetchLegacyPayments] Metadata for 199849:`, leadMeta.get('199849'));
+  console.log(`🔍 [fetchLegacyPayments] Metadata for 155026:`, leadMeta.get('155026'));
   
   // Fetch contact information for client_ids (contact_ids)
   const contactMap = new Map<number, string>();
@@ -1255,6 +1518,35 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
         proformaDate,
         hasProforma,
         collected: Boolean(actualDate),
+      });
+    }
+    
+    // Debug for 155026
+    if ((leadIdKey === '155026' || plan.lead_id === 155026)) {
+      console.log(`✅ [fetchLegacyPayments] Processing payment plan for 155026:`, {
+        planId: plan.id,
+        lead_id: plan.lead_id,
+        client_id: plan.client_id,
+        contactName,
+        metaFound: !!meta,
+        leadName: meta?.leadName,
+        caseNumber: meta?.caseNumber,
+        value,
+        value_base: plan.value_base,
+        dueDate,
+        date: plan.date,
+        actualDate,
+        proformaDate,
+        hasProforma,
+        collected: Boolean(actualDate),
+        cancel_date: plan.cancel_date,
+        ready_to_pay: plan.ready_to_pay,
+        currency_id: plan.currency_id,
+        filters: {
+          fromDate: filters.fromDate,
+          toDate: filters.toDate,
+          due: filters.due,
+        },
       });
     }
     // Always use lead_id metadata for lead information (leadName, caseNumber, etc.)

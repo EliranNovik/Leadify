@@ -1,4 +1,4 @@
-import React, { useState, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useLocation, Link, useNavigate } from 'react-router-dom';
 import { createPortal } from 'react-dom';
 import { searchLeads } from '../lib/legacyLeadsApi';
@@ -149,6 +149,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const fuzzySearchTimeoutRef = useRef<NodeJS.Timeout>();
   const showNoExactMatchTimeoutRef = useRef<NodeJS.Timeout>();
   const isSearchingRef = useRef<boolean>(false);
+  const currentSearchQueryRef = useRef<string>(''); // Track current search query to prevent race conditions
   const [showNoExactMatch, setShowNoExactMatch] = useState(false);
   const [showNotifications, setShowNotifications] = useState(false);
   const [notifications, setNotifications] = useState<Notification[]>([]);
@@ -2191,10 +2192,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       exactMatchesRef.current = [];
       fuzzyMatchesRef.current = [];
       previousSearchQueryRef.current = '';
+      currentSearchQueryRef.current = '';
       setIsSearching(false);
       isSearchingRef.current = false;
       return;
     }
+
+    // Update current search query ref to track which query we're processing
+    currentSearchQueryRef.current = trimmedQuery;
 
     // Perform immediate prefix search (no delay for emails, phones, lead numbers)
     setIsSearching(true);
@@ -2204,6 +2209,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       try {
         // First, try immediate prefix search (for emails, phones, lead numbers)
         const immediateResults = await performImmediateSearch(trimmedQuery);
+        
+        // CRITICAL: Check if query has changed while we were searching
+        if (currentSearchQueryRef.current !== trimmedQuery) {
+          // Query changed, ignore these results
+          return;
+        }
         
         if (immediateResults.length > 0) {
           // Re-evaluate exact matches based on the trimmed query to ensure accuracy for ALL search types
@@ -2286,25 +2297,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
           const prefixMatches = sortedResults.filter(r => r.isFuzzyMatch);
           
-          console.log('[Header useEffect] Immediate search results processed:', {
-            totalResults: sortedResults.length,
-            exactMatches: exactMatches.length,
-            fuzzyMatches: prefixMatches.length,
-            exactMatchDetails: exactMatches.map(r => ({
-              id: r.id,
-              lead_number: r.lead_number,
-              name: r.name || r.contactName,
-              isContact: r.isContact,
-              isFuzzyMatch: r.isFuzzyMatch
-            })),
-            allResults: sortedResults.map(r => ({
-              id: r.id,
-              lead_number: r.lead_number,
-              name: r.name || r.contactName,
-              isContact: r.isContact,
-              isFuzzyMatch: r.isFuzzyMatch
-            }))
-          });
+          // CRITICAL: Double-check query hasn't changed before updating state
+          if (currentSearchQueryRef.current !== trimmedQuery) {
+            return;
+          }
           
           // CRITICAL: Set refs and state together, and only mark as not searching AFTER results are set
           exactMatchesRef.current = exactMatches;
@@ -2333,9 +2329,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // 3. Wait a bit to ensure user has stopped typing
           if (exactMatches.length === 0) {
             showNoExactMatchTimeoutRef.current = setTimeout(() => {
-              // Double-check that we're still not searching before showing the message
-              // This prevents the message from showing if new queries started
-              if (!isSearchingRef.current) {
+              // Triple-check: query hasn't changed, we're not searching, and still no exact matches
+              if (currentSearchQueryRef.current === trimmedQuery && !isSearchingRef.current && exactMatchesRef.current.length === 0) {
                 setShowNoExactMatch(true);
               }
             }, 500); // 500ms delay after typing stops
@@ -2345,10 +2340,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           
           // If query is long enough (3+ chars) and we only have prefix matches (or no exact matches), also try fuzzy name search
           // BUT: Only do this if we're sure there are NO exact matches (check refs, not local variable)
+          // AND: Only if query hasn't changed
           if (trimmedQuery.length >= 3 && exactMatches.length === 0) {
-            // Run fuzzy search in background (with small delay to avoid blocking)
+            // Run fuzzy search in background (with longer delay to avoid blocking and allow user to finish typing)
             fuzzySearchTimeoutRef.current = setTimeout(async () => {
               try {
+                // CRITICAL: Check if query has changed before proceeding
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
                 // Double-check that we still have no exact matches (in case they were added)
                 const currentExactMatches = exactMatchesRef.current;
                 if (currentExactMatches.length > 0) {
@@ -2356,7 +2357,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   return;
                 }
                 
+                // Double-check query again before performing fuzzy search
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
                 const fuzzyResults = await performFuzzySearch(trimmedQuery);
+                
+                // CRITICAL: Final check - query must still match
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
                 // Combine prefix matches with fuzzy matches (fuzzy already limited to 5)
                 // Limit total fuzzy results to 5 (prefix + name fuzzy)
                 const allFuzzy = [...prefixMatches, ...fuzzyResults];
@@ -2380,39 +2392,59 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 });
                 scoredFuzzy.sort((a, b) => b.score - a.score);
                 const limitedFuzzy = scoredFuzzy.slice(0, 5).map(item => item.lead);
-                fuzzyMatchesRef.current = limitedFuzzy;
-                // Keep exact matches + limited fuzzy (check refs again to ensure we don't overwrite exact matches)
-                const finalExactMatches = exactMatchesRef.current;
-                const combinedResults = [...finalExactMatches, ...limitedFuzzy];
-                masterSearchResultsRef.current = combinedResults;
-                setSearchResults(combinedResults);
                 
-                // Update "No exact matches found" state after fuzzy search completes
-                // Only show if user has stopped typing AND we're not searching
-                if (finalExactMatches.length === 0 && limitedFuzzy.length > 0) {
-                  if (showNoExactMatchTimeoutRef.current) {
-                    clearTimeout(showNoExactMatchTimeoutRef.current);
-                  }
-                  showNoExactMatchTimeoutRef.current = setTimeout(() => {
-                    // Only show if we're not currently searching
-                    if (!isSearchingRef.current) {
-                      setShowNoExactMatch(true);
+                // CRITICAL: Final check before updating state
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
+                // Get current exact matches (should be empty, but check anyway)
+                const finalExactMatches = exactMatchesRef.current;
+                
+                // Only update if we still have no exact matches
+                if (finalExactMatches.length === 0) {
+                  fuzzyMatchesRef.current = limitedFuzzy;
+                  const combinedResults = [...finalExactMatches, ...limitedFuzzy];
+                  masterSearchResultsRef.current = combinedResults;
+                  setSearchResults(combinedResults);
+                  
+                  // Update "No exact matches found" state after fuzzy search completes
+                  if (limitedFuzzy.length > 0) {
+                    if (showNoExactMatchTimeoutRef.current) {
+                      clearTimeout(showNoExactMatchTimeoutRef.current);
                     }
-                  }, 300); // Small delay to ensure user has stopped typing
-                } else {
-                  setShowNoExactMatch(false);
+                    showNoExactMatchTimeoutRef.current = setTimeout(() => {
+                      // Only show if query hasn't changed and we're not searching
+                      if (currentSearchQueryRef.current === trimmedQuery && !isSearchingRef.current) {
+                        setShowNoExactMatch(true);
+                      }
+                    }, 300);
+                  } else {
+                    setShowNoExactMatch(false);
+                  }
                 }
               } catch (error) {
                 console.error('Error performing fuzzy search:', error);
               }
-            }, 200);
+            }, 600); // Increased delay to 600ms to allow user to finish typing
           }
         } else {
           // No immediate results - try fuzzy name search (only if query is 2+ chars)
           if (trimmedQuery.length >= 2) {
             fuzzySearchTimeoutRef.current = setTimeout(async () => {
               try {
+                // Check if query has changed
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
                 const fuzzyResults = await performFuzzySearch(trimmedQuery);
+                
+                // Final check before updating
+                if (currentSearchQueryRef.current !== trimmedQuery) {
+                  return;
+                }
+                
                 fuzzyMatchesRef.current = fuzzyResults;
                 masterSearchResultsRef.current = fuzzyResults;
                 setSearchResults(fuzzyResults);
@@ -2421,12 +2453,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 previousSearchQueryRef.current = trimmedQuery;
               } catch (error) {
                 console.error('Error performing fuzzy search:', error);
-                setSearchResults([]);
-                masterSearchResultsRef.current = [];
-                setIsSearching(false);
-                isSearchingRef.current = false;
+                // Only clear if query hasn't changed
+                if (currentSearchQueryRef.current === trimmedQuery) {
+                  setSearchResults([]);
+                  masterSearchResultsRef.current = [];
+                  setIsSearching(false);
+                  isSearchingRef.current = false;
+                }
               }
-            }, 300); // Small delay for fuzzy search to avoid too many requests
+            }, 500); // Increased delay for fuzzy search to avoid too many requests
           } else {
             // Query too short - no results
             setSearchResults([]);
@@ -2437,12 +2472,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       } catch (error) {
         console.error('Error searching leads:', error);
-        setSearchResults([]);
-        masterSearchResultsRef.current = [];
-        exactMatchesRef.current = [];
-        fuzzyMatchesRef.current = [];
-        setIsSearching(false);
-        isSearchingRef.current = false;
+        // Only clear if query hasn't changed
+        if (currentSearchQueryRef.current === trimmedQuery) {
+          setSearchResults([]);
+          masterSearchResultsRef.current = [];
+          exactMatchesRef.current = [];
+          fuzzyMatchesRef.current = [];
+          setIsSearching(false);
+          isSearchingRef.current = false;
+        }
       }
     })();
   }, [searchValue]);
@@ -4532,6 +4570,69 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     }
   };
 
+  // Memoize processed search results to prevent jumping/re-rendering
+  const processedSearchResults = useMemo(() => {
+    if (searchResults.length === 0) {
+      return { exactMatches: [], fuzzyMatches: [] };
+    }
+
+    // Ensure results are sorted: exact matches first
+    const sortedResults = [...searchResults].sort((a, b) => {
+      if (a.isFuzzyMatch !== b.isFuzzyMatch) {
+        return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
+      }
+      return 0;
+    });
+    
+    const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
+    let allFuzzyMatches = sortedResults.filter(r => r.isFuzzyMatch);
+    
+    // Create a set of exact match lead identifiers to filter duplicates
+    const exactMatchIdentifiers = new Set<string>();
+    exactMatches.forEach(match => {
+      const identifier = match.lead_number?.toString().trim() || match.id?.toString().trim() || '';
+      if (identifier) {
+        exactMatchIdentifiers.add(identifier.toLowerCase());
+      }
+    });
+    
+    // Filter out fuzzy matches that have the same lead_number or id as exact matches
+    allFuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
+      const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || fuzzyMatch.id?.toString().trim() || '';
+      if (!fuzzyIdentifier) return true; // Keep if no identifier
+      return !exactMatchIdentifiers.has(fuzzyIdentifier.toLowerCase());
+    });
+    
+    // Sort fuzzy matches by relevance (closest match first)
+    // Re-score fuzzy matches to ensure proper ordering
+    const lower = searchValue.trim().toLowerCase();
+    const scoredFuzzyMatches = allFuzzyMatches.map(lead => {
+      const name = (lead.contactName || lead.name || '').toLowerCase();
+      const email = (lead.email || '').toLowerCase();
+      
+      let score = 0;
+      if (name.startsWith(lower) || email.startsWith(lower)) {
+        score = 50; // Starts with
+      } else if (name.includes(lower) || email.includes(lower)) {
+        // Calculate position - earlier in string = higher score
+        const namePos = name.indexOf(lower);
+        const emailPos = email.indexOf(lower);
+        const earliestPos = namePos >= 0 && emailPos >= 0 
+          ? Math.min(namePos, emailPos)
+          : namePos >= 0 ? namePos : emailPos;
+        score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score
+      }
+      
+      return { lead, score };
+    });
+    
+    // Sort by score (highest first = closest match first), then limit to 5
+    scoredFuzzyMatches.sort((a, b) => b.score - a.score);
+    const fuzzyMatches = scoredFuzzyMatches.slice(0, 5).map(item => item.lead);
+    
+    return { exactMatches, fuzzyMatches };
+  }, [searchResults, searchValue]);
+
   // Stage badge function for search results
   const getStageBadge = (stage: string | number | null | undefined) => {
     const stageStr = stage ? String(stage).trim() : '';
@@ -5007,59 +5108,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               <div className="space-y-2">
                 {/* Separate exact matches from fuzzy matches */}
                 {(() => {
-                  // Ensure results are sorted: exact matches first
-                  const sortedResults = [...searchResults].sort((a, b) => {
-                    if (a.isFuzzyMatch !== b.isFuzzyMatch) {
-                      return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
-                    }
-                    return 0;
-                  });
-                  
-                  const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
-                  let allFuzzyMatches = sortedResults.filter(r => r.isFuzzyMatch);
-                  
-                  // Create a set of exact match lead identifiers to filter duplicates
-                  const exactMatchIdentifiers = new Set<string>();
-                  exactMatches.forEach(match => {
-                    const identifier = match.lead_number?.toString().trim() || match.id?.toString().trim() || '';
-                    if (identifier) {
-                      exactMatchIdentifiers.add(identifier.toLowerCase());
-                    }
-                  });
-                  
-                  // Filter out fuzzy matches that have the same lead_number or id as exact matches
-                  allFuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
-                    const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || fuzzyMatch.id?.toString().trim() || '';
-                    if (!fuzzyIdentifier) return true; // Keep if no identifier
-                    return !exactMatchIdentifiers.has(fuzzyIdentifier.toLowerCase());
-                  });
-                  
-                  // Sort fuzzy matches by relevance (closest match first)
-                  // Re-score fuzzy matches to ensure proper ordering
-                  const lower = searchValue.trim().toLowerCase();
-                  const scoredFuzzyMatches = allFuzzyMatches.map(lead => {
-                    const name = (lead.contactName || lead.name || '').toLowerCase();
-                    const email = (lead.email || '').toLowerCase();
-                    
-                    let score = 0;
-                    if (name.startsWith(lower) || email.startsWith(lower)) {
-                      score = 50; // Starts with
-                    } else if (name.includes(lower) || email.includes(lower)) {
-                      // Calculate position - earlier in string = higher score
-                      const namePos = name.indexOf(lower);
-                      const emailPos = email.indexOf(lower);
-                      const earliestPos = namePos >= 0 && emailPos >= 0 
-                        ? Math.min(namePos, emailPos)
-                        : namePos >= 0 ? namePos : emailPos;
-                      score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score
-                    }
-                    
-                    return { lead, score };
-                  });
-                  
-                  // Sort by score (highest first = closest match first), then limit to 5
-                  scoredFuzzyMatches.sort((a, b) => b.score - a.score);
-                  const fuzzyMatches = scoredFuzzyMatches.slice(0, 5).map(item => item.lead);
+                  const { exactMatches, fuzzyMatches } = processedSearchResults;
                   
                   return (
                     <>

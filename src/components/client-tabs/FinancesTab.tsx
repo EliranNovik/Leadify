@@ -33,6 +33,7 @@ interface PaymentPlan {
   ready_to_pay?: boolean; // Flag to indicate if payment is ready for collection
   ready_to_pay_by?: number | null; // Employee ID who marked it as ready to pay
   ready_to_pay_by_display_name?: string | null; // Display name of employee who marked it as ready to pay
+  client_id?: number | null; // Contact ID (client_id from payment plan row)
 }
 
 interface FinancePlan {
@@ -1240,6 +1241,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               ready_to_pay_date: (plan as any).ready_to_pay_date || null,
               ready_to_pay_by: readyToPayBy,
               ready_to_pay_by_display_name: readyToPayByDisplayName,
+              client_id: plan.client_id ? Number(plan.client_id) : null, // Include client_id (contact_id) for proforma creation
             };
           });
           } else {
@@ -4656,7 +4658,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   <button 
                                                     className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
                                                     title="Create Proforma" 
-                                                    onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                    onClick={e => { 
+                                                      e.preventDefault(); 
+                                                      const clientId = p.client_id ? `&client_id=${p.client_id}` : '';
+                                                      navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`); 
+                                                    }}
                                                     style={{ padding: 0 }}
                                                   >
                                                     <PlusIcon className="w-5 h-5" />
