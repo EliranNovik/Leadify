@@ -1,6 +1,6 @@
 import { supabase } from './supabase';
 import { calculateTotalContractValue, generatePaymentPlan } from './contractPricing';
-import { generateProformaName } from './proforma';
+// import { generateProformaName } from './proforma'; // Removed - no longer needed for automatic proforma creation
 
 interface Contract {
   id: string;
@@ -205,49 +205,50 @@ export async function handleContractSigned(contract: Contract) {
     }
     
     // 6. Generate proforma for the first payment (only for regular leads)
-    if (insertedPayments && insertedPayments.length > 0) {
-      const firstPayment = insertedPayments[0];
-      const proformaName = await generateProformaName();
-      
-      const proformaContent = {
-        client: contract.contact_name || client.name, // Use contact name if available
-        clientId: client.id,
-        proformaName: proformaName,
-        payment: firstPayment.value + firstPayment.value_vat,
-        base: firstPayment.value,
-        vat: firstPayment.value_vat,
-        language: 'EN',
-        rows: [
-          { 
-            description: firstPayment.payment_order, 
-            qty: 1, 
-            rate: firstPayment.value, 
-            total: firstPayment.value 
-          },
-        ],
-        total: firstPayment.value,
-        totalWithVat: firstPayment.value + firstPayment.value_vat,
-        addVat: currency === '₪',
-        currency: currency,
-        bankAccount: '',
-        notes: `Proforma for ${firstPayment.payment_order} - Contract ${contract.id}`,
-        createdAt: new Date().toISOString(),
-        createdBy: 'System',
-      };
-      
-      // Save proforma to the first payment
-      const { error: proformaError } = await supabase
-        .from('payment_plans')
-        .update({ proforma: JSON.stringify(proformaContent) })
-        .eq('id', firstPayment.id);
-      
-      if (proformaError) {
-        console.error('Error saving proforma:', proformaError);
-        // Don't throw here as the main process succeeded
-      } else {
-        console.log('Generated proforma for first payment');
-      }
-    }
+    // REMOVED: Automatic proforma creation - proformas should be created manually by users
+    // if (insertedPayments && insertedPayments.length > 0) {
+    //   const firstPayment = insertedPayments[0];
+    //   const proformaName = await generateProformaName();
+    //   
+    //   const proformaContent = {
+    //     client: contract.contact_name || client.name, // Use contact name if available
+    //     clientId: client.id,
+    //     proformaName: proformaName,
+    //     payment: firstPayment.value + firstPayment.value_vat,
+    //     base: firstPayment.value,
+    //     vat: firstPayment.value_vat,
+    //     language: 'EN',
+    //     rows: [
+    //       { 
+    //         description: firstPayment.payment_order, 
+    //         qty: 1, 
+    //         rate: firstPayment.value, 
+    //         total: firstPayment.value 
+    //       },
+    //     ],
+    //     total: firstPayment.value,
+    //     totalWithVat: firstPayment.value + firstPayment.value_vat,
+    //     addVat: currency === '₪',
+    //     currency: currency,
+    //     bankAccount: '',
+    //     notes: `Proforma for ${firstPayment.payment_order} - Contract ${contract.id}`,
+    //     createdAt: new Date().toISOString(),
+    //     createdBy: 'System',
+    //   };
+    //   
+    //   // Save proforma to the first payment
+    //   const { error: proformaError } = await supabase
+    //     .from('payment_plans')
+    //     .update({ proforma: JSON.stringify(proformaContent) })
+    //     .eq('id', firstPayment.id);
+    //   
+    //   if (proformaError) {
+    //     console.error('Error saving proforma:', proformaError);
+    //     // Don't throw here as the main process succeeded
+    //   } else {
+    //     console.log('Generated proforma for first payment');
+    //   }
+    // }
     
     // 7. Update lead with contract information (only for regular leads)
     // Use updateLeadStageWithHistory to ensure celebration triggers

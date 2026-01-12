@@ -493,6 +493,11 @@ const NewCasesPage: React.FC = () => {
       }`}
       onClick={(e) => {
         e.stopPropagation();
+        // If Ctrl/Cmd is held, open in new tab instead of selecting
+        if (e.ctrlKey || e.metaKey) {
+          handleCardClick(lead, e);
+          return;
+        }
         setSelectedLeadBoxes(prev => {
           const newSet = new Set(prev);
           if (newSet.has(lead.id)) {
@@ -506,7 +511,7 @@ const NewCasesPage: React.FC = () => {
       }}
       onDoubleClick={(e) => {
         e.stopPropagation();
-        navigate(`/clients/${lead.lead_number || lead.id}`);
+        handleCardClick(lead, e);
       }}
     >
       <div className="card-body p-4 flex flex-col">
@@ -556,7 +561,7 @@ const NewCasesPage: React.FC = () => {
             className="btn btn-ghost btn-sm btn-circle"
             onClick={(e) => {
               e.stopPropagation();
-              navigate(`/clients/${lead.lead_number || lead.id}`);
+              handleCardClick(lead, e);
             }}
             title="View Lead"
           >
@@ -1694,8 +1699,17 @@ const NewCasesPage: React.FC = () => {
     }
   };
 
-  const handleCardClick = (lead: any) => {
-    navigate(`/clients/${lead.lead_number}`);
+  const handleCardClick = (lead: any, event?: React.MouseEvent) => {
+    const leadPath = `/clients/${lead.lead_number || lead.id}`;
+    
+    // Check if Ctrl (Windows/Linux) or Cmd (Mac) is held
+    if (event && (event.ctrlKey || event.metaKey)) {
+      // Open in new tab
+      window.open(leadPath, '_blank');
+    } else {
+      // Navigate normally
+      navigate(leadPath);
+    }
   };
 
   // Handler functions for lead box actions
@@ -2477,14 +2491,14 @@ const NewCasesPage: React.FC = () => {
                                       )}
                                     </div>
                                   </td>
-                                  <td className="font-medium cursor-pointer pl-2" onClick={() => handleCardClick(lead)}>{lead.lead_number}</td>
-                                  <td className="cursor-pointer" onClick={() => handleCardClick(lead)}>
+                                  <td className="font-medium cursor-pointer pl-2" onClick={(e) => handleCardClick(lead, e)}>{lead.lead_number}</td>
+                                  <td className="cursor-pointer" onClick={(e) => handleCardClick(lead, e)}>
                                     {stageMapping.get(lead.stage) || lead.stage || 'Created'}
                                   </td>
-                                  <td className="cursor-pointer" onClick={() => handleCardClick(lead)}>
+                                  <td className="cursor-pointer" onClick={(e) => handleCardClick(lead, e)}>
                                     {formatCategoryDisplay(lead.category_id, lead.category || lead.topic)}
                                   </td>
-                                  <td className="cursor-pointer" onClick={() => handleCardClick(lead)}>
+                                  <td className="cursor-pointer" onClick={(e) => handleCardClick(lead, e)}>
                                     {lead.source || 'Unknown'}
                                   </td>
                                 </tr>

@@ -221,6 +221,27 @@ const MultiSelectInput = ({
   onHideDropdown: (field: string) => void;
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  // Handle clicks outside the component to close dropdown
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        onHideDropdown(field);
+      }
+    };
+
+    if (showDropdown) {
+      // Add event listener with a small delay to avoid immediate closing
+      setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside);
+      }, 100);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDropdown, field, onHideDropdown]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -234,7 +255,8 @@ const MultiSelectInput = ({
       onSelect(field, option);
     }
     setInputValue('');
-    onHideDropdown(field);
+    // Don't close dropdown - let user select multiple items
+    // Dropdown will close when clicking outside
   };
 
   const handleRemove = (value: string) => {
@@ -250,7 +272,7 @@ const MultiSelectInput = ({
   );
 
   return (
-    <div className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
+    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
       <label className="label mb-2">
         <span className="label-text">{label}</span>
         {safeValues.length > 0 && (
@@ -296,9 +318,6 @@ const MultiSelectInput = ({
               onShowDropdown(field);
             }
           }}
-          onBlur={() => {
-            setTimeout(() => onHideDropdown(field), 200);
-          }}
         />
         {showDropdown && filteredOptions.length > 0 && (
           <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
@@ -306,7 +325,11 @@ const MultiSelectInput = ({
               <div
                 key={index}
                 className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
-                onClick={() => handleSelect(option)}
+                onMouseDown={(e) => {
+                  // Prevent blur event from firing
+                  e.preventDefault();
+                  handleSelect(option);
+                }}
               >
                 <svg className="w-4 h-4 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
@@ -336,6 +359,28 @@ const ColumnSelector = ({
   onShowDropdown: () => void;
   onHideDropdown: () => void;
 }) => {
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  // Handle clicks outside the component to close dropdown
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        onHideDropdown();
+      }
+    };
+
+    if (showDropdown) {
+      // Add event listener with a small delay to avoid immediate closing
+      setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside);
+      }, 100);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDropdown, onHideDropdown]);
+
   const groupedColumns = AVAILABLE_COLUMNS.reduce((acc, column) => {
     if (!acc[column.category]) {
       acc[column.category] = [];
@@ -350,10 +395,12 @@ const ColumnSelector = ({
     } else {
       onColumnsChange([...selectedColumns, columnKey]);
     }
+    // Don't close dropdown - let user select multiple columns
+    // Dropdown will close when clicking outside
   };
 
   return (
-    <div className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
+    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
       <label className="label mb-2">
         <span className="label-text">Table Columns</span>
         <span className="label-text-alt text-purple-600 font-medium">
@@ -375,7 +422,7 @@ const ColumnSelector = ({
         
         {showDropdown && (
           <div className="absolute z-20 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-96 overflow-y-auto">
-            <div className="p-2" onMouseLeave={() => setTimeout(onHideDropdown, 200)}>
+            <div className="p-2">
               {Object.entries(groupedColumns).map(([category, columns]) => (
                 <div key={category} className="mb-4">
                   <h4 className="font-semibold text-sm text-gray-700 mb-2 border-b pb-1">
@@ -432,6 +479,27 @@ const MainCategoryInput = ({
   onMainCategorySelect: (mainCategoryName: string) => void;
 }) => {
   const [inputValue, setInputValue] = useState('');
+  const containerRef = React.useRef<HTMLDivElement>(null);
+
+  // Handle clicks outside the component to close dropdown
+  React.useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        onHideDropdown(field);
+      }
+    };
+
+    if (showDropdown) {
+      // Add event listener with a small delay to avoid immediate closing
+      setTimeout(() => {
+        document.addEventListener('mousedown', handleClickOutside);
+      }, 100);
+    }
+
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showDropdown, field, onHideDropdown]);
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const value = e.target.value;
@@ -446,7 +514,8 @@ const MainCategoryInput = ({
       onMainCategorySelect(option);
     }
     setInputValue('');
-    onHideDropdown(field);
+    // Don't close dropdown - let user select multiple items
+    // Dropdown will close when clicking outside
   };
 
   const handleRemove = (value: string) => {
@@ -462,7 +531,7 @@ const MainCategoryInput = ({
   );
 
   return (
-    <div className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
+    <div ref={containerRef} className="form-control flex flex-col col-span-2 sm:col-span-1 relative">
       <label className="label mb-2">
         <span className="label-text">{label}</span>
         {safeValues.length > 0 && (
@@ -508,9 +577,6 @@ const MainCategoryInput = ({
               onShowDropdown(field);
             }
           }}
-          onBlur={() => {
-            setTimeout(() => onHideDropdown(field), 200);
-          }}
         />
         {showDropdown && filteredOptions.length > 0 && (
           <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
@@ -518,7 +584,11 @@ const MainCategoryInput = ({
               <div
                 key={index}
                 className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm flex items-center gap-2"
-                onClick={() => handleSelect(option)}
+                onMouseDown={(e) => {
+                  // Prevent blur event from firing
+                  e.preventDefault();
+                  handleSelect(option);
+                }}
               >
                 <svg className="w-4 h-4 text-purple-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
@@ -1311,6 +1381,7 @@ const LeadSearchPage: React.FC = () => {
 
   // Handle main category selection and automatically select all subcategories
   const handleMainCategorySelect = async (mainCategoryName: string) => {
+    console.log('🔍 [Main Category] Starting main category selection:', mainCategoryName);
     try {
       // First, get the main category ID
       const { data: mainCategory, error: mainError } = await supabase
@@ -1319,8 +1390,15 @@ const LeadSearchPage: React.FC = () => {
         .eq('name', mainCategoryName)
         .single();
 
+      console.log('🔍 [Main Category] Main category lookup result:', {
+        mainCategoryName,
+        mainCategory,
+        mainError,
+        mainCategoryId: mainCategory?.id
+      });
+
       if (mainError || !mainCategory) {
-        console.error('Error finding main category:', mainError);
+        console.error('❌ [Main Category] Error finding main category:', mainError);
         return;
       }
 
@@ -1330,8 +1408,15 @@ const LeadSearchPage: React.FC = () => {
         .select('name, misc_maincategory!parent_id(name)')
         .eq('parent_id', mainCategory.id);
 
+      console.log('🔍 [Main Category] Subcategories fetch result:', {
+        mainCategoryId: mainCategory.id,
+        subcategoriesCount: subcategories?.length || 0,
+        subcategories: subcategories,
+        subError
+      });
+
       if (subError) {
-        console.error('Error fetching subcategories:', subError);
+        console.error('❌ [Main Category] Error fetching subcategories:', subError);
         return;
       }
 
@@ -1341,21 +1426,31 @@ const LeadSearchPage: React.FC = () => {
           `${sub.name} (${mainCategoryName})`
         );
 
+        console.log('🔍 [Main Category] Formatted subcategories:', formattedSubcategories);
+
         // Add all subcategories to the current category selection
         setFilters(prev => {
           const currentCategories = prev.category || [];
           const newCategories = [...currentCategories, ...formattedSubcategories];
           // Remove duplicates
+          const uniqueCategories = [...new Set(newCategories)];
+          
+          console.log('🔍 [Main Category] Updating category filter:', {
+            previousCategories: currentCategories,
+            newCategories: formattedSubcategories,
+            finalCategories: uniqueCategories
+          });
+          
           return {
             ...prev,
-            category: [...new Set(newCategories)]
+            category: uniqueCategories
           };
         });
 
-        console.log(`✅ Auto-selected ${formattedSubcategories.length} subcategories for main category: ${mainCategoryName}`);
+        console.log(`✅ [Main Category] Auto-selected ${formattedSubcategories.length} subcategories for main category: ${mainCategoryName}`);
       }
     } catch (error) {
-      console.error('Error handling main category selection:', error);
+      console.error('❌ [Main Category] Error handling main category selection:', error);
     }
   };
 
@@ -1434,10 +1529,17 @@ const LeadSearchPage: React.FC = () => {
     // This avoids using ilike/eq queries during filtering - we use the mapping directly
     const categoryNameToIdMapping = new Map<string, number>();
     try {
-      const { data: categoriesData } = await supabase
+      console.log('🔍 [Category Mapping] Fetching categories for mapping...');
+      const { data: categoriesData, error: categoriesError } = await supabase
         .from('misc_category')
         .select('id, name, parent_id, misc_maincategory!parent_id(id, name)')
         .order('name');
+      
+      console.log('🔍 [Category Mapping] Categories fetch result:', {
+        categoriesCount: categoriesData?.length || 0,
+        categoriesError,
+        sampleCategories: categoriesData?.slice(0, 5)
+      });
       
       if (categoriesData) {
         categoriesData.forEach((category: any) => {
@@ -1449,11 +1551,24 @@ const LeadSearchPage: React.FC = () => {
             ? `${category.name} (${mainCategory})`
             : category.name;
           categoryNameToIdMapping.set(formattedName, category.id);
+          
+          // Debug log for first few categories
+          if (categoryNameToIdMapping.size <= 5) {
+            console.log('🔍 [Category Mapping] Added mapping:', {
+              formattedName,
+              categoryId: category.id,
+              categoryName: category.name,
+              mainCategory
+            });
+          }
         });
-        console.log('✅ Created category name to ID mapping:', categoryNameToIdMapping.size, 'categories');
+        console.log('✅ [Category Mapping] Created category name to ID mapping:', {
+          totalMappings: categoryNameToIdMapping.size,
+          sampleMappings: Array.from(categoryNameToIdMapping.entries()).slice(0, 10)
+        });
       }
     } catch (error) {
-      console.error('⚠️ Error fetching categories for mapping:', error);
+      console.error('❌ [Category Mapping] Error fetching categories for mapping:', error);
     }
     
     try {
@@ -1672,17 +1787,77 @@ const LeadSearchPage: React.FC = () => {
         newLeadsQuery = newLeadsQuery.lte('created_at', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
-        console.log('🏷️ Adding category filter for new leads:', filters.category);
-        // Extract category names (remove main category in parentheses)
-        const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
+        console.log('🏷️ [New Leads Category Filter] Starting category filter application:', {
+          selectedCategories: filters.category,
+          categoryCount: filters.category.length,
+          mappingSize: categoryNameToIdMapping.size
+        });
         
-        if (categoryNames.length === 1) {
-          // Single category - use exact match
-          newLeadsQuery = newLeadsQuery.eq('category', categoryNames[0]);
-        } else {
-          // Multiple categories - use IN operator for exact matches
-          newLeadsQuery = newLeadsQuery.in('category', categoryNames);
+        // Try using category_id first (more reliable), fallback to category text field
+        const categoryIds: number[] = [];
+        const categoryNames: string[] = [];
+        
+        for (const formattedCategoryName of filters.category) {
+          // Try to get category_id from mapping
+          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+          if (categoryId !== undefined) {
+            categoryIds.push(categoryId);
+            console.log('🔍 [New Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
+          } else {
+            // Fallback: extract category name (remove main category in parentheses)
+            const categoryName = formattedCategoryName.split(' (')[0].trim();
+            categoryNames.push(categoryName);
+            console.log('⚠️ [New Leads Category Filter] No category_id found, will use category name:', categoryName, 'for:', formattedCategoryName);
+          }
         }
+        
+        console.log('🏷️ [New Leads Category Filter] Category filter summary:', {
+          totalSelected: filters.category.length,
+          categoryIdsFound: categoryIds,
+          categoryIdsCount: categoryIds.length,
+          categoryNamesFallback: categoryNames,
+          categoryNamesCount: categoryNames.length
+        });
+        
+        // Prefer category_id filter if we have IDs, otherwise use category text field
+        // If we have both IDs and names, use OR to include both
+        if (categoryIds.length > 0 && categoryNames.length > 0) {
+          // Mixed: some categories have IDs, some don't - use OR condition
+          console.log('🏷️ [New Leads Category Filter] Applying mixed filter (OR): category_id IN', categoryIds, 'OR category IN', categoryNames);
+          const orConditions = [
+            categoryIds.length === 1 
+              ? `category_id.eq.${categoryIds[0]}`
+              : `category_id.in.(${categoryIds.join(',')})`,
+            categoryNames.length === 1 
+              ? `category.eq.${categoryNames[0]}`
+              : `category.in.(${categoryNames.join(',')})`
+          ];
+          newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
+        } else if (categoryIds.length > 0) {
+          // All categories have IDs - use category_id filter
+          if (categoryIds.length === 1) {
+            console.log('🏷️ [New Leads Category Filter] Applying single category_id filter:', categoryIds[0]);
+            newLeadsQuery = newLeadsQuery.eq('category_id', categoryIds[0]);
+          } else {
+            console.log('🏷️ [New Leads Category Filter] Applying multiple category_id filter (IN):', categoryIds);
+            newLeadsQuery = newLeadsQuery.in('category_id', categoryIds);
+          }
+        } else if (categoryNames.length > 0) {
+          // Only category names available, use text field
+          if (categoryNames.length === 1) {
+            console.log('🏷️ [New Leads Category Filter] Applying single category name filter (fallback):', categoryNames[0]);
+            newLeadsQuery = newLeadsQuery.eq('category', categoryNames[0]);
+          } else {
+            console.log('🏷️ [New Leads Category Filter] Applying multiple category name filter (IN, fallback):', categoryNames);
+            newLeadsQuery = newLeadsQuery.in('category', categoryNames);
+          }
+        } else {
+          console.log('❌ [New Leads Category Filter] No category IDs or names found - filter will not be applied');
+        }
+        
+        console.log('🏷️ [New Leads Category Filter] Category filter applied to query');
+      } else {
+        console.log('🏷️ [New Leads Category Filter] No category filter - filters.category is empty or null');
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for new leads:', filters.language);
@@ -1797,30 +1972,137 @@ const LeadSearchPage: React.FC = () => {
         console.log('📝 Adding content filter for new leads:', filters.content);
         newLeadsQuery = newLeadsQuery.or(`facts.ilike.%${filters.content}%,special_notes.ilike.%${filters.content}%,general_notes.ilike.%${filters.content}%`);
       }
+      // Helper function to apply role filter for new leads (handles both display names and IDs)
+      const applyRoleFilterForNewLeads = (
+        roleName: string,
+        filterValues: string[],
+        textField: string | null,
+        idField: string | null
+      ) => {
+        if (!filterValues || filterValues.length === 0) return;
+        
+        console.log(`👥 [New Leads ${roleName} Filter] Starting filter application:`, {
+          roleName,
+          filterValues,
+          textField,
+          idField,
+          employeeMappingSize: nameToIdMapping.size
+        });
+        
+        // Convert filter values (display names) to employee IDs
+        const employeeIds: number[] = [];
+        const unmatchedNames: string[] = [];
+        
+        for (const filterValue of filterValues) {
+          // Check if filterValue is already a numeric ID
+          const numericId = parseInt(filterValue, 10);
+          if (!isNaN(numericId)) {
+            employeeIds.push(numericId);
+            console.log(`🔍 [New Leads ${roleName} Filter] Filter value is numeric ID:`, numericId);
+          } else {
+            // It's a display name, look it up in the mapping
+            const employeeId = nameToIdMapping.get(filterValue);
+            if (employeeId !== undefined) {
+              employeeIds.push(employeeId);
+              console.log(`🔍 [New Leads ${roleName} Filter] Found employee ID:`, employeeId, 'for name:', filterValue);
+            } else {
+              unmatchedNames.push(filterValue);
+              console.log(`⚠️ [New Leads ${roleName} Filter] No employee ID found for name:`, filterValue);
+            }
+          }
+        }
+        
+        console.log(`👥 [New Leads ${roleName} Filter] Filter summary:`, {
+          totalFilterValues: filterValues.length,
+          employeeIdsFound: employeeIds,
+          employeeIdsCount: employeeIds.length,
+          unmatchedNames,
+          unmatchedNamesCount: unmatchedNames.length
+        });
+        
+        // Build OR condition if we have both text field and ID field
+        const orConditions: string[] = [];
+        
+        // Add ID-based filter if we have IDs and an ID field
+        if (employeeIds.length > 0 && idField) {
+          if (employeeIds.length === 1) {
+            orConditions.push(`${idField}.eq.${employeeIds[0]}`);
+          } else {
+            orConditions.push(`${idField}.in.(${employeeIds.join(',')})`);
+          }
+        }
+        
+        // Add text-based filter if we have unmatched names and a text field
+        if (unmatchedNames.length > 0 && textField) {
+          if (unmatchedNames.length === 1) {
+            orConditions.push(`${textField}.eq.${unmatchedNames[0]}`);
+          } else {
+            orConditions.push(`${textField}.in.(${unmatchedNames.join(',')})`);
+          }
+        }
+        
+        // Also add text field filter for all filter values (in case some leads have names stored)
+        if (textField && filterValues.length > 0) {
+          if (filterValues.length === 1) {
+            orConditions.push(`${textField}.eq.${filterValues[0]}`);
+          } else {
+            orConditions.push(`${textField}.in.(${filterValues.join(',')})`);
+          }
+        }
+        
+        if (orConditions.length > 0) {
+          if (orConditions.length === 1) {
+            // Single condition, apply directly
+            const condition = orConditions[0];
+            if (condition.includes('.eq.')) {
+              const [field, value] = condition.split('.eq.');
+              newLeadsQuery = newLeadsQuery.eq(field, value);
+            } else if (condition.includes('.in.')) {
+              const [field, values] = condition.split('.in.');
+              const valueArray = values.replace(/[()]/g, '').split(',');
+              newLeadsQuery = newLeadsQuery.in(field, valueArray);
+            }
+            console.log(`👥 [New Leads ${roleName} Filter] Applied single condition:`, condition);
+          } else {
+            // Multiple conditions, use OR
+            const orString = orConditions.join(',');
+            newLeadsQuery = newLeadsQuery.or(orString);
+            console.log(`👥 [New Leads ${roleName} Filter] Applied OR condition:`, orString);
+          }
+        } else {
+          console.log(`❌ [New Leads ${roleName} Filter] No valid conditions to apply - filter will not work`);
+        }
+      };
+      
       // Individual role filters for new leads
+      // Scheduler: text field 'scheduler' (display name), no ID field
       if (filters.scheduler && filters.scheduler.length > 0) {
-        console.log('👥 Adding scheduler filter for new leads:', filters.scheduler);
-        newLeadsQuery = newLeadsQuery.in('scheduler', filters.scheduler);
+        applyRoleFilterForNewLeads('Scheduler', filters.scheduler, 'scheduler', null);
       }
+      
+      // Manager: ID field 'meeting_manager_id', text field 'manager' (may contain name or ID)
       if (filters.manager && filters.manager.length > 0) {
-        console.log('👥 Adding manager filter for new leads:', filters.manager);
-        newLeadsQuery = newLeadsQuery.in('manager', filters.manager);
+        applyRoleFilterForNewLeads('Manager', filters.manager, 'manager', 'meeting_manager_id');
       }
+      
+      // Lawyer: ID field 'meeting_lawyer_id', text field 'lawyer' (may contain name or ID)
       if (filters.lawyer && filters.lawyer.length > 0) {
-        console.log('👥 Adding lawyer filter for new leads:', filters.lawyer);
-        newLeadsQuery = newLeadsQuery.in('lawyer', filters.lawyer);
+        applyRoleFilterForNewLeads('Lawyer', filters.lawyer, 'lawyer', 'meeting_lawyer_id');
       }
+      
+      // Expert: ID field 'expert_id' or 'expert', text field 'expert' (may contain name or ID)
       if (filters.expert && filters.expert.length > 0) {
-        console.log('👥 Adding expert filter for new leads:', filters.expert);
-        newLeadsQuery = newLeadsQuery.in('expert', filters.expert);
+        applyRoleFilterForNewLeads('Expert', filters.expert, 'expert', 'expert_id');
       }
+      
+      // Closer: text field 'closer' (display name), no ID field
       if (filters.closer && filters.closer.length > 0) {
-        console.log('👥 Adding closer filter for new leads:', filters.closer);
-        newLeadsQuery = newLeadsQuery.in('closer', filters.closer);
+        applyRoleFilterForNewLeads('Closer', filters.closer, 'closer', null);
       }
+      
+      // Case Handler: ID field 'case_handler_id', text field 'handler' (may contain name or ID)
       if (filters.case_handler && filters.case_handler.length > 0) {
-        console.log('👥 Adding case_handler filter for new leads:', filters.case_handler);
-        newLeadsQuery = newLeadsQuery.in('handler', filters.case_handler);
+        applyRoleFilterForNewLeads('Case Handler', filters.case_handler, 'handler', 'case_handler_id');
       }
       if (filters.eligibilityDeterminedOnly) {
         console.log('✅ Adding eligibility filter for new leads');
@@ -1853,27 +2135,62 @@ const LeadSearchPage: React.FC = () => {
         legacyLeadsQuery = legacyLeadsQuery.lte('cdate', endOfDay);
       }
       if (filters.category && filters.category.length > 0) {
-        console.log('🏷️ Adding category filter for legacy leads:', filters.category);
+        console.log('🏷️ [Legacy Leads Category Filter] Starting category filter application:', {
+          selectedCategories: filters.category,
+          categoryCount: filters.category.length,
+          mappingSize: categoryNameToIdMapping.size
+        });
+        
         // Use the category name to ID mapping we created earlier (no database queries needed)
         const categoryIds: number[] = [];
+        const lookupResults: Array<{ formattedName: string; categoryId: number | undefined; found: boolean }> = [];
+        
         for (const formattedCategoryName of filters.category) {
           const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+          const found = categoryId !== undefined;
+          
+          lookupResults.push({
+            formattedName: formattedCategoryName,
+            categoryId,
+            found
+          });
+          
           if (categoryId !== undefined) {
             categoryIds.push(categoryId);
-            console.log('🔍 Found category_id:', categoryId, 'for category:', formattedCategoryName);
+            console.log('🔍 [Legacy Leads Category Filter] Found category_id:', categoryId, 'for category:', formattedCategoryName);
           } else {
-            console.log('⚠️ No category ID found for:', formattedCategoryName);
+            console.log('⚠️ [Legacy Leads Category Filter] No category ID found for:', formattedCategoryName);
+            // Debug: Check if the mapping contains similar entries
+            const similarEntries = Array.from(categoryNameToIdMapping.keys()).filter(key => 
+              key.toLowerCase().includes(formattedCategoryName.toLowerCase().split(' (')[0]) ||
+              formattedCategoryName.toLowerCase().includes(key.toLowerCase().split(' (')[0])
+            );
+            if (similarEntries.length > 0) {
+              console.log('🔍 [Legacy Leads Category Filter] Similar entries in mapping:', similarEntries);
+            }
           }
         }
         
-        console.log(`🔍 DEBUG Lead 174503: Category filter - categoryIds found:`, categoryIds, 'Lead has category_id: 122, included:', categoryIds.includes(122));
+        console.log('🏷️ [Legacy Leads Category Filter] Category ID lookup summary:', {
+          totalSelected: filters.category.length,
+          lookupResults,
+          categoryIdsFound: categoryIds,
+          categoryIdsCount: categoryIds.length
+        });
+        
+        console.log(`🔍 [Legacy Leads Category Filter] DEBUG Lead 174503: Category filter - categoryIds found:`, categoryIds, 'Lead has category_id: 122, included:', categoryIds.includes(122));
         
         if (categoryIds.length > 0) {
           // Use IN operator for multiple category_ids
+          console.log('🏷️ [Legacy Leads Category Filter] Applying category_id filter (IN):', categoryIds);
           legacyLeadsQuery = legacyLeadsQuery.in('category_id', categoryIds);
+          console.log('🏷️ [Legacy Leads Category Filter] Category filter applied to query');
         } else {
-          console.log('❌ No category_ids found for any categories - category filter will not be applied');
+          console.log('❌ [Legacy Leads Category Filter] No category_ids found for any categories - category filter will not be applied');
+          console.log('🔍 [Legacy Leads Category Filter] Available mappings:', Array.from(categoryNameToIdMapping.entries()).slice(0, 20));
         }
+      } else {
+        console.log('🏷️ [Legacy Leads Category Filter] No category filter - filters.category is empty or null');
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for legacy leads:', filters.language);
@@ -2101,8 +2418,6 @@ const LeadSearchPage: React.FC = () => {
         }
       }
 
-      console.log('🚀 Executing queries...');
-      
       // If tags filter is applied, prefetch lead IDs from leads_lead_tags
       // Use string-based sets to avoid bigint/Number precision issues
       let taggedNewLeadIds = new Set<string>();
@@ -2163,24 +2478,194 @@ const LeadSearchPage: React.FC = () => {
         }
       }
       
+      // Store categoryIds for later debugging (from legacy leads filter section)
+      let legacyCategoryIds: number[] = [];
+      if (filters.category && filters.category.length > 0) {
+        for (const formattedCategoryName of filters.category) {
+          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+          if (categoryId !== undefined) {
+            legacyCategoryIds.push(categoryId);
+          }
+        }
+      }
+      
       // Execute both queries with explicit limit to ensure we get all results
       // Supabase default limit is 1000, but we'll set it explicitly to be safe
+      console.log('🚀 [Query Execution] Executing queries with limits...');
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
         newLeadsQuery.order('created_at', { ascending: false }).limit(10000),
         legacyLeadsQuery.order('cdate', { ascending: false }).limit(10000)
       ]);
 
-      console.log('📊 New leads result:', {
+      console.log('📊 [Query Results] New leads result:', {
         data: newLeadsResult.data,
         error: newLeadsResult.error,
-        count: newLeadsResult.data?.length || 0
+        count: newLeadsResult.data?.length || 0,
+        sampleCategories: newLeadsResult.data?.slice(0, 5).map((lead: any) => ({
+          id: lead.id,
+          name: lead.name,
+          category: lead.category,
+          category_id: lead.category_id
+        })),
+        sampleRoles: newLeadsResult.data?.slice(0, 5).map((lead: any) => ({
+          id: lead.id,
+          name: lead.name,
+          scheduler: lead.scheduler,
+          manager: lead.manager,
+          meeting_manager_id: lead.meeting_manager_id,
+          lawyer: lead.lawyer,
+          meeting_lawyer_id: lead.meeting_lawyer_id,
+          expert: lead.expert,
+          expert_id: lead.expert_id,
+          closer: lead.closer,
+          handler: lead.handler,
+          case_handler_id: lead.case_handler_id
+        }))
       });
       
-      console.log('📊 Legacy leads result:', {
+      console.log('📊 [Query Results] Legacy leads result:', {
         data: legacyLeadsResult.data,
         error: legacyLeadsResult.error,
-        count: legacyLeadsResult.data?.length || 0
+        count: legacyLeadsResult.data?.length || 0,
+        sampleCategories: legacyLeadsResult.data?.slice(0, 5).map((lead: any) => ({
+          id: lead.id,
+          name: lead.name,
+          category: lead.category,
+          category_id: lead.category_id
+        }))
       });
+      
+      // Debug: Check if any results match the selected categories
+      if (filters.category && filters.category.length > 0) {
+        // Get category IDs for new leads too
+        const newLeadsCategoryIds: number[] = [];
+        const categoryNames = filters.category.map(cat => cat.split(' (')[0].trim());
+        for (const formattedCategoryName of filters.category) {
+          const categoryId = categoryNameToIdMapping.get(formattedCategoryName);
+          if (categoryId !== undefined) {
+            newLeadsCategoryIds.push(categoryId);
+          }
+        }
+        
+        console.log('🔍 [Query Results] Checking if results match selected categories:', {
+          selectedCategoryNames: categoryNames,
+          selectedFormattedCategories: filters.category,
+          newLeadsCategoryIds,
+          legacyCategoryIds,
+          newLeadsMatchingByCategoryId: newLeadsResult.data?.filter((lead: any) => 
+            newLeadsCategoryIds.length > 0 && newLeadsCategoryIds.includes(lead.category_id)
+          ).length || 0,
+          newLeadsMatchingByCategoryName: newLeadsResult.data?.filter((lead: any) => 
+            categoryNames.includes(lead.category)
+          ).length || 0,
+          legacyLeadsMatching: legacyLeadsResult.data?.filter((lead: any) => {
+            const leadCategoryId = lead.category_id;
+            return legacyCategoryIds.length > 0 && legacyCategoryIds.includes(leadCategoryId);
+          }).length || 0,
+          sampleNewLeadsCategories: newLeadsResult.data?.slice(0, 10).map((lead: any) => ({
+            id: lead.id,
+            category: lead.category,
+            category_id: lead.category_id,
+            matchesById: newLeadsCategoryIds.includes(lead.category_id),
+            matchesByName: categoryNames.includes(lead.category)
+          })),
+          sampleLegacyLeadsCategories: legacyLeadsResult.data?.slice(0, 10).map((lead: any) => ({
+            id: lead.id,
+            category_id: lead.category_id,
+            matches: legacyCategoryIds.includes(lead.category_id)
+          })),
+          // Role filter matching (if any role filters are applied)
+          roleFiltersApplied: {
+            scheduler: filters.scheduler?.length > 0,
+            manager: filters.manager?.length > 0,
+            lawyer: filters.lawyer?.length > 0,
+            expert: filters.expert?.length > 0,
+            closer: filters.closer?.length > 0,
+            case_handler: filters.case_handler?.length > 0
+          },
+          sampleNewLeadsRoles: newLeadsResult.data?.slice(0, 10).map((lead: any) => {
+            const schedulerMatch = filters.scheduler?.length > 0 
+              ? (filters.scheduler.includes(lead.scheduler) || 
+                 (lead.meeting_scheduler_id && filters.scheduler.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id)))
+              : null;
+            const managerMatch = filters.manager?.length > 0
+              ? (filters.manager.includes(lead.manager) ||
+                 (lead.meeting_manager_id && filters.manager.some(name => nameToIdMapping.get(name) === lead.meeting_manager_id)))
+              : null;
+            const lawyerMatch = filters.lawyer?.length > 0
+              ? (filters.lawyer.includes(lead.lawyer) ||
+                 (lead.meeting_lawyer_id && filters.lawyer.some(name => nameToIdMapping.get(name) === lead.meeting_lawyer_id)))
+              : null;
+            const expertMatch = filters.expert?.length > 0
+              ? (filters.expert.includes(lead.expert) ||
+                 (lead.expert_id && filters.expert.some(name => nameToIdMapping.get(name) === lead.expert_id)))
+              : null;
+            const closerMatch = filters.closer?.length > 0
+              ? filters.closer.includes(lead.closer)
+              : null;
+            const caseHandlerMatch = filters.case_handler?.length > 0
+              ? (filters.case_handler.includes(lead.handler) ||
+                 (lead.case_handler_id && filters.case_handler.some(name => nameToIdMapping.get(name) === lead.case_handler_id)))
+              : null;
+            
+            return {
+              id: lead.id,
+              scheduler: lead.scheduler,
+              schedulerMatch,
+              manager: lead.manager,
+              meeting_manager_id: lead.meeting_manager_id,
+              managerMatch,
+              lawyer: lead.lawyer,
+              meeting_lawyer_id: lead.meeting_lawyer_id,
+              lawyerMatch,
+              expert: lead.expert,
+              expert_id: lead.expert_id,
+              expertMatch,
+              closer: lead.closer,
+              closerMatch,
+              handler: lead.handler,
+              case_handler_id: lead.case_handler_id,
+              caseHandlerMatch
+            };
+          })
+        });
+      }
+      
+      // Debug role filters separately
+      if (filters.scheduler?.length > 0 || filters.manager?.length > 0 || filters.lawyer?.length > 0 || 
+          filters.expert?.length > 0 || filters.closer?.length > 0 || filters.case_handler?.length > 0) {
+        console.log('👥 [Query Results] Role filter matching summary:', {
+          schedulerFilter: filters.scheduler,
+          managerFilter: filters.manager,
+          lawyerFilter: filters.lawyer,
+          expertFilter: filters.expert,
+          closerFilter: filters.closer,
+          caseHandlerFilter: filters.case_handler,
+          newLeadsMatchingScheduler: newLeadsResult.data?.filter((lead: any) => 
+            filters.scheduler?.includes(lead.scheduler) ||
+            (lead.meeting_scheduler_id && filters.scheduler?.some(name => nameToIdMapping.get(name) === lead.meeting_scheduler_id))
+          ).length || 0,
+          newLeadsMatchingManager: newLeadsResult.data?.filter((lead: any) =>
+            filters.manager?.includes(lead.manager) ||
+            (lead.meeting_manager_id && filters.manager?.some(name => nameToIdMapping.get(name) === lead.meeting_manager_id))
+          ).length || 0,
+          newLeadsMatchingLawyer: newLeadsResult.data?.filter((lead: any) =>
+            filters.lawyer?.includes(lead.lawyer) ||
+            (lead.meeting_lawyer_id && filters.lawyer?.some(name => nameToIdMapping.get(name) === lead.meeting_lawyer_id))
+          ).length || 0,
+          newLeadsMatchingExpert: newLeadsResult.data?.filter((lead: any) =>
+            filters.expert?.includes(lead.expert) ||
+            (lead.expert_id && filters.expert?.some(name => nameToIdMapping.get(name) === lead.expert_id))
+          ).length || 0,
+          newLeadsMatchingCloser: newLeadsResult.data?.filter((lead: any) =>
+            filters.closer?.includes(lead.closer)
+          ).length || 0,
+          newLeadsMatchingCaseHandler: newLeadsResult.data?.filter((lead: any) =>
+            filters.case_handler?.includes(lead.handler) ||
+            (lead.case_handler_id && filters.case_handler?.some(name => nameToIdMapping.get(name) === lead.case_handler_id))
+          ).length || 0
+        });
+      }
 
       // DEBUG: Check if lead 174503 is in the query results
       const debugLeadId = 174503;

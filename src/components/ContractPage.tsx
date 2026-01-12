@@ -2384,7 +2384,7 @@ const ContractPage: React.FC = () => {
       }
 
       await handleContractSigned(updatedContract);
-      alert('Contract signed! Payment plan and proforma have been automatically generated.');
+      alert('Contract signed! Payment plan has been automatically generated.');
       navigate(`/clients/${leadNumber}`);
 
     } catch (error) {

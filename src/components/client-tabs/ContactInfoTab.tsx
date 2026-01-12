@@ -3139,7 +3139,7 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
       await handleContractSigned(contract);
 
       console.log('Contract signing automation completed successfully');
-      alert('Contract signed! Payment plan and proforma have been automatically generated.');
+      alert('Contract signed! Payment plan has been automatically generated.');
 
     } catch (error) {
       console.error('Error signing contract:', error);
