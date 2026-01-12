@@ -4,6 +4,7 @@ import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
 import SignaturePad from 'react-signature-canvas';
 import { updateLeadStageWithHistory } from '../lib/leadStageManager';
+import { ShareIcon } from '@heroicons/react/24/outline';
 
 // Function to clean HTML content and make it readable
 const cleanHtmlContent = (html: string): string => {
@@ -52,6 +53,7 @@ const PublicLegacyContractView: React.FC = () => {
   const [clientFields, setClientFields] = useState<{ [key: string]: string }>({});
   const [isSubmitted, setIsSubmitted] = useState(false);
   const [isAlreadySigned, setIsAlreadySigned] = useState(false);
+  const [leadNumber, setLeadNumber] = useState<string | null>(null);
   const signaturePads = useRef<{ [key: string]: any }>({});
 
   useEffect(() => {
@@ -109,6 +111,33 @@ const PublicLegacyContractView: React.FC = () => {
         }
 
         setContract(data);
+        
+        // Fetch lead number from leads_lead table
+        if (data.lead_id) {
+          try {
+            const { data: leadData, error: leadError } = await supabase
+              .from('leads_lead')
+              .select('id, lead_number, manual_id, master_id')
+              .eq('id', data.lead_id)
+              .single();
+            
+            if (!leadError && leadData) {
+              // Format lead number: use lead_number, then manual_id, then id
+              // If it's a sublead (has master_id), format as master_id/suffix
+              let formattedLeadNumber: string;
+              if (leadData.master_id) {
+                // It's a sublead - we'd need to calculate suffix, but for now just show master_id
+                formattedLeadNumber = `${leadData.master_id}/?`;
+              } else {
+                formattedLeadNumber = String(leadData.lead_number || leadData.manual_id || leadData.id);
+              }
+              setLeadNumber(formattedLeadNumber);
+            }
+          } catch (leadFetchError) {
+            console.error('Error fetching lead number:', leadFetchError);
+            // Don't fail the entire page if we can't fetch lead number
+          }
+        }
         
         // Check if contract is already signed
         if (data.signed_contract_html && data.signed_contract_html !== '\\N') {
@@ -339,6 +368,122 @@ const PublicLegacyContractView: React.FC = () => {
     return () => clearTimeout(timeoutId);
   }, [contract, isSubmitted, isAlreadySigned]);
 
+  // Helper function to detect if text contains Hebrew characters
+  const containsHebrew = (text: string): boolean => {
+    return /[\u0590-\u05FF]/.test(text);
+  };
+
+  // Handle share functionality
+  const handleShare = async () => {
+    const url = window.location.href;
+    
+    // Check if Web Share API is available (mobile devices)
+    if (navigator.share) {
+      try {
+        await navigator.share({
+          title: 'Contract Agreement',
+          text: 'View this contract agreement',
+          url: url,
+        });
+        toast.success('Contract link shared successfully');
+      } catch (error: any) {
+        // User cancelled or error occurred
+        if (error.name !== 'AbortError') {
+          console.error('Error sharing:', error);
+          // Fallback to clipboard
+          copyToClipboard(url);
+        }
+      }
+    } else {
+      // Fallback to clipboard for desktop
+      copyToClipboard(url);
+    }
+  };
+
+  // Copy URL to clipboard
+  const copyToClipboard = async (text: string) => {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast.success('Contract link copied to clipboard');
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      // Fallback for older browsers
+      const textArea = document.createElement('textarea');
+      textArea.value = text;
+      textArea.style.position = 'fixed';
+      textArea.style.opacity = '0';
+      document.body.appendChild(textArea);
+      textArea.select();
+      try {
+        document.execCommand('copy');
+        toast.success('Contract link copied to clipboard');
+      } catch (err) {
+        console.error('Fallback copy failed:', err);
+        toast.error('Failed to copy link');
+      }
+      document.body.removeChild(textArea);
+    }
+  };
+
+  // Effect to process rendered HTML and apply appropriate direction/alignment
+  useEffect(() => {
+    if (!contract || loading) return;
+    
+    const contractContentEl = document.querySelector('.contract-content');
+    if (!contractContentEl) return;
+    
+    // Process all elements in the contract content
+    const processElements = (container: Element) => {
+      const allElements = container.querySelectorAll('p, h1, h2, h3, h4, h5, h6, div, li, span');
+      
+      allElements.forEach((el) => {
+        // Skip if element already has explicit alignment classes
+        if (el.classList.contains('ql-align-left') || 
+            el.classList.contains('ql-align-right') || 
+            el.classList.contains('ql-align-center') ||
+            el.classList.contains('ql-direction-rtl')) {
+          return;
+        }
+        
+        // Get text content (excluding input fields and signatures)
+        const text = Array.from(el.childNodes)
+          .filter(node => {
+            if (node.nodeType === Node.ELEMENT_NODE) {
+              const elem = node as Element;
+              return !elem.classList.contains('inline-input') && 
+                     !elem.classList.contains('signature-pad-placeholder') &&
+                     !elem.classList.contains('signature-pad-container') &&
+                     elem.tagName !== 'INPUT' &&
+                     elem.tagName !== 'CANVAS';
+            }
+            return node.nodeType === Node.TEXT_NODE;
+          })
+          .map(node => node.textContent || '')
+          .join(' ')
+          .trim();
+        
+        if (text) {
+          if (containsHebrew(text)) {
+            // Hebrew text - right align
+            el.setAttribute('dir', 'rtl');
+            el.classList.add('hebrew-text');
+          } else {
+            // English text - left align
+            el.setAttribute('dir', 'ltr');
+            el.classList.add('english-text');
+          }
+        }
+      });
+    };
+    
+    // Process after a short delay to ensure DOM is ready
+    const timeoutId = setTimeout(() => {
+      processElements(contractContentEl);
+    }, 100);
+    
+    return () => clearTimeout(timeoutId);
+  }, [contract, loading, isSubmitted, isAlreadySigned]);
+
   // Function to render contract content with interactive fields
   const renderContractContent = (htmlContent: string, isReadOnly: boolean = false) => {
     if (!htmlContent) return null;
@@ -350,12 +495,12 @@ const PublicLegacyContractView: React.FC = () => {
       htmlContent = htmlContent.replace(/data:image\/png;base64,[A-Za-z0-9+/=]+/g, (match, offset, string) => {
         // Check if this signature is in a right-aligned context by looking at surrounding HTML
         const beforeMatch = string.substring(Math.max(0, offset - 200), offset);
-        const isInRightAlignedContext = /ql-align-right|ql-direction-rtl/.test(beforeMatch);
-        const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : '';
+        const isInRightAlignedContext = /ql-align-right|ql-direction-rtl|hebrew-text/.test(beforeMatch);
+        const alignmentStyle = isInRightAlignedContext ? 'text-align: right; direction: rtl;' : 'text-align: left; direction: ltr;';
         return `<img src="${match}" style="display: inline-block; vertical-align: middle; border: 2px solid #10b981; border-radius: 6px; padding: 4px; margin: 0 4px; background-color: #f0fdf4; max-width: 200px; max-height: 80px; object-fit: contain; ${alignmentStyle}" alt="Signature" />`;
       });
       
-      // For read-only mode, just render the HTML as-is (for signed contracts)
+      // For read-only mode, render the HTML
       return (
         <div 
           className="contract-content"
@@ -538,10 +683,12 @@ const PublicLegacyContractView: React.FC = () => {
         .single();
 
       if (leadFetchError) {
-        console.error('Error fetching lead for stage update:', leadFetchError);
+        console.error('❌ Error fetching lead for stage update:', leadFetchError);
+        toast.error('Contract saved, but failed to update lead stage. Please contact support.');
       } else if (leadData) {
         // Update lead stage to 60 (Client signed agreement)
         try {
+          console.log('📝 Attempting to update lead stage to 60 for lead:', leadId);
           await updateLeadStageWithHistory({
             lead: { ...leadData, id: `legacy_${leadId}`, lead_type: 'legacy' } as any,
             stage: 60,
@@ -549,8 +696,44 @@ const PublicLegacyContractView: React.FC = () => {
           });
           console.log('✅ Lead stage updated to 60 (Client signed agreement)');
         } catch (stageError) {
-          console.error('Error updating lead stage:', stageError);
-          // Don't fail the entire operation if stage update fails
+          console.error('❌ Error updating lead stage via updateLeadStageWithHistory:', stageError);
+          
+          // Fallback: Try to directly insert into leads_leadstage table
+          try {
+            console.log('🔄 Attempting fallback: direct insert into leads_leadstage');
+            const { error: stageInsertError } = await supabase
+              .from('leads_leadstage')
+              .insert({
+                lead_id: leadId,
+                stage: 60,
+                date: new Date().toISOString(),
+                cdate: new Date().toISOString(),
+                udate: new Date().toISOString(),
+                creator_id: null, // No creator for public contract signing
+              });
+            
+            if (stageInsertError) {
+              console.error('❌ Fallback stage insert also failed:', stageInsertError);
+              toast.error('Contract saved, but failed to record stage change. Please contact support.');
+            } else {
+              console.log('✅ Fallback: Stage 60 successfully inserted into leads_leadstage');
+              
+              // Also update the lead's stage in leads_lead table
+              const { error: leadUpdateError } = await supabase
+                .from('leads_lead')
+                .update({ stage: 60 })
+                .eq('id', leadId);
+              
+              if (leadUpdateError) {
+                console.error('❌ Error updating lead stage in leads_lead table:', leadUpdateError);
+              } else {
+                console.log('✅ Lead stage updated in leads_lead table');
+              }
+            }
+          } catch (fallbackError) {
+            console.error('❌ Fallback stage update failed:', fallbackError);
+            toast.error('Contract saved, but failed to update lead stage. Please contact support.');
+          }
         }
       }
 
@@ -606,8 +789,29 @@ const PublicLegacyContractView: React.FC = () => {
     <div className="min-h-screen bg-gray-50">
       <div className="max-w-4xl mx-auto p-6">
         {/* Header */}
-        <div className="bg-white rounded-lg shadow-sm p-6 mb-6">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">Contract Agreement</h1>
+        <div className="bg-white rounded-lg shadow-sm p-6 mb-6 print:hidden">
+          <div className="flex items-center justify-between mb-2">
+            <h1 className="text-3xl font-bold text-gray-900">Contract Agreement</h1>
+            <div className="flex items-center gap-4">
+              {leadNumber && (
+                <div className="text-right">
+                  <span className="text-sm text-gray-500 font-medium">Lead Number:</span>
+                  <span className="ml-2 text-lg font-mono font-bold text-blue-600">#{leadNumber}</span>
+                </div>
+              )}
+              {/* Share Button */}
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleShare}
+                  className="btn btn-outline btn-sm gap-2 print:hidden"
+                  title="Share Contract"
+                >
+                  <ShareIcon className="w-4 h-4" />
+                  <span className="hidden sm:inline">Share</span>
+                </button>
+              </div>
+            </div>
+          </div>
           <p className="text-gray-600">
             {isSubmitted || isAlreadySigned 
               ? 'Contract has been signed and submitted successfully' 
@@ -618,7 +822,7 @@ const PublicLegacyContractView: React.FC = () => {
 
         {/* Thank You Message */}
         {(isSubmitted || isAlreadySigned) && (
-          <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6">
+          <div className="bg-green-50 border border-green-200 rounded-lg p-6 mb-6 print:hidden">
             <div className="flex items-center">
               <div className="flex-shrink-0">
                 <div className="w-8 h-8 bg-green-100 rounded-full flex items-center justify-center">
@@ -643,14 +847,14 @@ const PublicLegacyContractView: React.FC = () => {
         )}
 
         {/* Contract Content */}
-        <div className="bg-white rounded-lg shadow-sm p-8">
+        <div className="bg-white rounded-lg shadow-sm p-8 contract-wrapper">
           <style>
             {`
               .contract-content {
                 font-family: inherit;
                 line-height: 1.75;
               }
-              /* Auto-detect and right-align Hebrew text */
+              /* Default: left-align for English text */
               .contract-content p,
               .contract-content h1,
               .contract-content h2,
@@ -661,25 +865,30 @@ const PublicLegacyContractView: React.FC = () => {
               .contract-content div,
               .contract-content li,
               .contract-content span {
-                unicode-bidi: plaintext;
-                text-align: right !important;
-                direction: rtl !important;
+                text-align: left;
+                direction: ltr;
               }
-              /* RTL support for Hebrew text - explicit classes */
+              /* Hebrew text - right-align */
+              .contract-content .hebrew-text,
+              .contract-content [dir="rtl"],
               .contract-content .ql-align-right,
               .contract-content .ql-direction-rtl,
               .contract-content p.ql-align-right {
                 text-align: right !important;
                 direction: rtl !important;
               }
+              /* English text - left-align */
+              .contract-content .english-text,
+              .contract-content [dir="ltr"],
+              .contract-content .ql-align-left {
+                text-align: left !important;
+                direction: ltr !important;
+              }
               .contract-content .ql-align-justify {
                 text-align: justify !important;
               }
               .contract-content .ql-align-center {
                 text-align: center !important;
-              }
-              .contract-content .ql-align-left {
-                text-align: left !important;
               }
               /* Input fields styling */
               .contract-content .inline-input {
@@ -863,6 +1072,104 @@ const PublicLegacyContractView: React.FC = () => {
               .contract-content .ql-direction-rtl i {
                 font-style: italic !important;
               }
+              /* Print styles */
+              @media print {
+                * {
+                  -webkit-print-color-adjust: exact !important;
+                  print-color-adjust: exact !important;
+                }
+                html, body {
+                  background: white !important;
+                  margin: 0 !important;
+                  padding: 0 !important;
+                  width: 100% !important;
+                  height: auto !important;
+                }
+                /* Hide elements with print:hidden class */
+                .print\\:hidden {
+                  display: none !important;
+                }
+                /* Remove ALL backgrounds and padding from ALL containers */
+                .min-h-screen,
+                .bg-gray-50,
+                .max-w-4xl,
+                .mx-auto {
+                  background: transparent !important;
+                  padding: 0 !important;
+                  margin: 0 !important;
+                  min-height: auto !important;
+                  max-width: 100% !important;
+                }
+                /* Remove white background from contract wrapper - be very specific */
+                .contract-wrapper,
+                div.bg-white,
+                .bg-white,
+                .bg-white.rounded-lg,
+                .bg-white.shadow-sm,
+                .bg-white.p-8,
+                div.bg-white.rounded-lg.shadow-sm.p-8 {
+                  background: transparent !important;
+                  background-color: transparent !important;
+                  box-shadow: none !important;
+                  border-radius: 0 !important;
+                  padding: 0 !important;
+                  margin: 0 !important;
+                }
+                .shadow-sm {
+                  box-shadow: none !important;
+                }
+                .rounded-lg {
+                  border-radius: 0 !important;
+                }
+                /* Remove padding from all p-* classes */
+                [class*="p-"] {
+                  padding: 0 !important;
+                }
+                [class*="px-"] {
+                  padding-left: 0 !important;
+                  padding-right: 0 !important;
+                }
+                [class*="py-"] {
+                  padding-top: 0 !important;
+                  padding-bottom: 0 !important;
+                }
+                /* Remove margin from all m-* classes except contract content */
+                [class*="m-"]:not(.contract-content):not(.contract-content *) {
+                  margin: 0 !important;
+                }
+                [class*="mb-"]:not(.contract-content):not(.contract-content *) {
+                  margin-bottom: 0 !important;
+                }
+                [class*="mt-"]:not(.contract-content):not(.contract-content *) {
+                  margin-top: 0 !important;
+                }
+                /* Ensure contract content is visible and properly formatted */
+                .contract-content {
+                  page-break-inside: avoid;
+                  background: white !important;
+                  color: black !important;
+                  padding: 20px !important;
+                  margin: 0 !important;
+                  display: block !important;
+                  width: 100% !important;
+                }
+                .contract-content p {
+                  page-break-inside: avoid;
+                }
+                /* Ensure all text is visible */
+                .contract-content * {
+                  color: black !important;
+                }
+                /* Hide prose class padding if present, but keep content visible */
+                .prose {
+                  padding: 0 !important;
+                  margin: 0 !important;
+                  max-width: 100% !important;
+                }
+                .prose.prose-lg {
+                  font-size: inherit !important;
+                }
+              }
             `}
           </style>
           
@@ -876,7 +1183,7 @@ const PublicLegacyContractView: React.FC = () => {
 
         {/* Submit Button */}
         {!isSubmitted && !isAlreadySigned && (
-          <div className="mt-6 text-center">
+          <div className="mt-6 text-center print:hidden">
             <button
               onClick={handleSubmit}
               disabled={isSubmitting}

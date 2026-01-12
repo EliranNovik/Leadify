@@ -882,6 +882,8 @@ const SchedulerToolPage: React.FC = () => {
           potential_applicants_meeting,
           eligible,
           country_id,
+          master_id,
+          manual_id,
           misc_country!country_id (
             id,
             name
@@ -904,6 +906,51 @@ const SchedulerToolPage: React.FC = () => {
         throw newError;
       }
 
+      // Calculate sublead suffixes for new leads
+      const newSubLeadSuffixMap = new Map<string, number>();
+      if (newLeads && newLeads.length > 0) {
+        // Find all unique master_ids from the fetched leads
+        const leadsWithMaster = newLeads.filter((lead: any) => lead.master_id);
+        const masterIds = Array.from(new Set(
+          leadsWithMaster.map((lead: any) => lead.master_id?.toString()).filter(Boolean)
+        ));
+        
+        if (masterIds.length > 0) {
+          // Fetch all subleads for all master_ids in one query
+          const { data: allSubLeads } = await supabase
+            .from('leads')
+            .select('id, master_id')
+            .in('master_id', masterIds)
+            .not('master_id', 'is', null)
+            .order('master_id', { ascending: true })
+            .order('id', { ascending: true });
+          
+          if (allSubLeads) {
+            // Group by master_id and calculate suffixes
+            const subLeadsByMaster = new Map<string, any[]>();
+            allSubLeads.forEach((subLead: any) => {
+              const masterId = subLead.master_id?.toString();
+              if (masterId) {
+                if (!subLeadsByMaster.has(masterId)) {
+                  subLeadsByMaster.set(masterId, []);
+                }
+                subLeadsByMaster.get(masterId)!.push(subLead);
+              }
+            });
+            
+            // Calculate suffixes for each master's subleads
+            subLeadsByMaster.forEach((subLeads, masterId) => {
+              subLeads.forEach((subLead, index) => {
+                const subLeadKey = subLead.id?.toString();
+                if (subLeadKey) {
+                  // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                  newSubLeadSuffixMap.set(subLeadKey, index + 2);
+                }
+              });
+            });
+          }
+        }
+      }
 
       // Fetch legacy leads with scheduler assigned to current user and specific stages
       const { data: legacyLeads, error: legacyError } = await supabase
@@ -928,7 +975,9 @@ const SchedulerToolPage: React.FC = () => {
           special_notes,
           notes,
           probability,
-          eligibile
+          eligibile,
+          master_id,
+          manual_id
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
         .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
@@ -940,7 +989,65 @@ const SchedulerToolPage: React.FC = () => {
         throw legacyError;
       }
 
-
+      // Calculate sublead suffixes for legacy leads
+      const subLeadSuffixMap = new Map<string, number>();
+      if (legacyLeads && legacyLeads.length > 0) {
+        // Find all unique master_ids from:
+        // 1. Leads that ARE subleads (have a master_id)
+        // 2. Leads that ARE masters (their id is used as master_id by other leads)
+        const leadsWithMaster = legacyLeads.filter((lead: any) => lead.master_id);
+        const masterIdsFromSubLeads = Array.from(new Set(
+          leadsWithMaster.map((lead: any) => lead.master_id?.toString()).filter(Boolean)
+        ));
+        
+        // Also get IDs of leads that might be masters (leads without master_id)
+        const potentialMasterIds = legacyLeads
+          .filter((lead: any) => !lead.master_id || String(lead.master_id).trim() === '')
+          .map((lead: any) => lead.id?.toString())
+          .filter(Boolean);
+        
+        // Combine both sets of master IDs
+        const allMasterIds = Array.from(new Set([...masterIdsFromSubLeads, ...potentialMasterIds]));
+        
+        if (allMasterIds.length > 0) {
+          // Fetch all subleads for all master_ids in one query
+          const numericMasterIds = allMasterIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
+          if (numericMasterIds.length > 0) {
+            const { data: allSubLeads } = await supabase
+              .from('leads_lead')
+              .select('id, master_id')
+              .in('master_id', numericMasterIds)
+              .not('master_id', 'is', null)
+              .order('master_id', { ascending: true })
+              .order('id', { ascending: true });
+            
+            if (allSubLeads) {
+              // Group by master_id and calculate suffixes
+              const subLeadsByMaster = new Map<number, any[]>();
+              allSubLeads.forEach((subLead: any) => {
+                const masterId = subLead.master_id;
+                if (masterId) {
+                  if (!subLeadsByMaster.has(masterId)) {
+                    subLeadsByMaster.set(masterId, []);
+                  }
+                  subLeadsByMaster.get(masterId)!.push(subLead);
+                }
+              });
+              
+              // Calculate suffixes for each master's subleads
+              subLeadsByMaster.forEach((subLeads, masterId) => {
+                subLeads.forEach((subLead, index) => {
+                  const subLeadKey = subLead.id?.toString();
+                  if (subLeadKey) {
+                    // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                    subLeadSuffixMap.set(subLeadKey, index + 2);
+                  }
+                });
+              });
+            }
+          }
+        }
+      }
 
       // Fetch language mappings for legacy leads
       const { data: languageMapping } = await supabase
@@ -1202,10 +1309,20 @@ const SchedulerToolPage: React.FC = () => {
           const sourceName = getSourceName(lead.source_id, lead.source, sourcesData);
           const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
           
+          // Format lead_number with sublead suffix if applicable
+          let leadNumber: string;
+          if (lead.master_id) {
+            // It's a sublead - format as master_id/suffix
+            const suffix = subLeadSuffixMap.get(lead.id?.toString() || '') || 2;
+            leadNumber = `${lead.master_id}/${suffix}`;
+          } else {
+            // It's a master lead or standalone lead
+            leadNumber = String(lead.manual_id || lead.id);
+          }
           
           return {
             id: lead.id,
-            lead_number: lead.lead_number || '',
+            lead_number: leadNumber,
             name: lead.name || '',
             created_at: lead.created_at || '',
             latest_interaction: lead.latest_interaction || '',
@@ -1249,10 +1366,20 @@ const SchedulerToolPage: React.FC = () => {
           const sourceName = getSourceName(lead.source_id, undefined, sourcesData);
           const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
           
+          // Format lead_number with sublead suffix if applicable
+          let leadNumber: string;
+          if (lead.master_id) {
+            // It's a sublead - format as master_id/suffix
+            const suffix = subLeadSuffixMap.get(lead.id?.toString() || '') || 2;
+            leadNumber = `${lead.master_id}/${suffix}`;
+          } else {
+            // It's a master lead or standalone lead
+            leadNumber = String(lead.manual_id || lead.id);
+          }
           
           return {
             id: `legacy_${lead.id}`,
-            lead_number: String(lead.id),
+            lead_number: leadNumber,
             name: lead.name || '',
             created_at: lead.cdate || '',
             latest_interaction: lead.latest_interaction || '',
