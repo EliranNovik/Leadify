@@ -112,7 +112,7 @@ const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { prof
         )}
         {proforma.issuedDate && (
           <div>
-            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}, {new Date(proforma.issuedDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+            <span style={{ fontWeight: 600 }}>Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}</span>
           </div>
         )}
       </div>
@@ -795,7 +795,7 @@ const ProformaLegacyViewPage: React.FC = () => {
             )}
             {proforma.issuedDate && (
               <div>
-                <span className="font-semibold">Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}, {new Date(proforma.issuedDate).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
+                <span className="font-semibold">Date:</span> <span>{new Date(proforma.issuedDate).toLocaleDateString()}</span>
               </div>
             )}
           </div>
