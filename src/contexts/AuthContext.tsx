@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { supabase, sessionManager } from '../lib/supabase';
+import { supabase, sessionManager, isAuthError, handleSessionExpiration } from '../lib/supabase';
 
 interface AuthState {
   user: any;
@@ -254,17 +254,16 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   }, [fetchUserDetails]);
 
-  // Session expiration monitoring - check periodically if session is expired
+  // Session expiration monitoring - check frequently and immediately on page load
   useEffect(() => {
     if (!authState.user) return; // No need to monitor if no user
     
     const checkSessionExpiration = async () => {
       try {
-        const { data: { session }, error } = await supabase.auth.getSession();
-        
-        // If no session or error, user is logged out
-        if (!session || error || !session.user) {
-          console.log('Session expired or invalid - logging out');
+        // Use the improved check function that handles expiration automatically
+        const isExpired = await sessionManager.checkAndHandleExpiration();
+        if (isExpired) {
+          // Session expired - handleSessionExpiration already called
           setAuthState({
             user: null,
             userFullName: null,
@@ -272,41 +271,43 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             isLoading: false,
             isInitialized: true
           });
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login';
-          }
-          return;
-        }
-        
-        // Check if session is expired using sessionManager
-        if (sessionManager.isSessionExpired(session)) {
-          console.log('Session expired - logging out');
-          setAuthState({
-            user: null,
-            userFullName: null,
-            userInitials: null,
-            isLoading: false,
-            isInitialized: true
-          });
-          // Sign out from Supabase to clear tokens
-          await supabase.auth.signOut();
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login';
-          }
           return;
         }
       } catch (error) {
         console.error('Error checking session expiration:', error);
+        // On error, check if it's an auth error
+        if (isAuthError(error)) {
+          await handleSessionExpiration();
+        }
       }
     };
     
-    // Check immediately
+    // Check immediately on mount and when user changes
     checkSessionExpiration();
     
-    // Then check every 30 seconds
-    const interval = setInterval(checkSessionExpiration, 30000);
+    // Then check every 5 seconds (more frequent for better security)
+    const interval = setInterval(checkSessionExpiration, 5000);
     
     return () => clearInterval(interval);
+  }, [authState.user]);
+  
+  // Also check on page visibility change (when user switches back to tab)
+  useEffect(() => {
+    if (!authState.user) return;
+    
+    const handleVisibilityChange = async () => {
+      if (document.visibilityState === 'visible') {
+        // Page became visible - check session immediately
+        try {
+          await sessionManager.checkAndHandleExpiration();
+        } catch (error) {
+          console.error('Error checking session on visibility change:', error);
+        }
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
   }, [authState.user]);
 
   useEffect(() => {

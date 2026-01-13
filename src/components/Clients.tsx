@@ -26,6 +26,7 @@ import {
   DocumentTextIcon,
   CalendarDaysIcon,
   ChevronDownIcon,
+  ChevronUpIcon,
   ChevronLeftIcon,
   CheckCircleIcon,
   EnvelopeIcon,
@@ -490,6 +491,13 @@ const Clients: React.FC<ClientsProps> = ({
   const [isSuperuser, setIsSuperuser] = useState<boolean>(false);
   // State to track if current lead is in highlights
   const [isInHighlightsState, setIsInHighlightsState] = useState<boolean>(false);
+  // State to track if inactive badge is expanded
+  const [isInactiveBadgeExpanded, setIsInactiveBadgeExpanded] = useState<boolean>(false);
+  
+  // Reset badge expansion when selected client changes
+  useEffect(() => {
+    setIsInactiveBadgeExpanded(false);
+  }, [selectedClient?.id]);
 
   // Helper function to extract country code and number from full phone number
   const parsePhoneNumber = (fullNumber: string | undefined | null) => {
@@ -11402,33 +11410,38 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         className="text-sm text-base-content/80 flex-1"
                         dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
                         style={{ 
-                          textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left' 
+                          textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
+                          whiteSpace: 'pre-wrap'
                         }}
                       >
                         {(selectedClient as any).deactivate_notes}
                       </span>
                     </div>
                   )}
-                  {selectedClient.unactivated_by && (
-                    <div className="flex items-center gap-2">
-                      <UserIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80">
-                        Unactivated by: {selectedClient.unactivated_by}
-                      </span>
-                    </div>
-                  )}
-                  {selectedClient.unactivated_at && (
-                    <div className="flex items-center gap-2">
-                      <CalendarIcon className="w-4 h-4 text-base-content/60" />
-                      <span className="text-sm text-base-content/80">
-                        Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                          year: 'numeric',
-                          month: 'short',
-                          day: 'numeric',
-                          hour: '2-digit',
-                          minute: '2-digit'
-                        })}
-                      </span>
+                  {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
+                    <div className="flex items-center gap-4 flex-wrap">
+                      {selectedClient.unactivated_by && (
+                        <div className="flex items-center gap-2">
+                          <UserIcon className="w-4 h-4 text-base-content/60" />
+                          <span className="text-sm text-base-content/80">
+                            Unactivated by: {selectedClient.unactivated_by}
+                          </span>
+                        </div>
+                      )}
+                      {selectedClient.unactivated_at && (
+                        <div className="flex items-center gap-2">
+                          <CalendarIcon className="w-4 h-4 text-base-content/60" />
+                          <span className="text-sm text-base-content/80">
+                            Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                              year: 'numeric',
+                              month: 'short',
+                              day: 'numeric',
+                              hour: '2-digit',
+                              minute: '2-digit'
+                            })}
+                          </span>
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -12784,6 +12797,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   // Detect if text contains Hebrew characters for RTL/LTR alignment
                   const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
                   
+                  // Text truncation settings
+                  const MAX_TEXT_LENGTH = 150;
+                  const shouldTruncate = deactivateNotes && deactivateNotes.length > MAX_TEXT_LENGTH;
+                  const displayText = shouldTruncate && !isInactiveBadgeExpanded
+                    ? deactivateNotes.substring(0, MAX_TEXT_LENGTH) + '...'
+                    : deactivateNotes;
+                  
                   return isUnactivatedForBadge ? (
                     <div className="mt-3 w-full">
                       <div className="bg-white border border-red-200 rounded-xl shadow-sm overflow-hidden w-full">
@@ -12798,10 +12818,32 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             <span 
                               className="text-red-800 text-sm leading-relaxed block" 
                               dir={hasHebrew ? 'rtl' : 'ltr'} 
-                              style={{ textAlign: hasHebrew ? 'right' : 'left' }}
+                              style={{ 
+                                textAlign: hasHebrew ? 'right' : 'left',
+                                whiteSpace: 'pre-wrap'
+                              }}
                             >
-                              {deactivateNotes}
+                              {displayText}
                             </span>
+                            {shouldTruncate && (
+                              <button
+                                onClick={() => setIsInactiveBadgeExpanded(!isInactiveBadgeExpanded)}
+                                className={`mt-2 text-red-700 hover:text-red-900 text-xs font-medium flex items-center gap-1 transition-colors ${hasHebrew ? 'flex-row-reverse' : ''}`}
+                                dir={hasHebrew ? 'rtl' : 'ltr'}
+                              >
+                                {isInactiveBadgeExpanded ? (
+                                  <>
+                                    <span>Show less</span>
+                                    <ChevronUpIcon className="w-4 h-4" />
+                                  </>
+                                ) : (
+                                  <>
+                                    <span>Show more</span>
+                                    <ChevronDownIcon className="w-4 h-4" />
+                                  </>
+                                )}
+                              </button>
+                            )}
                           </div>
                         )}
                       </div>

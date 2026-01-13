@@ -7,7 +7,8 @@ import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidg
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
-import { supabase } from '../lib/supabase';
+import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
+import { useAuthContext } from '../contexts/AuthContext';
 import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
@@ -47,6 +48,13 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void }> = (
 };
 
 const Dashboard: React.FC = () => {
+  // Get auth state from context to skip redundant checks
+  const { user: authUser, isInitialized } = useAuthContext();
+  
+  // State to track if auth check is complete (prevents flash of dashboard before redirect)
+  // If user is already authenticated via context, skip the check
+  const [isAuthChecked, setIsAuthChecked] = useState(!!authUser && isInitialized);
+  
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
   
@@ -133,6 +141,115 @@ const Dashboard: React.FC = () => {
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
   const [editFollowUpDate, setEditFollowUpDate] = useState<string>('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  
+  // Additional state hooks (must be declared before any conditional returns)
+  const [showAISuggestionsModal, setShowAISuggestionsModal] = useState(false);
+  const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
+  const [searchTerm, setSearchTerm] = useState('');
+
+  // Immediate session check on mount - redirect if no session
+  // Add small delay when multiple tabs open to avoid race conditions
+  useEffect(() => {
+    // If user is already authenticated via context, skip the check
+    if (authUser && isInitialized) {
+      console.log('✅ [Dashboard] User already authenticated via context, skipping check');
+      setIsAuthChecked(true);
+      return;
+    }
+    
+    const checkSessionImmediately = async () => {
+      console.log('🔐 [Dashboard] Starting auth check...');
+      
+      // Set a timeout to prevent infinite waiting (reduced to 2 seconds for faster UX)
+      const timeoutId = setTimeout(() => {
+        console.warn('⚠️ [Dashboard] Auth check timeout - allowing render to proceed');
+        setIsAuthChecked(true);
+      }, 2000);
+      
+      try {
+        // Small delay to allow other tabs to coordinate (only on initial load)
+        await new Promise(resolve => setTimeout(resolve, 50));
+        
+        // Check if another tab is redirecting
+        const redirectingUntil = typeof window !== 'undefined' ? localStorage.getItem('supabase_auth_redirecting') : null;
+        if (redirectingUntil) {
+          const until = parseInt(redirectingUntil, 10);
+          if (Date.now() < until) {
+            // Another tab is redirecting, wait a bit but not too long
+            console.log('⏳ [Dashboard] Another tab is redirecting, waiting...');
+            await new Promise(resolve => setTimeout(resolve, 300));
+          } else {
+            // Stale flag, clear it
+            if (typeof window !== 'undefined') {
+              localStorage.removeItem('supabase_auth_redirecting');
+            }
+          }
+        }
+        
+        console.log('🔍 [Dashboard] Checking session expiration...');
+        const isExpired = await sessionManager.checkAndHandleExpiration();
+        if (isExpired) {
+          // Already redirected by checkAndHandleExpiration
+          console.log('❌ [Dashboard] Session expired, redirecting...');
+          clearTimeout(timeoutId);
+          return;
+        }
+        
+        // Also check if we can get user (with retry for race conditions)
+        console.log('👤 [Dashboard] Getting user...');
+        let retries = 0;
+        let user = null;
+        let error = null;
+        
+        while (retries < 2 && !user) {
+          const result = await supabase.auth.getUser();
+          user = result.data?.user || null;
+          error = result.error;
+          
+          if (error && isAuthError(error)) {
+            console.error('❌ [Dashboard] Auth error - redirecting');
+            clearTimeout(timeoutId);
+            await handleSessionExpiration();
+            return;
+          }
+          
+          if (!user && retries < 1) {
+            // Wait a bit and retry (might be race condition with other tabs)
+            console.log(`⏳ [Dashboard] No user found, retrying... (attempt ${retries + 1})`);
+            await new Promise(resolve => setTimeout(resolve, 200));
+            retries++;
+          } else {
+            break;
+          }
+        }
+        
+        if (!user) {
+          // No user after retries - redirect to login
+          console.log('❌ [Dashboard] No user found after retries - redirecting to login');
+          clearTimeout(timeoutId);
+          await handleSessionExpiration();
+          return;
+        }
+        
+        // Auth check passed - allow rendering
+        console.log('✅ [Dashboard] Auth check passed, allowing render');
+        clearTimeout(timeoutId);
+        setIsAuthChecked(true);
+      } catch (error) {
+        console.error('❌ [Dashboard] Error checking session:', error);
+        clearTimeout(timeoutId);
+        if (isAuthError(error)) {
+          await handleSessionExpiration();
+          return;
+        }
+        // On non-auth errors, still allow rendering (might be network issue)
+        console.log('⚠️ [Dashboard] Non-auth error, allowing render anyway');
+        setIsAuthChecked(true);
+      }
+    };
+    
+    checkSessionImmediately();
+  }, [authUser, isInitialized]);
 
   // Fetch meeting locations and their default links for join buttons
   useEffect(() => {
@@ -397,7 +514,12 @@ const Dashboard: React.FC = () => {
   const fetchFollowUpLeadsData = async (dateType: 'today' | 'overdue' | 'tomorrow' | 'future', fetchAll = false) => {
     try {
       // Get current user's data
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError && isAuthError(authError)) {
+        console.error('Auth error in fetchFollowUpLeadsData - redirecting');
+        await handleSessionExpiration();
+        return { newLeads: [], legacyLeads: [], totalCount: 0 };
+      }
       if (!user) {
         return { newLeads: [], legacyLeads: [], totalCount: 0 };
       }
@@ -627,7 +749,12 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     const fetchUserId = async () => {
       try {
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError && isAuthError(authError)) {
+          console.error('Auth error in fetchUserId - redirecting');
+          await handleSessionExpiration();
+          return;
+        }
         if (user) {
           const { data: userData } = await supabase
             .from('users')
@@ -751,7 +878,12 @@ const Dashboard: React.FC = () => {
       setMeetingsLoading(true);
       try {
         // First, fetch current user's employee_id, display name, and email
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError && isAuthError(authError)) {
+          console.error('Auth error in fetchMeetings - redirecting');
+          await handleSessionExpiration();
+          return;
+        }
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
         let userEmail: string | null = null;
@@ -1467,7 +1599,12 @@ const Dashboard: React.FC = () => {
       
       try {
         // Get current user's data with employee relationship using JOIN
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError && isAuthError(authError)) {
+          console.error('Auth error in fetchOverdueFollowups - redirecting');
+          await handleSessionExpiration();
+          return;
+        }
         if (!user) {
           setOverdueFollowups(0);
           return;
@@ -1547,7 +1684,12 @@ const Dashboard: React.FC = () => {
     (async () => {
       try {
         // Get current user's leads
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError && isAuthError(authError)) {
+          console.error('Auth error in fetchMessages - redirecting');
+          await handleSessionExpiration();
+          return;
+        }
         if (!user) return;
 
         // Get user's leads
@@ -1984,7 +2126,12 @@ const Dashboard: React.FC = () => {
     setPerformanceLoading(true);
     try {
       // Get current user's employee ID and full name
-      const { data: { user } } = await supabase.auth.getUser();
+      const { data: { user }, error: authError } = await supabase.auth.getUser();
+      if (authError && isAuthError(authError)) {
+        console.error('Auth error in fetchInvoicedData - redirecting');
+        await handleSessionExpiration();
+        return;
+      }
       if (!user) {
         setPerformanceLoading(false);
         return;
@@ -4550,10 +4697,20 @@ const Dashboard: React.FC = () => {
     };
   }, [aiContainerCollapsed]);
 
-  const [showAISuggestionsModal, setShowAISuggestionsModal] = useState(false);
-
-  const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
-  const [searchTerm, setSearchTerm] = useState('');
+  // Show loading screen until auth is confirmed (must be after all hooks)
+  if (!isAuthChecked) {
+    console.log('⏳ [Dashboard] Waiting for auth check, showing loading screen...');
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center">
+          <div className="loading loading-spinner loading-lg text-primary"></div>
+          <p className="mt-4 text-gray-600">Verifying authentication...</p>
+        </div>
+      </div>
+    );
+  }
+  
+  console.log('✅ [Dashboard] Auth check complete, rendering dashboard...');
 
   // Extended list for the modal view
   const allSuggestions = [
@@ -4880,7 +5037,12 @@ const Dashboard: React.FC = () => {
         }
 
         // Get current user info
-        const { data: { user } } = await supabase.auth.getUser();
+        const { data: { user }, error: authError } = await supabase.auth.getUser();
+        if (authError && isAuthError(authError)) {
+          console.error('Auth error in fetchRealSignedLeads - redirecting');
+          await handleSessionExpiration();
+          return;
+        }
         if (!user) {
           setRealSignedLeads([]);
           setRealLeadsLoading(false);

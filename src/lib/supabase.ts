@@ -39,6 +39,125 @@ if (typeof window !== 'undefined') {
   (window as any).supabase = supabase;
 }
 
+// Global flag to prevent multiple simultaneous redirects (per-tab)
+let isRedirecting = false;
+
+// Storage key for cross-tab coordination
+const REDIRECTING_KEY = 'supabase_auth_redirecting';
+const REDIRECTING_TIMEOUT = 2000; // 2 seconds
+
+// Function to handle session expiration and redirect
+export const handleSessionExpiration = async () => {
+  // Check if another tab is already redirecting
+  if (typeof window !== 'undefined') {
+    const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
+    if (redirectingUntil) {
+      const until = parseInt(redirectingUntil, 10);
+      if (Date.now() < until) {
+        // Another tab is redirecting, wait for it
+        console.log('Another tab is handling redirect, waiting...');
+        return;
+      } else {
+        // Stale flag, clear it
+        localStorage.removeItem(REDIRECTING_KEY);
+      }
+    }
+    
+    // Set flag in localStorage to coordinate across tabs
+    const redirectUntil = Date.now() + REDIRECTING_TIMEOUT;
+    localStorage.setItem(REDIRECTING_KEY, redirectUntil.toString());
+  }
+  
+  if (isRedirecting) return; // Prevent multiple redirects in same tab
+  isRedirecting = true;
+  
+  try {
+    console.log('Session expired - signing out and redirecting to login');
+    // Clear auth state immediately
+    await supabase.auth.signOut();
+    // Clear any cached session data
+    if (typeof window !== 'undefined') {
+      // Clear Supabase session storage
+      Object.keys(localStorage).forEach(key => {
+        if (key.includes('supabase.auth.token')) {
+          localStorage.removeItem(key);
+        }
+      });
+      // Clear redirecting flag
+      localStorage.removeItem(REDIRECTING_KEY);
+      // Force redirect to login
+      window.location.href = '/login';
+    }
+  } catch (error) {
+    console.error('Error during session expiration handling:', error);
+    // Even if signOut fails, still redirect
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem(REDIRECTING_KEY);
+      window.location.href = '/login';
+    }
+  }
+};
+
+// Helper function to check if an error is an authentication error
+export const isAuthError = (error: any): boolean => {
+  if (!error) return false;
+  
+  // Check for Supabase auth errors
+  if (error.message) {
+    const errorMsg = error.message.toLowerCase();
+    if (
+      errorMsg.includes('jwt') ||
+      errorMsg.includes('token') ||
+      errorMsg.includes('expired') ||
+      errorMsg.includes('unauthorized') ||
+      errorMsg.includes('authentication') ||
+      errorMsg.includes('session')
+    ) {
+      return true;
+    }
+  }
+  
+  // Check for HTTP status codes
+  if (error.status === 401 || error.status === 403) {
+    return true;
+  }
+  
+  // Check for Supabase error codes
+  if (error.code === 'PGRST301' || error.code === 'PGRST116') {
+    return true;
+  }
+  
+  return false;
+};
+
+// Wrapper function for Supabase queries that automatically handles auth errors
+export const safeSupabaseQuery = async <T>(
+  queryFn: () => Promise<{ data: T | null; error: any }>
+): Promise<{ data: T | null; error: any }> => {
+  try {
+    const result = await queryFn();
+    
+    // Check if the error is an authentication error
+    if (result.error && isAuthError(result.error)) {
+      console.error('Authentication error detected in query:', result.error);
+      // Handle session expiration immediately
+      await handleSessionExpiration();
+      return { data: null, error: result.error };
+    }
+    
+    return result;
+  } catch (error: any) {
+    // Check if the caught error is an authentication error
+    if (isAuthError(error)) {
+      console.error('Authentication error caught in query:', error);
+      await handleSessionExpiration();
+      return { data: null, error };
+    }
+    // Re-throw non-auth errors
+    throw error;
+  }
+};
+
 // Simplified session manager - let Supabase handle auto-refresh
 export const sessionManager = {
   async getSession() {
@@ -47,13 +166,19 @@ export const sessionManager = {
       const { data: { session }, error } = await supabase.auth.getSession();
       if (error) {
         console.error('Error getting session:', error);
-        // Don't sign out on error - might be temporary network issue
+        // If it's an auth error, handle expiration
+        if (isAuthError(error)) {
+          await handleSessionExpiration();
+        }
         return null;
       }
       return session;
     } catch (error) {
       console.error('Error getting session:', error);
-      // Don't sign out on error - might be temporary network issue
+      // If it's an auth error, handle expiration
+      if (isAuthError(error)) {
+        await handleSessionExpiration();
+      }
       return null;
     }
   },
@@ -71,6 +196,51 @@ export const sessionManager = {
     } catch (e) {
       // If we can't parse, assume valid (let Supabase handle it)
       return false;
+    }
+  },
+  
+  // Check session and handle expiration immediately
+  async checkAndHandleExpiration(): Promise<boolean> {
+    try {
+      // Check if another tab is redirecting (with small delay to avoid race conditions)
+      if (typeof window !== 'undefined') {
+        const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
+        if (redirectingUntil) {
+          const until = parseInt(redirectingUntil, 10);
+          if (Date.now() < until) {
+            // Another tab is redirecting, wait a bit but not too long (max 500ms)
+            await new Promise(resolve => setTimeout(resolve, Math.min(500, until - Date.now())));
+            // Re-check after delay
+            const { data: { session } } = await supabase.auth.getSession();
+            if (!session || !session.user) {
+              return true; // Session is invalid, let the other tab handle redirect
+            }
+            // Session exists, continue with check
+          } else {
+            // Stale flag, clear it
+            localStorage.removeItem(REDIRECTING_KEY);
+          }
+        }
+      }
+      
+      const session = await this.getSession();
+      if (!session) {
+        await handleSessionExpiration();
+        return true; // Session expired
+      }
+      if (this.isSessionExpired(session)) {
+        await handleSessionExpiration();
+        return true; // Session expired
+      }
+      return false; // Session valid
+    } catch (e) {
+      console.error('Error in checkAndHandleExpiration:', e);
+      // Only redirect if it's an auth error
+      if (isAuthError(e)) {
+        await handleSessionExpiration();
+        return true;
+      }
+      return false; // Non-auth error, don't redirect
     }
   }
 };
