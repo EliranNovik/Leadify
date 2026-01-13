@@ -1514,14 +1514,13 @@ const resolveLegacyLanguage = (lead: any) => {
           return matchesLanguageFilter(languageName);
         })
         .map(lead => {
-          // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
           const currencyId = lead.currency_id;
           const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
           let resolvedAmount = 0;
           if (numericCurrencyId === 1) {
-            // If total exists and has a value, use total; otherwise use total_base
-            const totalValue = parseNumericAmount(lead.total);
-            resolvedAmount = (totalValue && totalValue !== 0) ? totalValue : (parseNumericAmount(lead.total_base) || 0);
+            // Use total_base for NIS/ILS currency
+            resolvedAmount = parseNumericAmount(lead.total_base) || 0;
           } else {
             // Use total for other currencies
             resolvedAmount = parseNumericAmount(lead.total) || 0;

@@ -685,35 +685,51 @@ const PublicLegacyContractView: React.FC = () => {
         console.error('❌ Error fetching lead for stage update:', leadFetchError);
         toast.error('Contract saved, but failed to update lead stage. Please contact support.');
       } else if (leadData) {
-        // For public contract signing, use a database function that bypasses RLS
-        // This is necessary because unauthenticated users cannot directly update tables with RLS
+        // For public contract signing, directly update the tables (RLS is disabled)
         console.log('📝 Public contract signing: Updating lead stage to 60 for lead:', leadId);
         
-        // Call the database function that bypasses RLS using SECURITY DEFINER
-        const { data: functionResult, error: functionError } = await supabase.rpc(
-          'update_lead_stage_for_public_contract',
-          {
-            p_lead_id: leadId,
-            p_stage: 60,
-            p_public_token: token!,
-          }
-        );
+        const timestamp = new Date().toISOString();
+        const stageId = 60; // Client signed agreement
+        const numericLeadId = typeof leadId === 'number' ? leadId : parseInt(leadId, 10);
         
-        if (functionError) {
-          console.error('❌ Failed to update lead stage via database function:', {
-            error: functionError,
-            code: functionError.code,
-            message: functionError.message,
-            details: functionError.details,
-            hint: functionError.hint,
+        // Step 1: Insert into leads_leadstage table
+        const { error: stageInsertError } = await supabase
+          .from('leads_leadstage')
+          .insert({
+            lead_id: numericLeadId,
+            stage: stageId,
+            date: timestamp,
+            cdate: timestamp,
+            udate: timestamp,
+            creator_id: null, // No creator for public contract signing
           });
-          toast.error(`Contract saved, but failed to update lead stage: ${functionError.message || 'Database error'}. Please contact support.`);
-        } else if (functionResult && functionResult.success) {
-          console.log('✅ Lead stage 60 (Client signed agreement) successfully updated via database function:', functionResult);
+        
+        if (stageInsertError) {
+          console.error('❌ Failed to insert stage record:', stageInsertError);
+          toast.error(`Contract saved, but failed to update stage history: ${stageInsertError.message || 'Database error'}. Please contact support.`);
         } else {
-          const errorMsg = functionResult?.error || 'Unknown error';
-          console.error('❌ Database function returned error:', errorMsg);
-          toast.error(`Contract saved, but failed to update lead stage: ${errorMsg}. Please contact support.`);
+          console.log('✅ Stage history record inserted successfully');
+        }
+        
+        // Step 2: Update the lead's stage in leads_lead table
+        const { error: leadUpdateError } = await supabase
+          .from('leads_lead')
+          .update({
+            stage: stageId,
+            stage_changed_at: timestamp,
+          })
+          .eq('id', numericLeadId);
+        
+        if (leadUpdateError) {
+          console.error('❌ Failed to update lead stage:', {
+            error: leadUpdateError,
+            code: leadUpdateError.code,
+            message: leadUpdateError.message,
+            leadId: leadId,
+          });
+          toast.error(`Contract saved, but failed to update lead stage: ${leadUpdateError.message || 'Database error'}. Please contact support.`);
+        } else {
+          console.log('✅ Lead stage 60 (Client signed agreement) successfully updated');
         }
       }
 

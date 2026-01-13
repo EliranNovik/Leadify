@@ -39,60 +39,56 @@ if (typeof window !== 'undefined') {
   (window as any).supabase = supabase;
 }
 
-// Global flag to prevent multiple simultaneous redirects (per-tab)
-let isRedirecting = false;
-
 // Storage key for cross-tab coordination
 const REDIRECTING_KEY = 'supabase_auth_redirecting';
-const REDIRECTING_TIMEOUT = 2000; // 2 seconds
+const REDIRECTING_TIMEOUT = 1000; // 1 second
 
 // Function to handle session expiration and redirect
 export const handleSessionExpiration = async () => {
+  if (typeof window === 'undefined') return;
+  
   // Check if another tab is already redirecting
-  if (typeof window !== 'undefined') {
-    const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
-    if (redirectingUntil) {
-      const until = parseInt(redirectingUntil, 10);
-      if (Date.now() < until) {
-        // Another tab is redirecting, wait for it
-        console.log('Another tab is handling redirect, waiting...');
-        return;
-      } else {
-        // Stale flag, clear it
-        localStorage.removeItem(REDIRECTING_KEY);
-      }
+  const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
+  if (redirectingUntil) {
+    const until = parseInt(redirectingUntil, 10);
+    if (Date.now() < until) {
+      // Another tab is redirecting, don't do anything
+      console.log('Another tab is handling redirect');
+      return;
+    } else {
+      // Stale flag, clear it
+      localStorage.removeItem(REDIRECTING_KEY);
     }
-    
-    // Set flag in localStorage to coordinate across tabs
-    const redirectUntil = Date.now() + REDIRECTING_TIMEOUT;
-    localStorage.setItem(REDIRECTING_KEY, redirectUntil.toString());
   }
   
-  if (isRedirecting) return; // Prevent multiple redirects in same tab
-  isRedirecting = true;
+  // Set flag in localStorage to coordinate across tabs
+  const redirectUntil = Date.now() + REDIRECTING_TIMEOUT;
+  localStorage.setItem(REDIRECTING_KEY, redirectUntil.toString());
   
   try {
     console.log('Session expired - signing out and redirecting to login');
     // Clear auth state immediately
     await supabase.auth.signOut();
+    
     // Clear any cached session data
-    if (typeof window !== 'undefined') {
-      // Clear Supabase session storage
-      Object.keys(localStorage).forEach(key => {
-        if (key.includes('supabase.auth.token')) {
-          localStorage.removeItem(key);
-        }
-      });
-      // Clear redirecting flag
-      localStorage.removeItem(REDIRECTING_KEY);
-      // Force redirect to login
+    Object.keys(localStorage).forEach(key => {
+      if (key.includes('supabase.auth.token')) {
+        localStorage.removeItem(key);
+      }
+    });
+    
+    // Clear redirecting flag
+    localStorage.removeItem(REDIRECTING_KEY);
+    
+    // Only redirect if we're not already on login page
+    if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
   } catch (error) {
     console.error('Error during session expiration handling:', error);
     // Even if signOut fails, still redirect
-    if (typeof window !== 'undefined') {
-      localStorage.removeItem(REDIRECTING_KEY);
+    localStorage.removeItem(REDIRECTING_KEY);
+    if (window.location.pathname !== '/login') {
       window.location.href = '/login';
     }
   }
@@ -202,20 +198,14 @@ export const sessionManager = {
   // Check session and handle expiration immediately
   async checkAndHandleExpiration(): Promise<boolean> {
     try {
-      // Check if another tab is redirecting (with small delay to avoid race conditions)
+      // Check if another tab is redirecting
       if (typeof window !== 'undefined') {
         const redirectingUntil = localStorage.getItem(REDIRECTING_KEY);
         if (redirectingUntil) {
           const until = parseInt(redirectingUntil, 10);
           if (Date.now() < until) {
-            // Another tab is redirecting, wait a bit but not too long (max 500ms)
-            await new Promise(resolve => setTimeout(resolve, Math.min(500, until - Date.now())));
-            // Re-check after delay
-            const { data: { session } } = await supabase.auth.getSession();
-            if (!session || !session.user) {
-              return true; // Session is invalid, let the other tab handle redirect
-            }
-            // Session exists, continue with check
+            // Another tab is redirecting, don't do anything
+            return true;
           } else {
             // Stale flag, clear it
             localStorage.removeItem(REDIRECTING_KEY);
@@ -225,18 +215,27 @@ export const sessionManager = {
       
       const session = await this.getSession();
       if (!session) {
-        await handleSessionExpiration();
+        // No session - check if we should redirect
+        // Only redirect if we're not already on login page
+        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+          await handleSessionExpiration();
+        }
         return true; // Session expired
       }
+      
       if (this.isSessionExpired(session)) {
-        await handleSessionExpiration();
+        // Session expired - check if we should redirect
+        if (typeof window !== 'undefined' && window.location.pathname !== '/login') {
+          await handleSessionExpiration();
+        }
         return true; // Session expired
       }
+      
       return false; // Session valid
     } catch (e) {
       console.error('Error in checkAndHandleExpiration:', e);
-      // Only redirect if it's an auth error
-      if (isAuthError(e)) {
+      // Only redirect if it's an auth error and we're not on login page
+      if (isAuthError(e) && typeof window !== 'undefined' && window.location.pathname !== '/login') {
         await handleSessionExpiration();
         return true;
       }

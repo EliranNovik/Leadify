@@ -251,88 +251,136 @@ export async function handleContractSigned(contract: Contract) {
     // }
     
     // 7. Update lead with contract information (only for regular leads)
-    // Use updateLeadStageWithHistory to ensure celebration triggers
-    if (contract.client_id) {
-      // Fetch the lead first to pass to updateLeadStageWithHistory
-      const { data: leadData, error: leadFetchError } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('id', contract.client_id)
-        .single();
-      
-      if (leadFetchError) {
-        console.error('Error fetching lead for stage update:', leadFetchError);
-      } else if (leadData) {
-        const { updateLeadStageWithHistory } = await import('./leadStageManager');
-        try {
-          await updateLeadStageWithHistory({
-            lead: { ...leadData, lead_type: 'new' } as any,
-            stage: 'Client signed agreement',
-            additionalFields: {
-              balance: totalValue,
-              balance_currency: currency,
-              number_of_applicants_meeting: contract.applicant_count,
-            },
-          });
-          console.log('✅ Lead stage updated to "Client signed agreement" (stage 60)');
-        } catch (stageUpdateError) {
-          console.error('❌ Error updating lead stage:', stageUpdateError);
-          // Fallback to direct update if stage manager fails
-          const { error: leadUpdateError } = await supabase
-            .from('leads')
-            .update({
-              balance: totalValue,
-              balance_currency: currency,
-              number_of_applicants_meeting: contract.applicant_count,
+    // Check if user is authenticated - if not, stage update was already handled by RPC function
+    const { data: { user }, error: authError } = await supabase.auth.getUser();
+    const isAuthenticated = user && !authError;
+    
+    // Only update stage if authenticated (not public contract signing)
+    // Public contract signing uses RPC functions that bypass RLS
+    if (isAuthenticated) {
+      // Use updateLeadStageWithHistory to ensure celebration triggers
+      if (contract.client_id) {
+        // Fetch the lead first to pass to updateLeadStageWithHistory
+        const { data: leadData, error: leadFetchError } = await supabase
+          .from('leads')
+          .select('*')
+          .eq('id', contract.client_id)
+          .single();
+        
+        if (leadFetchError) {
+          console.error('Error fetching lead for stage update:', leadFetchError);
+        } else if (leadData) {
+          const { updateLeadStageWithHistory } = await import('./leadStageManager');
+          try {
+            await updateLeadStageWithHistory({
+              lead: { ...leadData, lead_type: 'new' } as any,
               stage: 'Client signed agreement',
-            })
-            .eq('id', contract.client_id);
+              additionalFields: {
+                balance: totalValue,
+                balance_currency: currency,
+                number_of_applicants_meeting: contract.applicant_count,
+              },
+            });
+            console.log('✅ Lead stage updated to "Client signed agreement" (stage 60)');
+          } catch (stageUpdateError) {
+            console.error('❌ Error updating lead stage:', stageUpdateError);
+            // Fallback to direct update if stage manager fails
+            const { error: leadUpdateError } = await supabase
+              .from('leads')
+              .update({
+                balance: totalValue,
+                balance_currency: currency,
+                number_of_applicants_meeting: contract.applicant_count,
+                stage: 'Client signed agreement',
+              })
+              .eq('id', contract.client_id);
+            
+            if (leadUpdateError) {
+              console.error('❌ Error updating lead (fallback):', leadUpdateError);
+              // Re-throw the error so it's caught by the outer try-catch
+              throw new Error(`Failed to update lead stage: ${leadUpdateError.message}`);
+            } else {
+              console.log('✅ Lead stage updated via fallback method');
+            }
+          }
+        }
+      } else {
+        // For legacy leads, fetch the lead first
+        const legacyId = (contract as any).legacy_id;
+        if (legacyId) {
+          const { data: legacyLeadData, error: legacyLeadFetchError } = await supabase
+            .from('leads_lead')
+            .select('*')
+            .eq('id', legacyId)
+            .single();
           
-          if (leadUpdateError) {
-            console.error('❌ Error updating lead (fallback):', leadUpdateError);
-            // Re-throw the error so it's caught by the outer try-catch
-            throw new Error(`Failed to update lead stage: ${leadUpdateError.message}`);
-          } else {
-            console.log('✅ Lead stage updated via fallback method');
+          if (legacyLeadFetchError) {
+            console.error('Error fetching legacy lead for stage update:', legacyLeadFetchError);
+          } else if (legacyLeadData) {
+            const { updateLeadStageWithHistory } = await import('./leadStageManager');
+            try {
+              await updateLeadStageWithHistory({
+                lead: { ...legacyLeadData, id: `legacy_${legacyId}`, lead_type: 'legacy' } as any,
+                stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
+                additionalFields: {
+                  total: totalValue,
+                },
+              });
+            } catch (stageUpdateError) {
+              console.error('Error updating legacy lead stage:', stageUpdateError);
+              // Fallback to direct update if stage manager fails - use numeric stage ID 60 for legacy leads
+              const { error: legacyLeadUpdateError } = await supabase
+                .from('leads_lead')
+                .update({
+                  total: totalValue,
+                  stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
+                })
+                .eq('id', legacyId);
+              
+              if (legacyLeadUpdateError) {
+                console.error('Error updating legacy lead (fallback):', legacyLeadUpdateError);
+              }
+            }
           }
         }
       }
     } else {
-      // For legacy leads, fetch the lead first
-      const legacyId = (contract as any).legacy_id;
-      if (legacyId) {
-        const { data: legacyLeadData, error: legacyLeadFetchError } = await supabase
-          .from('leads_lead')
-          .select('*')
-          .eq('id', legacyId)
-          .single();
+      // Public contract signing - stage update was already handled in PublicContractView/PublicLegacyContractView
+      // Just update the balance and other fields without stage update
+      console.log('ℹ️ Public contract signing detected - stage update skipped (already handled in contract view)');
+      
+      if (contract.client_id) {
+        // Update balance and other fields for new leads
+        const { error: leadUpdateError } = await supabase
+          .from('leads')
+          .update({
+            balance: totalValue,
+            balance_currency: currency,
+            number_of_applicants_meeting: contract.applicant_count,
+            // Don't update stage - already done in PublicContractView
+          })
+          .eq('id', contract.client_id);
         
-        if (legacyLeadFetchError) {
-          console.error('Error fetching legacy lead for stage update:', legacyLeadFetchError);
-        } else if (legacyLeadData) {
-          const { updateLeadStageWithHistory } = await import('./leadStageManager');
-          try {
-            await updateLeadStageWithHistory({
-              lead: { ...legacyLeadData, id: `legacy_${legacyId}`, lead_type: 'legacy' } as any,
-              stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
-              additionalFields: {
-                total: totalValue,
-              },
-            });
-          } catch (stageUpdateError) {
-            console.error('Error updating legacy lead stage:', stageUpdateError);
-            // Fallback to direct update if stage manager fails - use numeric stage ID 60 for legacy leads
-            const { error: legacyLeadUpdateError } = await supabase
-              .from('leads_lead')
-              .update({
-                total: totalValue,
-                stage: 60, // Use numeric stage ID 60 for legacy leads (Client signed agreement)
-              })
-              .eq('id', legacyId);
-            
-            if (legacyLeadUpdateError) {
-              console.error('Error updating legacy lead (fallback):', legacyLeadUpdateError);
-            }
+        if (leadUpdateError) {
+          console.error('❌ Error updating lead balance (public signing):', leadUpdateError);
+          // Don't throw - this is not critical
+        }
+      } else {
+        // For legacy leads, update total
+        const legacyId = (contract as any).legacy_id;
+        if (legacyId) {
+          const numericLegacyId = typeof legacyId === 'number' ? legacyId : parseInt(legacyId, 10);
+          const { error: legacyLeadUpdateError } = await supabase
+            .from('leads_lead')
+            .update({
+              total: totalValue,
+              // Don't update stage - already done in PublicContractView/PublicLegacyContractView
+            })
+            .eq('id', numericLegacyId);
+          
+          if (legacyLeadUpdateError) {
+            console.error('Error updating legacy lead total (public signing):', legacyLeadUpdateError);
+            // Don't throw - this is not critical
           }
         }
       }

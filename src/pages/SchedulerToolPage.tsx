@@ -205,26 +205,31 @@ const SchedulerToolPage: React.FC = () => {
 
   useEffect(() => {
     const loadData = async () => {
-      // First, get current user information
-      const userData = await fetchCurrentUser();
+      // Fetch current user and all reference data in parallel for faster loading
+      const [userData, categoriesData, sourcesData, stagesData, tagsData, countriesData, stageMapResult] = await Promise.all([
+        fetchCurrentUser(),
+        fetchCategories(),
+        fetchSources(),
+        fetchStages(),
+        fetchTags(),
+        fetchCountries(),
+        fetchStageNames().catch(err => {
+          console.error('Error resolving scheduler stage IDs from lead_stages:', err);
+          return {};
+        })
+      ]);
+
       if (!userData || !userData.employee_id) {
         console.error('❌ No user or employee ID found');
         setError('User not found or not linked to an employee');
         setLoading(false);
         return;
       }
-      
-      // Load reference data first
-      const categoriesData = await fetchCategories();
-      const sourcesData = await fetchSources();
-      const stagesData = await fetchStages();
-      const tagsData = await fetchTags();
-      const countriesData = await fetchCountries();
 
+      // Resolve stage IDs from stage map
       let resolvedStageIds = FALLBACK_SCHEDULER_STAGE_IDS;
       try {
-        const stageMap = await fetchStageNames();
-        const matchedIds = Object.entries(stageMap)
+        const matchedIds = Object.entries(stageMapResult)
           .filter(([, stageName]) =>
             SCHEDULER_STAGE_TARGETS.some(target => areStagesEquivalent(stageName, target))
           )
@@ -235,11 +240,11 @@ const SchedulerToolPage: React.FC = () => {
           resolvedStageIds = Array.from(new Set(matchedIds));
         }
       } catch (error) {
-        console.error('Error resolving scheduler stage IDs from lead_stages:', error);
+        console.error('Error resolving scheduler stage IDs:', error);
       }
       setSchedulerStageIds(resolvedStageIds);
 
-      // Then load leads after reference data is ready, passing user data
+      // Load leads after reference data is ready, passing user data
       await fetchSchedulerLeads(
         categoriesData,
         sourcesData,
@@ -801,37 +806,9 @@ const SchedulerToolPage: React.FC = () => {
         });
       }
 
-      // First, get the employee's display name for filtering new leads
+      // Get the employee's display name for filtering new leads
+      // This will be fetched in parallel with other queries below
       let employeeDisplayName = null;
-      if (userData?.employee_id) {
-        const { data: employeeData, error: employeeError } = await supabase
-          .from('tenants_employee')
-          .select('display_name')
-          .eq('id', userData.employee_id)
-          .single();
-        
-        if (!employeeError && employeeData) {
-          employeeDisplayName = employeeData.display_name;
-          
-          // Special logging for employee_id 54
-          if (userData.employee_id === '54' || userData.employee_id === 54) {
-            console.log('🔍 EMPLOYEE_ID_54 DEBUG - Employee display name:', {
-              employee_id: userData.employee_id,
-              display_name: employeeDisplayName
-            });
-          }
-        } else {
-          console.error('❌ Could not find employee display name for ID:', userData.employee_id);
-          
-          // Special logging for employee_id 54
-          if (userData.employee_id === '54' || userData.employee_id === 54) {
-            console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error fetching employee display name:', {
-              employee_id: userData.employee_id,
-              error: employeeError
-            });
-          }
-        }
-      }
 
       let stageIdsToUse =
         (stageIdsOverride && stageIdsOverride.length
@@ -853,7 +830,27 @@ const SchedulerToolPage: React.FC = () => {
       // Explicitly exclude stage 110 (Handler Started) - should never be in scheduler view
       stageIdsToUse = stageIdsToUse.filter(id => id !== 110);
 
-      // Fetch new leads with scheduler assigned to current user (by name) and specific stages
+      // Fetch employee display name first (needed for new leads query)
+      if (userData?.employee_id) {
+        const { data: employeeData, error: employeeError } = await supabase
+          .from('tenants_employee')
+          .select('display_name')
+          .eq('id', userData.employee_id)
+          .single();
+        
+        if (!employeeError && employeeData) {
+          employeeDisplayName = employeeData.display_name;
+        }
+      }
+
+      if (!employeeDisplayName) {
+        console.error('❌ Could not find employee display name for ID:', userData.employee_id);
+        setError('Employee data not found');
+        setLoading(false);
+        return;
+      }
+
+      // Build and execute new leads query
       let newLeadsQueryBuilder = supabase
         .from('leads')
         .select(`
@@ -891,8 +888,8 @@ const SchedulerToolPage: React.FC = () => {
           )
         `)
         .eq('scheduler', employeeDisplayName)
-        .is('unactivated_at', null) // Only active leads
-        .neq('stage', 110); // Explicitly exclude stage 110 (Handler Started)
+        .is('unactivated_at', null)
+        .neq('stage', 110);
 
       if (stageIdsToUse.length === 1) {
         newLeadsQueryBuilder = newLeadsQueryBuilder.eq('stage', stageIdsToUse[0]);
@@ -907,67 +904,56 @@ const SchedulerToolPage: React.FC = () => {
         throw newError;
       }
 
-      // Calculate sublead suffixes for new leads
-      const newSubLeadSuffixMap = new Map<string, number>();
-      if (newLeads && newLeads.length > 0) {
-        // Find all unique master_ids from the fetched leads
-        const leadsWithMaster = newLeads.filter((lead: any) => lead.master_id);
-        const masterIds = Array.from(new Set(
-          leadsWithMaster.map((lead: any) => lead.master_id?.toString()).filter(Boolean)
-        ));
-        
-        if (masterIds.length > 0) {
-          // Fetch all subleads for all master_ids in one query
-          const { data: allSubLeads } = await supabase
-            .from('leads')
-            .select('id, master_id')
-            .in('master_id', masterIds)
-            .not('master_id', 'is', null)
-            .order('master_id', { ascending: true })
-            .order('id', { ascending: true });
+      // Calculate sublead suffixes for new leads (run in parallel with legacy leads fetch)
+      const newSubLeadSuffixMapPromise = (async () => {
+        const suffixMap = new Map<string, number>();
+        if (newLeads && newLeads.length > 0) {
+          // Find all unique master_ids from the fetched leads
+          const leadsWithMaster = newLeads.filter((lead: any) => lead.master_id);
+          const masterIds = Array.from(new Set(
+            leadsWithMaster.map((lead: any) => lead.master_id?.toString()).filter(Boolean)
+          ));
           
-          if (allSubLeads) {
-            // Group by master_id and calculate suffixes
-            const subLeadsByMaster = new Map<string, any[]>();
-            allSubLeads.forEach((subLead: any) => {
-              const masterId = subLead.master_id?.toString();
-              if (masterId) {
-                if (!subLeadsByMaster.has(masterId)) {
-                  subLeadsByMaster.set(masterId, []);
-                }
-                subLeadsByMaster.get(masterId)!.push(subLead);
-              }
-            });
+          if (masterIds.length > 0) {
+            // Fetch all subleads for all master_ids in one query
+            const { data: allSubLeads } = await supabase
+              .from('leads')
+              .select('id, master_id')
+              .in('master_id', masterIds)
+              .not('master_id', 'is', null)
+              .order('master_id', { ascending: true })
+              .order('id', { ascending: true });
             
-            // Calculate suffixes for each master's subleads
-            subLeadsByMaster.forEach((subLeads, masterId) => {
-              subLeads.forEach((subLead, index) => {
-                const subLeadKey = subLead.id?.toString();
-                if (subLeadKey) {
-                  // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
-                  newSubLeadSuffixMap.set(subLeadKey, index + 2);
+            if (allSubLeads) {
+              // Group by master_id and calculate suffixes
+              const subLeadsByMaster = new Map<string, any[]>();
+              allSubLeads.forEach((subLead: any) => {
+                const masterId = subLead.master_id?.toString();
+                if (masterId) {
+                  if (!subLeadsByMaster.has(masterId)) {
+                    subLeadsByMaster.set(masterId, []);
+                  }
+                  subLeadsByMaster.get(masterId)!.push(subLead);
                 }
               });
-            });
+              
+              // Calculate suffixes for each master's subleads
+              subLeadsByMaster.forEach((subLeads, masterId) => {
+                subLeads.forEach((subLead, index) => {
+                  const subLeadKey = subLead.id?.toString();
+                  if (subLeadKey) {
+                    // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                    suffixMap.set(subLeadKey, index + 2);
+                  }
+                });
+              });
+            }
           }
         }
-      }
+        return suffixMap;
+      })();
 
-      // Debug: First, let's check lead 210552 directly
-      const { data: lead210552Data, error: lead210552Error } = await supabase
-        .from('leads_lead')
-        .select('id, name, master_id, meeting_scheduler_id, status, stage, manual_id')
-        .eq('id', 210552)
-        .single();
-      
-      console.log('🔍 [SchedulerTool] Direct query for lead 210552:', {
-        found: !!lead210552Data,
-        data: lead210552Data,
-        error: lead210552Error
-      });
-
-      // Fetch legacy leads with scheduler assigned to current user and specific stages
-      // Status filter: status = 0 OR status IS NULL (both mean active)
+      // Fetch legacy leads and calculate new sublead suffixes in parallel
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
@@ -994,29 +980,23 @@ const SchedulerToolPage: React.FC = () => {
           master_id,
           manual_id
         `)
-        .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
-        .in('stage', [0, 10, 11, 15]) // Only show leads with stages 0, 10, 11, 15
-        .neq('stage', 110); // Explicitly exclude stage 110 (Handler Started)
+        .eq('meeting_scheduler_id', Number(userData.employee_id))
+        .in('stage', [0, 10, 11, 15])
+        .neq('stage', 110)
+        .or('status.eq.0,status.is.null');
       
-      // Status filter: status = 0 OR status IS NULL (both mean active)
-      legacyLeadsQuery = legacyLeadsQuery.or('status.eq.0,status.is.null');
+      const [legacyLeadsResult, newSubLeadSuffixMap] = await Promise.all([
+        legacyLeadsQuery,
+        newSubLeadSuffixMapPromise
+      ]);
       
-      const { data: legacyLeads, error: legacyError } = await legacyLeadsQuery;
+      const { data: legacyLeads, error: legacyError } = legacyLeadsResult;
 
       if (legacyError) {
         console.error('❌ Error fetching legacy leads:', legacyError);
         throw legacyError;
       }
 
-      // Debug: Check if lead 210552 is in the initial fetch
-      console.log('🔍 [SchedulerTool] Initial legacy leads fetch:', {
-        employeeId: userData.employee_id,
-        totalLeads: legacyLeads?.length || 0,
-        lead210552Found: legacyLeads?.some((lead: any) => lead.id === 210552),
-        lead210552Data: legacyLeads?.find((lead: any) => lead.id === 210552),
-        allLeadIds: legacyLeads?.map((lead: any) => lead.id).slice(0, 20),
-        allMasterIds: legacyLeads?.map((lead: any) => lead.master_id).filter(Boolean).slice(0, 10)
-      });
 
       // Calculate sublead suffixes for legacy leads AND fetch subleads to display
       const subLeadSuffixMap = new Map<string, number>();
@@ -1040,15 +1020,6 @@ const SchedulerToolPage: React.FC = () => {
         // Combine both sets of master IDs
         const allMasterIds = Array.from(new Set([...masterIdsFromSubLeads, ...potentialMasterIds]));
         
-        console.log('🔍 [SchedulerTool] Master IDs found:', {
-          masterIdsFromSubLeads,
-          potentialMasterIds,
-          allMasterIds: allMasterIds.slice(0, 10),
-          totalMasterIds: allMasterIds.length,
-          lead210552MasterId: lead210552Data?.master_id,
-          isLead210552MasterInList: lead210552Data?.master_id ? allMasterIds.includes(lead210552Data.master_id.toString()) : false
-        });
-        
         if (allMasterIds.length > 0) {
           // Fetch all subleads for all master_ids in one query
           const numericMasterIds = allMasterIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
@@ -1061,13 +1032,6 @@ const SchedulerToolPage: React.FC = () => {
               .not('master_id', 'is', null)
               .order('master_id', { ascending: true })
               .order('id', { ascending: true });
-            
-            console.log('🔍 [SchedulerTool] Subleads found (for suffix calculation):', {
-              totalSubLeads: allSubLeads?.length || 0,
-              lead210552Found: allSubLeads?.some((lead: any) => lead.id === 210552),
-              lead210552Data: allSubLeads?.find((lead: any) => lead.id === 210552),
-              sampleSubLeadIds: allSubLeads?.map((lead: any) => lead.id).slice(0, 10)
-            });
             
             if (allSubLeads) {
               // Group by master_id and calculate suffixes
@@ -1139,17 +1103,6 @@ const SchedulerToolPage: React.FC = () => {
                   // Only add subleads that aren't already in legacyLeads (avoid duplicates)
                   const existingLeadIds = new Set(legacyLeads.map((lead: any) => lead.id));
                   subLeadsToAdd = fullSubLeads.filter((subLead: any) => !existingLeadIds.has(subLead.id));
-                  
-                  console.log('🔍 [SchedulerTool] Full subleads fetched:', {
-                    totalFullSubLeads: fullSubLeads?.length || 0,
-                    subLeadsToAdd: subLeadsToAdd.length,
-                    lead210552Found: fullSubLeads?.some((lead: any) => lead.id === 210552),
-                    lead210552Data: fullSubLeads?.find((lead: any) => lead.id === 210552),
-                    lead210552InToAdd: subLeadsToAdd.some((lead: any) => lead.id === 210552),
-                    allSubLeadIds: fullSubLeads?.map((lead: any) => lead.id).slice(0, 20),
-                    subLeadIdsQuery: subLeadIds.slice(0, 10),
-                    error: subLeadsError
-                  });
                 }
               }
             }
@@ -1159,235 +1112,76 @@ const SchedulerToolPage: React.FC = () => {
       
       // Combine master leads with their subleads
       const allLegacyLeads = [...(legacyLeads || []), ...subLeadsToAdd];
-      
-      console.log('🔍 [SchedulerTool] Final legacy leads (masters + subleads):', {
-        masterLeadsCount: legacyLeads?.length || 0,
-        subLeadsAddedCount: subLeadsToAdd.length,
-        totalLegacyLeads: allLegacyLeads.length,
-        lead210552Found: allLegacyLeads.some((lead: any) => lead.id === 210552),
-        lead210552Data: allLegacyLeads.find((lead: any) => lead.id === 210552)
-      });
 
-      // Fetch language mappings for legacy leads
-      const { data: languageMapping } = await supabase
-        .from('misc_language')
-        .select('id, name');
-
-      const languageMap = new Map();
-      if (languageMapping) {
-        languageMapping.forEach(language => {
-          languageMap.set(language.id, language.name);
-        });
-      }
-
-      // Fetch tags for legacy leads (use allLegacyLeads which includes subleads)
+      // Fetch all additional data in parallel for better performance
       const legacyLeadIds = allLegacyLeads?.map(lead => lead.id) || [];
-      let legacyTagsMap = new Map();
-      
-      if (legacyLeadIds.length > 0) {
-        const { data: legacyTagsData } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            lead_id,
-            misc_leadtag (
-              name
-            )
-          `)
-          .in('lead_id', legacyLeadIds);
-        
-        if (legacyTagsData) {
-          legacyTagsData.forEach(item => {
-            if (item.misc_leadtag) {
-              const leadId = item.lead_id;
-              const tagName = (item.misc_leadtag as any).name;
-              
-              if (!legacyTagsMap.has(leadId)) {
-                legacyTagsMap.set(leadId, []);
-              }
-              legacyTagsMap.get(leadId).push(tagName);
-            }
-          });
-        }
-      }
-
-      // Fetch tags for new leads
       const newLeadIds = newLeads?.map(lead => lead.id) || [];
-      let newTagsMap = new Map();
-      
-      if (newLeadIds.length > 0) {
-        const { data: newTagsData } = await supabase
-          .from('leads_lead_tags')
-          .select(`
-            newlead_id,
-            misc_leadtag (
-              name
-            )
-          `)
-          .in('newlead_id', newLeadIds);
-        
-        if (newTagsData) {
-          newTagsData.forEach(item => {
-            if (item.misc_leadtag) {
-              const leadId = item.newlead_id;
-              const tagName = (item.misc_leadtag as any).name;
-              
-              if (!newTagsMap.has(leadId)) {
-                newTagsMap.set(leadId, []);
-              }
-              newTagsMap.get(leadId).push(tagName);
-            }
-          });
-        }
-      }
-
-      // Fetch follow-ups from follow_ups table for the current user
-      const { data: { user: authUser } } = await supabase.auth.getUser();
-      let followUpsMap = new Map<string, string>(); // Map lead_id -> follow-up date
-      
-      if (authUser?.email && userData?.id) {
-        // Fetch follow-ups for new leads
-        const newLeadIds = newLeads?.map(lead => lead.id) || [];
-        if (newLeadIds.length > 0) {
-          const { data: newFollowups } = await supabase
-            .from('follow_ups')
-            .select('new_lead_id, date')
-            .eq('user_id', userData.id)
-            .in('new_lead_id', newLeadIds)
-            .is('lead_id', null);
-          
-          if (newFollowups) {
-            newFollowups.forEach(fu => {
-              if (fu.new_lead_id && fu.date) {
-                try {
-                  const date = safeParseDate(fu.date);
-                  if (date && !isNaN(date.getTime())) {
-                    // Double-check date is valid before calling toISOString
-                    const dateStr = date.toISOString().split('T')[0];
-                    if (dateStr && dateStr !== 'Invalid Date') {
-                      followUpsMap.set(fu.new_lead_id, dateStr);
-                    } else {
-                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date string result for new lead:', {
-                        new_lead_id: fu.new_lead_id,
-                        date: fu.date,
-                        dateType: typeof fu.date,
-                        dateStr
-                      });
-                    }
-                  } else {
-                    console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date object for new lead:', {
-                      new_lead_id: fu.new_lead_id,
-                      date: fu.date,
-                      dateType: typeof fu.date,
-                      dateObject: date
-                    });
-                  }
-                } catch (error) {
-                  console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for new lead:', {
-                    new_lead_id: fu.new_lead_id,
-                    date: fu.date,
-                    dateType: typeof fu.date,
-                    error
-                  });
-                }
-              }
-            });
-          }
-        }
-        
-        // Fetch follow-ups for legacy leads (use allLegacyLeads which includes subleads)
-        const legacyLeadIds = allLegacyLeads?.map(lead => lead.id) || [];
-        if (legacyLeadIds.length > 0) {
-          const { data: legacyFollowups } = await supabase
-            .from('follow_ups')
-            .select('lead_id, date')
-            .eq('user_id', userData.id)
-            .in('lead_id', legacyLeadIds)
-            .is('new_lead_id', null);
-          
-          if (legacyFollowups) {
-            legacyFollowups.forEach(fu => {
-              if (fu.lead_id && fu.date) {
-                try {
-                  const date = safeParseDate(fu.date);
-                  if (date && !isNaN(date.getTime())) {
-                    // Double-check date is valid before calling toISOString
-                    const dateStr = date.toISOString().split('T')[0];
-                    if (dateStr && dateStr !== 'Invalid Date') {
-                      followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
-                    } else {
-                      console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date string result for legacy lead:', {
-                        lead_id: fu.lead_id,
-                        date: fu.date,
-                        dateType: typeof fu.date,
-                        dateStr
-                      });
-                    }
-                  } else {
-                    console.error('🔍 EMPLOYEE_ID_54 DEBUG - Invalid date object for legacy lead:', {
-                      lead_id: fu.lead_id,
-                      date: fu.date,
-                      dateType: typeof fu.date,
-                      dateObject: date
-                    });
-                  }
-                } catch (error) {
-                  console.error('🔍 EMPLOYEE_ID_54 DEBUG - Error parsing follow-up date for legacy lead:', {
-                    lead_id: fu.lead_id,
-                    date: fu.date,
-                    dateType: typeof fu.date,
-                    error
-                  });
-                }
-              }
-            });
-          }
-        }
-      }
-
-      // Country data for new leads is now fetched directly from the leads table with the JOIN
-      // For legacy leads, we'll keep the existing contact-based approach since they don't have country_id directly
-      let legacyCountryMap = new Map();
-      let legacyCountryIdMap = new Map();
-      
-      // Use allLegacyLeads which includes subleads for country data
       const legacyLeadIdsForCountry = allLegacyLeads?.map(lead => lead.id) || [];
-      if (legacyLeadIdsForCountry.length > 0) {
-        try {
-          // Query for country data via lead_leadcontact -> leads_contact -> misc_country
-          const { data: legacyCountryData, error: legacyCountryError } = await supabase
-            .from('lead_leadcontact')
-            .select(`
-              lead_id,
-              leads_contact (
-                country_id,
-                misc_country (
-                  id,
+      
+      // Get auth user once for follow-ups
+      const { data: { user: authUser } } = await supabase.auth.getUser();
+
+      // Run all independent queries in parallel
+      const [
+        languageMappingResult,
+        legacyTagsResult,
+        newTagsResult,
+        newFollowupsResult,
+        legacyFollowupsResult,
+        legacyCountryResult
+      ] = await Promise.all([
+        // Language mappings
+        supabase
+          .from('misc_language')
+          .select('id, name'),
+        // Legacy tags
+        legacyLeadIds.length > 0
+          ? supabase
+              .from('leads_lead_tags')
+              .select(`
+                lead_id,
+                misc_leadtag (
                   name
                 )
-              )
-            `)
-            .in('lead_id', legacyLeadIdsForCountry)
-            .eq('main', 'true'); // Only get main contacts
-          
-          if (legacyCountryError) {
-            console.error('Error fetching country data for legacy leads:', legacyCountryError);
-          } else if (legacyCountryData && legacyCountryData.length > 0) {
-            legacyCountryData.forEach((item) => {
-              if (item.leads_contact && (item.leads_contact as any).misc_country) {
-                const leadId = item.lead_id;
-                const countryName = ((item.leads_contact as any).misc_country as any).name;
-                const countryId = ((item.leads_contact as any).misc_country as any).id;
-                legacyCountryMap.set(leadId, countryName);
-                if (countryId) legacyCountryIdMap.set(leadId, countryId);
-              }
-            });
-          } else {
-            // Try without the main filter to get all contacts
-            const allContactsResult = await supabase
+              `)
+              .in('lead_id', legacyLeadIds)
+          : Promise.resolve({ data: [] }),
+        // New tags
+        newLeadIds.length > 0
+          ? supabase
+              .from('leads_lead_tags')
+              .select(`
+                newlead_id,
+                misc_leadtag (
+                  name
+                )
+              `)
+              .in('newlead_id', newLeadIds)
+          : Promise.resolve({ data: [] }),
+        // New follow-ups
+        (authUser?.email && userData?.id && newLeadIds.length > 0)
+          ? supabase
+              .from('follow_ups')
+              .select('new_lead_id, date')
+              .eq('user_id', userData.id)
+              .in('new_lead_id', newLeadIds)
+              .is('lead_id', null)
+          : Promise.resolve({ data: [] }),
+        // Legacy follow-ups
+        (authUser?.email && userData?.id && legacyLeadIds.length > 0)
+          ? supabase
+              .from('follow_ups')
+              .select('lead_id, date')
+              .eq('user_id', userData.id)
+              .in('lead_id', legacyLeadIds)
+              .is('new_lead_id', null)
+          : Promise.resolve({ data: [] }),
+        // Legacy country data (try main contacts first)
+        legacyLeadIdsForCountry.length > 0
+          ? supabase
               .from('lead_leadcontact')
               .select(`
                 lead_id,
-                main,
                 leads_contact (
                   country_id,
                   misc_country (
@@ -1396,22 +1190,131 @@ const SchedulerToolPage: React.FC = () => {
                   )
                 )
               `)
-              .in('lead_id', legacyLeadIdsForCountry);
-            
-            if (allContactsResult.data && allContactsResult.data.length > 0) {
-              allContactsResult.data.forEach((item: any) => {
-                if (item.leads_contact && (item.leads_contact as any).misc_country) {
-                  const leadId = item.lead_id;
-                  const countryName = ((item.leads_contact as any).misc_country as any).name;
-                  const countryId = ((item.leads_contact as any).misc_country as any).id;
-                  legacyCountryMap.set(leadId, countryName);
-                  if (countryId) legacyCountryIdMap.set(leadId, countryId);
+              .in('lead_id', legacyLeadIdsForCountry)
+              .eq('main', 'true')
+          : Promise.resolve({ data: [], error: null })
+      ]);
+
+      // Process language mappings
+      const languageMap = new Map();
+      if (languageMappingResult.data) {
+        languageMappingResult.data.forEach(language => {
+          languageMap.set(language.id, language.name);
+        });
+      }
+
+      // Process legacy tags
+      const legacyTagsMap = new Map();
+      if (legacyTagsResult.data) {
+        legacyTagsResult.data.forEach((item: any) => {
+          if (item.misc_leadtag) {
+            const leadId = item.lead_id;
+            const tagName = (item.misc_leadtag as any).name;
+            if (!legacyTagsMap.has(leadId)) {
+              legacyTagsMap.set(leadId, []);
+            }
+            legacyTagsMap.get(leadId).push(tagName);
+          }
+        });
+      }
+
+      // Process new tags
+      const newTagsMap = new Map();
+      if (newTagsResult.data) {
+        newTagsResult.data.forEach((item: any) => {
+          if (item.misc_leadtag) {
+            const leadId = item.newlead_id;
+            const tagName = (item.misc_leadtag as any).name;
+            if (!newTagsMap.has(leadId)) {
+              newTagsMap.set(leadId, []);
+            }
+            newTagsMap.get(leadId).push(tagName);
+          }
+        });
+      }
+
+      // Process follow-ups
+      const followUpsMap = new Map<string, string>();
+      
+      // Process new follow-ups
+      if (newFollowupsResult.data) {
+        newFollowupsResult.data.forEach((fu: any) => {
+          if (fu.new_lead_id && fu.date) {
+            try {
+              const date = safeParseDate(fu.date);
+              if (date && !isNaN(date.getTime())) {
+                const dateStr = date.toISOString().split('T')[0];
+                if (dateStr && dateStr !== 'Invalid Date') {
+                  followUpsMap.set(fu.new_lead_id, dateStr);
                 }
-              });
+              }
+            } catch (error) {
+              // Silently skip invalid dates
             }
           }
-        } catch (error) {
-          console.error('Error fetching country data for legacy leads:', error);
+        });
+      }
+      
+      // Process legacy follow-ups
+      if (legacyFollowupsResult.data) {
+        legacyFollowupsResult.data.forEach((fu: any) => {
+          if (fu.lead_id && fu.date) {
+            try {
+              const date = safeParseDate(fu.date);
+              if (date && !isNaN(date.getTime())) {
+                const dateStr = date.toISOString().split('T')[0];
+                if (dateStr && dateStr !== 'Invalid Date') {
+                  followUpsMap.set(`legacy_${fu.lead_id}`, dateStr);
+                }
+              }
+            } catch (error) {
+              // Silently skip invalid dates
+            }
+          }
+        });
+      }
+
+      // Process legacy country data
+      let legacyCountryMap = new Map();
+      let legacyCountryIdMap = new Map();
+      
+      if (legacyCountryResult.data && legacyCountryResult.data.length > 0) {
+        legacyCountryResult.data.forEach((item: any) => {
+          if (item.leads_contact && (item.leads_contact as any).misc_country) {
+            const leadId = item.lead_id;
+            const countryName = ((item.leads_contact as any).misc_country as any).name;
+            const countryId = ((item.leads_contact as any).misc_country as any).id;
+            legacyCountryMap.set(leadId, countryName);
+            if (countryId) legacyCountryIdMap.set(leadId, countryId);
+          }
+        });
+      } else if (legacyLeadIdsForCountry.length > 0) {
+        // Fallback: try without main filter if no results
+        const allContactsResult = await supabase
+          .from('lead_leadcontact')
+          .select(`
+            lead_id,
+            main,
+            leads_contact (
+              country_id,
+              misc_country (
+                id,
+                name
+              )
+            )
+          `)
+          .in('lead_id', legacyLeadIdsForCountry);
+        
+        if (allContactsResult.data && allContactsResult.data.length > 0) {
+          allContactsResult.data.forEach((item: any) => {
+            if (item.leads_contact && (item.leads_contact as any).misc_country) {
+              const leadId = item.lead_id;
+              const countryName = ((item.leads_contact as any).misc_country as any).name;
+              const countryId = ((item.leads_contact as any).misc_country as any).id;
+              legacyCountryMap.set(leadId, countryName);
+              if (countryId) legacyCountryIdMap.set(leadId, countryId);
+            }
+          });
         }
       }
 
@@ -1701,8 +1604,20 @@ const SchedulerToolPage: React.FC = () => {
         // Regular new lead: just use lead_number
         navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}`;
       }
+    } else if (lead.lead_type === 'legacy') {
+      // Legacy lead: extract numeric ID from lead.id (remove "legacy_" prefix)
+      const legacyId = lead.id.toString().replace('legacy_', '');
+      const isSubLead = lead.lead_number.includes('/');
+      
+      if (isSubLead) {
+        // Legacy sublead: use numeric ID in path, formatted lead_number in query
+        navigationUrl = `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        // Legacy master lead: use numeric ID or lead_number
+        navigationUrl = `/clients/${encodeURIComponent(legacyId)}`;
+      }
     } else {
-      // Legacy lead or fallback: use lead_number directly
+      // Fallback: use lead_number directly
       navigationUrl = `/clients/${encodeURIComponent(lead.lead_number)}`;
     }
     
@@ -1741,8 +1656,20 @@ const SchedulerToolPage: React.FC = () => {
         // Regular new lead: just use lead_number
         navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}?tab=interactions`;
       }
+    } else if (lead.lead_type === 'legacy') {
+      // Legacy lead: extract numeric ID from lead.id (remove "legacy_" prefix)
+      const legacyId = lead.id.toString().replace('legacy_', '');
+      const isSubLead = lead.lead_number.includes('/');
+      
+      if (isSubLead) {
+        // Legacy sublead: use numeric ID in path, formatted lead_number in query
+        navigationUrl = `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}&tab=interactions`;
+      } else {
+        // Legacy master lead: use numeric ID
+        navigationUrl = `/clients/${encodeURIComponent(legacyId)}?tab=interactions`;
+      }
     } else {
-      // Legacy lead or fallback: use lead_number directly
+      // Fallback: use lead_number directly
       navigationUrl = `/clients/${encodeURIComponent(lead.lead_number)}?tab=interactions`;
     }
     

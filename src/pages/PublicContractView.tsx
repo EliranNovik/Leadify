@@ -369,10 +369,10 @@ const PublicContractView: React.FC = () => {
       // Fetch client info and lead number
       // Check if this is a legacy lead (has legacy_id) or new lead (has client_id)
       if (contractData.legacy_id) {
-        // Legacy lead - fetch from leads_lead table
+        // Legacy lead - fetch from leads_lead table using legacy_id from contracts table
         const { data: legacyLeadData } = await supabase
           .from('leads_lead')
-          .select('id, lead_number, manual_id, name, email, phone, mobile')
+          .select('id, lead_number, manual_id, master_id, name, email, phone, mobile')
           .eq('id', contractData.legacy_id)
           .single();
         
@@ -385,12 +385,35 @@ const PublicContractView: React.FC = () => {
             mobile: legacyLeadData.mobile
           });
           
-          // Format lead number: use lead_number, then manual_id, then id
-          const formattedLeadNumber = legacyLeadData.lead_number 
-            ? String(legacyLeadData.lead_number)
-            : (legacyLeadData.manual_id 
-              ? String(legacyLeadData.manual_id)
-              : String(legacyLeadData.id));
+          // Format lead number: handle subleads (master_id/suffix) or master leads
+          let formattedLeadNumber: string;
+          const masterId = legacyLeadData.master_id;
+          
+          if (masterId && String(masterId).trim() !== '') {
+            // It's a sub-lead - calculate suffix from all subleads with same master_id
+            const { data: allSubLeads } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', masterId)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+            
+            if (allSubLeads && allSubLeads.length > 0) {
+              const suffix = allSubLeads.findIndex(subLead => subLead.id === legacyLeadData.id) + 2;
+              formattedLeadNumber = `${masterId}/${suffix}`;
+            } else {
+              // Fallback if subleads not found
+              formattedLeadNumber = `${masterId}/?`;
+            }
+          } else {
+            // It's a master lead - use lead_number, then manual_id, then id
+            formattedLeadNumber = legacyLeadData.lead_number 
+              ? String(legacyLeadData.lead_number)
+              : (legacyLeadData.manual_id 
+                ? String(legacyLeadData.manual_id)
+                : String(legacyLeadData.id));
+          }
+          
           setLeadNumber(formattedLeadNumber);
         }
       } else if (contractData.client_id) {
@@ -578,6 +601,108 @@ const PublicContractView: React.FC = () => {
         .select('*')
         .eq('id', contract.id)
         .single();
+      
+      // For new leads (has client_id), directly update stage in leads and leads_leadstage tables
+      if (updatedContract && updatedContract.client_id && !updatedContract.legacy_id) {
+        console.log('📝 Public contract signing: Updating lead stage to "Client signed agreement" for new lead:', updatedContract.client_id);
+        
+        const timestamp = new Date().toISOString();
+        const stageId = 60; // Client signed agreement
+        
+        // Step 1: Insert into leads_leadstage table
+        const { error: stageInsertError } = await supabase
+          .from('leads_leadstage')
+          .insert({
+            newlead_id: updatedContract.client_id,
+            stage: stageId,
+            date: timestamp,
+            cdate: timestamp,
+            udate: timestamp,
+            creator_id: null, // No creator for public contract signing
+          });
+        
+        if (stageInsertError) {
+          console.error('❌ Failed to insert stage record:', stageInsertError);
+          alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
+        } else {
+          console.log('✅ Stage history record inserted successfully');
+        }
+        
+        // Step 2: Update the lead's stage in leads table
+        const { error: leadUpdateError } = await supabase
+          .from('leads')
+          .update({
+            stage: 'Client signed agreement',
+            stage_changed_at: timestamp,
+          })
+          .eq('id', updatedContract.client_id);
+        
+        if (leadUpdateError) {
+          console.error('❌ Failed to update lead stage:', {
+            error: leadUpdateError,
+            code: leadUpdateError.code,
+            message: leadUpdateError.message,
+            contractId: updatedContract.id,
+            token: token,
+            clientId: updatedContract.client_id,
+          });
+          alert(`Warning: Contract signed but stage update failed: ${leadUpdateError.message || 'Database error'}. Please contact support.`);
+        } else {
+          console.log('✅ Lead stage "Client signed agreement" (stage 60) successfully updated');
+        }
+      } else if (updatedContract && updatedContract.legacy_id) {
+        // For legacy leads (has legacy_id) in new contracts table, directly update stage
+        console.log('📝 Public contract signing: Updating lead stage to 60 for legacy lead in contracts table:', updatedContract.legacy_id);
+        
+        const timestamp = new Date().toISOString();
+        const stageId = 60; // Client signed agreement
+        const legacyId = typeof updatedContract.legacy_id === 'number' 
+          ? updatedContract.legacy_id 
+          : parseInt(updatedContract.legacy_id, 10);
+        
+        // Step 1: Insert into leads_leadstage table
+        const { error: stageInsertError } = await supabase
+          .from('leads_leadstage')
+          .insert({
+            lead_id: legacyId,
+            stage: stageId,
+            date: timestamp,
+            cdate: timestamp,
+            udate: timestamp,
+            creator_id: null, // No creator for public contract signing
+          });
+        
+        if (stageInsertError) {
+          console.error('❌ Failed to insert stage record:', stageInsertError);
+          alert(`Warning: Contract signed but stage history update failed: ${stageInsertError.message || 'Database error'}. Please contact support.`);
+        } else {
+          console.log('✅ Stage history record inserted successfully');
+        }
+        
+        // Step 2: Update the lead's stage in leads_lead table
+        const { error: leadUpdateError } = await supabase
+          .from('leads_lead')
+          .update({
+            stage: stageId,
+            stage_changed_at: timestamp,
+          })
+          .eq('id', legacyId);
+        
+        if (leadUpdateError) {
+          console.error('❌ Failed to update legacy lead stage:', {
+            error: leadUpdateError,
+            code: leadUpdateError.code,
+            message: leadUpdateError.message,
+            contractId: updatedContract.id,
+            token: token,
+            legacyId: updatedContract.legacy_id,
+          });
+          alert(`Warning: Contract signed but stage update failed: ${leadUpdateError.message || 'Database error'}. Please contact support.`);
+        } else {
+          console.log('✅ Lead stage 60 (Client signed agreement) successfully updated');
+        }
+      }
+      
       // Trigger backend logic (e.g., payment plan, lead balance)
       if (updatedContract) {
         await handleContractSigned(updatedContract);

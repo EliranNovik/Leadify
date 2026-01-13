@@ -2,9 +2,14 @@
 -- This function bypasses RLS using SECURITY DEFINER to allow unauthenticated users
 -- to update the lead stage when signing a contract via public link
 
+-- Drop any existing versions with different signatures to avoid conflicts
+DROP FUNCTION IF EXISTS public.update_lead_stage_for_public_contract(BIGINT, INTEGER, TEXT);
+DROP FUNCTION IF EXISTS public.update_lead_stage_for_public_contract(INTEGER, INTEGER, TEXT);
+DROP FUNCTION IF EXISTS public.update_lead_stage_for_public_contract(BIGINT, BIGINT, TEXT);
+
 CREATE OR REPLACE FUNCTION public.update_lead_stage_for_public_contract(
   p_lead_id BIGINT,
-  p_stage INTEGER,
+  p_stage BIGINT,
   p_public_token TEXT
 )
 RETURNS JSONB
@@ -24,12 +29,13 @@ BEGIN
     FROM lead_leadcontact 
     WHERE lead_id = p_lead_id 
     AND public_token = p_public_token
+    AND public_token IS NOT NULL
   ) INTO v_contract_exists;
   
   IF NOT v_contract_exists THEN
     RETURN jsonb_build_object(
       'success', false,
-      'error', 'Invalid contract or token'
+      'error', 'Invalid contract or token. Contract may not have a public_token set.'
     );
   END IF;
   
@@ -37,6 +43,7 @@ BEGIN
   v_timestamp := NOW();
   
   -- Step 1: Insert into leads_leadstage table
+  -- Note: stage column is BIGINT, so we ensure proper type casting
   INSERT INTO leads_leadstage (
     lead_id,
     stage,
@@ -46,7 +53,7 @@ BEGIN
     creator_id
   ) VALUES (
     p_lead_id,
-    p_stage,
+    p_stage::BIGINT,
     v_timestamp,
     v_timestamp,
     v_timestamp,
@@ -55,9 +62,11 @@ BEGIN
   RETURNING id INTO v_stage_record_id;
   
   -- Step 2: Update the lead's stage in leads_lead table
+  -- Note: leads_lead.stage is BIGINT (not INTEGER!)
+  -- The foreign key constraint leads_lead_stage_fkey references lead_stages(id)
   UPDATE leads_lead
   SET 
-    stage = p_stage,
+    stage = p_stage::BIGINT,
     stage_changed_by = 'Public Contract Signing',
     stage_changed_at = v_timestamp
   WHERE id = p_lead_id;
@@ -90,8 +99,8 @@ END;
 $$;
 
 -- Grant execute permission to anon (unauthenticated) users
-GRANT EXECUTE ON FUNCTION public.update_lead_stage_for_public_contract(BIGINT, INTEGER, TEXT) TO anon;
-GRANT EXECUTE ON FUNCTION public.update_lead_stage_for_public_contract(BIGINT, INTEGER, TEXT) TO authenticated;
+GRANT EXECUTE ON FUNCTION public.update_lead_stage_for_public_contract(BIGINT, BIGINT, TEXT) TO anon;
+GRANT EXECUTE ON FUNCTION public.update_lead_stage_for_public_contract(BIGINT, BIGINT, TEXT) TO authenticated;
 
 -- Add comment
 COMMENT ON FUNCTION public.update_lead_stage_for_public_contract IS 

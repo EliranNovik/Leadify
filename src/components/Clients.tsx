@@ -559,7 +559,7 @@ const Clients: React.FC<ClientsProps> = ({
     });
   };
 
-  // Function to find duplicate contacts
+  // Optimized function to find duplicate contacts - uses parallel queries and batching
   const findDuplicateContacts = async () => {
     if (!selectedClient?.id) {
       setDuplicateContacts([]);
@@ -575,15 +575,28 @@ const Clients: React.FC<ClientsProps> = ({
         ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
         : selectedClient.id;
 
-      // Get all contacts for the current lead
-      const { data: leadContacts } = await supabase
-        .from('lead_leadcontact')
-        .select('contact_id, main, newlead_id, lead_id')
-        .or(isLegacyLead 
-          ? `lead_id.eq.${currentLeadId}` 
-          : `newlead_id.eq.${currentLeadId}`
-        );
+      // Normalize phone numbers for comparison
+      const normalizePhone = (phone: string | null | undefined): string => {
+        if (!phone) return '';
+        return phone.replace(/\D/g, '');
+      };
 
+      // Step 1: Get all contacts for the current lead (parallel with contact details)
+      const [leadContactsResult, currentContactsResult] = await Promise.all([
+        supabase
+          .from('lead_leadcontact')
+          .select('contact_id, main, newlead_id, lead_id')
+          .or(isLegacyLead 
+            ? `lead_id.eq.${currentLeadId}` 
+            : `newlead_id.eq.${currentLeadId}`
+          ),
+        // Pre-fetch contact details in parallel
+        supabase
+          .from('leads_contact')
+          .select('id, name, email, phone, mobile')
+      ]);
+
+      const leadContacts = leadContactsResult.data;
       if (!leadContacts || leadContacts.length === 0) {
         setDuplicateContacts([]);
         return;
@@ -595,18 +608,125 @@ const Clients: React.FC<ClientsProps> = ({
         return;
       }
 
-      // Get contact details
-      const { data: currentContacts } = await supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile')
-        .in('id', contactIds);
-
-      if (!currentContacts || currentContacts.length === 0) {
+      // Filter current contacts from pre-fetched data
+      const currentContacts = (currentContactsResult.data || []).filter(c => contactIds.includes(c.id));
+      if (currentContacts.length === 0) {
         setDuplicateContacts([]);
         return;
       }
 
-      // Build search filters for duplicate detection
+      // Step 2: Build all search filters at once and combine into single query
+      const allFilters: string[] = [];
+      const contactFilterMap = new Map<number, string[]>(); // Map contact ID to its filters
+
+      for (const currentContact of currentContacts) {
+        const filters: string[] = [];
+
+        if (currentContact.email) {
+          filters.push(`email.eq.${currentContact.email}`);
+        }
+        if (currentContact.name) {
+          filters.push(`name.ilike.%${currentContact.name}%`);
+        }
+        if (currentContact.phone) {
+          const normalizedPhone = normalizePhone(currentContact.phone);
+          if (normalizedPhone) {
+            filters.push(`phone.eq.${currentContact.phone}`);
+            filters.push(`mobile.eq.${currentContact.phone}`);
+          }
+        }
+        if (currentContact.mobile) {
+          const normalizedMobile = normalizePhone(currentContact.mobile);
+          if (normalizedMobile) {
+            filters.push(`phone.eq.${currentContact.mobile}`);
+            filters.push(`mobile.eq.${currentContact.mobile}`);
+          }
+        }
+
+        if (filters.length > 0) {
+          allFilters.push(...filters);
+          contactFilterMap.set(currentContact.id, filters);
+        }
+      }
+
+      if (allFilters.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      // Step 3: Single query to find all duplicate contacts
+      const { data: allDuplicateContacts } = await supabase
+        .from('leads_contact')
+        .select('id, name, email, phone, mobile, country_id, misc_country!country_id(id, name)')
+        .or(allFilters.join(','));
+
+      const duplicateContacts = (allDuplicateContacts || []).filter(
+        dc => !contactIds.includes(dc.id)
+      );
+
+      if (duplicateContacts.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      // Step 4: Get all relationships in parallel
+      const duplicateContactIds = duplicateContacts.map(dc => dc.id);
+      const { data: relationships } = await supabase
+        .from('lead_leadcontact')
+        .select('contact_id, newlead_id, lead_id')
+        .in('contact_id', duplicateContactIds);
+
+      if (!relationships || relationships.length === 0) {
+        setDuplicateContacts([]);
+        return;
+      }
+
+      // Step 5: Collect all lead IDs and fetch in parallel
+      const newLeadIds = [...new Set(relationships.map(r => r.newlead_id).filter(Boolean))] as string[];
+      const legacyLeadIds = [...new Set(relationships.map(r => r.lead_id).filter(Boolean))] as number[];
+      const allSourceIds = new Set<number>();
+
+      // Fetch leads and collect source IDs in parallel
+      const [newLeadsResult, legacyLeadsResult] = await Promise.all([
+        newLeadIds.length > 0
+          ? supabase
+              .from('leads')
+              .select('id, lead_number, name, stage, category, master_id, status, topic, source_id')
+              .in('id', newLeadIds)
+              .is('master_id', null)
+          : Promise.resolve({ data: [] }),
+        legacyLeadIds.length > 0
+          ? supabase
+              .from('leads_lead')
+              .select('id, name, stage, category_id, master_id, status, topic, source_id')
+              .in('id', legacyLeadIds)
+              .is('master_id', null)
+          : Promise.resolve({ data: [] })
+      ]);
+
+      const newLeads = newLeadsResult.data || [];
+      const legacyLeads = legacyLeadsResult.data || [];
+
+      // Collect all source IDs for batch fetching
+      newLeads.forEach(lead => { if (lead.source_id) allSourceIds.add(lead.source_id); });
+      legacyLeads.forEach(lead => { if (lead.source_id) allSourceIds.add(lead.source_id); });
+
+      // Step 6: Batch fetch all source names at once
+      const sourceNamesMap = new Map<number, string>();
+      if (allSourceIds.size > 0) {
+        const { data: sources } = await supabase
+          .from('misc_leadsource')
+          .select('id, name')
+          .in('id', Array.from(allSourceIds));
+        
+        (sources || []).forEach(source => {
+          if (source.id && source.name) {
+            sourceNamesMap.set(source.id, source.name);
+          }
+        });
+      }
+
+      // Step 7: Build duplicate matches efficiently
       const duplicateMatches: Array<{
         contactId: number;
         contactName: string;
@@ -626,225 +746,75 @@ const Clients: React.FC<ClientsProps> = ({
         status: string | number | null;
       }> = [];
 
-      for (const currentContact of currentContacts) {
-        const filters: string[] = [];
+      const processedLeads = new Set<string>(); // Track processed leads to avoid duplicates
+
+      // Process new leads
+      for (const duplicateContact of duplicateContacts) {
+        const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
         
-        // Normalize phone numbers for comparison
-        const normalizePhone = (phone: string | null | undefined): string => {
-          if (!phone) return '';
-          return phone.replace(/\D/g, '');
-        };
-
-        if (currentContact.email) {
-          filters.push(`email.eq.${currentContact.email}`);
-        }
-        if (currentContact.name) {
-          filters.push(`name.ilike.%${currentContact.name}%`);
-        }
-        if (currentContact.phone) {
-          const normalizedPhone = normalizePhone(currentContact.phone);
-          if (normalizedPhone) {
-            filters.push(`phone.eq.${currentContact.phone}`);
-            // Also check mobile field
-            filters.push(`mobile.eq.${currentContact.phone}`);
-          }
-        }
-        if (currentContact.mobile) {
-          const normalizedMobile = normalizePhone(currentContact.mobile);
-          if (normalizedMobile) {
-            filters.push(`phone.eq.${currentContact.mobile}`);
-            filters.push(`mobile.eq.${currentContact.mobile}`);
-          }
-        }
-
-        if (filters.length === 0) continue;
-
-        // Find contacts with matching data (excluding current lead's contacts)
-        // Build OR query properly for Supabase
-        let duplicateQuery = supabase
-          .from('leads_contact')
-          .select('id, name, email, phone, mobile, country_id, misc_country!country_id(id, name)');
-        
-        if (filters.length > 0) {
-          duplicateQuery = duplicateQuery.or(filters.join(','));
-        }
-        
-        // Exclude current lead's contacts - filter after fetching
-        const { data: allDuplicateContacts } = await duplicateQuery;
-        const duplicateContacts = allDuplicateContacts?.filter(
-          dc => !contactIds.includes(dc.id)
-        ) || [];
-
-        if (!duplicateContacts || duplicateContacts.length === 0) continue;
-
-        // For each duplicate contact, find which leads it belongs to
-        const duplicateContactIds = duplicateContacts.map(dc => dc.id);
-        const { data: relationships } = await supabase
-          .from('lead_leadcontact')
-          .select('contact_id, newlead_id, lead_id')
-          .in('contact_id', duplicateContactIds);
-
-        if (!relationships || relationships.length === 0) continue;
-
-        // Get lead information for each relationship
-        const newLeadIds = relationships
-          .map(r => r.newlead_id)
-          .filter(Boolean) as string[];
-        const legacyLeadIds = relationships
-          .map(r => r.lead_id)
-          .filter(Boolean) as number[];
-
-        // Fetch new leads (excluding subleads - those with master_id)
-        if (newLeadIds.length > 0) {
-          const { data: newLeads } = await supabase
-            .from('leads')
-            .select('id, lead_number, name, stage, category, master_id, status, topic, source_id')
-            .in('id', newLeadIds)
-            .is('master_id', null); // Only get main leads, exclude subleads
-
-          if (newLeads) {
-            for (const duplicateContact of duplicateContacts) {
-              const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-              for (const rel of contactRelationships) {
-                if (rel.newlead_id) {
-                  const lead = newLeads.find(l => l.id === rel.newlead_id);
-                  if (lead && lead.id !== currentLeadId) {
-                    const matchingFields: string[] = [];
-                    if (currentContact.email && duplicateContact.email && currentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
-                      matchingFields.push('email');
-                    }
-                    if (currentContact.phone && duplicateContact.phone && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.phone)) {
-                      matchingFields.push('phone');
-                    }
-                    if (currentContact.mobile && duplicateContact.mobile && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.mobile)) {
-                      matchingFields.push('mobile');
-                    }
-                    if (currentContact.phone && duplicateContact.mobile && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.mobile)) {
-                      matchingFields.push('phone/mobile');
-                    }
-                    if (currentContact.mobile && duplicateContact.phone && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.phone)) {
-                      matchingFields.push('mobile/phone');
-                    }
-
-                    if (matchingFields.length > 0) {
-                      // Get category name for new lead (category is already text in new leads table)
-                      const categoryName = lead.category || null;
-                      // Get stage name from stage ID
-                      const stageName = (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null;
-                      // Get country name from the contact
-                      const countryName = (duplicateContact.misc_country as any)?.name || null;
-                      // Get topic
-                      const topicName = lead.topic || null;
-                      // Get source name
-                      let sourceName = null;
-                      if (lead.source_id) {
-                        const { data: sourceData } = await supabase
-                          .from('misc_leadsource')
-                          .select('name')
-                          .eq('id', lead.source_id)
-                          .maybeSingle();
-                        sourceName = sourceData?.name || null;
-                      }
-                      
-                      duplicateMatches.push({
-                        contactId: duplicateContact.id,
-                        contactName: duplicateContact.name || 'Unknown',
-                        contactEmail: duplicateContact.email,
-                        contactPhone: duplicateContact.phone,
-                        contactMobile: duplicateContact.mobile,
-                        contactCountry: countryName,
-                        leadId: lead.id,
-                        leadNumber: lead.lead_number || String(lead.id),
-                        leadName: lead.name || 'Unknown',
-                        leadType: 'new',
-                        matchingFields,
-                        stage: stageName, // Use stage name instead of ID
-                        category: categoryName,
-                        topic: topicName,
-                        source: sourceName,
-                        status: lead.status || null,
-                      });
-                    }
+        for (const rel of contactRelationships) {
+          if (rel.newlead_id) {
+            const lead = newLeads.find(l => l.id === rel.newlead_id);
+            if (lead && lead.id !== currentLeadId && !processedLeads.has(`new_${lead.id}`)) {
+              // Find which current contact matches this duplicate
+              const matchingCurrentContact = currentContacts.find(cc => {
+                const contactFilters = contactFilterMap.get(cc.id) || [];
+                return contactFilters.some(filter => {
+                  if (filter.includes('email.eq.') && duplicateContact.email) {
+                    return filter.includes(duplicateContact.email);
                   }
+                  if (filter.includes('phone.eq.') || filter.includes('mobile.eq.')) {
+                    const normalized = normalizePhone(duplicateContact.phone || duplicateContact.mobile);
+                    return normalized && (normalizePhone(cc.phone) === normalized || normalizePhone(cc.mobile) === normalized);
+                  }
+                  return false;
+                });
+              });
+
+              if (matchingCurrentContact) {
+                const matchingFields: string[] = [];
+                if (matchingCurrentContact.email && duplicateContact.email && 
+                    matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                  matchingFields.push('email');
                 }
-              }
-            }
-          }
-        }
+                const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
+                const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
+                const normDupPhone = normalizePhone(duplicateContact.phone);
+                const normDupMobile = normalizePhone(duplicateContact.mobile);
+                
+                if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
+                  matchingFields.push('phone');
+                }
+                if (normCurrentMobile && normDupMobile && normCurrentMobile === normDupMobile) {
+                  matchingFields.push('mobile');
+                }
+                if (normCurrentPhone && normDupMobile && normCurrentPhone === normDupMobile) {
+                  matchingFields.push('phone/mobile');
+                }
+                if (normCurrentMobile && normDupPhone && normCurrentMobile === normDupPhone) {
+                  matchingFields.push('mobile/phone');
+                }
 
-        // Fetch legacy leads (excluding subleads - those with master_id)
-        if (legacyLeadIds.length > 0) {
-          const { data: legacyLeads } = await supabase
-            .from('leads_lead')
-            .select('id, name, stage, category_id, master_id, status, topic, source_id')
-            .in('id', legacyLeadIds)
-            .is('master_id', null); // Only get main leads, exclude subleads
-
-          if (legacyLeads) {
-            for (const duplicateContact of duplicateContacts) {
-              const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-              for (const rel of contactRelationships) {
-                if (rel.lead_id) {
-                  const lead = legacyLeads.find(l => l.id === rel.lead_id);
-                  if (lead && String(lead.id) !== String(currentLeadId)) {
-                    const matchingFields: string[] = [];
-                    if (currentContact.email && duplicateContact.email && currentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
-                      matchingFields.push('email');
-                    }
-                    if (currentContact.phone && duplicateContact.phone && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.phone)) {
-                      matchingFields.push('phone');
-                    }
-                    if (currentContact.mobile && duplicateContact.mobile && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.mobile)) {
-                      matchingFields.push('mobile');
-                    }
-                    if (currentContact.phone && duplicateContact.mobile && normalizePhone(currentContact.phone) === normalizePhone(duplicateContact.mobile)) {
-                      matchingFields.push('phone/mobile');
-                    }
-                    if (currentContact.mobile && duplicateContact.phone && normalizePhone(currentContact.mobile) === normalizePhone(duplicateContact.phone)) {
-                      matchingFields.push('mobile/phone');
-                    }
-
-                    if (matchingFields.length > 0) {
-                      // Get category name for legacy lead
-                      const categoryName = lead.category_id ? getCategoryName(lead.category_id) : null;
-                      // Get stage name from stage ID
-                      const stageName = (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null;
-                      
-                      // Get country name from the contact
-                      const countryName = (duplicateContact.misc_country as any)?.name || null;
-                      // Get topic
-                      const topicName = lead.topic || null;
-                      // Get source name
-                      let sourceName = null;
-                      if (lead.source_id) {
-                        const { data: sourceData } = await supabase
-                          .from('misc_leadsource')
-                          .select('name')
-                          .eq('id', lead.source_id)
-                          .maybeSingle();
-                        sourceName = sourceData?.name || null;
-                      }
-                      
-                      duplicateMatches.push({
-                        contactId: duplicateContact.id,
-                        contactName: duplicateContact.name || 'Unknown',
-                        contactEmail: duplicateContact.email,
-                        contactPhone: duplicateContact.phone,
-                        contactMobile: duplicateContact.mobile,
-                        contactCountry: countryName,
-                        leadId: `legacy_${lead.id}`,
-                        leadNumber: String(lead.id),
-                        leadName: lead.name || 'Unknown',
-                        leadType: 'legacy',
-                        matchingFields,
-                        stage: stageName, // Use stage name instead of ID
-                        category: categoryName,
-                        topic: topicName,
-                        source: sourceName,
-                        status: lead.status || null,
-                      });
-                    }
-                  }
+                if (matchingFields.length > 0) {
+                  processedLeads.add(`new_${lead.id}`);
+                  duplicateMatches.push({
+                    contactId: duplicateContact.id,
+                    contactName: duplicateContact.name || 'Unknown',
+                    contactEmail: duplicateContact.email,
+                    contactPhone: duplicateContact.phone,
+                    contactMobile: duplicateContact.mobile,
+                    contactCountry: (duplicateContact.misc_country as any)?.name || null,
+                    leadId: lead.id,
+                    leadNumber: lead.lead_number || String(lead.id),
+                    leadName: lead.name || 'Unknown',
+                    leadType: 'new',
+                    matchingFields,
+                    stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
+                    category: lead.category || null,
+                    topic: lead.topic || null,
+                    source: lead.source_id ? (sourceNamesMap.get(lead.source_id) || null) : null,
+                    status: lead.status || null,
+                  });
                 }
               }
             }
@@ -852,8 +822,81 @@ const Clients: React.FC<ClientsProps> = ({
         }
       }
 
-      // Deduplicate by leadNumber to ensure each lead appears only once
-      // If the same lead has multiple matching contacts, we'll keep the first one
+      // Process legacy leads
+      for (const duplicateContact of duplicateContacts) {
+        const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
+        
+        for (const rel of contactRelationships) {
+          if (rel.lead_id) {
+            const lead = legacyLeads.find(l => l.id === rel.lead_id);
+            if (lead && String(lead.id) !== String(currentLeadId) && !processedLeads.has(`legacy_${lead.id}`)) {
+              // Find which current contact matches this duplicate
+              const matchingCurrentContact = currentContacts.find(cc => {
+                const contactFilters = contactFilterMap.get(cc.id) || [];
+                return contactFilters.some(filter => {
+                  if (filter.includes('email.eq.') && duplicateContact.email) {
+                    return filter.includes(duplicateContact.email);
+                  }
+                  if (filter.includes('phone.eq.') || filter.includes('mobile.eq.')) {
+                    const normalized = normalizePhone(duplicateContact.phone || duplicateContact.mobile);
+                    return normalized && (normalizePhone(cc.phone) === normalized || normalizePhone(cc.mobile) === normalized);
+                  }
+                  return false;
+                });
+              });
+
+              if (matchingCurrentContact) {
+                const matchingFields: string[] = [];
+                if (matchingCurrentContact.email && duplicateContact.email && 
+                    matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                  matchingFields.push('email');
+                }
+                const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
+                const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
+                const normDupPhone = normalizePhone(duplicateContact.phone);
+                const normDupMobile = normalizePhone(duplicateContact.mobile);
+                
+                if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
+                  matchingFields.push('phone');
+                }
+                if (normCurrentMobile && normDupMobile && normCurrentMobile === normDupMobile) {
+                  matchingFields.push('mobile');
+                }
+                if (normCurrentPhone && normDupMobile && normCurrentPhone === normDupMobile) {
+                  matchingFields.push('phone/mobile');
+                }
+                if (normCurrentMobile && normDupPhone && normCurrentMobile === normDupPhone) {
+                  matchingFields.push('mobile/phone');
+                }
+
+                if (matchingFields.length > 0) {
+                  processedLeads.add(`legacy_${lead.id}`);
+                  duplicateMatches.push({
+                    contactId: duplicateContact.id,
+                    contactName: duplicateContact.name || 'Unknown',
+                    contactEmail: duplicateContact.email,
+                    contactPhone: duplicateContact.phone,
+                    contactMobile: duplicateContact.mobile,
+                    contactCountry: (duplicateContact.misc_country as any)?.name || null,
+                    leadId: `legacy_${lead.id}`,
+                    leadNumber: String(lead.id),
+                    leadName: lead.name || 'Unknown',
+                    leadType: 'legacy',
+                    matchingFields,
+                    stage: (lead.stage !== null && lead.stage !== undefined) ? getStageName(String(lead.stage)) : null,
+                    category: lead.category_id ? getCategoryName(lead.category_id) : null,
+                    topic: lead.topic || null,
+                    source: lead.source_id ? (sourceNamesMap.get(lead.source_id) || null) : null,
+                    status: lead.status || null,
+                  });
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Deduplicate by leadNumber
       const uniqueMatches = Array.from(
         new Map(
           duplicateMatches.map(m => [m.leadNumber, m])
@@ -2913,18 +2956,14 @@ useEffect(() => {
     refreshClientData();
   }, [allCategories, selectedClient?.id, onClientUpdate]);
 
-  // Find duplicate contacts when selectedClient changes
+  // Find duplicate contacts when selectedClient changes - run immediately without delay
   useEffect(() => {
     // Clear immediately when client changes to prevent showing old badge
     setDuplicateContacts([]);
     
     if (selectedClient?.id) {
-      // Use a small delay to ensure state is cleared first, then fetch
-      const timeoutId = setTimeout(() => {
-        findDuplicateContacts();
-      }, 0);
-      
-      return () => clearTimeout(timeoutId);
+      // Run immediately - no delay needed
+      findDuplicateContacts();
     }
   }, [selectedClient?.id]);
 
@@ -3112,16 +3151,20 @@ useEffect(() => {
               }
               
               // Calculate sub-lead suffix if this is a sub-lead (has master_id)
+              // Optimized: Use a simpler query without ordering for faster results
               let subLeadSuffix: number | undefined;
               if (legacyLead.master_id) {
+                // Use a faster query - just count and find index, no ordering needed initially
                 const { data: existingSubLeads } = await supabase
                   .from('leads_lead')
                   .select('id')
                   .eq('master_id', legacyLead.master_id)
                   .not('master_id', 'is', null)
-                  .order('id', { ascending: true });
+                  .limit(100); // Limit to prevent huge queries
                 
                 if (existingSubLeads) {
+                  // Sort in memory (faster than DB sort for small datasets)
+                  existingSubLeads.sort((a, b) => a.id - b.id);
                   const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
                   // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
                   subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;

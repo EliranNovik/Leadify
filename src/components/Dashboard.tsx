@@ -9,7 +9,7 @@ import UnavailableEmployeesModal from './UnavailableEmployeesModal';
 import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
-import { convertToNIS, calculateTotalRevenueInNIS } from '../lib/currencyConversion';
+import { convertToNIS, calculateTotalRevenueInNIS, getCurrencySymbol } from '../lib/currencyConversion';
 import { PieChart as RechartsPieChart, Pie, Cell } from 'recharts';
 import { LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceDot, ReferenceArea, BarChart, Bar, Legend as RechartsLegend, CartesianGrid } from 'recharts';
 import { RadialBarChart, RadialBar, PolarAngleAxis, Legend } from 'recharts';
@@ -147,108 +147,15 @@ const Dashboard: React.FC = () => {
   const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
   const [searchTerm, setSearchTerm] = useState('');
 
-  // Immediate session check on mount - redirect if no session
-  // Add small delay when multiple tabs open to avoid race conditions
+  // Skip redundant auth check - ProtectedRoute already handles authentication
+  // Just rely on AuthContext state for faster page loads
   useEffect(() => {
-    // If user is already authenticated via context, skip the check
     if (authUser && isInitialized) {
-      console.log('✅ [Dashboard] User already authenticated via context, skipping check');
       setIsAuthChecked(true);
-      return;
+    } else if (isInitialized && !authUser) {
+      // AuthContext will handle redirect via ProtectedRoute
+      setIsAuthChecked(true);
     }
-    
-    const checkSessionImmediately = async () => {
-      console.log('🔐 [Dashboard] Starting auth check...');
-      
-      // Set a timeout to prevent infinite waiting (reduced to 2 seconds for faster UX)
-      const timeoutId = setTimeout(() => {
-        console.warn('⚠️ [Dashboard] Auth check timeout - allowing render to proceed');
-        setIsAuthChecked(true);
-      }, 2000);
-      
-      try {
-        // Small delay to allow other tabs to coordinate (only on initial load)
-        await new Promise(resolve => setTimeout(resolve, 50));
-        
-        // Check if another tab is redirecting
-        const redirectingUntil = typeof window !== 'undefined' ? localStorage.getItem('supabase_auth_redirecting') : null;
-        if (redirectingUntil) {
-          const until = parseInt(redirectingUntil, 10);
-          if (Date.now() < until) {
-            // Another tab is redirecting, wait a bit but not too long
-            console.log('⏳ [Dashboard] Another tab is redirecting, waiting...');
-            await new Promise(resolve => setTimeout(resolve, 300));
-          } else {
-            // Stale flag, clear it
-            if (typeof window !== 'undefined') {
-              localStorage.removeItem('supabase_auth_redirecting');
-            }
-          }
-        }
-        
-        console.log('🔍 [Dashboard] Checking session expiration...');
-        const isExpired = await sessionManager.checkAndHandleExpiration();
-        if (isExpired) {
-          // Already redirected by checkAndHandleExpiration
-          console.log('❌ [Dashboard] Session expired, redirecting...');
-          clearTimeout(timeoutId);
-          return;
-        }
-        
-        // Also check if we can get user (with retry for race conditions)
-        console.log('👤 [Dashboard] Getting user...');
-        let retries = 0;
-        let user = null;
-        let error = null;
-        
-        while (retries < 2 && !user) {
-          const result = await supabase.auth.getUser();
-          user = result.data?.user || null;
-          error = result.error;
-          
-          if (error && isAuthError(error)) {
-            console.error('❌ [Dashboard] Auth error - redirecting');
-            clearTimeout(timeoutId);
-            await handleSessionExpiration();
-            return;
-          }
-          
-          if (!user && retries < 1) {
-            // Wait a bit and retry (might be race condition with other tabs)
-            console.log(`⏳ [Dashboard] No user found, retrying... (attempt ${retries + 1})`);
-            await new Promise(resolve => setTimeout(resolve, 200));
-            retries++;
-          } else {
-            break;
-          }
-        }
-        
-        if (!user) {
-          // No user after retries - redirect to login
-          console.log('❌ [Dashboard] No user found after retries - redirecting to login');
-          clearTimeout(timeoutId);
-          await handleSessionExpiration();
-          return;
-        }
-        
-        // Auth check passed - allow rendering
-        console.log('✅ [Dashboard] Auth check passed, allowing render');
-        clearTimeout(timeoutId);
-        setIsAuthChecked(true);
-      } catch (error) {
-        console.error('❌ [Dashboard] Error checking session:', error);
-        clearTimeout(timeoutId);
-        if (isAuthError(error)) {
-          await handleSessionExpiration();
-          return;
-        }
-        // On non-auth errors, still allow rendering (might be network issue)
-        console.log('⚠️ [Dashboard] Non-auth error, allowing render anyway');
-        setIsAuthChecked(true);
-      }
-    };
-    
-    checkSessionImmediately();
   }, [authUser, isInitialized]);
 
   // Fetch meeting locations and their default links for join buttons
@@ -2602,7 +2509,7 @@ const Dashboard: React.FC = () => {
           const { data: newLeads, error: newLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, category,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2629,7 +2536,12 @@ const Dashboard: React.FC = () => {
           const { data: leadsData, error: leadsError } = await supabase
             .from('leads_lead')
             .select(`
-              id, total, total_base, currency_id,
+              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
+              accounting_currencies!leads_lead_currency_id_fkey(
+                id,
+                iso_code,
+                name
+              ),
               misc_category(
                 id, name, parent_id,
                 misc_maincategory(
@@ -2774,7 +2686,7 @@ const Dashboard: React.FC = () => {
           const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
             .from('leads')
             .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, category,
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
               misc_category!category_id(
                 id, name, parent_id,
                 misc_maincategory!parent_id(
@@ -2800,7 +2712,12 @@ const Dashboard: React.FC = () => {
           const { data: monthLeadsData, error: monthLeadsError } = await supabase
             .from('leads_lead')
             .select(`
-              id, total, total_base, currency_id,
+              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
+              accounting_currencies!leads_lead_currency_id_fkey(
+                id,
+                iso_code,
+                name
+              ),
               misc_category(
                 id, name, parent_id,
                 misc_maincategory(
@@ -2927,19 +2844,73 @@ const Dashboard: React.FC = () => {
               // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
               const currencyId = lead.currency_id;
               const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
               if (numericCurrencyId === 1) {
-                // If total exists and has a value, use total; otherwise use total_base
-                const totalValue = parseFloat(lead.total);
-                amount = (totalValue && totalValue !== 0) ? totalValue : (parseFloat(lead.total_base) || 0);
+                // Use total_base for NIS/ILS currency
+                amount = parseFloat(lead.total_base) || 0;
               } else {
                 // Use total for other currencies
                 amount = parseFloat(lead.total) || 0;
               }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
+            
+            // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
+            const parseNumericAmount = (val: any) => {
+              if (typeof val === 'number') return val;
+              if (typeof val === 'string') {
+                const cleaned = val.replace(/[^0-9.-]/g, '');
+                const parsed = parseFloat(cleaned);
+                return Number.isNaN(parsed) ? 0 : parsed;
+              }
+              return 0;
+            };
+            
+            // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
+            const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+              for (const candidate of candidates) {
+                if (candidate === null || candidate === undefined) continue;
+                const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+                if (rawValue === null || rawValue === undefined) continue;
+                
+                if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+                  return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
+                }
+                
+                const valueStr = rawValue.toString().trim();
+                if (!valueStr) continue;
+                
+                const numeric = Number(valueStr);
+                if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
+                  return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
+                }
+                
+                const upper = valueStr.toUpperCase();
+                if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
+                  return { displaySymbol: '₪', conversionValue: 'NIS' };
+                }
+                if (upper === 'USD' || valueStr === '$') {
+                  return { displaySymbol: '$', conversionValue: 'USD' };
+                }
+                if (upper === 'EUR' || valueStr === '€') {
+                  return { displaySymbol: '€', conversionValue: 'EUR' };
+                }
+                if (upper === 'GBP' || valueStr === '£') {
+                  return { displaySymbol: '£', conversionValue: 'GBP' };
+                }
+              }
+              return { displaySymbol: '₪', conversionValue: 'NIS' };
+            };
+            
+            const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+            const currencyMeta = record.isNewLead
+              ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+              : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+            const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+            const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+            
             const recordDate = record.date;
             
             // Debug currency conversion
@@ -2973,34 +2944,34 @@ const Dashboard: React.FC = () => {
               // Check if it's today
               if (recordDateOnly === todayStr) {
                 newAgreementData.Today[deptIndex].count++;
-                newAgreementData.Today[deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Today[deptIndex].amount += amountAfterFee; // Use amount after fee
                 newAgreementData.Today[0].count++; // General
-                newAgreementData.Today[0].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Today[0].amount += amountAfterFee; // Use amount after fee
               }
               
               // Check if it's yesterday
               if (recordDateOnly === yesterdayStr) {
                 newAgreementData.Yesterday[deptIndex].count++;
-                newAgreementData.Yesterday[deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Yesterday[deptIndex].amount += amountAfterFee; // Use amount after fee
                 newAgreementData.Yesterday[0].count++; // General
-                newAgreementData.Yesterday[0].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Yesterday[0].amount += amountAfterFee; // Use amount after fee
               }
               
               // Check if it's in the last week (7 days including today)
               if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
                 newAgreementData.Week[deptIndex].count++;
-                newAgreementData.Week[deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Week[deptIndex].amount += amountAfterFee; // Use amount after fee
                 newAgreementData.Week[0].count++; // General
-                newAgreementData.Week[0].amount += amountInNIS; // Use NIS amount
+                newAgreementData.Week[0].amount += amountAfterFee; // Use amount after fee
               }
               
               // Check if it's in last 30 days (rolling 30 days from today)
               // Always use thirtyDaysAgoStr for Last 30d - from 30 days ago to today
               if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
                 newAgreementData["Last 30d"][deptIndex].count++;
-                newAgreementData["Last 30d"][deptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData["Last 30d"][deptIndex].amount += amountAfterFee; // Use amount after fee
                 newAgreementData["Last 30d"][0].count++; // General
-                newAgreementData["Last 30d"][0].amount += amountInNIS; // Use NIS amount
+                newAgreementData["Last 30d"][0].amount += amountAfterFee; // Use amount after fee
               }
               
               // Note: Month data will be processed separately from monthStageRecords
@@ -3038,19 +3009,73 @@ const Dashboard: React.FC = () => {
               // For new leads, use balance or proposal_total
               amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
             } else {
-              // For legacy leads: if currency_id is 1 (NIS/ILS), use total if it exists; otherwise use total_base
+              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
               const currencyId = lead.currency_id;
               const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
               if (numericCurrencyId === 1) {
-                // If total exists and has a value, use total; otherwise use total_base
-                const totalValue = parseFloat(lead.total);
-                amount = (totalValue && totalValue !== 0) ? totalValue : (parseFloat(lead.total_base) || 0);
+                // Use total_base for NIS/ILS currency
+                amount = parseFloat(lead.total_base) || 0;
               } else {
                 // Use total for other currencies
                 amount = parseFloat(lead.total) || 0;
               }
             }
             const amountInNIS = convertToNIS(amount, lead.currency_id);
+            
+            // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
+            const parseNumericAmount = (val: any) => {
+              if (typeof val === 'number') return val;
+              if (typeof val === 'string') {
+                const cleaned = val.replace(/[^0-9.-]/g, '');
+                const parsed = parseFloat(cleaned);
+                return Number.isNaN(parsed) ? 0 : parsed;
+              }
+              return 0;
+            };
+            
+            // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
+            const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+              for (const candidate of candidates) {
+                if (candidate === null || candidate === undefined) continue;
+                const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+                if (rawValue === null || rawValue === undefined) continue;
+                
+                if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+                  return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
+                }
+                
+                const valueStr = rawValue.toString().trim();
+                if (!valueStr) continue;
+                
+                const numeric = Number(valueStr);
+                if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
+                  return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
+                }
+                
+                const upper = valueStr.toUpperCase();
+                if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
+                  return { displaySymbol: '₪', conversionValue: 'NIS' };
+                }
+                if (upper === 'USD' || valueStr === '$') {
+                  return { displaySymbol: '$', conversionValue: 'USD' };
+                }
+                if (upper === 'EUR' || valueStr === '€') {
+                  return { displaySymbol: '€', conversionValue: 'EUR' };
+                }
+                if (upper === 'GBP' || valueStr === '£') {
+                  return { displaySymbol: '£', conversionValue: 'GBP' };
+                }
+              }
+              return { displaySymbol: '₪', conversionValue: 'NIS' };
+            };
+            
+            const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+            const currencyMeta = record.isNewLead
+              ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+              : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+            const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+            const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+            
             const recordDate = record.date;
             
             // Get department ID from the JOIN
@@ -3076,7 +3101,7 @@ const Dashboard: React.FC = () => {
               // Check if it's in selected month (must be between start and end of month)
               if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
                 newAgreementData[selectedMonthName][monthDeptIndex].count++;
-                newAgreementData[selectedMonthName][monthDeptIndex].amount += amountInNIS; // Use NIS amount
+                newAgreementData[selectedMonthName][monthDeptIndex].amount += amountAfterFee; // Use amount after fee
               }
             } else {
               monthSkippedCount++;
