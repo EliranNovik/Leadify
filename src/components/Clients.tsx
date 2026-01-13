@@ -11144,12 +11144,23 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           {/* Unactivated Lead Compact Card */}
           <div 
             className="bg-base-100 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-base-300 overflow-hidden"
-            onClick={() => {
-              console.log('🔍 Clicking unactivated view to expand');
-              console.log('🔍 Current isUnactivatedView before setting:', isUnactivatedView);
+            onClick={(e) => {
+              // Don't navigate if clicking on a button inside
+              if ((e.target as HTMLElement).closest('button')) {
+                return;
+              }
+              console.log('🔍 Clicking unactivated view to navigate to lead page');
+              // First, expand the view
               setUserManuallyExpanded(true);
               setIsUnactivatedView(false);
-              console.log('🔍 Set isUnactivatedView to false and userManuallyExpanded to true');
+              // Then navigate to ensure we're on the correct route
+              if (selectedClient.lead_number) {
+                navigate(`/clients/${selectedClient.lead_number}`, { replace: false });
+              } else if (selectedClient.id) {
+                // Fallback to id if lead_number is not available
+                const leadId = selectedClient.id.toString().replace('legacy_', '');
+                navigate(`/clients/${leadId}`, { replace: false });
+              }
             }}
           >
             {/* Header with Unactivated Badge */}
@@ -11189,7 +11200,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   {/* Meeting Scheduled Badge */}
                   {hasScheduledMeetings && nextMeetingDate && (
                     <button
-                      onClick={() => setActiveTab('meeting')}
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setActiveTab('meeting');
+                      }}
                       className="shadow-lg cursor-pointer animate-pulse font-semibold rounded-full"
                       style={{
                         background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',

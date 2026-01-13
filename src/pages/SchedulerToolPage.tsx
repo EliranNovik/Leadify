@@ -15,7 +15,8 @@ import CallOptionsModal from '../components/CallOptionsModal';
 
 export interface SchedulerLead {
   id: string;
-  lead_number: string;
+  lead_number: string; // Display format (e.g., "12345/2" for subleads)
+  lead_number_nav?: string; // Actual lead_number from DB for navigation (for subleads)
   name: string;
   created_at: string;
   latest_interaction?: string;
@@ -952,8 +953,22 @@ const SchedulerToolPage: React.FC = () => {
         }
       }
 
+      // Debug: First, let's check lead 210552 directly
+      const { data: lead210552Data, error: lead210552Error } = await supabase
+        .from('leads_lead')
+        .select('id, name, master_id, meeting_scheduler_id, status, stage, manual_id')
+        .eq('id', 210552)
+        .single();
+      
+      console.log('🔍 [SchedulerTool] Direct query for lead 210552:', {
+        found: !!lead210552Data,
+        data: lead210552Data,
+        error: lead210552Error
+      });
+
       // Fetch legacy leads with scheduler assigned to current user and specific stages
-      const { data: legacyLeads, error: legacyError } = await supabase
+      // Status filter: status = 0 OR status IS NULL (both mean active)
+      let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
           id,
@@ -980,17 +995,33 @@ const SchedulerToolPage: React.FC = () => {
           manual_id
         `)
         .eq('meeting_scheduler_id', Number(userData.employee_id)) // Filter by current user's employee ID (use number for bigint column)
-        .eq('status', 0) // Only active leads (status 0 = active, status 10 = inactive)
         .in('stage', [0, 10, 11, 15]) // Only show leads with stages 0, 10, 11, 15
         .neq('stage', 110); // Explicitly exclude stage 110 (Handler Started)
+      
+      // Status filter: status = 0 OR status IS NULL (both mean active)
+      legacyLeadsQuery = legacyLeadsQuery.or('status.eq.0,status.is.null');
+      
+      const { data: legacyLeads, error: legacyError } = await legacyLeadsQuery;
 
       if (legacyError) {
         console.error('❌ Error fetching legacy leads:', legacyError);
         throw legacyError;
       }
 
-      // Calculate sublead suffixes for legacy leads
+      // Debug: Check if lead 210552 is in the initial fetch
+      console.log('🔍 [SchedulerTool] Initial legacy leads fetch:', {
+        employeeId: userData.employee_id,
+        totalLeads: legacyLeads?.length || 0,
+        lead210552Found: legacyLeads?.some((lead: any) => lead.id === 210552),
+        lead210552Data: legacyLeads?.find((lead: any) => lead.id === 210552),
+        allLeadIds: legacyLeads?.map((lead: any) => lead.id).slice(0, 20),
+        allMasterIds: legacyLeads?.map((lead: any) => lead.master_id).filter(Boolean).slice(0, 10)
+      });
+
+      // Calculate sublead suffixes for legacy leads AND fetch subleads to display
       const subLeadSuffixMap = new Map<string, number>();
+      let subLeadsToAdd: any[] = []; // Store subleads that should be displayed
+      
       if (legacyLeads && legacyLeads.length > 0) {
         // Find all unique master_ids from:
         // 1. Leads that ARE subleads (have a master_id)
@@ -1009,10 +1040,20 @@ const SchedulerToolPage: React.FC = () => {
         // Combine both sets of master IDs
         const allMasterIds = Array.from(new Set([...masterIdsFromSubLeads, ...potentialMasterIds]));
         
+        console.log('🔍 [SchedulerTool] Master IDs found:', {
+          masterIdsFromSubLeads,
+          potentialMasterIds,
+          allMasterIds: allMasterIds.slice(0, 10),
+          totalMasterIds: allMasterIds.length,
+          lead210552MasterId: lead210552Data?.master_id,
+          isLead210552MasterInList: lead210552Data?.master_id ? allMasterIds.includes(lead210552Data.master_id.toString()) : false
+        });
+        
         if (allMasterIds.length > 0) {
           // Fetch all subleads for all master_ids in one query
           const numericMasterIds = allMasterIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
           if (numericMasterIds.length > 0) {
+            // First, fetch just IDs and master_ids for suffix calculation
             const { data: allSubLeads } = await supabase
               .from('leads_lead')
               .select('id, master_id')
@@ -1020,6 +1061,13 @@ const SchedulerToolPage: React.FC = () => {
               .not('master_id', 'is', null)
               .order('master_id', { ascending: true })
               .order('id', { ascending: true });
+            
+            console.log('🔍 [SchedulerTool] Subleads found (for suffix calculation):', {
+              totalSubLeads: allSubLeads?.length || 0,
+              lead210552Found: allSubLeads?.some((lead: any) => lead.id === 210552),
+              lead210552Data: allSubLeads?.find((lead: any) => lead.id === 210552),
+              sampleSubLeadIds: allSubLeads?.map((lead: any) => lead.id).slice(0, 10)
+            });
             
             if (allSubLeads) {
               // Group by master_id and calculate suffixes
@@ -1044,10 +1092,81 @@ const SchedulerToolPage: React.FC = () => {
                   }
                 });
               });
+              
+              // Now fetch full sublead data for subleads that should be displayed
+              // Only fetch subleads that match the same criteria (status, stage) as master leads
+              const subLeadIds = allSubLeads.map((sl: any) => sl.id);
+              if (subLeadIds.length > 0) {
+                // Build query for subleads - status can be 0 OR null (null means active)
+                let subLeadsQuery = supabase
+                  .from('leads_lead')
+                  .select(`
+                    id,
+                    name,
+                    cdate,
+                    latest_interaction,
+                    stage,
+                    language_id,
+                    source_id,
+                    category,
+                    category_id,
+                    topic,
+                    total,
+                    currency_id,
+                    meeting_scheduler_id,
+                    phone,
+                    email,
+                    description,
+                    special_notes,
+                    notes,
+                    probability,
+                    eligibile,
+                    master_id,
+                    manual_id
+                  `)
+                  .in('id', subLeadIds)
+                  .in('stage', [0, 10, 11, 15]) // Only show leads with stages 0, 10, 11, 15
+                  .neq('stage', 110); // Explicitly exclude stage 110
+                
+                // Status filter: status = 0 OR status IS NULL (both mean active)
+                subLeadsQuery = subLeadsQuery.or('status.eq.0,status.is.null');
+                
+                const { data: fullSubLeads, error: subLeadsError } = await subLeadsQuery;
+                
+                if (subLeadsError) {
+                  console.error('❌ Error fetching full sublead data:', subLeadsError);
+                } else if (fullSubLeads) {
+                  // Only add subleads that aren't already in legacyLeads (avoid duplicates)
+                  const existingLeadIds = new Set(legacyLeads.map((lead: any) => lead.id));
+                  subLeadsToAdd = fullSubLeads.filter((subLead: any) => !existingLeadIds.has(subLead.id));
+                  
+                  console.log('🔍 [SchedulerTool] Full subleads fetched:', {
+                    totalFullSubLeads: fullSubLeads?.length || 0,
+                    subLeadsToAdd: subLeadsToAdd.length,
+                    lead210552Found: fullSubLeads?.some((lead: any) => lead.id === 210552),
+                    lead210552Data: fullSubLeads?.find((lead: any) => lead.id === 210552),
+                    lead210552InToAdd: subLeadsToAdd.some((lead: any) => lead.id === 210552),
+                    allSubLeadIds: fullSubLeads?.map((lead: any) => lead.id).slice(0, 20),
+                    subLeadIdsQuery: subLeadIds.slice(0, 10),
+                    error: subLeadsError
+                  });
+                }
+              }
             }
           }
         }
       }
+      
+      // Combine master leads with their subleads
+      const allLegacyLeads = [...(legacyLeads || []), ...subLeadsToAdd];
+      
+      console.log('🔍 [SchedulerTool] Final legacy leads (masters + subleads):', {
+        masterLeadsCount: legacyLeads?.length || 0,
+        subLeadsAddedCount: subLeadsToAdd.length,
+        totalLegacyLeads: allLegacyLeads.length,
+        lead210552Found: allLegacyLeads.some((lead: any) => lead.id === 210552),
+        lead210552Data: allLegacyLeads.find((lead: any) => lead.id === 210552)
+      });
 
       // Fetch language mappings for legacy leads
       const { data: languageMapping } = await supabase
@@ -1061,8 +1180,8 @@ const SchedulerToolPage: React.FC = () => {
         });
       }
 
-      // Fetch tags for legacy leads
-      const legacyLeadIds = legacyLeads?.map(lead => lead.id) || [];
+      // Fetch tags for legacy leads (use allLegacyLeads which includes subleads)
+      const legacyLeadIds = allLegacyLeads?.map(lead => lead.id) || [];
       let legacyTagsMap = new Map();
       
       if (legacyLeadIds.length > 0) {
@@ -1175,8 +1294,8 @@ const SchedulerToolPage: React.FC = () => {
           }
         }
         
-        // Fetch follow-ups for legacy leads
-        const legacyLeadIds = legacyLeads?.map(lead => lead.id) || [];
+        // Fetch follow-ups for legacy leads (use allLegacyLeads which includes subleads)
+        const legacyLeadIds = allLegacyLeads?.map(lead => lead.id) || [];
         if (legacyLeadIds.length > 0) {
           const { data: legacyFollowups } = await supabase
             .from('follow_ups')
@@ -1230,7 +1349,9 @@ const SchedulerToolPage: React.FC = () => {
       let legacyCountryMap = new Map();
       let legacyCountryIdMap = new Map();
       
-      if (legacyLeadIds.length > 0) {
+      // Use allLegacyLeads which includes subleads for country data
+      const legacyLeadIdsForCountry = allLegacyLeads?.map(lead => lead.id) || [];
+      if (legacyLeadIdsForCountry.length > 0) {
         try {
           // Query for country data via lead_leadcontact -> leads_contact -> misc_country
           const { data: legacyCountryData, error: legacyCountryError } = await supabase
@@ -1245,7 +1366,7 @@ const SchedulerToolPage: React.FC = () => {
                 )
               )
             `)
-            .in('lead_id', legacyLeadIds)
+            .in('lead_id', legacyLeadIdsForCountry)
             .eq('main', 'true'); // Only get main contacts
           
           if (legacyCountryError) {
@@ -1275,7 +1396,7 @@ const SchedulerToolPage: React.FC = () => {
                   )
                 )
               `)
-              .in('lead_id', legacyLeadIds);
+              .in('lead_id', legacyLeadIdsForCountry);
             
             if (allContactsResult.data && allContactsResult.data.length > 0) {
               allContactsResult.data.forEach((item: any) => {
@@ -1309,20 +1430,30 @@ const SchedulerToolPage: React.FC = () => {
           const sourceName = getSourceName(lead.source_id, lead.source, sourcesData);
           const categoryName = getCategoryName(lead.category_id, lead.category, categoriesData);
           
-          // Format lead_number with sublead suffix if applicable
-          let leadNumber: string;
+          // Format lead_number with sublead suffix if applicable (for display only)
+          // For navigation, always use the actual lead_number from database
+          let leadNumberDisplay: string;
           if (lead.master_id) {
-            // It's a sublead - format as master_id/suffix
-            const suffix = subLeadSuffixMap.get(lead.id?.toString() || '') || 2;
-            leadNumber = `${lead.master_id}/${suffix}`;
+            // It's a sublead - format as master_id/suffix for display
+            const suffix = newSubLeadSuffixMap.get(lead.id?.toString() || '') || 2;
+            // For subleads, use the master's lead_number (not master_id)
+            // First, find the master lead to get its lead_number
+            const masterLead = newLeads.find((l: any) => l.id === lead.master_id || l.lead_number === lead.master_id);
+            const masterLeadNumber = masterLead?.lead_number || lead.master_id;
+            leadNumberDisplay = `${masterLeadNumber}/${suffix}`;
           } else {
-            // It's a master lead or standalone lead
-            leadNumber = String(lead.manual_id || lead.id);
+            // It's a master lead or standalone lead - use lead_number from database
+            leadNumberDisplay = lead.lead_number || String(lead.id);
           }
+          
+          // For navigation, always use the actual lead_number from database (not the formatted display string)
+          // This ensures subleads navigate to their own page, not the master's page
+          const leadNumberForNavigation = lead.lead_number || String(lead.id);
           
           return {
             id: lead.id,
-            lead_number: leadNumber,
+            lead_number: leadNumberDisplay, // Display format (e.g., "12345/2" for subleads)
+            lead_number_nav: leadNumberForNavigation, // Actual lead_number for navigation
             name: lead.name || '',
             created_at: lead.created_at || '',
             latest_interaction: lead.latest_interaction || '',
@@ -1352,7 +1483,8 @@ const SchedulerToolPage: React.FC = () => {
 
 
       // Transform legacy leads - already filtered by user's employee ID
-      const transformedLegacyLeads: SchedulerLead[] = (legacyLeads || [])
+      // Use allLegacyLeads which includes both master leads and their subleads
+      const transformedLegacyLeads: SchedulerLead[] = (allLegacyLeads || [])
         .filter(lead => {
           // For legacy leads, eligible is text field - show only leads that are NOT eligible
           // Hide leads that are explicitly set to 'yes' or 'true'
@@ -1554,14 +1686,34 @@ const SchedulerToolPage: React.FC = () => {
   const handleViewClient = (lead: SchedulerLead, event?: React.MouseEvent) => {
     const isNewTab = event?.metaKey || event?.ctrlKey;
     
+    // Build navigation URL matching Clients.tsx buildClientRoute pattern
+    // For subleads: /clients/{actual_lead_number}?lead={formatted_display_string}
+    // For regular leads: /clients/{lead_number}
+    let navigationUrl = '';
+    
+    if (lead.lead_type === 'new' && lead.lead_number_nav) {
+      // New lead sublead: use actual lead_number from DB in path, formatted display in query
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        // Sublead: path uses actual lead_number, query uses formatted display
+        navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        // Regular new lead: just use lead_number
+        navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}`;
+      }
+    } else {
+      // Legacy lead or fallback: use lead_number directly
+      navigationUrl = `/clients/${encodeURIComponent(lead.lead_number)}`;
+    }
+    
     if (isNewTab) {
       // Open in new tab
-      window.open(`/clients/${lead.lead_number}`, '_blank');
+      window.open(navigationUrl, '_blank');
       return;
     }
     
     // Normal navigation in same tab
-    navigate(`/clients/${lead.lead_number}`);
+    navigate(navigationUrl);
   };
 
   const handleEmail = (lead: SchedulerLead) => {
@@ -1576,7 +1728,25 @@ const SchedulerToolPage: React.FC = () => {
 
   const handleTimeline = (lead: SchedulerLead) => {
     // Navigate to the client page with the InteractionsTab
-    navigate(`/clients/${lead.lead_number}?tab=interactions`);
+    // Build navigation URL matching Clients.tsx buildClientRoute pattern
+    let navigationUrl = '';
+    
+    if (lead.lead_type === 'new' && lead.lead_number_nav) {
+      // New lead sublead: use actual lead_number from DB in path, formatted display in query
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        // Sublead: path uses actual lead_number, query uses formatted display
+        navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}?lead=${encodeURIComponent(lead.lead_number)}&tab=interactions`;
+      } else {
+        // Regular new lead: just use lead_number
+        navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}?tab=interactions`;
+      }
+    } else {
+      // Legacy lead or fallback: use lead_number directly
+      navigationUrl = `/clients/${encodeURIComponent(lead.lead_number)}?tab=interactions`;
+    }
+    
+    navigate(navigationUrl);
   };
 
   // Helper function to add highlight to user_highlights table
@@ -1745,7 +1915,25 @@ const SchedulerToolPage: React.FC = () => {
     if (isNewTab) {
       const lead = leads.find(l => l.id === leadId);
       if (lead) {
-        window.open(`/clients/${lead.lead_number}`, '_blank');
+        // Build navigation URL matching Clients.tsx buildClientRoute pattern
+        let navigationUrl = '';
+        
+        if (lead.lead_type === 'new' && lead.lead_number_nav) {
+          // New lead sublead: use actual lead_number from DB in path, formatted display in query
+          const isSubLead = lead.lead_number.includes('/');
+          if (isSubLead) {
+            // Sublead: path uses actual lead_number, query uses formatted display
+            navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}?lead=${encodeURIComponent(lead.lead_number)}`;
+          } else {
+            // Regular new lead: just use lead_number
+            navigationUrl = `/clients/${encodeURIComponent(lead.lead_number_nav)}`;
+          }
+        } else {
+          // Legacy lead or fallback: use lead_number directly
+          navigationUrl = `/clients/${encodeURIComponent(lead.lead_number)}`;
+        }
+        
+        window.open(navigationUrl, '_blank');
         return;
       }
     }

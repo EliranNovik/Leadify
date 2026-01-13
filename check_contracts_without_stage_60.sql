@@ -4,10 +4,18 @@
 -- Filtered by contract date from 28/12/2025 to 12/01/2026
 -- (Date format in HTML can be either DD/MM/YYYY or MM/DD/YYYY - handles both)
 -- (Change the dates below if needed - use DD/MM/YYYY format for the range)
+-- Now tries multiple date extraction patterns to find dates in different HTML formats
 WITH date_extracted AS (
     SELECT 
         llc.lead_id,
-        (regexp_match(llc.signed_contract_html::text, '<span class="user-input">([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1] as date_str
+        llc.id as contact_id,
+        -- Try multiple patterns and use the first one that matches
+        COALESCE(
+            (regexp_match(llc.signed_contract_html::text, '<span class="user-input">([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1],
+            (regexp_match(llc.signed_contract_html::text, '<span[^>]*>([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1],
+            (regexp_match(llc.signed_contract_html::text, '(?:Date:|תאריך:)\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})'))[1],
+            (regexp_match(llc.signed_contract_html::text, '([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})'))[1]
+        ) as date_str
     FROM lead_leadcontact llc
     WHERE 
         llc.signed_contract_html IS NOT NULL
@@ -17,11 +25,18 @@ WITH date_extracted AS (
             WHERE lls.lead_id = llc.lead_id 
             AND lls.stage = 60
         )
-        AND (regexp_match(llc.signed_contract_html::text, '<span class="user-input">([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1] IS NOT NULL
+        -- Check if any pattern matches
+        AND (
+            (regexp_match(llc.signed_contract_html::text, '<span class="user-input">([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1] IS NOT NULL
+            OR (regexp_match(llc.signed_contract_html::text, '<span[^>]*>([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})</span>'))[1] IS NOT NULL
+            OR (regexp_match(llc.signed_contract_html::text, '(?:Date:|תאריך:)\s*([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})'))[1] IS NOT NULL
+            OR (regexp_match(llc.signed_contract_html::text, '([0-9]{1,2}/[0-9]{1,2}/[0-9]{4})'))[1] IS NOT NULL
+        )
 ),
 date_parsed AS (
     SELECT 
         de.lead_id,
+        de.contact_id,
         de.date_str as contract_date,
         CASE 
             -- If first part > 12, it must be DD/MM/YYYY
@@ -44,12 +59,17 @@ date_parsed AS (
                 )
         END as parsed_date
     FROM date_extracted de
+    WHERE de.date_str IS NOT NULL
 )
 SELECT DISTINCT 
     dp.lead_id,
+    dp.contact_id,
     dp.contract_date,
-    dp.parsed_date
+    dp.parsed_date,
+    ll.lead_number,
+    ll.name
 FROM date_parsed dp
+INNER JOIN leads_lead ll ON dp.lead_id = ll.id
 WHERE 
     dp.parsed_date BETWEEN to_date('28/12/2025', 'DD/MM/YYYY') AND to_date('12/01/2026', 'DD/MM/YYYY')
 ORDER BY dp.lead_id
