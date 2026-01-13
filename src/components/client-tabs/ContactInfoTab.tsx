@@ -1,6 +1,6 @@
 import React, { useState, useEffect, Fragment, useMemo, useRef } from 'react';
 import { ClientTabProps } from '../../types/client';
-import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PhoneIcon, EnvelopeIcon, PlusIcon, MinusIcon, DocumentTextIcon, XMarkIcon, PencilSquareIcon, CheckIcon, TrashIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../../lib/supabase';
 import { createPortal } from 'react-dom';
 import SignaturePad from 'react-signature-canvas';
@@ -74,8 +74,16 @@ const processHtmlForEditing = (html: string): string => {
   processed = processed.replace(/([>\s])_____________([\s<])/g, '$1{{text}}$2');
   
   // Replace placeholders with styled input fields and signature pads
+  // Add unique IDs to each input field for tracking
+  let textFieldCounter = 0;
   processed = processed
-    .replace(/\{\{text\}\}/g, '<input type="text" class="inline-input" style="border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" placeholder="Enter text..." />')
+    .replace(/\{\{text\}\}/g, () => {
+      const id = `text-field-${textFieldCounter++}`;
+      return `<span class="text-field-wrapper" data-field-id="${id}" style="display: inline-block; position: relative; margin: 0 4px;">
+        <input type="text" class="inline-input" id="${id}" data-field-type="text" style="border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);" placeholder="Enter text..." />
+        <button type="button" class="text-field-remove-btn" data-field-id="${id}" style="position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; background: #ef4444; color: white; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1; padding: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.2);" title="Remove field">−</button>
+      </span>`;
+    })
     .replace(/\{\{sig\}\}/g, '<div class="signature-pad" style="display: inline-block; border: 2px dashed #3b82f6; border-radius: 6px; padding: 12px; margin: 0 4px; min-width: 180px; min-height: 50px; background: #f8fafc; cursor: pointer; text-align: center; font-size: 14px; color: #6b7280; font-weight: 500;">Click to sign</div>');
   
   return processed;
@@ -402,6 +410,77 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
     }
   };
 
+  // Function to insert a new text field at the cursor position
+  const insertTextField = () => {
+    if (!contractEditorRef.current) return;
+    
+    const selection = window.getSelection();
+    if (!selection) return;
+    
+    let range: Range;
+    if (selection.rangeCount === 0) {
+      // If no selection, insert at the end
+      range = document.createRange();
+      range.selectNodeContents(contractEditorRef.current);
+      range.collapse(false);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    } else {
+      range = selection.getRangeAt(0);
+    }
+    const textFieldWrapper = document.createElement('span');
+    textFieldWrapper.className = 'text-field-wrapper';
+    const fieldId = `text-field-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    textFieldWrapper.setAttribute('data-field-id', fieldId);
+    textFieldWrapper.style.cssText = 'display: inline-block; position: relative; margin: 0 4px;';
+    
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'inline-input';
+    input.id = fieldId;
+    input.setAttribute('data-field-type', 'text');
+    input.style.cssText = 'border: 2px solid #3b82f6; border-radius: 6px; padding: 4px 8px; margin: 0 4px; min-width: 150px; font-family: inherit; font-size: 14px; background: #ffffff; color: #374151; box-shadow: 0 1px 3px rgba(0,0,0,0.1);';
+    input.placeholder = 'Enter text...';
+    
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'text-field-remove-btn';
+    removeBtn.setAttribute('data-field-id', fieldId);
+    removeBtn.style.cssText = 'position: absolute; top: -8px; right: -8px; width: 20px; height: 20px; border-radius: 50%; background: #ef4444; color: white; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1; padding: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.2);';
+    removeBtn.title = 'Remove field';
+    removeBtn.textContent = '−';
+    removeBtn.onclick = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      removeTextField(fieldId);
+    };
+    
+    textFieldWrapper.appendChild(input);
+    textFieldWrapper.appendChild(removeBtn);
+    
+    range.deleteContents();
+    range.insertNode(textFieldWrapper);
+    
+    // Move cursor after the input
+    const newRange = document.createRange();
+    newRange.setStartAfter(input);
+    newRange.collapse(true);
+    selection.removeAllRanges();
+    selection.addRange(newRange);
+    
+    input.focus();
+  };
+
+  // Function to remove a text field
+  const removeTextField = (fieldId: string) => {
+    if (!contractEditorRef.current) return;
+    
+    const wrapper = contractEditorRef.current.querySelector(`[data-field-id="${fieldId}"]`);
+    if (wrapper && wrapper.parentNode) {
+      wrapper.parentNode.removeChild(wrapper);
+    }
+  };
+
   // Effect to handle signature pad clicks and input field interactions
   useEffect(() => {
     if (viewingContract && viewingContract.mode === 'edit' && contractEditorRef.current) {
@@ -434,6 +513,19 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
               newPad.parentNode?.replaceChild(signatureInput, newPad);
               signatureInput.focus();
             });
+          });
+          
+          // Handle remove button clicks for text fields
+          const removeButtons = contentDiv.querySelectorAll('.text-field-remove-btn');
+          removeButtons.forEach(btn => {
+            const fieldId = btn.getAttribute('data-field-id');
+            if (fieldId) {
+              btn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                removeTextField(fieldId);
+              });
+            }
           });
         }
       }, 100);
@@ -4395,6 +4487,35 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                 line-height: 1.5 !important;
                 height: auto !important;
               }
+              .text-field-wrapper {
+                display: inline-block !important;
+                position: relative !important;
+                margin: 0 4px !important;
+              }
+              .text-field-remove-btn {
+                position: absolute !important;
+                top: -8px !important;
+                right: -8px !important;
+                width: 20px !important;
+                height: 20px !important;
+                border-radius: 50% !important;
+                background: #ef4444 !important;
+                color: white !important;
+                border: none !important;
+                cursor: pointer !important;
+                display: flex !important;
+                align-items: center !important;
+                justify-content: center !important;
+                font-size: 12px !important;
+                line-height: 1 !important;
+                padding: 0 !important;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.2) !important;
+                z-index: 10 !important;
+              }
+              .text-field-remove-btn:hover {
+                background: #dc2626 !important;
+                transform: scale(1.1) !important;
+              }
               .signature-pad {
                 display: inline-block !important;
                 vertical-align: middle !important;
@@ -4720,6 +4841,15 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                             >
                               ≡
                             </button>
+                            <div className="divider divider-horizontal mx-1"></div>
+                            <button
+                              onClick={insertTextField}
+                              className="btn btn-sm btn-primary"
+                              title="Add Text Field"
+                            >
+                              <PlusIcon className="w-4 h-4 mr-1" />
+                              Add Field
+                            </button>
                           </div>
                         </div>
                         <div 
@@ -4956,13 +5086,22 @@ const ContactInfoTab: React.FC<ClientTabProps> = ({ client, onClientUpdate }) =>
                       
                       // Replace text inputs - match by order
                       // Important: Always use {{text}} placeholder when saving to preserve editability
+                      // Handle both wrapped inputs (in text-field-wrapper) and standalone inputs
                       const tempTextInputs = Array.from(tempContainer.querySelectorAll('input.inline-input'));
                       tempTextInputs.forEach((tempInput, index) => {
                         if (textInputs[index]) {
                           const value = (textInputs[index] as HTMLInputElement).value.trim();
                           // Always use {{text}} placeholder when saving, so it can be edited again later
                           const textNode = document.createTextNode('{{text}}');
-                          tempInput.parentNode?.replaceChild(textNode, tempInput);
+                          // Check if input is wrapped in a text-field-wrapper
+                          const wrapper = tempInput.closest('.text-field-wrapper');
+                          if (wrapper) {
+                            // Replace the entire wrapper with the placeholder
+                            wrapper.parentNode?.replaceChild(textNode, wrapper);
+                          } else {
+                            // Replace just the input
+                            tempInput.parentNode?.replaceChild(textNode, tempInput);
+                          }
                         }
                       });
                       

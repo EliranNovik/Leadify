@@ -201,6 +201,7 @@ const PublicContractView: React.FC = () => {
   const [applicantFieldIds, setApplicantFieldIds] = useState<string[]>([]);
   const [activeApplicantFields, setActiveApplicantFields] = useState<string[]>([]); // Fields that are currently visible (can be added/removed)
   const [dynamicApplicantFieldCounter, setDynamicApplicantFieldCounter] = useState(0); // Counter for generating new field IDs
+  const [leadNumber, setLeadNumber] = useState<string | null>(null);
   
   // Ref for contract content area (for PDF generation)
   const contractContentRef = useRef<HTMLDivElement>(null);
@@ -365,13 +366,50 @@ const PublicContractView: React.FC = () => {
         setLoading(false);
         return;
       }
-      // Fetch client info
-      const { data: leadData } = await supabase
-        .from('leads')
-        .select('id, name, email, phone, mobile')
-        .eq('id', contractData.client_id)
-        .single();
-      setClient(leadData);
+      // Fetch client info and lead number
+      // Check if this is a legacy lead (has legacy_id) or new lead (has client_id)
+      if (contractData.legacy_id) {
+        // Legacy lead - fetch from leads_lead table
+        const { data: legacyLeadData } = await supabase
+          .from('leads_lead')
+          .select('id, lead_number, manual_id, name, email, phone, mobile')
+          .eq('id', contractData.legacy_id)
+          .single();
+        
+        if (legacyLeadData) {
+          setClient({
+            id: legacyLeadData.id,
+            name: legacyLeadData.name,
+            email: legacyLeadData.email,
+            phone: legacyLeadData.phone,
+            mobile: legacyLeadData.mobile
+          });
+          
+          // Format lead number: use lead_number, then manual_id, then id
+          const formattedLeadNumber = legacyLeadData.lead_number 
+            ? String(legacyLeadData.lead_number)
+            : (legacyLeadData.manual_id 
+              ? String(legacyLeadData.manual_id)
+              : String(legacyLeadData.id));
+          setLeadNumber(formattedLeadNumber);
+        }
+      } else if (contractData.client_id) {
+        // New lead - fetch from leads table
+        const { data: leadData } = await supabase
+          .from('leads')
+          .select('id, lead_number, name, email, phone, mobile')
+          .eq('id', contractData.client_id)
+          .single();
+        
+        if (leadData) {
+          setClient(leadData);
+          // Format lead number: use lead_number with L prefix if it doesn't have it
+          const formattedLeadNumber = leadData.lead_number 
+            ? (leadData.lead_number.startsWith('L') ? leadData.lead_number : `L${leadData.lead_number}`)
+            : null;
+          setLeadNumber(formattedLeadNumber);
+        }
+      }
       
       // Load saved client inputs if contract was previously started
       if (contractData.client_inputs) {
@@ -1641,9 +1679,16 @@ const PublicContractView: React.FC = () => {
           </div>
         )}
         
-        <h1 className="text-xl md:text-2xl font-bold mb-4 md:mb-6 text-center">
-          Contract for {contract?.contact_name || client?.name || 'Client'}
-        </h1>
+        <div className="mb-4 md:mb-6 text-center">
+          <h1 className="text-xl md:text-2xl font-bold">
+            Contract for {contract?.contact_name || client?.name || 'Client'}
+          </h1>
+          {leadNumber && (
+            <p className="text-sm md:text-base text-gray-600 mt-2">
+              Lead Number: <span className="font-mono font-semibold text-blue-600">#{leadNumber}</span>
+            </p>
+          )}
+        </div>
         
         <div ref={contractContentRef} id="contract-print-area" className="prose prose-sm md:prose-base max-w-none">
                   {thankYou ? (
