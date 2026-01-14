@@ -467,6 +467,14 @@ const AppContentInner: React.FC = () => {
       <Route path="/calls-ledger" element={
         <ProtectedRoute user={authUser}>
           <div className="flex h-screen bg-white">
+            <Sidebar 
+              userName={userFullName || userName}
+              userInitials={userInitials}
+              isOpen={isSidebarOpen}
+              onClose={() => setIsSidebarOpen(false)}
+              onOpenAIChat={() => setIsAiChatOpen(true)}
+              mobileOnly={true}
+            />
             <div className="flex-1 flex flex-col overflow-hidden">
               <Header 
                 onMenuClick={() => setIsSidebarOpen(prev => !prev)} 
@@ -516,13 +524,14 @@ const AppContentInner: React.FC = () => {
         element={
           <ProtectedRoute user={authUser}>
             <div className={`flex h-screen bg-base-100 ${appJustLoggedIn ? 'fade-in' : ''}`}>
-              {!isAdminPage && !isReportsPage && !isSignedSalesPage && (
+              {!isSignedSalesPage && (
                 <Sidebar 
                   userName={userFullName || userName}
                   userInitials={userInitials}
                   isOpen={isSidebarOpen}
                   onClose={() => setIsSidebarOpen(false)}
                   onOpenAIChat={() => setIsAiChatOpen(true)}
+                  mobileOnly={isReportsPage || isAdminPage}
                 />
               )}
               <div className={`flex-1 flex flex-col overflow-hidden ${!isAdminPage && !isReportsPage && !isSignedSalesPage ? 'md:pl-24' : ''}`}>

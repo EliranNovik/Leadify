@@ -522,6 +522,126 @@ const CalendarPage: React.FC = () => {
     return employee ? employee.display_name : employeeId.toString(); // Fallback to ID if not found
   };
 
+  // Helper function to get employee object by ID or display name
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--') {
+      console.log('🔍 getEmployeeById - Invalid input:', employeeIdOrName);
+      return null;
+    }
+    
+    console.log('🔍 getEmployeeById - Searching for:', employeeIdOrName, 'Type:', typeof employeeIdOrName, 'Total employees:', allEmployees.length);
+    
+    // First, try to match by ID (for legacy leads and new leads with ID fields)
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+      
+      // Skip if searchId is NaN (not a valid number)
+      if (isNaN(Number(searchId))) return false;
+      
+      // Try exact match
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+      
+      return false;
+    });
+    
+    if (employeeById) {
+      console.log('✅ getEmployeeById - Found by ID:', employeeById.display_name, 'ID:', employeeById.id, 'photo_url:', employeeById.photo_url, 'photo:', employeeById.photo);
+      return employeeById;
+    }
+    
+    // If not found by ID, try to match by display name (for new leads where display_name is saved)
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        // Case-insensitive match, trim whitespace
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+      
+      if (employeeByName) {
+        console.log('✅ getEmployeeById - Found by name:', employeeByName.display_name, 'ID:', employeeByName.id, 'photo_url:', employeeByName.photo_url, 'photo:', employeeByName.photo);
+        return employeeByName;
+      }
+    }
+    
+    console.log('❌ getEmployeeById - Not found:', employeeIdOrName, 'Sample employee IDs:', allEmployees.slice(0, 5).map(e => ({ id: e.id, name: e.display_name })));
+    return null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string) => {
+    if (!name) return '--';
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
+  // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
+  const EmployeeAvatar: React.FC<{ 
+    employeeId: string | number | null | undefined; 
+    size?: 'sm' | 'md';
+    showPlaceholder?: boolean; // If false, return null when no employee (for unassigned roles)
+  }> = ({ employeeId, size = 'md', showPlaceholder = false }) => {
+    const [imageError, setImageError] = useState(false);
+    const employee = getEmployeeById(employeeId);
+    
+    console.log('🖼️ EmployeeAvatar - Input:', employeeId, 'Found employee:', employee?.display_name || 'NOT FOUND');
+    
+    if (!employee) {
+      console.log('🖼️ EmployeeAvatar - No employee found for:', employeeId, 'showPlaceholder:', showPlaceholder);
+      // Return null if no placeholder should be shown (for unassigned roles)
+      if (!showPlaceholder) {
+        return null;
+      }
+      // Return placeholder only if showPlaceholder is true
+      return (
+        <div className={`${size === 'sm' ? 'w-8 h-8' : 'w-10 h-10'} rounded-full flex items-center justify-center bg-gray-200 text-gray-500 text-xs font-semibold`}>
+          --
+        </div>
+      );
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+    const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
+
+    console.log('🖼️ EmployeeAvatar - Employee:', employee.display_name, 'photo_url:', employee.photo_url, 'photo:', employee.photo, 'Final photoUrl:', photoUrl, 'imageError:', imageError);
+
+    if (imageError || !photoUrl) {
+      console.log('🖼️ EmployeeAvatar - Showing initials for:', employee.display_name, 'Reason:', imageError ? 'Image error' : 'No photo URL');
+      return (
+        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
+          {initials}
+        </div>
+      );
+    }
+
+    console.log('🖼️ EmployeeAvatar - Rendering image for:', employee.display_name, 'URL:', photoUrl);
+    return (
+      <img
+        src={photoUrl}
+        alt={employee.display_name}
+        className={`${sizeClasses} rounded-full object-cover`}
+        onError={(e) => {
+          console.error('🖼️ EmployeeAvatar - Image load ERROR for:', photoUrl, 'Employee:', employee.display_name, 'Error event:', e);
+          setImageError(true);
+        }}
+        onLoad={() => {
+          console.log('🖼️ EmployeeAvatar - Image loaded SUCCESS for:', photoUrl, 'Employee:', employee.display_name);
+        }}
+      />
+    );
+  };
+
+  // Helper function to render employee avatar (wrapper for backward compatibility)
+  const renderEmployeeAvatar = (employeeId: string | number | null | undefined, size: 'sm' | 'md' = 'md', showPlaceholder: boolean = false) => {
+    return <EmployeeAvatar employeeId={employeeId} size={size} showPlaceholder={showPlaceholder} />;
+  };
+
   // Helper function to get role display name
   const getRoleDisplayName = (roleCode: string | null | undefined): string => {
     if (!roleCode) return 'N/A';
@@ -874,7 +994,7 @@ const CalendarPage: React.FC = () => {
       // Fetch legacy leads with minimal fields
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
-        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
+        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
         .gte('meeting_date', fromDate)
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
@@ -892,9 +1012,14 @@ const CalendarPage: React.FC = () => {
       
       if (!legacyData || legacyData.length === 0) return [];
       
-      // Fetch currencies separately if we have legacy data
+      // Fetch currencies separately if we have legacy data (both currency_id and meeting_total_currency_id)
       let currencyMap: Record<number, { name?: string; iso_code?: string }> = {};
-      const currencyIds = [...new Set(legacyData.map((l: any) => l.meeting_total_currency_id).filter(Boolean))];
+      const currencyIds = [
+        ...new Set([
+          ...legacyData.map((l: any) => l.currency_id).filter(Boolean),
+          ...legacyData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
+        ])
+      ];
       if (currencyIds.length > 0) {
         const { data: currencies } = await supabase
           .from('accounting_currencies')
@@ -1178,50 +1303,108 @@ const CalendarPage: React.FC = () => {
   };
 
   // Cache employees and categories data to prevent refetches when navigating back
+  // Changed cache key to force refresh with new photo_url fetching
   const { data: employeesAndCategoriesData } = useCachedFetch(
-    'calendar-employees-categories',
+    'calendar-employees-categories-v2',
     async () => {
-      // Fetch all employees for name lookup - only active users
-      const { data: employeesData, error: employeesError } = await supabase
-        .from('users')
-        .select(`
-          id,
-          full_name,
-          email,
-          employee_id,
-          is_active,
-          tenants_employee!employee_id(
-            id,
-            display_name,
-            bonuses_role
-          )
-        `)
-        .not('employee_id', 'is', null)
-        .eq('is_active', true);
-      
-      if (employeesError) throw employeesError;
+      // Fetch employees directly from tenants_employee table (like CallsLedgerPage does)
+      // This ensures we get photo_url and photo fields correctly
+      const { data: allEmployeesData, error: allEmployeesError } = await supabase
+        .from('tenants_employee')
+        .select('id, display_name, user_id, photo_url, photo, bonuses_role')
+        .not('display_name', 'is', null)
+        .order('display_name', { ascending: true });
 
-      // Process the data to match the expected format
-      const processedEmployees = (employeesData || [])
-        .filter(user => user.tenants_employee && user.email)
-        .map(user => {
-          const employee = user.tenants_employee as any;
-          return {
-            id: employee.id,
-            display_name: employee.display_name,
-            bonuses_role: employee.bonuses_role
-          };
-        })
-        .sort((a, b) => a.display_name.localeCompare(b.display_name));
+      if (allEmployeesError) {
+        console.error('❌ CalendarPage - Error fetching all employees:', allEmployeesError);
+        throw allEmployeesError;
+      }
 
-      // Deduplicate by employee ID to prevent duplicates
-      const uniqueEmployeesMap = new Map();
-      processedEmployees.forEach(emp => {
-        if (!uniqueEmployeesMap.has(emp.id)) {
-          uniqueEmployeesMap.set(emp.id, emp);
+      if (!allEmployeesData || allEmployeesData.length === 0) {
+        console.log('⚠️ CalendarPage - No employees found in tenants_employee table');
+        return { employees: [], categories: [] };
+      }
+
+      console.log('🔍 CalendarPage - Fetched', allEmployeesData.length, 'employees from tenants_employee');
+      if (allEmployeesData && allEmployeesData.length > 0) {
+        console.log('🔍 CalendarPage - Sample employee (first):', JSON.stringify(allEmployeesData[0], null, 2));
+        console.log('🔍 CalendarPage - Sample employee photo_url:', allEmployeesData[0]?.photo_url);
+        console.log('🔍 CalendarPage - Sample employee photo:', allEmployeesData[0]?.photo);
+        // Check a few employees for photos
+        const employeesWithPhotos = allEmployeesData.filter((e: any) => e.photo_url || e.photo);
+        console.log('🔍 CalendarPage - Employees with photos in raw data:', employeesWithPhotos.length, 'out of', allEmployeesData.length);
+        if (employeesWithPhotos.length > 0) {
+          console.log('🔍 CalendarPage - Sample employee WITH photo:', JSON.stringify(employeesWithPhotos[0], null, 2));
         }
-      });
-      const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+      }
+
+      // Get employee IDs for querying users table to filter by active users
+      const employeeIds = allEmployeesData
+        .map((emp: any) => emp.id)
+        .filter((id: any) => id !== null && id !== undefined);
+
+      if (employeeIds.length === 0) {
+        return { employees: [], categories: [] };
+      }
+
+      // Fetch active users by employee_id to filter employees
+      const { data: activeUsers, error: usersError } = await supabase
+        .from('users')
+        .select('employee_id, is_active')
+        .in('employee_id', employeeIds)
+        .eq('is_active', true);
+
+      let uniqueEmployees;
+      
+      if (usersError) {
+        console.error('❌ CalendarPage - Error fetching active users:', usersError);
+        // Fallback: return all employees if user check fails
+        const allEmployees = allEmployeesData.map((emp: any) => ({
+          id: emp.id,
+          display_name: emp.display_name,
+          bonuses_role: emp.bonuses_role,
+          photo_url: emp.photo_url || null,
+          photo: emp.photo || null
+        }));
+        console.log('⚠️ CalendarPage - Using all employees (user check failed), count:', allEmployees.length);
+        uniqueEmployees = allEmployees.sort((a, b) => a.display_name.localeCompare(b.display_name));
+      } else {
+        // Create a set of active employee IDs for quick lookup
+        const activeEmployeeIds = new Set(
+          (activeUsers || []).map((user: any) => user.employee_id?.toString())
+        );
+
+        // Filter employees to only those with active users
+        const activeEmployees = allEmployeesData
+          .filter((emp: any) => activeEmployeeIds.has(emp.id.toString()))
+          .map((emp: any) => ({
+            id: emp.id,
+            display_name: emp.display_name,
+            bonuses_role: emp.bonuses_role,
+            photo_url: emp.photo_url || null,
+            photo: emp.photo || null
+          }));
+
+        console.log('✅ CalendarPage - Active employees:', activeEmployees.length);
+        console.log('🔍 CalendarPage - Employees with photos:', activeEmployees.filter(e => e.photo_url || e.photo).length);
+        if (activeEmployees.length > 0) {
+          console.log('🔍 CalendarPage - Sample active employee:', activeEmployees[0]);
+        }
+
+        const processedEmployees = activeEmployees.sort((a, b) => a.display_name.localeCompare(b.display_name));
+      
+        console.log('🔍 CalendarPage - Processed employees:', processedEmployees.length, 'items');
+        console.log('🔍 CalendarPage - Employees with photos:', processedEmployees.filter(e => e.photo_url || e.photo).length);
+
+        // Deduplicate by employee ID to prevent duplicates
+        const uniqueEmployeesMap = new Map();
+        processedEmployees.forEach(emp => {
+          if (!uniqueEmployeesMap.has(emp.id)) {
+            uniqueEmployeesMap.set(emp.id, emp);
+          }
+        });
+        uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+      }
 
       // Fetch all categories with their parent main category names using JOINs
       const { data: categoriesData, error: categoriesError } = await supabase
@@ -1427,7 +1610,7 @@ const CalendarPage: React.FC = () => {
               .from('leads_lead')
               .select(`
                 id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
-                total, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
+                total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
                 meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
                 misc_category!category_id(
                   id, name, parent_id,
@@ -1439,9 +1622,14 @@ const CalendarPage: React.FC = () => {
               `)
               .in('id', numericLegacyLeadIds);
             
-            // Fetch currencies separately for legacy leads
+            // Fetch currencies separately for legacy leads (both currency_id and meeting_total_currency_id)
             if (legacyLeadsData && legacyLeadsData.length > 0) {
-              const currencyIds = [...new Set(legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean))];
+              const currencyIds = [
+                ...new Set([
+                  ...legacyLeadsData.map((l: any) => l.currency_id).filter(Boolean),
+                  ...legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
+                ])
+              ];
               if (currencyIds.length > 0) {
                 const { data: currencies } = await supabase
                   .from('accounting_currencies')
@@ -1495,17 +1683,44 @@ const CalendarPage: React.FC = () => {
                   lead_type: 'legacy',
                   name: meeting.legacy_lead.name || '',
                   stage: meeting.legacy_lead.stage || null,
+                  // Store original IDs for employee lookup (for avatars)
+                  manager_id: meeting.legacy_lead.meeting_manager_id,
+                  helper_id: meeting.legacy_lead.meeting_lawyer_id,
+                  expert_id: meeting.legacy_lead.expert_id,
+                  // Convert IDs to display names for display
                   manager: getEmployeeDisplayName(meeting.legacy_lead.meeting_manager_id),
                   helper: getEmployeeDisplayName(meeting.legacy_lead.meeting_lawyer_id),
-                  balance: meeting.legacy_lead.total,
-                  balance_currency: (() => {
-                    const currencyId = meeting.legacy_lead.meeting_total_currency_id;
-                    if (currencyId && allMeetingsCurrencyMap[currencyId]) {
-                      return allMeetingsCurrencyMap[currencyId].iso_code || allMeetingsCurrencyMap[currencyId].name || 'NIS';
+                  // Store total_base and total for balance logic
+                  total_base: meeting.legacy_lead.total_base ?? null,
+                  total: meeting.legacy_lead.total ?? null,
+                  currency_id: meeting.legacy_lead.currency_id ?? null,
+                  // Calculate balance based on currency_id (same logic as Clients.tsx)
+                  balance: (() => {
+                    const currencyId = meeting.legacy_lead.currency_id;
+                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                    if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                      numericCurrencyId = 1; // Default to NIS
                     }
-                    return currencyId === 1 ? 'NIS' : 
-                           currencyId === 2 ? 'USD' : 
-                           currencyId === 3 ? 'EUR' : 'NIS';
+                    if (numericCurrencyId === 1) {
+                      return meeting.legacy_lead.total_base ?? null;
+                    } else {
+                      return meeting.legacy_lead.total ?? null;
+                    }
+                  })(),
+                  balance_currency: (() => {
+                    const currencyId = meeting.legacy_lead.currency_id;
+                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                    if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                      numericCurrencyId = 1; // Default to NIS
+                    }
+                    // Use currency_id for currency symbol lookup
+                    if (numericCurrencyId && allMeetingsCurrencyMap[numericCurrencyId]) {
+                      return allMeetingsCurrencyMap[numericCurrencyId].iso_code || allMeetingsCurrencyMap[numericCurrencyId].name || 'NIS';
+                    }
+                    // Fallback to hardcoded mapping
+                    return numericCurrencyId === 1 ? 'NIS' : 
+                           numericCurrencyId === 2 ? 'USD' : 
+                           numericCurrencyId === 3 ? 'EUR' : 'NIS';
                   })(),
                   expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
                   category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
@@ -1518,7 +1733,11 @@ const CalendarPage: React.FC = () => {
                 leadData = {
                   ...meeting.lead,
                   lead_type: 'new',
-                  // Convert IDs to display names for manager, helper, and expert
+                  // Store original IDs for employee lookup (for avatars)
+                  manager_id: meeting.lead.meeting_manager_id || meeting.lead.manager,
+                  helper_id: meeting.lead.meeting_lawyer_id || meeting.lead.helper,
+                  expert_id: meeting.lead.expert,
+                  // Convert IDs to display names for display
                   manager: meeting.lead.meeting_manager_id 
                     ? getEmployeeDisplayName(meeting.lead.meeting_manager_id) 
                     : (meeting.lead.manager || '--'),
@@ -2099,14 +2318,19 @@ const CalendarPage: React.FC = () => {
       if (uniqueLegacyLeadIds.length > 0) {
         const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
           .from('leads_lead')
-          .select('id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, total, meeting_total_currency_id, probability, phone, email, mobile, topic, language_id')
+          .select('id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, total, total_base, currency_id, meeting_total_currency_id, probability, phone, email, mobile, topic, language_id')
           .in('id', uniqueLegacyLeadIds)
           .limit(500);
         
-        // Fetch currencies separately for legacy leads
+        // Fetch currencies separately for legacy leads (both currency_id and meeting_total_currency_id)
         let assignStaffCurrencyMap: Record<number, { name?: string; iso_code?: string }> = {};
         if (legacyLeadsData && legacyLeadsData.length > 0) {
-          const currencyIds = [...new Set(legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean))];
+          const currencyIds = [
+            ...new Set([
+              ...legacyLeadsData.map((l: any) => l.currency_id).filter(Boolean),
+              ...legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
+            ])
+          ];
           if (currencyIds.length > 0) {
             const { data: currencies } = await supabase
               .from('accounting_currencies')
@@ -2138,7 +2362,7 @@ const CalendarPage: React.FC = () => {
       let directLegacyMeetings: any[] = [];
       const { data: directLegacyMeetingsData, error: directLegacyError } = await supabase
         .from('leads_lead')
-        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id')
+        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id')
         .gte('meeting_date', sevenDaysAgo)
         .lte('meeting_date', thirtyDaysFromNow)
         .not('meeting_date', 'is', null)
@@ -2201,16 +2425,37 @@ const CalendarPage: React.FC = () => {
             topic: legacyLead.topic || '',
             manager: getEmployeeDisplayName(legacyLead.meeting_manager_id),
             helper: getEmployeeDisplayName(legacyLead.meeting_lawyer_id),
-            balance: parseFloat(legacyLead.total || '0'),
+            // Store total_base and total for balance logic
+            total_base: legacyLead.total_base ?? null,
+            total: legacyLead.total ?? null,
+            currency_id: legacyLead.currency_id ?? null,
+            // Calculate balance based on currency_id (same logic as Clients.tsx)
+            balance: (() => {
+              const currencyId = legacyLead.currency_id;
+              let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+              if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                numericCurrencyId = 1; // Default to NIS
+              }
+              if (numericCurrencyId === 1) {
+                return legacyLead.total_base ?? null;
+              } else {
+                return legacyLead.total ?? null;
+              }
+            })(),
             balance_currency: (() => {
-              const currencyId = legacyLead.meeting_total_currency_id;
-              if (currencyId && directLegacyCurrencyMap[currencyId]) {
-                return directLegacyCurrencyMap[currencyId].iso_code || directLegacyCurrencyMap[currencyId].name || 'NIS';
+              const currencyId = legacyLead.currency_id;
+              let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+              if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                numericCurrencyId = 1; // Default to NIS
+              }
+              // Use currency_id for currency symbol lookup
+              if (numericCurrencyId && directLegacyCurrencyMap[numericCurrencyId]) {
+                return directLegacyCurrencyMap[numericCurrencyId].iso_code || directLegacyCurrencyMap[numericCurrencyId].name || 'NIS';
               }
               // Fallback to hardcoded mapping if currency not found
-              return currencyId === 1 ? 'NIS' : 
-                     currencyId === 2 ? 'USD' : 
-                     currencyId === 3 ? 'EUR' : 'NIS';
+              return numericCurrencyId === 1 ? 'NIS' : 
+                     numericCurrencyId === 2 ? 'USD' : 
+                     numericCurrencyId === 3 ? 'EUR' : 'NIS';
             })(),
             expert: getEmployeeDisplayName(legacyLead.expert_id),
             expert_examination: legacyLead.expert_examination || '',
@@ -3084,11 +3329,16 @@ const CalendarPage: React.FC = () => {
       .replace(/\b\w/g, char => char.toUpperCase());
   };
 
-  // Helper function to get expert status icon and color
-  const getExpertStatusIcon = (lead: any, meeting: any) => {
+  // Helper function to get expert status icon and color (small version for card view)
+  const getExpertStatusIcon = (lead: any, meeting: any, size: 'small' | 'large' = 'large') => {
     if (meeting.calendar_type === 'staff') {
       return null;
     }
+
+    const sizeClasses = size === 'small' 
+      ? 'w-5 h-5 rounded-full text-white inline-flex items-center justify-center font-semibold shadow-sm' 
+      : 'w-10 h-10 rounded-full text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md';
+    const iconSize = size === 'small' ? 'w-3 h-3' : 'w-6 h-6';
 
     // For NEW leads: use eligibility_status field (text values)
     // For LEGACY leads: use expert_examination field (numeric values)
@@ -3097,35 +3347,35 @@ const CalendarPage: React.FC = () => {
       
       if (!eligibilityStatus || eligibilityStatus === '') {
         return (
-          <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-            <QuestionMarkCircleIcon className="w-6 h-6" />
+          <span className={`${sizeClasses} bg-gray-400`} title="Expert opinion not checked">
+            <QuestionMarkCircleIcon className={iconSize} />
           </span>
         );
       }
 
       if (eligibilityStatus === 'not_feasible') {
         return (
-          <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-            <XCircleIcon className="w-6 h-6" />
+          <span className={`${sizeClasses} bg-red-500`} title="Not Feasible">
+            <XCircleIcon className={iconSize} />
           </span>
         );
       } else if (eligibilityStatus === 'feasible_no_check') {
         return (
-          <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-            <CheckCircleIcon className="w-6 h-6" />
+          <span className={`${sizeClasses} bg-green-500`} title="Feasible (no check)">
+            <CheckCircleIcon className={iconSize} />
           </span>
         );
       } else if (eligibilityStatus === 'feasible_with_check') {
         return (
-          <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (with check)">
-            <ExclamationTriangleIcon className="w-6 h-6" />
+          <span className={`${sizeClasses} bg-orange-500`} title="Feasible (with check)">
+            <ExclamationTriangleIcon className={iconSize} />
           </span>
         );
       }
 
       return (
-        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-          <QuestionMarkCircleIcon className="w-6 h-6" />
+        <span className={`${sizeClasses} bg-gray-400`} title="Expert opinion not checked">
+          <QuestionMarkCircleIcon className={iconSize} />
         </span>
       );
     }
@@ -3136,35 +3386,35 @@ const CalendarPage: React.FC = () => {
 
     if (!expertExamination || expertExamination === 0 || expertExamination === '0') {
       return (
-        <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion not checked">
-          <QuestionMarkCircleIcon className="w-6 h-6" />
+        <span className={`${sizeClasses} bg-gray-400`} title="Expert opinion not checked">
+          <QuestionMarkCircleIcon className={iconSize} />
         </span>
       );
     }
 
     if (expertExamination === 1 || expertExamination === '1') {
       return (
-        <span className="w-10 h-10 rounded-full bg-red-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Not Feasible">
-          <XCircleIcon className="w-6 h-6" />
+        <span className={`${sizeClasses} bg-red-500`} title="Not Feasible">
+          <XCircleIcon className={iconSize} />
         </span>
       );
     } else if (expertExamination === 5 || expertExamination === '5') {
       return (
-        <span className="w-10 h-10 rounded-full bg-orange-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (further check)">
-          <ExclamationTriangleIcon className="w-6 h-6" />
+        <span className={`${sizeClasses} bg-orange-500`} title="Feasible (further check)">
+          <ExclamationTriangleIcon className={iconSize} />
         </span>
       );
     } else if (expertExamination === 8 || expertExamination === '8') {
       return (
-        <span className="w-10 h-10 rounded-full bg-green-500 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Feasible (no check)">
-          <CheckCircleIcon className="w-6 h-6" />
+        <span className={`${sizeClasses} bg-green-500`} title="Feasible (no check)">
+          <CheckCircleIcon className={iconSize} />
         </span>
       );
     }
 
     return (
-      <span className="w-10 h-10 rounded-full bg-gray-400 text-white ml-2 inline-flex items-center justify-center font-semibold shadow-md" title="Expert opinion status unknown">
-        <QuestionMarkCircleIcon className="w-6 h-6" />
+      <span className={`${sizeClasses} bg-gray-400`} title="Expert opinion status unknown">
+        <QuestionMarkCircleIcon className={iconSize} />
       </span>
     );
   };
@@ -3210,111 +3460,265 @@ const CalendarPage: React.FC = () => {
           }} 
           className="flex-1 cursor-pointer flex flex-col"
         >
-          {/* Lead Number and Name */}
-          <div className="mb-3 flex items-center gap-2">
-            <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
-              {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
-            </span>
-            <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-            <h3 className="text-lg md:text-2xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{lead.name || meeting.name}</h3>
-            {/* Calendar type badge */}
-            {(() => {
-              const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
-              if (!badge) return null;
-              return (
-                <span
-                  className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border"
+          {/* Header with Name, Badge, and Action Buttons */}
+          <div className="mb-3 flex items-start justify-between gap-2 relative">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              <span className="text-xs md:text-base font-semibold text-gray-400 tracking-widest">
+                {meeting.calendar_type === 'staff' ? 'STAFF' : (lead.lead_number || meeting.lead_number)}
+              </span>
+              <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+              <h3 className="text-sm md:text-base font-extrabold text-gray-900 group-hover:text-primary transition-colors flex-1 break-words">{lead.name || meeting.name}</h3>
+              {/* Calendar type badge - next to client name */}
+              {(() => {
+                const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+                if (!badge) return null;
+                return (
+                  <span
+                    className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-bold border flex-shrink-0"
+                    style={{
+                      backgroundColor: badge.backgroundColor,
+                      color: badge.textColor,
+                      borderColor: badge.borderColor
+                    }}
+                  >
+                    {badge.label}
+                  </span>
+                );
+              })()}
+            </div>
+            {/* Action Buttons - Top Right Corner */}
+            <div className="flex flex-row gap-2 items-center flex-shrink-0">
+              {meeting.calendar_type !== 'staff' && (
+                <label
+                  className="cursor-pointer"
+                  onClick={e => e.stopPropagation()}
+                  title="Toggle meeting confirmation"
+                >
+                  <input
+                    type="checkbox"
+                    className={`toggle toggle-primary toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
+                    checked={getMeetingConfirmationState(meeting)}
+                    onChange={e => {
+                      e.stopPropagation();
+                      handleMeetingConfirmationToggle(meeting);
+                    }}
+                    disabled={meetingConfirmationLoadingId === meeting.id}
+                    aria-label="Meeting confirmed"
+                  />
+                </label>
+              )}
+              {/* Only show join button if there is a valid link and either:
+                  - the location is online/Teams, or
+                  - the location has a default_link configured,
+                  OR it's a staff meeting */}
+              {(() => {
+                const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                const fallbackLink = meetingLocationLinks[locationName] || '';
+                const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+                const hasLink = !!url;
+                const hasDefaultForLocation = !!meetingLocationLinks[locationName];
+                const isTeamsLike = isOnlineLocation(locationName || '');
+                return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
+              })() && (
+                <button
+                  className="btn btn-outline btn-primary btn-sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
+                    const fallbackLink = meetingLocationLinks[locationName] || '';
+                    const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+                    if (url) {
+                      window.open(url, '_blank');
+                    } else {
+                      alert('No meeting URL available');
+                    }
+                  }}
+                  title="Teams Meeting"
+                >
+                  <VideoCameraIcon className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+          </div>
+
+          {/* Meeting Time and Stage Badge - Same row */}
+          {meeting.meeting_time && (() => {
+            // Get the color for "Meeting scheduled" stage (stage 20) to match the stage badge
+            const meetingScheduledColor = resolveStageColour('20') || getStageColour('20') || '#10b981';
+            const textColor = getContrastingTextColor(meetingScheduledColor);
+            
+            return (
+              <div className="mt-4 mb-3 flex items-center justify-between">
+                <div 
+                  className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full"
                   style={{
-                    backgroundColor: badge.backgroundColor,
-                    color: badge.textColor,
-                    borderColor: badge.borderColor
+                    backgroundColor: meetingScheduledColor,
+                    color: textColor,
                   }}
                 >
-                  {badge.label}
-                </span>
-              );
-            })()}
-            {/* Expert status indicator */}
-            {getExpertStatusIcon(lead, meeting)}
-          </div>
-
-          {/* Stage */}
-          <div className="flex justify-between items-center py-1 gap-2">
-            <span className="text-xs md:text-base font-semibold text-gray-500">Stage</span>
-            <div className="ml-auto">
-              {getStageBadge(lead.stage ?? meeting.stage)}
-            </div>
-          </div>
+                  <ClockIcon className="w-4 h-4" />
+                  <span className="text-sm font-semibold">
+                    {meeting.meeting_time.slice(0,5)}
+                  </span>
+                </div>
+                <div className="ml-auto">
+                  {getStageBadge(lead.stage ?? meeting.stage)}
+                </div>
+              </div>
+            );
+          })()}
 
           <div className="space-y-2 divide-y divide-gray-100">
-            {/* Time */}
-            <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Time</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {meeting.meeting_time ? meeting.meeting_time.slice(0,5) : 'No time'}
-              </span>
-            </div>
 
-            {/* Manager / Attendees */}
-            <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">
-                {meeting.calendar_type === 'staff' ? 'Attendees' : 'Manager'}
-              </span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {meeting.calendar_type === 'staff' ? (
-                  <div className="text-right max-w-xs">
-                    <div className="text-sm md:text-lg font-bold text-gray-800 break-words">
-                      {meeting.meeting_manager || 'No attendees'}
-                    </div>
-                  </div>
-                ) : (
-                  getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'
-                )}
-              </span>
-            </div>
+            {/* Manager */}
+            {meeting.calendar_type !== 'staff' && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs md:text-base font-semibold text-gray-500">Manager</span>
+                <div className="flex items-center gap-2">
+                  {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'md', false)}
+                  <span className="text-sm md:text-lg font-bold text-gray-800">
+                    {getEmployeeDisplayName(lead.manager || meeting.meeting_manager) || '---'}
+                  </span>
+                </div>
+              </div>
+            )}
 
             {/* Helper */}
-            <div className="flex justify-between items-center py-1">
-              <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {meeting.calendar_type === 'staff' ? (
-                  null
-                ) : (
-                  getEmployeeDisplayName(lead.helper || meeting.helper) || '---'
-                )}
-              </span>
-            </div>
+            {meeting.calendar_type !== 'staff' && (
+              <div className="flex justify-between items-center py-1">
+                <span className="text-xs md:text-base font-semibold text-gray-500">Helper</span>
+                <div className="flex items-center gap-2">
+                  {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'md', false)}
+                  <span className="text-sm md:text-lg font-bold text-gray-800">
+                    {getEmployeeDisplayName(lead.helper || meeting.helper) || '---'}
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Staff Meeting Attendees */}
+            {meeting.calendar_type === 'staff' && (
+              <div className="flex items-center gap-2 py-1">
+                <span className="text-xs md:text-base font-semibold text-gray-500">Attendees</span>
+                <div className="text-sm md:text-lg font-bold text-gray-800 break-words">
+                  {meeting.meeting_manager || 'No attendees'}
+                </div>
+              </div>
+            )}
 
             {/* Category */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Category</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
+              <span className="text-sm md:text-lg font-bold text-gray-800">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</span>
             </div>
 
             {/* Amount */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Value</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {lead.balance === '--' || meeting.meeting_amount === '--' 
-                  ? '--'
-                  : typeof lead.balance === 'number'
-                  ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
-                  : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '₪0')}
+              <span className="text-sm md:text-lg font-bold text-gray-800">
+                {(() => {
+                  // Same logic as Clients.tsx balance badge
+                  const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+                  let balanceValue: any;
+                  
+                  if (isLegacy) {
+                    // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                    const currencyId = (lead as any).currency_id;
+                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                    if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                      numericCurrencyId = 1; // Default to NIS
+                    }
+                    if (numericCurrencyId === 1) {
+                      balanceValue = (lead as any).total_base ?? null;
+                    } else {
+                      balanceValue = (lead as any).total ?? null;
+                    }
+                  } else {
+                    balanceValue = lead.balance || (lead as any).proposal_total;
+                  }
+                  
+                  // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
+                  let balanceCurrency = lead.balance_currency;
+                  if (!balanceCurrency && isLegacy) {
+                    const currencyId = (lead as any).currency_id;
+                    if (currencyId) {
+                      // Fallback to hardcoded mapping if currency not found
+                      const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                      balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
+                                       numericCurrencyId === 2 ? 'USD' : 
+                                       numericCurrencyId === 3 ? 'EUR' : 'NIS';
+                    } else {
+                      balanceCurrency = 'NIS';
+                    }
+                  } else if (!balanceCurrency) {
+                    balanceCurrency = meeting.meeting_currency || 'NIS';
+                  }
+                  
+                  // Fallback to meeting amount if no balance
+                  if (!balanceValue && meeting.meeting_amount) {
+                    balanceValue = meeting.meeting_amount;
+                    balanceCurrency = meeting.meeting_currency || balanceCurrency || 'NIS';
+                  }
+                  
+                  if (balanceValue === '--' || meeting.meeting_amount === '--') {
+                    return '--';
+                  }
+                  
+                  // Ensure we have a currency (default to NIS)
+                  if (!balanceCurrency) {
+                    balanceCurrency = 'NIS';
+                  }
+                  
+                  // Handle 0 values - show currency symbol
+                  if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
+                    return `${getCurrencySymbol(balanceCurrency)}0`;
+                  }
+                  
+                  if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
+                    const formattedValue = typeof balanceValue === 'number' 
+                      ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                      : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                    return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
+                  }
+                  
+                  if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
+                    return `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`;
+                  }
+                  
+                  // Default: show 0 with NIS symbol
+                  return `${getCurrencySymbol(balanceCurrency)}0`;
+                })()}
               </span>
             </div>
 
             {/* Expert */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Expert</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
-                {getEmployeeDisplayName(lead.expert || meeting.expert) || 'N/A'}
-              </span>
+              <div className="flex items-center gap-2">
+                {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
+                <span className="text-sm md:text-lg font-bold text-gray-800">
+                  {(() => {
+                    // Use expert_id if available (for proper lookup), otherwise use expert
+                    const expertId = lead.expert_id || meeting.expert_id || meeting.expert;
+                    const expertDisplayName = expertId ? getEmployeeDisplayName(expertId) : null;
+                    // If getEmployeeDisplayName returns the ID (meaning employee not found), try using lead.expert as display name
+                    if (expertDisplayName && expertDisplayName !== expertId?.toString() && expertDisplayName !== '--') {
+                      return expertDisplayName;
+                    }
+                    // Fallback to lead.expert if it's a display name, or show N/A
+                    return lead.expert && typeof lead.expert === 'string' && isNaN(Number(lead.expert)) 
+                      ? lead.expert 
+                      : (expertDisplayName || 'N/A');
+                  })()}
+                </span>
+                {getExpertStatusIcon(lead, meeting, 'small')}
+              </div>
             </div>
 
             {/* Location */}
             <div className="flex justify-between items-center py-1">
               <span className="text-xs md:text-base font-semibold text-gray-500">Location</span>
-              <span className="text-sm md:text-lg font-bold text-gray-800 ml-2">
+              <span className="text-sm md:text-lg font-bold text-gray-800">
                 {meeting.location || meeting.meeting_location || 
                  (meeting.meeting_location_id ? getLegacyMeetingLocation(meeting.meeting_location_id) : null) || 
                  'N/A'}
@@ -3394,73 +3798,22 @@ const CalendarPage: React.FC = () => {
           )}
         </div>
 
-        {/* Action Buttons */}
-        <div className="mt-4 flex flex-row gap-2 justify-end items-center">
-          {meeting.calendar_type !== 'staff' && (
-            <label
-              className="cursor-pointer"
-              onClick={e => e.stopPropagation()}
-              title="Toggle meeting confirmation"
+        {/* Show edit button for staff meetings (at bottom) */}
+        {meeting.calendar_type === 'staff' && (
+          <div className="mt-4 flex flex-row gap-2 justify-end items-center">
+            <button
+              className="btn btn-outline btn-warning btn-sm"
+              title="Edit Staff Meeting"
+              onClick={(e) => {
+                e.stopPropagation();
+                setSelectedStaffMeeting(meeting);
+                setIsStaffMeetingEditModalOpen(true);
+              }}
             >
-              <input
-                type="checkbox"
-                className={`toggle toggle-primary toggle-sm ${meetingConfirmationLoadingId === meeting.id ? 'opacity-60' : ''}`}
-                checked={getMeetingConfirmationState(meeting)}
-                onChange={e => {
-                  e.stopPropagation();
-                  handleMeetingConfirmationToggle(meeting);
-                }}
-                disabled={meetingConfirmationLoadingId === meeting.id}
-                aria-label="Meeting confirmed"
-              />
-            </label>
-          )}
-            {/* Only show join button if there is a valid link and either:
-                - the location is online/Teams, or
-                - the location has a default_link configured,
-                OR it's a staff meeting */}
-            {(() => {
-              const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-              const fallbackLink = meetingLocationLinks[locationName] || '';
-              const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
-              const hasLink = !!url;
-              const hasDefaultForLocation = !!meetingLocationLinks[locationName];
-              const isTeamsLike = isOnlineLocation(locationName || '');
-              return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
-            })() && (
-              <button
-                className="btn btn-outline btn-primary btn-sm"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                  const fallbackLink = meetingLocationLinks[locationName] || '';
-                  const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
-                  if (url) {
-                    window.open(url, '_blank');
-                  } else {
-                    alert('No meeting URL available');
-                  }
-                }}
-                title="Teams Meeting"
-              >
-                <VideoCameraIcon className="w-4 h-4" />
-              </button>
-            )}
-            {/* Show edit button for staff meetings */}
-            {meeting.calendar_type === 'staff' && (
-              <button
-                className="btn btn-outline btn-warning btn-sm"
-                title="Edit Staff Meeting"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  setSelectedStaffMeeting(meeting);
-                  setIsStaffMeetingEditModalOpen(true);
-                }}
-              >
-                <PencilIcon className="w-4 h-4" />
-              </button>
-            )}
-        </div>
+              <PencilIcon className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* Expanded Details */}
         {isExpanded && (
@@ -3562,38 +3915,58 @@ const CalendarPage: React.FC = () => {
           <td className="font-bold">
             <div className="flex items-center gap-1 sm:gap-2">
               {meeting.calendar_type === 'staff' ? (
-                <span className="text-black text-xs sm:text-sm">
-                  {lead.name || meeting.name}
-                </span>
-              ) : (
-                <Link 
-                  to={`/clients/${lead.lead_number || meeting.lead_number}`} 
-                  className="hover:opacity-80 text-xs sm:text-sm"
-                  style={{ color: '#3b28c7' }}
-                >
-                  {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
-                </Link>
-              )}
-              {(() => {
-                const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
-                if (!badge) return null;
-                return (
-                  <span
-                    className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border"
-                    style={{
-                      backgroundColor: badge.backgroundColor,
-                      color: badge.textColor,
-                      borderColor: badge.borderColor
-                    }}
-                  >
-                    {badge.label}
+                <>
+                  <span className="text-black text-xs sm:text-sm">
+                    {lead.name || meeting.name}
                   </span>
-                );
-              })()}
+                  {(() => {
+                    const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+                    if (!badge) return null;
+                    return (
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border ml-1"
+                        style={{
+                          backgroundColor: badge.backgroundColor,
+                          color: badge.textColor,
+                          borderColor: badge.borderColor
+                        }}
+                      >
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
+                </>
+              ) : (
+                <>
+                  <Link 
+                    to={`/clients/${lead.lead_number || meeting.lead_number}`} 
+                    className="hover:opacity-80 text-xs sm:text-sm"
+                    style={{ color: '#3b28c7' }}
+                  >
+                    {lead.name || meeting.name} ({lead.lead_number || meeting.lead_number})
+                  </Link>
+                  {(() => {
+                    const badge = getCalendarTypeBadgeStyles(meeting.calendar_type);
+                    if (!badge) return null;
+                    return (
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] sm:text-xs font-bold border ml-1"
+                        style={{
+                          backgroundColor: badge.backgroundColor,
+                          color: badge.textColor,
+                          borderColor: badge.borderColor
+                        }}
+                      >
+                        {badge.label}
+                      </span>
+                    );
+                  })()}
+                </>
+              )}
             </div>
           </td>
           <td className="text-xs sm:text-sm">{meeting.meeting_time ? meeting.meeting_time.slice(0,5) : ''}</td>
-          <td className="hidden sm:table-cell">
+          <td>
             {meeting.calendar_type === 'staff' ? (
               <div className="max-w-xs">
                 <div className="text-xs font-medium text-gray-700">Attendees:</div>
@@ -3602,27 +3975,126 @@ const CalendarPage: React.FC = () => {
                 </div>
               </div>
             ) : (
-              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
+              <div className="flex items-center gap-2">
+                {/* Desktop only - employee image */}
+                <div className="hidden md:block">
+                  {renderEmployeeAvatar(lead.manager_id || lead.manager || meeting.meeting_manager_id || meeting.meeting_manager, 'md', false)}
+                </div>
+                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.manager || meeting.meeting_manager)}</span>
+              </div>
             )}
           </td>
-          <td className="hidden md:table-cell">
+          <td>
             {meeting.calendar_type === 'staff' ? (
               null
             ) : (
-              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
+              <div className="flex items-center gap-2">
+                {/* Desktop only - employee image */}
+                <div className="hidden md:block">
+                  {renderEmployeeAvatar(lead.helper_id || lead.helper || meeting.helper, 'md', false)}
+                </div>
+                <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.helper || meeting.helper)}</span>
+              </div>
             )}
           </td>
-          <td className="hidden lg:table-cell text-xs sm:text-sm">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
-          <td className="hidden sm:table-cell text-xs sm:text-sm">
-            {lead.balance === '--' || meeting.meeting_amount === '--' 
-              ? '--'
-              : typeof lead.balance === 'number'
-              ? `${getCurrencySymbol(lead.balance_currency)}${lead.balance.toLocaleString()}`
-              : (typeof meeting.meeting_amount === 'number' ? `${getCurrencySymbol(meeting.meeting_currency)}${meeting.meeting_amount.toLocaleString()}` : '0')}
+          <td className="text-xs sm:text-sm">{getCategoryName(lead.category_id, lead.category || meeting.category) || 'N/A'}</td>
+          <td className="text-xs sm:text-sm">
+            {(() => {
+              // Same logic as Clients.tsx balance badge
+              const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+              let balanceValue: any;
+              
+              if (isLegacy) {
+                // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                const currencyId = (lead as any).currency_id;
+                let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                  numericCurrencyId = 1; // Default to NIS
+                }
+                if (numericCurrencyId === 1) {
+                  balanceValue = (lead as any).total_base ?? null;
+                } else {
+                  balanceValue = (lead as any).total ?? null;
+                }
+              } else {
+                balanceValue = lead.balance || (lead as any).proposal_total;
+              }
+              
+              // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
+              let balanceCurrency = lead.balance_currency;
+              if (!balanceCurrency && isLegacy) {
+                const currencyId = (lead as any).currency_id;
+                if (currencyId) {
+                  // Fallback to hardcoded mapping if currency not found
+                  const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                  balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
+                                   numericCurrencyId === 2 ? 'USD' : 
+                                   numericCurrencyId === 3 ? 'EUR' : 'NIS';
+                } else {
+                  balanceCurrency = 'NIS';
+                }
+              } else if (!balanceCurrency) {
+                balanceCurrency = meeting.meeting_currency || 'NIS';
+              }
+              
+              // Fallback to meeting amount if no balance
+              if (!balanceValue && meeting.meeting_amount) {
+                balanceValue = meeting.meeting_amount;
+                balanceCurrency = meeting.meeting_currency || balanceCurrency || 'NIS';
+              }
+              
+              if (balanceValue === '--' || meeting.meeting_amount === '--') {
+                return '--';
+              }
+              
+              // Ensure we have a currency (default to NIS)
+              if (!balanceCurrency) {
+                balanceCurrency = 'NIS';
+              }
+              
+              // Handle 0 values - show currency symbol
+              if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
+                return `${getCurrencySymbol(balanceCurrency)}0`;
+              }
+              
+              if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
+                const formattedValue = typeof balanceValue === 'number' 
+                  ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+                  : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+                return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
+              }
+              
+              if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
+                return `${getCurrencySymbol(meeting.meeting_currency || 'NIS')}${meeting.meeting_amount.toLocaleString()}`;
+              }
+              
+              // Default: show 0 with NIS symbol
+              return `${getCurrencySymbol(balanceCurrency)}0`;
+            })()}
           </td>
-          <td className="hidden lg:table-cell">
+          <td>
             <div className="flex flex-col gap-1">
-              <span className="text-xs sm:text-sm">{getEmployeeDisplayName(lead.expert || meeting.expert) || <span className="text-gray-400">N/A</span>}</span>
+              <div className="flex items-center gap-2">
+                {/* Desktop only - employee image */}
+                <div className="hidden md:block">
+                  {renderEmployeeAvatar(lead.expert_id || lead.expert || meeting.expert, 'md', false)}
+                </div>
+                <span className="text-xs sm:text-sm">
+                  {(() => {
+                    // Use expert_id if available (for proper lookup), otherwise use expert
+                    const expertId = lead.expert_id || meeting.expert_id || meeting.expert;
+                    const expertDisplayName = expertId ? getEmployeeDisplayName(expertId) : null;
+                    // If getEmployeeDisplayName returns the ID (meaning employee not found), try using lead.expert as display name
+                    if (expertDisplayName && expertDisplayName !== expertId?.toString() && expertDisplayName !== '--') {
+                      return expertDisplayName;
+                    }
+                    // Fallback to lead.expert if it's a display name, or show N/A
+                    return lead.expert && typeof lead.expert === 'string' && isNaN(Number(lead.expert)) 
+                      ? lead.expert 
+                      : (expertDisplayName || <span className="text-gray-400">N/A</span>);
+                  })()}
+                </span>
+              </div>
               {(() => {
                 if (meeting.calendar_type === 'staff') {
                   return null;
@@ -3707,7 +4179,7 @@ const CalendarPage: React.FC = () => {
               })()}
             </div>
           </td>
-          <td className="hidden md:table-cell text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
+          <td className="text-xs sm:text-sm">{meeting.calendar_type === 'staff' ? meeting.meeting_location : (meeting.meeting_location === '--' ? '--' : (meeting.location || meeting.meeting_location || getLegacyMeetingLocation(meeting.meeting_location_id) || 'N/A'))}</td>
           <td>
             <div className="flex items-center gap-1">
               {isNotFirstMeeting(meeting) && (
@@ -3764,7 +4236,7 @@ const CalendarPage: React.FC = () => {
               )}
             </div>
           </td>
-          <td className="hidden sm:table-cell">{getStageBadge(lead.stage || meeting.stage)}</td>
+          <td>{getStageBadge(lead.stage || meeting.stage)}</td>
           <td>
             <div className="flex flex-row items-center gap-1 sm:gap-2">
               {meeting.calendar_type !== 'staff' && (
@@ -4170,14 +4642,14 @@ const CalendarPage: React.FC = () => {
               <tr className="bg-white text-sm sm:text-base md:text-lg">
                 <th className="text-gray-900">Lead</th>
                 <th className="text-gray-900">Time</th>
-                <th className="hidden sm:table-cell text-gray-900">Manager</th>
-                <th className="hidden md:table-cell text-gray-900">Helper</th>
-                <th className="hidden lg:table-cell text-gray-900">Category</th>
-                <th className="hidden sm:table-cell text-gray-900">Value</th>
-                <th className="hidden lg:table-cell text-gray-900">Expert</th>
-                <th className="hidden md:table-cell text-gray-900">Location</th>
+                <th className="text-gray-900">Manager</th>
+                <th className="text-gray-900">Helper</th>
+                <th className="text-gray-900">Category</th>
+                <th className="text-gray-900">Value</th>
+                <th className="text-gray-900">Expert</th>
+                <th className="text-gray-900">Location</th>
                 <th className="text-gray-900">Info</th>
-                <th className="hidden sm:table-cell text-gray-900">Status</th>
+                <th className="text-gray-900">Status</th>
                 <th className="text-gray-900">Actions</th>
               </tr>
             </thead>

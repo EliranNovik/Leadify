@@ -40,6 +40,7 @@ interface SidebarProps {
   isOpen?: boolean;
   onClose?: () => void;
   onOpenAIChat?: () => void;
+  mobileOnly?: boolean; // If true, only show mobile sidebar, hide desktop sidebar
 }
 
 interface SidebarItem {
@@ -127,7 +128,7 @@ const mobileSidebarItems: SidebarItem[] = [
   { icon: ShieldCheckIcon, label: 'Admin Panel', path: '/admin' },
 ];
 
-const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat }) => {
+const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, userRole = 'User', isOpen = false, onClose, onOpenAIChat, mobileOnly = false }) => {
   const location = useLocation();
   const initials = userInitials || userName.split(' ').map(n => n[0]).join('');
   const { isAdmin } = useAdminRole();
@@ -457,7 +458,8 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
   return (
     <>
       {/* Desktop/Tablet Sidebar */}
-      <div className="hidden md:block">
+      {!mobileOnly && (
+        <div className="hidden md:block">
         <div
           ref={sidebarRef}
           className={`fixed top-20 left-4 flex flex-col shadow-2xl z-40 ${isSidebarHovered ? 'w-64' : 'w-20'} transition-all duration-300 group/sidebar rounded-2xl h-[calc(100vh-6rem)] max-h-[calc(100vh-6rem)] min-h-[120px] border sidebar-frosted-glass`}
@@ -573,6 +575,7 @@ const Sidebar: React.FC<SidebarProps> = ({ userName = 'John Doe', userInitials, 
           </div>
         </div>
       </div>
+      )}
 
       {/* Mobile Sidebar Drawer */}
       <div className="md:hidden">
