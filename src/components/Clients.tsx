@@ -472,7 +472,21 @@ const Clients: React.FC<ClientsProps> = ({
   refreshClientData,
 }) => {
   const { user } = useAuthContext();
+  
+  // Use a stable user ID reference to prevent unnecessary re-renders
+  // Only update when user ID actually changes, not on every auth context update
+  const stableUserIdRef = useRef<string | null>(null);
   const userId = user?.id ?? null;
+  
+  // Only update ref when user ID actually changes (not on every auth context update)
+  useEffect(() => {
+    if (userId !== stableUserIdRef.current) {
+      stableUserIdRef.current = userId;
+    }
+  }, [userId]);
+  
+  // Use the stable ref value for actual logic to prevent re-renders
+  const stableUserId = stableUserIdRef.current;
   
   // Removed excessive console.log statements for performance
   // State to store all employees for name lookup

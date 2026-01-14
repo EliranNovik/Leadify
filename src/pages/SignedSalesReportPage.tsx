@@ -119,7 +119,7 @@ const roleConfig: Record<RoleKey, { label: string; newLeadField: string; legacyF
   handler: {
     label: 'Handler',
     newLeadField: 'handler',
-    legacyFields: ['case_handler_id', 'meeting_lawyer_id'],
+    legacyFields: ['case_handler_id'],
   },
 };
 
@@ -421,6 +421,7 @@ const SignedSalesReportPage: React.FC = () => {
     category: false,
     language: false,
   });
+  const [sortByHandler, setSortByHandler] = useState<boolean>(false);
   const employeeFilterRef = useRef<HTMLDivElement | null>(null);
   const categoryFilterRef = useRef<HTMLDivElement | null>(null);
   const languageFilterRef = useRef<HTMLDivElement | null>(null);
@@ -479,21 +480,45 @@ const SignedSalesReportPage: React.FC = () => {
     return languageOptions.filter(option => normalizeString(option).includes(term));
   }, [filters.language, languageOptions]);
 
+  // Normalize unassigned role values to a single consistent string
+  const normalizeRoleValue = (value: string | null | undefined): string => {
+    if (!value) return '';
+    const trimmed = value.trim();
+    // Normalize all variations of "unassigned" to empty string
+    if (
+      trimmed === '' ||
+      trimmed === '---' ||
+      trimmed.toLowerCase() === 'not assigned' ||
+      trimmed === '—' ||
+      trimmed === '–'
+    ) {
+      return '';
+    }
+    return trimmed;
+  };
+
   const getRoleDisplay = (row: SignedLeadRow, role: RoleKey): string => {
+    let rawValue: string | null | undefined;
     switch (role) {
       case 'scheduler':
-        return row.scheduler || '';
+        rawValue = row.scheduler;
+        break;
       case 'manager':
-        return row.manager || '';
+        rawValue = row.manager;
+        break;
       case 'closer':
-        return row.closer || '';
+        rawValue = row.closer;
+        break;
       case 'expert':
-        return row.expert || '';
+        rawValue = row.expert;
+        break;
       case 'handler':
-        return row.handler || '';
+        rawValue = row.handler;
+        break;
       default:
         return '';
     }
+    return normalizeRoleValue(rawValue);
   };
 
   const getRoleIdValue = (row: SignedLeadRow, role: RoleKey): string => {
@@ -668,9 +693,11 @@ const SignedSalesReportPage: React.FC = () => {
     const currentDisplay = getRoleDisplay(row, role);
 
     if (!isEditing) {
+      // Use consistent "---" string for all unassigned roles
+      const displayText = currentDisplay && currentDisplay.trim() !== '' ? currentDisplay : '---';
       return (
         <div className="flex items-center gap-2">
-          <span>{currentDisplay && currentDisplay.trim() !== '' ? currentDisplay : '—'}</span>
+          <span>{displayText}</span>
           <button
             type="button"
             className="btn btn-ghost btn-xs"
@@ -1542,13 +1569,13 @@ const resolveLegacyLanguage = (lead: any) => {
           const closerName = resolveLegacyEmployeeName(lead.closer_id);
           const expertName = resolveLegacyEmployeeName(lead.expert_id);
           const handlerName = resolveLegacyEmployeeName(lead.case_handler_id);
-          const lawyerName = resolveLegacyEmployeeName(lead.meeting_lawyer_id);
 
-          const roleHandler = handlerName || lawyerName;
+          // Handler should only use case_handler_id, not fall back to meeting_lawyer_id (helper/lawyer)
+          const roleHandler = handlerName;
           const handlerIdRaw =
             lead.case_handler_id !== null && lead.case_handler_id !== undefined
               ? lead.case_handler_id
-              : lead.meeting_lawyer_id ?? null;
+              : null;
 
           // Format lead number with sublead suffix if applicable (same logic as Clients.tsx)
           const formattedLeadNumber = (lead as any)._formattedLeadNumber || String(lead.id);
@@ -1662,14 +1689,26 @@ const resolveLegacyLanguage = (lead: any) => {
     }
   };
 
-  const totalInNIS = useMemo(() => rows.reduce((sum, row) => sum + (row.totalNIS || 0), 0), [rows]);
+  // Sort rows by handler (no handler on top) when sortByHandler is true
+  const sortedRows = useMemo(() => {
+    if (!sortByHandler) return rows;
+    return [...rows].sort((a, b) => {
+      const aHasHandler = !!(a.handler && a.handler.trim() !== '');
+      const bHasHandler = !!(b.handler && b.handler.trim() !== '');
+      // No handler comes first (true < false)
+      if (aHasHandler === bHasHandler) return 0;
+      return aHasHandler ? 1 : -1;
+    });
+  }, [rows, sortByHandler]);
+
+  const totalInNIS = useMemo(() => sortedRows.reduce((sum, row) => sum + (row.totalNIS || 0), 0), [sortedRows]);
   const totalInNISWithFeeDeducted = useMemo(() => 
-    rows.reduce((sum, row) => {
+    sortedRows.reduce((sum, row) => {
       const total = row.totalNIS || 0;
       const fee = row.subcontractorFeeNIS || 0;
       return sum + (total - fee);
     }, 0), 
-    [rows]
+    [sortedRows]
   );
 
   // Filter reports based on search query
@@ -1970,7 +2009,7 @@ const resolveLegacyLanguage = (lead: any) => {
                     <span className="text-3xl font-extrabold text-gray-900">{`₪ ${Math.round(totalInNISWithFeeDeducted).toLocaleString('en-US')}`}</span>
                   </div>
                   <div className="w-16 h-16 rounded-xl bg-gradient-to-br from-indigo-500 via-purple-500 to-blue-500 flex items-center justify-center text-white text-xl font-bold shadow-lg">
-                    {rows.length}
+                    {sortedRows.length}
                   </div>
                 </div>
                 <div className="bg-white border border-base-200 shadow-lg rounded-2xl px-6 py-4 flex items-center gap-5 w-full md:max-w-[280px]">
@@ -2007,7 +2046,7 @@ const resolveLegacyLanguage = (lead: any) => {
               <div className="py-12 flex justify-center">
                 <span className="loading loading-spinner loading-lg text-primary" />
               </div>
-            ) : rows.length === 0 ? (
+            ) : sortedRows.length === 0 ? (
               <div className="py-12 text-center text-gray-500">
                 No signed agreements found for the selected filters.
               </div>
@@ -2025,13 +2064,19 @@ const resolveLegacyLanguage = (lead: any) => {
                       <th className="text-xs md:text-sm">Manager</th>
                       <th className="text-xs md:text-sm">Closer</th>
                       <th className="text-xs md:text-sm">Expert</th>
-                      <th className="text-xs md:text-sm">Handler</th>
+                      <th 
+                        className="text-xs md:text-sm cursor-pointer hover:bg-gray-100 select-none"
+                        onClick={() => setSortByHandler(!sortByHandler)}
+                        title="Click to sort by handler (no handler on top)"
+                      >
+                        Handler {sortByHandler && '↑'}
+                      </th>
                       <th className="text-xs md:text-sm">Total</th>
                       <th className="text-xs md:text-sm">Total (₪)</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {rows.map(row => (
+                    {sortedRows.map(row => (
                       <tr key={`${row.leadType}-${row.id}`}>
                         <td>
                           <div className="flex flex-col">

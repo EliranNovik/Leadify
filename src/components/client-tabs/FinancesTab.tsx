@@ -154,6 +154,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     numberOfPayments: 3,
     // Per‑payment percentages, must always sum to 100
     paymentPercents: [50, 25, 25],
+    // Payment amounts - can be edited freely
+    paymentAmounts: [] as number[],
     // Payment orders for each payment
     paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
     includeVat: true,
@@ -197,17 +199,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         suggestedTotal = Number(client?.balance || 0);
       }
 
-      setAutoPlanData(prev => ({
-        ...prev,
-        currency,
-        // Only prefill if we don't already have a value and suggestedTotal is positive
-        totalAmount:
-          (!prev.totalAmount || Number(prev.totalAmount) <= 0) && suggestedTotal > 0
-            ? String(suggestedTotal)
-            : prev.totalAmount,
-        // Set default contact to main client name if not set
-        contact: prev.contact || client?.name || '',
-      }));
+      setAutoPlanData(prev => {
+        const totalAmount = (!prev.totalAmount || Number(prev.totalAmount) <= 0) && suggestedTotal > 0
+          ? String(suggestedTotal)
+          : prev.totalAmount;
+        
+        // Initialize payment amounts if not set or if total amount changed
+        let paymentAmounts = prev.paymentAmounts || [];
+        if (paymentAmounts.length === 0 && totalAmount) {
+          // Calculate initial amounts from percentages
+          const total = Number(totalAmount);
+          paymentAmounts = prev.paymentPercents.map(percent => (total * percent) / 100);
+        }
+        
+        return {
+          ...prev,
+          currency,
+          totalAmount,
+          paymentAmounts,
+          // Set default contact to main client name if not set
+          contact: prev.contact || client?.name || '',
+        };
+      });
     }
   }, [client]);
   
@@ -1867,13 +1880,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // For legacy leads, update the leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
         
+        // Get currency_id from client (same logic as balance badge)
+        const currencyId = (client as any).currency_id;
+        // Convert to number for comparison (handle both string and number types)
+        // Default to 1 (NIS) if currency_id is null/undefined/NaN
+        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+          numericCurrencyId = 1; // Default to NIS
+        }
+        
+        // Determine which column to update based on currency_id
+        // If currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total
+        const updateData: any = {};
+        if (numericCurrencyId === 1) {
+          updateData.total_base = newBalance;
+        } else {
+          updateData.total = newBalance;
+        }
+        
         const { error } = await supabase
           .from('leads_lead')
-          .update({ 
-            total: newBalance
-            // Note: leads_lead table doesn't have balance_currency field, 
-            // it uses currency_id instead, but we'll keep it simple for now
-          })
+          .update(updateData)
           .eq('id', legacyId);
         
         if (error) {
@@ -2605,7 +2632,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .update({
             due_percent: duePercentValue,
             date: dueDateValue,
-            due_date: dueDateValue,
+            // Removed due_date: dueDateValue - do not update due_date when editing payment plan
             value: editPaymentData.value,
             vat_value: editPaymentData.valueVat,
             order: orderValue,
@@ -3250,13 +3277,33 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       return;
     }
 
-    const percents = autoPlanData.paymentPercents || [];
-    const activePercents = percents.slice(0, autoPlanData.numberOfPayments);
-    const sumPercents = activePercents.reduce((sum, value) => sum + Number(value || 0), 0);
-
-    if (sumPercents !== 100) {
-      toast.error('The sum of all payment percentages must be exactly 100%. Please adjust the values.');
-      return;
+    const totalAmount = Number(autoPlanData.totalAmount);
+    
+    // Use payment amounts if available, otherwise calculate from percentages
+    const paymentAmounts = autoPlanData.paymentAmounts && autoPlanData.paymentAmounts.length > 0
+      ? autoPlanData.paymentAmounts.slice(0, autoPlanData.numberOfPayments)
+      : (() => {
+          const percents = autoPlanData.paymentPercents || [];
+          const activePercents = percents.slice(0, autoPlanData.numberOfPayments);
+          return activePercents.map(percent => (totalAmount * Number(percent || 0)) / 100);
+        })();
+    
+    // Calculate percentages from amounts for display/storage
+    const activePercents = paymentAmounts.map(amount => 
+      totalAmount > 0 ? Math.round((amount / totalAmount) * 100 * 100) / 100 : 0
+    );
+    
+    // Check if amounts sum to total (allow small floating point differences)
+    const sumOfAmounts = paymentAmounts.reduce((sum, amount) => sum + (amount || 0), 0);
+    const amountsMatch = Math.abs(sumOfAmounts - totalAmount) < 0.01;
+    
+    // Show warning but allow creation if amounts don't match
+    if (!amountsMatch) {
+      const difference = Math.abs(sumOfAmounts - totalAmount);
+      const confirmMessage = `The sum of payment amounts (${sumOfAmounts.toFixed(2)} ${autoPlanData.currency || '₪'}) doesn't match the total amount (${totalAmount.toFixed(2)} ${autoPlanData.currency || '₪'}). Difference: ${difference.toFixed(2)} ${autoPlanData.currency || '₪'}. Do you want to proceed anyway?`;
+      if (!window.confirm(confirmMessage)) {
+        return;
+      }
     }
 
     setIsSavingPaymentRow(true);
@@ -3353,8 +3400,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
-          const paymentPercent = Number(activePercents[i] || 0);
-          const value = (totalAmount * paymentPercent) / 100;
+          // Use actual payment amount if available, otherwise calculate from percentage
+          const value = paymentAmounts[i] !== undefined ? paymentAmounts[i] : (totalAmount * Number(activePercents[i] || 0)) / 100;
+          const paymentPercent = totalAmount > 0 ? Math.round((value / totalAmount) * 100 * 100) / 100 : 0;
           // Use custom order from paymentOrders array, or fallback to default based on position
           const defaultOrder = i === 0 ? 'First Payment' : i === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
           const orderText = paymentOrders[i] || defaultOrder;
@@ -3460,8 +3508,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
 
         for (let i = 0; i < autoPlanData.numberOfPayments; i++) {
-          const paymentPercent = Number(activePercents[i] || 0);
-          const value = (totalAmount * paymentPercent) / 100;
+          // Use actual payment amount if available, otherwise calculate from percentage
+          const value = paymentAmounts[i] !== undefined ? paymentAmounts[i] : (totalAmount * Number(activePercents[i] || 0)) / 100;
+          const paymentPercent = totalAmount > 0 ? Math.round((value / totalAmount) * 100 * 100) / 100 : 0;
 
           // Calculate due date: 3 months apart for each payment (i * 3 months from today)
           const dueDate = new Date(today);
@@ -3554,6 +3603,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         currency: '₪',
         numberOfPayments: 3,
         paymentPercents: [50, 25, 25],
+        paymentAmounts: [],
         paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
         includeVat: true,
         contact: '', // Reset contact
@@ -3580,6 +3630,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       currency: '₪',
       numberOfPayments: 3,
       paymentPercents: [50, 25, 25],
+      paymentAmounts: [],
       paymentOrders: ['First Payment', 'Intermediate Payment', 'Final Payment'],
       includeVat: true,
       contact: '', // Reset contact
@@ -3895,15 +3946,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 const count = Number(e.target.value) || 1;
                                 setCustomPaymentCount(count);
                                 setAutoPlanData(prev => {
+                                  const totalAmount = Number(prev.totalAmount || 0);
                                   let percents: number[];
+                                  let amounts: number[];
                                   let orders: string[];
                                   if (count === 1) {
                                     // For single payment, set to 100%
                                     percents = [100];
+                                    amounts = totalAmount > 0 ? [totalAmount] : [0];
                                     orders = ['Single Payment'];
                                   } else if (count === 3) {
                                     // Special default for 3 payments
                                     percents = [50, 25, 25];
+                                    amounts = totalAmount > 0 
+                                      ? [totalAmount * 0.5, totalAmount * 0.25, totalAmount * 0.25]
+                                      : [0, 0, 0];
                                     orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
                                   } else {
                                     // Even split that sums to 100
@@ -3913,6 +3970,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     for (let i = 0; i < remainder; i++) {
                                       percents[i] += 1;
                                     }
+                                    // Calculate amounts from percentages
+                                    amounts = totalAmount > 0
+                                      ? percents.map(percent => (totalAmount * percent) / 100)
+                                      : Array(count).fill(0);
                                     // Generate default orders
                                     orders = Array.from({ length: count }, (_, i) => {
                                       if (i === 0) return 'First Payment';
@@ -3924,6 +3985,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     ...prev,
                                     numberOfPayments: count,
                                     paymentPercents: percents,
+                                    paymentAmounts: amounts,
                                     paymentOrders: orders,
                                   };
                                 });
@@ -3978,17 +4040,35 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 min={0}
                                 max={100}
                                 value={autoPlanData.paymentPercents[index] ?? 0}
+                                onFocus={(e) => {
+                                  // Select all text when focused for easy editing
+                                  e.target.select();
+                                }}
                                 onChange={(e) => {
                                   const percentValue = Number(e.target.value || 0);
                                   const totalAmount = Number(autoPlanData.totalAmount || 0);
                                   setAutoPlanData(prev => {
-                                    const next = [...(prev.paymentPercents || [])];
+                                    const nextPercents = [...(prev.paymentPercents || [])];
                                     // Ensure array length
-                                    while (next.length < prev.numberOfPayments) next.push(0);
-                                    next[index] = percentValue;
+                                    while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
+                                    nextPercents[index] = percentValue;
+                                    
+                                    // Also update payment amounts when percentage changes
+                                    const nextAmounts = [...(prev.paymentAmounts || [])];
+                                    while (nextAmounts.length < prev.numberOfPayments) {
+                                      const idx = nextAmounts.length;
+                                      const total = Number(prev.totalAmount || 0);
+                                      const percent = prev.paymentPercents[idx] ?? 0;
+                                      nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
+                                    }
+                                    if (totalAmount > 0) {
+                                      nextAmounts[index] = (totalAmount * percentValue) / 100;
+                                    }
+                                    
                                     return {
                                       ...prev,
-                                      paymentPercents: next,
+                                      paymentPercents: nextPercents,
+                                      paymentAmounts: nextAmounts,
                                     };
                                   });
                                 }}
@@ -4000,35 +4080,86 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                 min={0}
                                 step="0.01"
                                 value={(() => {
+                                  // Use paymentAmounts if available, otherwise calculate from percentage
                                   const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                  const percent = autoPlanData.paymentPercents[index] ?? 0;
-                                  return totalAmount > 0 ? ((totalAmount * percent) / 100).toFixed(2) : '0.00';
+                                  let amount: number;
+                                  if (autoPlanData.paymentAmounts && autoPlanData.paymentAmounts[index] !== undefined) {
+                                    amount = autoPlanData.paymentAmounts[index];
+                                  } else {
+                                    const percent = autoPlanData.paymentPercents[index] ?? 0;
+                                    amount = totalAmount > 0 ? (totalAmount * percent) / 100 : 0;
+                                  }
+                                  // Return as number (not string with .toFixed) to allow easy editing
+                                  return amount;
                                 })()}
+                                onFocus={(e) => {
+                                  // Select all text when focused for easy editing
+                                  e.target.select();
+                                }}
                                 onChange={(e) => {
                                   const amountValue = Number(e.target.value || 0);
                                   const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                  if (totalAmount > 0) {
-                                    const newPercent = (amountValue / totalAmount) * 100;
-                                    setAutoPlanData(prev => {
-                                      const next = [...(prev.paymentPercents || [])];
-                                      // Ensure array length
-                                      while (next.length < prev.numberOfPayments) next.push(0);
-                                      next[index] = Math.round(newPercent * 100) / 100; // Round to 2 decimal places
-                                      return {
-                                        ...prev,
-                                        paymentPercents: next,
-                                      };
-                                    });
-                                  }
+                                  
+                                  setAutoPlanData(prev => {
+                                    // Update payment amounts array
+                                    const nextAmounts = [...(prev.paymentAmounts || [])];
+                                    while (nextAmounts.length < prev.numberOfPayments) {
+                                      const idx = nextAmounts.length;
+                                      const total = Number(prev.totalAmount || 0);
+                                      const percent = prev.paymentPercents[idx] ?? 0;
+                                      nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
+                                    }
+                                    nextAmounts[index] = amountValue;
+                                    
+                                    // Also update percentage if total amount is available
+                                    const nextPercents = [...(prev.paymentPercents || [])];
+                                    while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
+                                    if (totalAmount > 0) {
+                                      nextPercents[index] = Math.round((amountValue / totalAmount) * 100 * 100) / 100;
+                                    }
+                                    
+                                    return {
+                                      ...prev,
+                                      paymentAmounts: nextAmounts,
+                                      paymentPercents: nextPercents,
+                                    };
+                                  });
                                 }}
-                                placeholder="0.00"
+                                placeholder="0"
                               />
                               <span className="text-sm">{autoPlanData.currency || '₪'}</span>
                             </div>
                           )})}
-                          <div className="text-xs text-gray-500">
-                            Sum must be exactly 100%. If not, you'll see an error when creating the plan.
-                          </div>
+                          {(() => {
+                            // Calculate sum of payment amounts
+                            const totalAmount = Number(autoPlanData.totalAmount || 0);
+                            const paymentAmounts = autoPlanData.paymentAmounts || [];
+                            const sumOfAmounts = paymentAmounts.length > 0
+                              ? paymentAmounts.reduce((sum, amount) => sum + (amount || 0), 0)
+                              : autoPlanData.paymentPercents.slice(0, autoPlanData.numberOfPayments).reduce((sum, percent) => {
+                                  return sum + (totalAmount * (percent || 0) / 100);
+                                }, 0);
+                            
+                            const amountsMatch = Math.abs(sumOfAmounts - totalAmount) < 0.01; // Allow small floating point differences
+                            
+                            return (
+                              <div className="space-y-1">
+                                {!amountsMatch && totalAmount > 0 && (
+                                  <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
+                                    <ExclamationTriangleIcon className="w-4 h-4" />
+                                    <span>
+                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'}) 
+                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}). 
+                                      Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
+                                    </span>
+                                  </div>
+                                )}
+                                <div className="text-xs text-gray-500">
+                                  You can freely edit payment amounts. The system will use the actual amounts you enter.
+                                </div>
+                              </div>
+                            );
+                          })()}
                         </div>
                       </div>
                     </div>

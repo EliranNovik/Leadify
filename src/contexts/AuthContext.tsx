@@ -87,49 +87,56 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const updateAuthState = useCallback((session: any, isInitialized: boolean = true) => {
     // Prevent duplicate updates for the same user
     const userId = session?.user?.id || null;
-    if (userId === lastUserIdRef.current && authState.user?.id === userId && authState.isInitialized) {
-      return; // No change needed
-    }
     
-    lastUserIdRef.current = userId;
-    
-    if (session?.user) {
-      // Check if session is expired
-      if (sessionManager.isSessionExpired(session)) {
-        console.log('Session is expired - logging out');
-        setAuthState({
-          user: null,
-          userFullName: null,
-          userInitials: null,
-          isLoading: false,
-          isInitialized: true
-        });
-        supabase.auth.signOut().then(() => {
-          if (typeof window !== 'undefined') {
-            window.location.href = '/login';
-          }
-        });
-        return;
+    // Use functional update to avoid dependency on authState
+    setAuthState(prev => {
+      // Prevent duplicate updates for the same user
+      if (userId === lastUserIdRef.current && prev.user?.id === userId && prev.isInitialized) {
+        return prev; // No change needed
       }
       
-      setAuthState(prev => {
-        // Only fetch user details if we don't have them
-        if (!prev.userFullName && session.user) {
+      lastUserIdRef.current = userId;
+      
+      if (session?.user) {
+        // Check if session is expired
+        if (sessionManager.isSessionExpired(session)) {
+          console.log('Session is expired - logging out');
+          // Only sign out if we actually had a user
+          if (prev.user) {
+            supabase.auth.signOut().then(() => {
+              if (typeof window !== 'undefined') {
+                window.location.href = '/login';
+              }
+            });
+          }
+          return {
+            user: null,
+            userFullName: null,
+            userInitials: null,
+            isLoading: false,
+            isInitialized: true
+          };
+        }
+        
+        // Only fetch user details if we don't have them or user changed
+        if ((!prev.userFullName || prev.user?.id !== session.user.id) && session.user) {
           fetchUserDetails(session.user);
         }
+        
         return {
           ...prev,
           user: session.user,
           isLoading: false,
           isInitialized
         };
-      });
-    } else {
-      setAuthState(prev => {
-        // Only update if we had a user before
+      } else {
+        // Only clear state if we actually had a user before
+        // This prevents clearing state on initial load when there's no session
         if (!prev.user && prev.isInitialized) {
-          return prev;
+          return prev; // Already cleared, no change needed
         }
+        
+        // Only clear if we're sure the user is signed out
         return {
           user: null,
           userFullName: null,
@@ -137,9 +144,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           isLoading: false,
           isInitialized
         };
-      });
-    }
-  }, [authState.user, fetchUserDetails]);
+      }
+    });
+  }, [fetchUserDetails]);
 
   const handleAuthStateChange = useCallback(async (event: string, session: any) => {
     // Prevent concurrent processing
@@ -154,13 +161,19 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         // For INITIAL_SESSION, ensure we mark as initialized
         updateAuthState(session, true);
       } else if (event === 'SIGNED_OUT') {
-        lastUserIdRef.current = null;
-        setAuthState({
-          user: null,
-          userFullName: null,
-          userInitials: null,
-          isLoading: false,
-          isInitialized: true
+        // Only clear if we actually had a user
+        setAuthState(prev => {
+          if (!prev.user) {
+            return prev; // Already cleared
+          }
+          lastUserIdRef.current = null;
+          return {
+            user: null,
+            userFullName: null,
+            userInitials: null,
+            isLoading: false,
+            isInitialized: true
+          };
         });
         // Don't redirect here - let the component handle it
       } else if (event === 'USER_UPDATED' && session?.user) {
@@ -184,27 +197,46 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     
     const checkSessionExpiration = async () => {
       try {
+        // Get current session first to verify it still exists
+        const { data: { session } } = await supabase.auth.getSession();
+        
+        // If session is gone, user was already signed out
+        if (!session?.user) {
+          return; // Don't clear state if session check fails - might be network issue
+        }
+        
         const isExpired = await sessionManager.checkAndHandleExpiration();
         if (isExpired) {
-          setAuthState({
-            user: null,
-            userFullName: null,
-            userInitials: null,
-            isLoading: false,
-            isInitialized: true
+          // Only clear if we're sure the session is expired
+          setAuthState(prev => {
+            // Double-check we still have a user before clearing
+            if (!prev.user) return prev;
+            return {
+              user: null,
+              userFullName: null,
+              userInitials: null,
+              isLoading: false,
+              isInitialized: true
+            };
           });
         }
       } catch (error) {
         console.error('Error checking session expiration:', error);
+        // Don't clear state on error - might be network issue
+        // Only handle if it's a clear auth error
         if (isAuthError(error)) {
-          await handleSessionExpiration();
+          try {
+            await handleSessionExpiration();
+          } catch (handleError) {
+            // Silently fail - don't disrupt user experience
+          }
         }
       }
     };
     
     // Only check periodically, not immediately on mount
-    // Then check every 30 seconds (less frequent to reduce load)
-    const interval = setInterval(checkSessionExpiration, 30000);
+    // Check every 60 seconds (less frequent to reduce load and false positives)
+    const interval = setInterval(checkSessionExpiration, 60000);
     
     return () => clearInterval(interval);
   }, [authState.user]);
@@ -215,6 +247,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     let isMounted = true;
     let storageListener: ((e: StorageEvent) => void) | null = null;
     let initHandled = false;
+    const storageCheckTimeouts = new Map<string, NodeJS.Timeout>();
     
     const initializeAuth = async () => {
       try {
@@ -251,18 +284,42 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         subscription = authSubscription;
         
         // Listen for localStorage changes from other tabs
+        // Add debouncing to prevent excessive checks
         storageListener = (e: StorageEvent) => {
           // Only react to Supabase auth token changes
           if (e.key && e.key.includes('supabase.auth.token') && e.newValue !== e.oldValue) {
-            // Session changed in another tab, refresh our session
-            if (isMounted) {
-              supabase.auth.getSession().then(({ data: { session }, error }) => {
-                if (!error && session?.user && isMounted) {
-                  handleAuthStateChange('SIGNED_IN', session);
-                } else if (!session && isMounted) {
-                  handleAuthStateChange('SIGNED_OUT', null);
-                }
-              });
+            // Debounce storage events to prevent excessive checks
+            const existingTimeout = storageCheckTimeouts.get(e.key);
+            if (existingTimeout) {
+              clearTimeout(existingTimeout);
+            }
+            
+            const timeout = setTimeout(() => {
+              storageCheckTimeouts.delete(e.key || '');
+              // Session changed in another tab, refresh our session
+              if (isMounted) {
+                supabase.auth.getSession().then(({ data: { session }, error }) => {
+                  if (!isMounted) return;
+                  
+                  // Only update if there's an actual change
+                  if (!error && session?.user) {
+                    // Check if user actually changed
+                    const currentUserId = lastUserIdRef.current;
+                    if (currentUserId !== session.user.id) {
+                      handleAuthStateChange('SIGNED_IN', session);
+                    }
+                  } else if (!session) {
+                    // Only clear if we actually had a user
+                    if (lastUserIdRef.current) {
+                      handleAuthStateChange('SIGNED_OUT', null);
+                    }
+                  }
+                });
+              }
+            }, 500); // 500ms debounce - increased to reduce frequency
+            
+            if (e.key) {
+              storageCheckTimeouts.set(e.key, timeout);
             }
           }
         };
@@ -288,6 +345,9 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       if (storageListener) {
         window.removeEventListener('storage', storageListener);
       }
+      // Clear all pending storage check timeouts
+      storageCheckTimeouts.forEach(timeout => clearTimeout(timeout));
+      storageCheckTimeouts.clear();
     };
   }, [handleAuthStateChange, updateAuthState]);
 
