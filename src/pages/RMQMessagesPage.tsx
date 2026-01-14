@@ -37,7 +37,9 @@ import {
   TrashIcon,
   ArrowRightIcon,
   LockClosedIcon,
-  LockOpenIcon
+  LockOpenIcon,
+  ChatBubbleBottomCenterTextIcon,
+  PencilIcon
 } from '@heroicons/react/24/outline';
 import { format, isToday, isYesterday, formatDistanceToNow } from 'date-fns';
 import EmployeeModal from '../components/EmployeeModal';
@@ -205,6 +207,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const [messageToForward, setMessageToForward] = useState<Message | null>(null);
   const [forwardSearchQuery, setForwardSearchQuery] = useState('');
   
+  // Message actions state (reply, edit, delete)
+  const [messageToReply, setMessageToReply] = useState<Message | null>(null);
+  const [messageToEdit, setMessageToEdit] = useState<Message | null>(null);
+  const [editingMessageText, setEditingMessageText] = useState('');
+  const [messageActionMenu, setMessageActionMenu] = useState<number | null>(null);
+  
   // Online status state
   const [onlineUsers, setOnlineUsers] = useState<Set<string>>(new Set());
   const [lastOnlineTimes, setLastOnlineTimes] = useState<Map<string, Date>>(new Map());
@@ -269,6 +277,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const rafRef = useRef<number | null>(null);
   const lastDateRef = useRef<string | null>(null);
   const opacityRef = useRef(0);
+  const initialLoadRef = useRef<number | null>(null);
+  const firstUnreadMessageIdRef = useRef<number | null>(null);
   const isFadingOutRef = useRef(false);
   const lastScrollPositionRef = useRef<number>(0);
   const scrollPositionCheckRef = useRef<NodeJS.Timeout | null>(null);
@@ -2407,16 +2417,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               bonuses_role,
               photo_url
             )
-          ),
-          reply_to_message:messages!reply_to_message_id(
-            id,
-            content,
-            sender:users!sender_id(
-              id,
-              full_name,
-              is_active,
-              tenants_employee!users_employee_id_fkey(display_name)
-            )
           )
         `)
         .eq('conversation_id', conversationId)
@@ -2428,14 +2428,94 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         return;
       }
 
+      // Process messages - always fetch reply messages separately since Supabase relationship query doesn't work well for self-referential FKs
+      let processedMessages = (messagesData || []).map((msg: any) => {
+        // Remove any reply_to_message data from the initial query (we'll fetch it separately)
+        msg.reply_to_message = null;
+        // Mark messages that need reply data fetched
+        if (msg.reply_to_message_id) {
+          msg._needs_reply_fetch = true;
+        }
+        return msg;
+      });
+
+      // Fetch all reply messages in one query
+      const messagesNeedingReplyFetch = processedMessages.filter((msg: any) => msg._needs_reply_fetch && msg.reply_to_message_id);
+      if (messagesNeedingReplyFetch.length > 0) {
+        const replyMessageIds = messagesNeedingReplyFetch.map((msg: any) => msg.reply_to_message_id);
+        const uniqueReplyIds = [...new Set(replyMessageIds.filter(id => id != null))];
+        
+        if (uniqueReplyIds.length > 0) {
+          console.log('🔍 [Reply Debug] Fetching reply messages for IDs:', uniqueReplyIds);
+          
+          const { data: fetchedReplies, error: replyFetchError } = await supabase
+            .from('messages')
+            .select(`
+              id,
+              content,
+              message_type,
+              attachment_url,
+              attachment_name,
+              attachment_type,
+              sender:users!sender_id(
+                id,
+                full_name,
+                is_active,
+                tenants_employee!users_employee_id_fkey(display_name)
+              )
+            `)
+            .in('id', uniqueReplyIds);
+          
+          if (!replyFetchError && fetchedReplies && fetchedReplies.length > 0) {
+            // Create a map of reply messages by ID
+            const replyMap = new Map(fetchedReplies.map((reply: any) => [reply.id, reply]));
+            
+            console.log('🔍 [Reply Debug] Fetched reply messages:', {
+              count: fetchedReplies.length,
+              replyIds: fetchedReplies.map((r: any) => r.id),
+              replyMapSize: replyMap.size
+            });
+            
+            // Attach fetched replies to messages
+            processedMessages = processedMessages.map((msg: any) => {
+              if (msg._needs_reply_fetch && msg.reply_to_message_id) {
+                const fetchedReply = replyMap.get(msg.reply_to_message_id);
+                if (fetchedReply) {
+                  msg.reply_to_message = fetchedReply;
+                  console.log('🔍 [Reply Debug] ✅ Attached reply to message:', {
+                    messageId: msg.id,
+                    replyId: fetchedReply.id,
+                    replyContent: fetchedReply.content?.substring(0, 50),
+                    replySender: fetchedReply.sender?.tenants_employee?.display_name || fetchedReply.sender?.full_name
+                  });
+                } else {
+                  console.warn('🔍 [Reply Debug] ⚠️ Reply not found in fetched data:', {
+                    messageId: msg.id,
+                    replyToMessageId: msg.reply_to_message_id,
+                    availableReplyIds: Array.from(replyMap.keys())
+                  });
+                }
+              }
+              // Remove the flag
+              delete msg._needs_reply_fetch;
+              return msg;
+            });
+          } else if (replyFetchError) {
+            console.error('🔍 [Reply Debug] ❌ Error fetching reply messages:', replyFetchError);
+          } else {
+            console.warn('🔍 [Reply Debug] ⚠️ No reply messages found for IDs:', uniqueReplyIds);
+          }
+        }
+      }
+
       // Fetch read receipts for all messages
-      if (messagesData && messagesData.length > 0 && currentUser) {
-        const messageIds = messagesData.map(m => m.id);
+      if (processedMessages && processedMessages.length > 0 && currentUser) {
+        const messageIds = processedMessages.map(m => m.id);
         // Filter out undefined/null message IDs
         const validMessageIds = messageIds.filter(id => id != null && id !== undefined);
         
         if (validMessageIds.length === 0) {
-          setMessages(messagesData as unknown as Message[]);
+          setMessages(processedMessages as unknown as Message[]);
           return;
         }
 
@@ -2444,18 +2524,27 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           .select('message_id, user_id, read_at')
           .in('message_id', validMessageIds);
 
-        // Attach read receipts to messages
-        const messagesWithReceipts = messagesData.map((msg: any) => ({
-          ...msg,
-          read_receipts: readReceiptsData?.filter(rr => rr.message_id === msg.id) || []
-        }));
+        // Attach read receipts to messages and ensure reply_to_message is processed
+        const messagesWithReceipts = processedMessages.map((msg: any) => {
+          // Ensure reply_to_message is an object, not an array
+          let replyMessage = msg.reply_to_message;
+          if (replyMessage && Array.isArray(replyMessage)) {
+            replyMessage = replyMessage.length > 0 ? replyMessage[0] : null;
+          }
+          
+          return {
+            ...msg,
+            reply_to_message: replyMessage,
+            read_receipts: readReceiptsData?.filter(rr => rr.message_id === msg.id) || []
+          };
+        });
 
         setMessages(messagesWithReceipts as unknown as Message[]);
         
         // Mark messages as read for current user when viewing conversation
         await markMessagesAsRead(messageIds, conversationId);
       } else {
-        setMessages((messagesData || []) as unknown as Message[]);
+        setMessages((processedMessages || []) as unknown as Message[]);
       }
       
       // Mark conversation as read
@@ -2480,17 +2569,35 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       setIsUserScrolling(false);
       setNewMessagesCount(0);
       
-      // Force scroll to bottom after messages are loaded (works for both desktop and mobile)
+      // Find first unread message (works for both direct chats and group chats)
+      const firstUnreadMessage = findFirstUnreadMessage();
+      firstUnreadMessageIdRef.current = firstUnreadMessage?.id || null;
+      
+      // Force scroll after messages are loaded (works for both desktop and mobile)
+      // If there are unread messages, scroll to the first unread message
+      // Otherwise, scroll to bottom
+      // Works for both direct chats (1-on-1) and group chats (multiple participants)
+      // Use instant scroll only - no visible animation when entering chat
       // Use multiple attempts to ensure scroll happens after DOM updates
       setTimeout(() => {
+        if (firstUnreadMessage) {
+          scrollToMessage(firstUnreadMessage.id, 'instant');
+          setTimeout(() => {
+            scrollToMessage(firstUnreadMessage.id, 'instant');
+          }, 100);
+          setTimeout(() => {
+            scrollToMessage(firstUnreadMessage.id, 'instant');
+          }, 200);
+        } else {
           scrollToBottom('instant');
-        setTimeout(() => {
-          scrollToBottom('instant');
-        }, 200);
-        setTimeout(() => {
-          scrollToBottom('smooth');
-        }, 400);
-      }, 100);
+          setTimeout(() => {
+            scrollToBottom('instant');
+          }, 100);
+          setTimeout(() => {
+            scrollToBottom('instant');
+          }, 200);
+        }
+      }, 50);
     } catch (error) {
       toast.error('Failed to load messages');
     }
@@ -3160,8 +3267,79 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // Shift+Enter will allow default behavior (new line)
   };
 
+  // Delete message function
+  const handleDeleteMessage = async (messageId: number) => {
+    if (!currentUser || !selectedConversation) return;
+    
+    try {
+      // Update message in database to mark as deleted
+      const { error } = await supabase
+        .from('messages')
+        .update({ is_deleted: true })
+        .eq('id', messageId);
+      
+      if (error) throw error;
+      
+      // Update local state
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageId ? { ...msg, is_deleted: true, content: 'This message was deleted' } : msg
+      ));
+      
+      toast.success('Message deleted');
+    } catch (error) {
+      console.error('Error deleting message:', error);
+      toast.error('Failed to delete message');
+    }
+  };
+
+  // Edit message function
+  const handleEditMessage = async () => {
+    if (!messageToEdit || !editingMessageText.trim() || !currentUser) return;
+    
+    try {
+      // Update message in database
+      const { error } = await supabase
+        .from('messages')
+        .update({ 
+          content: editingMessageText.trim(),
+          edited_at: new Date().toISOString()
+        })
+        .eq('id', messageToEdit.id);
+      
+      if (error) throw error;
+      
+      // Update local state
+      setMessages(prev => prev.map(msg => 
+        msg.id === messageToEdit.id 
+          ? { ...msg, content: editingMessageText.trim(), edited_at: new Date().toISOString() }
+          : msg
+      ));
+      
+      setMessageToEdit(null);
+      setEditingMessageText('');
+      toast.success('Message edited');
+    } catch (error) {
+      console.error('Error editing message:', error);
+      toast.error('Failed to edit message');
+    }
+  };
+
   const sendMessage = async () => {
+    // If editing, handle edit instead
+    if (messageToEdit) {
+      await handleEditMessage();
+      return;
+    }
+    
     if (!selectedConversation || !currentUser || !newMessage.trim()) return;
+    
+    // Debug: Log reply information
+    console.log('🔍 [Reply Debug] Sending message with reply:', {
+      hasReply: !!messageToReply,
+      replyMessageId: messageToReply?.id,
+      replyMessageContent: messageToReply?.content,
+      replyMessageSender: messageToReply?.sender?.tenants_employee?.display_name || messageToReply?.sender?.full_name
+    });
     
     // Stop typing indicator
     if (typingTimeoutRef.current) {
@@ -3182,18 +3360,72 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     try {
       // Send via WebSocket for real-time delivery
       if (websocketService.isSocketConnected()) {
-        websocketService.sendMessage(selectedConversation.id, newMessage.trim(), 'text');
+        console.log('🔍 [Reply Debug] Sending via WebSocket with reply_to_message_id:', messageToReply?.id);
+        
+        // Add optimistic update even when WebSocket is connected so user sees their message immediately with reply preview
+        if (messageToReply) {
+          // Create optimistic message with reply data
+          const optimisticMessage: Message = {
+            id: Date.now(), // Temporary ID until real one arrives
+            conversation_id: selectedConversation.id,
+            sender_id: currentUser.id,
+            sender: currentUser,
+            content: newMessage.trim(),
+            message_type: 'text',
+            sent_at: new Date().toISOString(),
+            edited_at: undefined,
+            is_deleted: false,
+            delivery_status: 'sending',
+            read_receipts: [],
+            reactions: [],
+            reply_to_message_id: messageToReply.id,
+            reply_to_message: messageToReply, // Use the message being replied to directly
+            attachment_url: undefined,
+            attachment_name: undefined,
+            attachment_type: undefined,
+            attachment_size: undefined,
+            voice_duration: undefined,
+            voice_waveform: undefined,
+            is_voice_message: false,
+          };
+          
+          console.log('🔍 [Reply Debug] Adding optimistic message with reply (WebSocket connected):', {
+            messageId: optimisticMessage.id,
+            replyToMessageId: optimisticMessage.reply_to_message_id,
+            hasReplyToMessage: !!optimisticMessage.reply_to_message,
+            replyContent: optimisticMessage.reply_to_message?.content?.substring(0, 50)
+          });
+          
+          setMessages(prev => {
+            const updated = [...prev, optimisticMessage];
+            return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+          });
+        }
+        
+        websocketService.sendMessage(
+          selectedConversation.id, 
+          newMessage.trim(), 
+          'text',
+          undefined,
+          undefined,
+          undefined,
+          messageToReply?.id
+        );
       } else {
       }
 
       // Also save to database
+      const replyToMessageId = messageToReply?.id || null;
+      console.log('🔍 [Reply Debug] Inserting message to database with reply_to_message_id:', replyToMessageId);
+      
       const { data: messageData, error } = await supabase
         .from('messages')
         .insert({
           conversation_id: selectedConversation.id,
           sender_id: currentUser.id,
           content: newMessage.trim(),
-          message_type: 'text'
+          message_type: 'text',
+          reply_to_message_id: replyToMessageId
         })
         .select(`
           id,
@@ -3202,6 +3434,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           content,
           message_type,
           sent_at,
+          reply_to_message_id,
           sender:users!sender_id(
             id,
             full_name,
@@ -3217,7 +3450,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         `)
         .single();
 
-      if (error) throw error;
+      if (error) {
+        console.error('🔍 [Reply Debug] Error inserting message:', error);
+        throw error;
+      }
+      
+      console.log('🔍 [Reply Debug] Message inserted successfully:', {
+        messageId: messageData?.id,
+        replyToMessageId: (messageData as any)?.reply_to_message_id,
+        hasReplyToMessage: !!(messageData as any)?.reply_to_message,
+        replyToMessageData: (messageData as any)?.reply_to_message
+      });
 
       // If WebSocket is not connected, trigger push notifications via backend API
       if (!websocketService.isSocketConnected()) {
@@ -3242,6 +3485,44 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Only add message optimistically if WebSocket is NOT connected
       // If WebSocket IS connected, let the WebSocket handler add it to avoid duplicates
       if (!websocketService.isSocketConnected()) {
+        // Fetch reply message if this is a reply (since we removed it from the insert query)
+        let processedReplyMessage: any = undefined;
+        if ((messageData as any)?.reply_to_message_id) {
+          console.log('🔍 [Reply Debug] Fetching reply message for optimistic update:', (messageData as any)?.reply_to_message_id);
+          const { data: replyData } = await supabase
+            .from('messages')
+            .select(`
+              id,
+              content,
+              message_type,
+              attachment_url,
+              attachment_name,
+              attachment_type,
+              sender:users!sender_id(
+                id,
+                full_name,
+                is_active,
+                tenants_employee!users_employee_id_fkey(display_name)
+              )
+            `)
+            .eq('id', (messageData as any)?.reply_to_message_id)
+            .single();
+          
+          if (replyData) {
+            processedReplyMessage = replyData;
+            console.log('🔍 [Reply Debug] ✅ Fetched reply for optimistic update:', {
+              replyId: processedReplyMessage.id,
+              replyContent: processedReplyMessage.content?.substring(0, 50)
+            });
+          }
+        }
+        
+        console.log('🔍 [Reply Debug] Adding message optimistically (WebSocket not connected):', {
+          messageId: (messageData as any)?.id,
+          replyToMessageId: (messageData as any)?.reply_to_message_id,
+          hasReplyMessage: !!processedReplyMessage
+        });
+        
         const enhancedMessage: Message = {
           ...messageData as unknown as Message,
           read_receipts: [],
@@ -3249,8 +3530,9 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           is_deleted: false,
           reactions: [],
           edited_at: undefined,
-          reply_to_message_id: undefined,
-          reply_to_message: undefined,
+          // Preserve reply data (fetched separately)
+          reply_to_message_id: (messageData as any).reply_to_message_id || undefined,
+          reply_to_message: processedReplyMessage || undefined,
           attachment_url: undefined,
           attachment_name: undefined,
           attachment_type: undefined,
@@ -3259,6 +3541,13 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           voice_waveform: undefined,
           is_voice_message: false,
         };
+        
+        console.log('🔍 [Reply Debug] Enhanced message with reply data:', {
+          messageId: enhancedMessage.id,
+          replyToMessageId: enhancedMessage.reply_to_message_id,
+          hasReplyToMessage: !!enhancedMessage.reply_to_message,
+          replyToMessageContent: enhancedMessage.reply_to_message?.content
+        });
         
         setMessages(prev => {
           // Check if message already exists (shouldn't happen, but safety check)
@@ -3276,6 +3565,8 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       }
       
       setNewMessage('');
+      console.log('🔍 [Reply Debug] Clearing reply state after sending');
+      setMessageToReply(null); // Clear reply after sending
       resetInputHeights();
       
       // Always scroll to bottom when user sends a message
@@ -3822,6 +4113,106 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
+  // Find the first unread message
+  // Works for both direct chats and group chats
+  const findFirstUnreadMessage = useCallback((): Message | null => {
+    if (!selectedConversation || !currentUser || messages.length === 0) return null;
+    
+    // Get the current user's participant info
+    // This works for both direct chats (2 participants) and group chats (multiple participants)
+    const userParticipant = selectedConversation.participants?.find(
+      p => p.user_id === currentUser.id && p.is_active
+    );
+    
+    if (!userParticipant) {
+      // User is not a participant (shouldn't happen, but handle gracefully)
+      return null;
+    }
+    
+    if (!userParticipant.last_read_at) {
+      // If no last_read_at, all messages are potentially unread
+      // For group chats: return first message from any other participant
+      // For direct chats: return first message from the other participant
+      return messages.find(m => m.sender_id !== currentUser.id && !m.is_deleted) || null;
+    }
+    
+    // Find the first message that:
+    // 1. Was sent after the user's last_read_at
+    // 2. Was not sent by the current user
+    // 3. Is not deleted
+    // This logic works for both direct and group chats
+    const lastReadAt = new Date(userParticipant.last_read_at);
+    
+    for (const message of messages) {
+      if (message.is_deleted) continue; // Skip deleted messages
+      
+      const messageSentAt = new Date(message.sent_at);
+      // For group chats: any message from any participant after last_read_at is unread
+      // For direct chats: any message from the other participant after last_read_at is unread
+      if (messageSentAt > lastReadAt && message.sender_id !== currentUser.id) {
+        return message;
+      }
+    }
+    
+    return null;
+  }, [selectedConversation, currentUser, messages]);
+
+  // Scroll to a specific message by ID
+  const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
+    // Find the message element in the DOM
+    const messageElement = document.querySelector(`[data-message-id="${messageId}"]`);
+    
+    if (messageElement) {
+      // Get the container
+      let container: HTMLElement | null = null;
+      
+      if (desktopMessagesContainerRef.current) {
+        const desktopContainer = desktopMessagesContainerRef.current;
+        if (desktopContainer.offsetWidth > 0 && desktopContainer.offsetHeight > 0) {
+          container = desktopContainer;
+        }
+      }
+      
+      if (!container && mobileMessagesContainerRef.current) {
+        const mobileContainer = mobileMessagesContainerRef.current;
+        if (mobileContainer.offsetWidth > 0 && mobileContainer.offsetHeight > 0) {
+          container = mobileContainer;
+        }
+      }
+      
+      if (!container && messagesContainerRef.current) {
+        const fallbackContainer = messagesContainerRef.current;
+        if (fallbackContainer.offsetWidth > 0 && fallbackContainer.offsetHeight > 0) {
+          container = fallbackContainer;
+        }
+      }
+      
+      if (container && messageElement) {
+        // Calculate the position to scroll to (message at top of viewport)
+        const containerRect = container.getBoundingClientRect();
+        const messageRect = messageElement.getBoundingClientRect();
+        const scrollTop = container.scrollTop;
+        const relativeTop = messageRect.top - containerRect.top + scrollTop;
+        
+        if (behavior === 'instant') {
+          container.scrollTop = relativeTop;
+        } else {
+          container.scrollTo({
+            top: relativeTop,
+            behavior: 'smooth'
+          });
+        }
+      } else {
+        // Fallback: use scrollIntoView
+        messageElement.scrollIntoView({
+          behavior: behavior === 'instant' ? 'auto' : behavior,
+          block: 'start',
+          inline: 'nearest'
+        });
+      }
+    }
+  }, []);
+
   // Smart auto-scroll logic - scrolls the visible container (desktop or mobile)
   const scrollToBottom = (behavior: 'smooth' | 'instant' = 'smooth') => {
     // Try desktop container first
@@ -4293,31 +4684,49 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialUserId, currentUser?.id, selectedConversation?.id, conversations.length]);
 
-  // Auto-scroll to bottom when conversation changes or messages are loaded
+  // Auto-scroll to bottom when conversation changes (initial load only)
   useEffect(() => {
     if (selectedConversation && messages.length > 0) {
-      // Reset scroll state
-      setShouldAutoScroll(true);
-      setIsUserScrolling(false);
-      setNewMessagesCount(0);
+      const isInitialLoad = initialLoadRef.current !== selectedConversation.id;
       
-      // Scroll to bottom with multiple attempts to ensure it works
-      // Use requestAnimationFrame for better timing with DOM updates
-      requestAnimationFrame(() => {
-        setTimeout(() => {
-          scrollToBottom('instant');
-          requestAnimationFrame(() => {
-            setTimeout(() => {
+      if (isInitialLoad) {
+        // This is the initial load - use instant scroll only
+        initialLoadRef.current = selectedConversation.id;
+        
+        // Reset scroll state
+        setShouldAutoScroll(true);
+        setIsUserScrolling(false);
+        setNewMessagesCount(0);
+        
+        // Find first unread message (works for both direct chats and group chats)
+        const firstUnreadMessage = findFirstUnreadMessage();
+        firstUnreadMessageIdRef.current = firstUnreadMessage?.id || null;
+        
+        // Scroll to first unread message if it exists, otherwise scroll to bottom
+        // Works for both direct chats (1-on-1) and group chats (multiple participants)
+        // Use instant scroll - no visible animation
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            if (firstUnreadMessage) {
+              scrollToMessage(firstUnreadMessage.id, 'instant');
+              requestAnimationFrame(() => {
+                setTimeout(() => {
+                  scrollToMessage(firstUnreadMessage.id, 'instant');
+                }, 100);
+              });
+            } else {
               scrollToBottom('instant');
-              setTimeout(() => {
-                scrollToBottom('smooth');
-              }, 200);
-            }, 200);
-          });
-        }, 100);
-      });
+              requestAnimationFrame(() => {
+                setTimeout(() => {
+                  scrollToBottom('instant');
+                }, 100);
+              });
+            }
+          }, 50);
+        });
+      }
     }
-  }, [selectedConversation?.id, messages.length]); // Trigger when conversation ID or message count changes
+  }, [selectedConversation?.id, messages.length, findFirstUnreadMessage, scrollToMessage]); // Trigger when conversation ID or message count changes
 
   // Set initial message when conversation is selected and initialMessage/lead info is provided
   useEffect(() => {
@@ -4482,6 +4891,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     }
   };
 
+  // Close message action menu when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (messageActionMenu !== null) {
+        const target = event.target as HTMLElement;
+        if (!target.closest('.message-action-menu')) {
+          setMessageActionMenu(null);
+        }
+      }
+    };
+
+    if (messageActionMenu !== null) {
+      document.addEventListener('mousedown', handleClickOutside);
+      return () => {
+        document.removeEventListener('mousedown', handleClickOutside);
+      };
+    }
+  }, [messageActionMenu]);
+
   // Close emoji picker, lead search, and reaction picker when clicking outside
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {
@@ -4514,9 +4942,10 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       if (showReactionPicker) {
         const target = event.target as Element;
         
-        // Check if click is inside reaction picker or on a message bubble
+        // Check if click is inside the reaction picker buttons/container only
+        // Don't check for message bubble - clicking on message bubble should close the picker
         const isInsideReactionPicker = target.closest('button[title^="React with"]') ||
-                                      target.closest('[data-message-id]');
+                                      target.closest('.reaction-picker-container');
         
         if (!isInsideReactionPicker) {
           setShowReactionPicker(null);
@@ -4555,6 +4984,45 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
           readReceipts = receipts || [];
         }
         
+        // Fetch reply message data if this message is a reply
+        let replyToMessage: Message | undefined = undefined;
+        if (message.reply_to_message_id) {
+          console.log('🔍 [Reply Debug] WebSocket message has reply_to_message_id:', message.reply_to_message_id);
+          const { data: replyData, error: replyError } = await supabase
+            .from('messages')
+            .select(`
+              id,
+              content,
+              message_type,
+              attachment_url,
+              attachment_name,
+              attachment_type,
+              sender:users!sender_id(
+                id,
+                full_name,
+                is_active,
+                tenants_employee!users_employee_id_fkey(display_name)
+              )
+            `)
+            .eq('id', message.reply_to_message_id)
+            .single();
+          
+          if (replyError) {
+            console.error('🔍 [Reply Debug] Error fetching reply message:', replyError);
+          } else if (replyData) {
+            replyToMessage = replyData as unknown as Message;
+            console.log('🔍 [Reply Debug] Fetched reply message data:', {
+              replyId: replyToMessage.id,
+              replyContent: replyToMessage.content,
+              replySender: replyToMessage.sender?.tenants_employee?.display_name || replyToMessage.sender?.full_name
+            });
+          } else {
+            console.warn('🔍 [Reply Debug] No reply data found for reply_to_message_id:', message.reply_to_message_id);
+          }
+        } else {
+          console.log('🔍 [Reply Debug] WebSocket message has no reply_to_message_id');
+        }
+        
         setMessages(prev => {
           // Check if message already exists to avoid duplicates
           // First check by exact ID match (if message from DB already exists)
@@ -4562,12 +5030,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
             const existingById = prev.find(m => m.id === message.id);
             if (existingById) {
               // Message already exists with this ID, update it with WebSocket data
-              const updated = prev.map(m => m.id === message.id ? {
-                ...m,
-                ...message,
-                read_receipts: readReceipts,
-                delivery_status: 'sent'
-              } as Message : m);
+              const updated = prev.map(m => {
+                if (m.id === message.id) {
+                  // Handle reply_to_message - might be array or object
+                  let processedReplyMessage = replyToMessage || m.reply_to_message;
+                  if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
+                    processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
+                  }
+                  
+                  return {
+                    ...m,
+                    ...message,
+                    read_receipts: readReceipts,
+                    delivery_status: 'sent',
+                    reply_to_message_id: message.reply_to_message_id || m.reply_to_message_id,
+                    reply_to_message: processedReplyMessage
+                  } as Message;
+                }
+                return m;
+              });
               // Sort by sent_at to ensure correct chronological order
               return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
@@ -4583,25 +5064,62 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
               m.content === message.content && 
               Math.abs(new Date(m.sent_at).getTime() - new Date(message.sent_at).getTime()) < 3000);
             if (duplicateByContent) {
-              // This message was already added, update it with the new ID if available
-              if (message.id && duplicateByContent.id !== message.id) {
-                const updated = prev.map(m => 
-                  m.id === duplicateByContent.id 
-                    ? { ...m, id: message.id, read_receipts: readReceipts } as Message
-                    : m
-                );
-                return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
+              console.log('🔍 [Reply Debug] Found duplicate message by content, updating with reply data:', {
+                duplicateId: duplicateByContent.id,
+                newMessageId: message.id,
+                replyToMessageId: message.reply_to_message_id,
+                hasReplyToMessage: !!replyToMessage,
+                duplicateHasReply: !!duplicateByContent.reply_to_message_id
+              });
+              
+              // Handle reply_to_message - ensure it's an object, not an array
+              let processedReplyMessage = replyToMessage;
+              if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
+                processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
               }
-              // Skip adding duplicate
-              return prev;
+              
+              // Always update the duplicate with the latest data from WebSocket, including reply data
+              const updated = prev.map(m => {
+                if (m.id === duplicateByContent.id) {
+                  const updatedMessage = {
+                    ...m,
+                    id: message.id || m.id, // Use new ID if available
+                    read_receipts: readReceipts,
+                    delivery_status: 'sent' as const,
+                    // Always update reply data if available from WebSocket message
+                    reply_to_message_id: message.reply_to_message_id || m.reply_to_message_id,
+                    reply_to_message: processedReplyMessage || m.reply_to_message
+                  } as Message;
+                  
+                  console.log('🔍 [Reply Debug] Updated duplicate message with reply data:', {
+                    messageId: updatedMessage.id,
+                    replyToMessageId: updatedMessage.reply_to_message_id,
+                    hasReplyToMessage: !!updatedMessage.reply_to_message,
+                    replyContent: updatedMessage.reply_to_message?.content?.substring(0, 50)
+                  });
+                  
+                  return updatedMessage;
+                }
+                return m;
+              });
+              
+              return updated.sort((a, b) => new Date(a.sent_at).getTime() - new Date(b.sent_at).getTime());
             }
           }
           
           // Enhance WebSocket message with real user data from conversation participants
+          // Handle reply_to_message - ensure it's an object, not an array
+          let processedReplyMessage = replyToMessage;
+          if (processedReplyMessage && Array.isArray(processedReplyMessage)) {
+            processedReplyMessage = processedReplyMessage.length > 0 ? processedReplyMessage[0] : undefined;
+          }
+          
           const enhancedMessage = { 
             ...message,
             read_receipts: readReceipts,
-            delivery_status: 'sent'
+            delivery_status: 'sent',
+            reply_to_message_id: message.reply_to_message_id || undefined,
+            reply_to_message: processedReplyMessage || undefined
           } as unknown as Message;
           
           // Find the sender in the conversation participants to get real user data
@@ -5689,6 +6207,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                         className="relative"
                         data-message-id={message.id}
                       >
+                      {/* Unread messages indicator - Desktop */}
+                      {firstUnreadMessageIdRef.current === message.id && (
+                        <div className="flex items-center gap-3 my-4 px-2">
+                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                          <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                            <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                            <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
+                          </div>
+                          <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                        </div>
+                      )}
                       {/* Date Separator - Removed inline separators */}
                       
                       {/* Image, video and emoji messages - render outside bubble */}
@@ -5803,6 +6332,97 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             )}
                             
                             <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative`}>
+                              {/* Message actions dropdown - positioned directly next to message box */}
+                              {/* For sent messages (isOwn): left side, for received messages: right side */}
+                              <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                                <div className="relative message-action-menu">
+                                  <button
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                    }}
+                                    className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                    title="Message options"
+                                  >
+                                    <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                  </button>
+                                  
+                                  {/* Dropdown menu */}
+                                  {messageActionMenu === message.id && (
+                                    <div className={`absolute bottom-full ${isOwn ? 'left-0' : 'right-0'} mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMessageToForward(message);
+                                          setShowForwardModal(true);
+                                          setMessageActionMenu(null);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                      >
+                                        <ArrowRightIcon className="w-4 h-4" />
+                                        Forward
+                                      </button>
+                                      <button
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          setMessageToReply(message);
+                                          setMessageActionMenu(null);
+                                          // Focus input field
+                                          setTimeout(() => {
+                                            if (messageInputRef.current) {
+                                              messageInputRef.current.focus();
+                                            }
+                                            if (mobileMessageInputRef.current) {
+                                              mobileMessageInputRef.current.focus();
+                                            }
+                                          }, 100);
+                                        }}
+                                        className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                      >
+                                        <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                        Reply
+                                      </button>
+                                      {isOwn && (
+                                        <>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              setMessageToEdit(message);
+                                              setEditingMessageText(message.content || '');
+                                              setMessageActionMenu(null);
+                                              // Focus input field
+                                              setTimeout(() => {
+                                                if (messageInputRef.current) {
+                                                  messageInputRef.current.focus();
+                                                }
+                                                if (mobileMessageInputRef.current) {
+                                                  mobileMessageInputRef.current.focus();
+                                                }
+                                              }, 100);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                          >
+                                            <PencilIcon className="w-4 h-4" />
+                                            Edit
+                                          </button>
+                                          <button
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              handleDeleteMessage(message.id);
+                                              setMessageActionMenu(null);
+                                            }}
+                                            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                          >
+                                            <TrashIcon className="w-4 h-4" />
+                                            Delete
+                                          </button>
+                                        </>
+                                      )}
+                                    </div>
+                                  )}
+                                </div>
+                              </div>
+                              
                               <div
                                 data-message-id={message.id}
                                 onClick={() => {
@@ -5821,24 +6441,87 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 : {}
                               }
                               >
+                              {/* Reply preview - only show if message actually has a reply with valid data */}
+                              {(() => {
+                                const hasReplyId = !!message.reply_to_message_id;
+                                
+                                // Handle both array and object cases from Supabase
+                                let replyMessage: Message | null = null;
+                                if (message.reply_to_message) {
+                                  // Supabase might return it as an array or object
+                                  if (Array.isArray(message.reply_to_message)) {
+                                    replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                  } else {
+                                    replyMessage = message.reply_to_message;
+                                  }
+                                }
+                                
+                                const hasValidReplyData = replyMessage && 
+                                  (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+                                
+                                // Debug logging
+                                if (hasReplyId && !hasValidReplyData) {
+                                  console.warn('🔍 [Reply Debug] Message has reply_to_message_id but invalid reply data:', {
+                                    messageId: message.id,
+                                    replyToMessageId: message.reply_to_message_id,
+                                    replyToMessageRaw: message.reply_to_message,
+                                    replyToMessageProcessed: replyMessage,
+                                    isArray: Array.isArray(message.reply_to_message)
+                                  });
+                                }
+                                
+                                return hasReplyId && hasValidReplyData && replyMessage ? (
+                                  <div className={`mb-2 p-2 rounded-lg border-l-4 ${
+                                    isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                  }`}>
+                                    <div className="text-xs font-semibold opacity-80 mb-1">
+                                      {replyMessage.sender?.tenants_employee?.display_name || 
+                                       replyMessage.sender?.full_name || 
+                                       'Unknown'}
+                                    </div>
+                                    {/* Only show content if it exists, don't show "Media" placeholder */}
+                                    {replyMessage.content && (
+                                      <div className="text-xs opacity-70 line-clamp-2">
+                                        {replyMessage.content}
+                                      </div>
+                                    )}
+                                    {/* Show attachment indicator if no content but has attachment */}
+                                    {!replyMessage.content && replyMessage.attachment_url && (
+                                      <div className="text-xs opacity-70 italic">
+                                        {replyMessage.message_type === 'image' ? '📷 Image' : 
+                                         replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                         replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                      </div>
+                                    )}
+                                  </div>
+                                ) : null;
+                              })()}
+                              
                               {/* Message content */}
                               {message.content && (
-                                <div 
-                                  className="break-words text-base whitespace-pre-wrap"
-                                  dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
-                                  style={{ 
-                                    textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
-                                               getTextDirection(message.content) === 'auto' ? 'start' : 'left',
-                                    ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
-                                    fontSize: '1rem',
-                                    lineHeight: '1.5',
-                                    wordBreak: 'break-word',
-                                    overflowWrap: 'break-word',
-                                    whiteSpace: 'pre-wrap',
-                                    unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
-                                  }}
-                                >
-                                  {renderMessageContent(message.content, isOwn)}
+                                <div className="flex items-end gap-2">
+                                  <div 
+                                    className="break-words text-base whitespace-pre-wrap flex-1"
+                                    dir={getTextDirection(message.content) as 'ltr' | 'rtl' | 'auto'}
+                                    style={{ 
+                                      textAlign: getTextDirection(message.content) === 'rtl' ? 'right' : 
+                                                 getTextDirection(message.content) === 'auto' ? 'start' : 'left',
+                                      ...(getTextDirection(message.content) !== 'auto' && { direction: getTextDirection(message.content) as 'ltr' | 'rtl' }),
+                                      fontSize: '1rem',
+                                      lineHeight: '1.5',
+                                      wordBreak: 'break-word',
+                                      overflowWrap: 'break-word',
+                                      whiteSpace: 'pre-wrap',
+                                      unicodeBidi: 'plaintext' // Ensures proper bidirectional text handling
+                                    }}
+                                  >
+                                    {renderMessageContent(message.content, isOwn)}
+                                  </div>
+                                  {message.edited_at && (
+                                    <span className="text-xs opacity-60 italic" style={{ fontSize: '0.75rem' }}>
+                                      (edited)
+                                    </span>
+                                  )}
                                 </div>
                               )}
                               
@@ -5984,7 +6667,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                           
                           {/* Reaction picker */}
                           {showReactionPicker === message.id && (
-                            <div className={`absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
+                            <div className={`reaction-picker-container absolute ${isOwn ? 'bottom-6 right-0' : 'bottom-6 left-0'} bg-white border border-gray-200 rounded-lg shadow-lg p-2 flex gap-1 z-50`}>
                               {['👍', '❤️', '😂', '😮', '😢', '😡', '👏'].map((emoji) => (
                                 <button
                                   key={emoji}
@@ -5998,20 +6681,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           )}
                           
-                          {/* Forward button - appears on message hover */}
-                          <div className={`absolute ${isOwn ? 'top-2 right-2' : 'top-2 left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMessageToForward(message);
-                                setShowForwardModal(true);
-                              }}
-                              className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                              title="Forward message"
-                            >
-                              <ArrowRightIcon className="w-4 h-4 text-gray-700" />
-                            </button>
-                          </div>
                           
                           {/* Reactions */}
                           {message.reactions && message.reactions.length > 0 && (
@@ -6266,14 +6935,58 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   )}
                 </div>
                 
-                <div className="flex-1">
+                <div className="flex-1 flex flex-col gap-2">
+                  {/* Reply preview - Desktop */}
+                  {(messageToReply || messageToEdit) && (
+                    <div className="flex items-start gap-2 p-2 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                      <div className="flex-1 min-w-0">
+                        {messageToReply && (
+                          <>
+                            <div className="text-xs font-semibold text-gray-600 mb-1">
+                              Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
+                            </div>
+                            <div className="text-sm text-gray-700 truncate">
+                              {messageToReply.content || 'Media'}
+                            </div>
+                          </>
+                        )}
+                        {messageToEdit && (
+                          <>
+                            <div className="text-xs font-semibold text-gray-600 mb-1">
+                              Editing message
+                            </div>
+                            <div className="text-sm text-gray-700 truncate">
+                              {messageToEdit.content}
+                            </div>
+                          </>
+                        )}
+                      </div>
+                      <button
+                        onClick={() => {
+                          setMessageToReply(null);
+                          setMessageToEdit(null);
+                          setEditingMessageText('');
+                        }}
+                        className="flex-shrink-0 p-1 hover:bg-gray-200 rounded transition-colors"
+                      >
+                        <XMarkIcon className="w-4 h-4 text-gray-600" />
+                      </button>
+                    </div>
+                  )}
+                  
                   <textarea
                     ref={messageInputRef}
-                    value={newMessage}
-                    onChange={handleMessageInputChange}
+                    value={messageToEdit ? editingMessageText : newMessage}
+                    onChange={(e) => {
+                      if (messageToEdit) {
+                        setEditingMessageText(e.target.value);
+                      } else {
+                        handleMessageInputChange(e);
+                      }
+                    }}
                     onKeyDown={handleMessageKeyDown}
                     onPaste={handlePaste}
-                    placeholder="Type a message..."
+                    placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
                     className="textarea w-full resize-none max-h-32 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                     rows={1}
                     disabled={isSending}
@@ -6290,7 +7003,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                 </div>
                 
                 <button
-                  onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
+                  onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                   disabled={isSending}
                   className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
                   style={{ 
@@ -6300,10 +7013,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     borderColor: 'rgba(255, 255, 255, 0.3)',
                     boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
                   }}
-                  title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
+                  title={messageToEdit ? 'Save edit' : !newMessage.trim() && !messageToEdit ? 'Record voice message' : 'Send message'}
                 >
                   {isSending ? (
                     <div className="loading loading-spinner loading-sm"></div>
+                  ) : messageToEdit ? (
+                    <CheckIcon className="w-5 h-5" />
                   ) : !newMessage.trim() ? (
                     <MicrophoneIcon className="w-5 h-5" />
                   ) : (
@@ -6771,6 +7486,17 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       }}
                       data-message-id={message.id}
                     >
+                    {/* Unread messages indicator - Mobile */}
+                    {firstUnreadMessageIdRef.current === message.id && (
+                      <div className="flex items-center gap-3 my-4 px-2">
+                        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                        <div className="flex items-center gap-2 px-3 py-1 bg-blue-500/10 rounded-full border border-blue-500/30">
+                          <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse"></div>
+                          <span className="text-xs font-semibold text-blue-600 dark:text-blue-400">New messages</span>
+                        </div>
+                        <div className="flex-1 h-px bg-gradient-to-r from-transparent via-blue-500 to-transparent"></div>
+                      </div>
+                    )}
                     {/* Date Separator - Removed inline separators */}
                     
                     {/* Image, video and emoji messages - render outside bubble - Mobile */}
@@ -6884,6 +7610,91 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </span>
                           )}
                           <div className={`flex items-end gap-2 ${isOwn ? 'flex-row-reverse' : 'flex-row'} relative group`}>
+                            {/* Message actions dropdown - Mobile - positioned directly next to message box */}
+                            {/* For sent messages (isOwn): left side, for received messages: right side */}
+                            <div className={`absolute ${isOwn ? '-left-8 top-1/2 -translate-y-1/2' : '-right-8 top-1/2 -translate-y-1/2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
+                              <div className="relative message-action-menu">
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setMessageActionMenu(messageActionMenu === message.id ? null : message.id);
+                                  }}
+                                  className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
+                                  title="Message options"
+                                >
+                                  <EllipsisVerticalIcon className="w-4 h-4 text-gray-700" />
+                                </button>
+                                
+                                {/* Dropdown menu */}
+                                {messageActionMenu === message.id && (
+                                  <div className={`absolute ${isOwn ? 'left-0' : 'right-0'} bottom-full mb-1 bg-white border border-gray-200 rounded-lg shadow-lg min-w-[140px] z-50`}>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMessageToForward(message);
+                                        setShowForwardModal(true);
+                                        setMessageActionMenu(null);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                    >
+                                      <ArrowRightIcon className="w-4 h-4" />
+                                      Forward
+                                    </button>
+                                    <button
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setMessageToReply(message);
+                                        setMessageActionMenu(null);
+                                        // Focus input field
+                                        setTimeout(() => {
+                                          if (mobileMessageInputRef.current) {
+                                            mobileMessageInputRef.current.focus();
+                                          }
+                                        }, 100);
+                                      }}
+                                      className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                    >
+                                      <ChatBubbleBottomCenterTextIcon className="w-4 h-4" />
+                                      Reply
+                                    </button>
+                                    {isOwn && (
+                                      <>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            setMessageToEdit(message);
+                                            setEditingMessageText(message.content || '');
+                                            setMessageActionMenu(null);
+                                            // Focus input field
+                                            setTimeout(() => {
+                                              if (mobileMessageInputRef.current) {
+                                                mobileMessageInputRef.current.focus();
+                                              }
+                                            }, 100);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-gray-700 hover:bg-gray-100 transition-colors text-left"
+                                        >
+                                          <PencilIcon className="w-4 h-4" />
+                                          Edit
+                                        </button>
+                                        <button
+                                          onClick={(e) => {
+                                            e.stopPropagation();
+                                            handleDeleteMessage(message.id);
+                                            setMessageActionMenu(null);
+                                          }}
+                                          className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-600 hover:bg-red-50 transition-colors text-left"
+                                        >
+                                          <TrashIcon className="w-4 h-4" />
+                                          Delete
+                                        </button>
+                                      </>
+                                    )}
+                                  </div>
+                                )}
+                              </div>
+                            </div>
+                            
                             <div
                               data-message-id={message.id}
                               onClick={() => {
@@ -6902,6 +7713,51 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                                 : {}
                               }
                             >
+                            {/* Reply preview - Mobile - only show if message actually has a reply with valid data */}
+                            {(() => {
+                              const hasReplyId = !!message.reply_to_message_id;
+                              
+                              // Handle both array and object cases from Supabase
+                              let replyMessage: Message | null = null;
+                              if (message.reply_to_message) {
+                                // Supabase might return it as an array or object
+                                if (Array.isArray(message.reply_to_message)) {
+                                  replyMessage = message.reply_to_message.length > 0 ? message.reply_to_message[0] : null;
+                                } else {
+                                  replyMessage = message.reply_to_message;
+                                }
+                              }
+                              
+                              const hasValidReplyData = replyMessage && 
+                                (replyMessage.sender || replyMessage.content || replyMessage.attachment_url);
+                              
+                              return hasReplyId && hasValidReplyData && replyMessage ? (
+                                <div className={`mb-2 p-2 rounded-lg border-l-4 ${
+                                  isOwn ? 'bg-white/20 border-white/40' : 'bg-green-50 border-green-300'
+                                }`}>
+                                  <div className="text-xs font-semibold opacity-80 mb-1">
+                                    {replyMessage.sender?.tenants_employee?.display_name || 
+                                     replyMessage.sender?.full_name || 
+                                     'Unknown'}
+                                  </div>
+                                  {/* Only show content if it exists, don't show "Media" placeholder */}
+                                  {replyMessage.content && (
+                                    <div className="text-xs opacity-70 line-clamp-2">
+                                      {replyMessage.content}
+                                    </div>
+                                  )}
+                                  {/* Show attachment indicator if no content but has attachment */}
+                                  {!replyMessage.content && replyMessage.attachment_url && (
+                                    <div className="text-xs opacity-70 italic">
+                                      {replyMessage.message_type === 'image' ? '📷 Image' : 
+                                       replyMessage.message_type === 'voice' ? '🎤 Voice message' :
+                                       replyMessage.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                    </div>
+                                  )}
+                                </div>
+                              ) : null;
+                            })()}
+                            
                             {/* Message content */}
                             {message.content && (
                               <div 
@@ -7077,20 +7933,6 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                             </div>
                           )}
                           
-                          {/* Forward button - Mobile - appears on message hover */}
-                          <div className={`absolute ${isOwn ? 'top-2 right-2' : 'top-2 left-2'} opacity-0 group-hover:opacity-100 transition-opacity z-10`}>
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                setMessageToForward(message);
-                                setShowForwardModal(true);
-                              }}
-                              className="p-1.5 rounded-full bg-white/90 hover:bg-white shadow-md border border-gray-200 transition-colors"
-                              title="Forward message"
-                            >
-                              <ArrowRightIcon className="w-4 h-4 text-gray-700" />
-                            </button>
-                          </div>
                           
                           {/* Reactions - Mobile */}
                           {message.reactions && message.reactions.length > 0 && (
@@ -7218,14 +8060,69 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                     )}
                   </div>
                   
-                  <div className="flex-1">
+                  <div className="flex-1 flex flex-col gap-2">
+                    {/* Reply preview - Mobile */}
+                    {(messageToReply || messageToEdit) && (
+                      <div className="flex items-start gap-2 p-2 bg-gray-100 rounded-lg border-l-4 border-blue-500">
+                        <div className="flex-1 min-w-0">
+                          {messageToReply && (
+                            <>
+                              <div className="text-xs font-semibold text-gray-600 mb-1">
+                                Replying to {messageToReply.sender?.tenants_employee?.display_name || messageToReply.sender?.full_name || 'Unknown'}
+                              </div>
+                              {/* Only show content if it exists */}
+                              {messageToReply.content && (
+                                <div className="text-sm text-gray-700 truncate">
+                                  {messageToReply.content}
+                                </div>
+                              )}
+                              {/* Show attachment indicator if no content but has attachment */}
+                              {!messageToReply.content && messageToReply.attachment_url && (
+                                <div className="text-sm text-gray-700 italic">
+                                  {messageToReply.message_type === 'image' ? '📷 Image' : 
+                                   messageToReply.message_type === 'voice' ? '🎤 Voice message' :
+                                   messageToReply.message_type === 'file' ? '📎 File' : '📎 Attachment'}
+                                </div>
+                              )}
+                            </>
+                          )}
+                          {messageToEdit && (
+                            <>
+                              <div className="text-xs font-semibold text-gray-600 mb-1">
+                                Editing message
+                              </div>
+                              <div className="text-sm text-gray-700 truncate">
+                                {messageToEdit.content}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                        <button
+                          onClick={() => {
+                            setMessageToReply(null);
+                            setMessageToEdit(null);
+                            setEditingMessageText('');
+                          }}
+                          className="flex-shrink-0 p-1 hover:bg-gray-200 rounded transition-colors"
+                        >
+                          <XMarkIcon className="w-4 h-4 text-gray-600" />
+                        </button>
+                      </div>
+                    )}
+                    
                     <textarea
                       ref={mobileMessageInputRef}
-                      value={newMessage}
-                      onChange={handleMessageInputChange}
+                      value={messageToEdit ? editingMessageText : newMessage}
+                      onChange={(e) => {
+                        if (messageToEdit) {
+                          setEditingMessageText(e.target.value);
+                        } else {
+                          handleMessageInputChange(e);
+                        }
+                      }}
                       onKeyDown={handleMessageKeyDown}
                       onPaste={handlePaste}
-                      placeholder="Type a message..."
+                      placeholder={messageToEdit ? "Edit message..." : "Type a message..."}
                       className="textarea w-full resize-none text-sm max-h-40 border border-white/30 rounded-2xl focus:border-white/50 focus:outline-none"
                       rows={1}
                       disabled={isSending}
@@ -7243,7 +8140,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                   </div>
                   
                   <button
-                    onClick={!newMessage.trim() ? startVoiceRecording : sendMessage}
+                    onClick={!newMessage.trim() && !messageToEdit ? startVoiceRecording : sendMessage}
                     disabled={isSending}
                     className="btn btn-circle w-12 h-12 text-gray-600 shadow-lg hover:shadow-xl transition-shadow flex-shrink-0"
                     style={{ 
@@ -7253,10 +8150,12 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
                       borderColor: 'rgba(255, 255, 255, 0.3)',
                       boxShadow: '0 2px 8px rgba(0, 0, 0, 0.1)'
                     }}
-                    title={!newMessage.trim() ? 'Record voice message' : 'Send message'}
+                    title={messageToEdit ? 'Save edit' : !newMessage.trim() && !messageToEdit ? 'Record voice message' : 'Send message'}
                   >
                     {isSending ? (
                       <div className="loading loading-spinner loading-sm"></div>
+                    ) : messageToEdit ? (
+                      <CheckIcon className="w-5 h-5" />
                     ) : !newMessage.trim() ? (
                       <MicrophoneIcon className="w-5 h-5" />
                     ) : (

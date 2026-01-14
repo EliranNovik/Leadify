@@ -235,14 +235,15 @@ class WebSocketService {
     messageType: 'text' | 'file' | 'image' | 'system' = 'text', 
     attachmentUrl?: string, 
     attachmentType?: string, 
-    attachmentSize?: number
+    attachmentSize?: number,
+    replyToMessageId?: number
   ): void {
     if (!this.socket?.connected) {
       console.error('🔌 WebSocket not connected, cannot send message');
       return;
     }
 
-    console.log('📤 Sending WebSocket message:', { conversation_id: conversationId, sender_id: this.userId, content, message_type: messageType });
+    console.log('📤 Sending WebSocket message:', { conversation_id: conversationId, sender_id: this.userId, content, message_type: messageType, reply_to_message_id: replyToMessageId });
     console.log('📤 Socket connected:', this.socket.connected);
     console.log('📤 Socket ID:', this.socket.id);
     console.log('📤 User ID:', this.userId);
@@ -257,6 +258,7 @@ class WebSocketService {
       attachment_name: content, // Use content as attachment name for now
       attachment_type: attachmentType,
       attachment_size: attachmentSize,
+      reply_to_message_id: replyToMessageId || null,
     });
     
     console.log('📤 Message emitted successfully');
