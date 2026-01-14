@@ -50,6 +50,7 @@ interface GenericCRUDManagerProps {
   hideTitle?: boolean;
   refreshKey?: number;
   skipIdAssignment?: boolean; // Skip manual ID assignment for UUID tables
+  hideDeleteButton?: boolean; // Hide delete button for non-super users
 }
 
 interface Record {
@@ -67,7 +68,8 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
   hideAddButton = false,
   hideTitle = false,
   refreshKey = 0,
-  skipIdAssignment = false
+  skipIdAssignment = false,
+  hideDeleteButton = false
 }) => {
   const [records, setRecords] = useState<Record[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1867,18 +1869,20 @@ const GenericCRUDManager: React.FC<GenericCRUDManagerProps> = ({
                           </td>
                         ))}
                         <td className="w-20">
-                          <div className="flex justify-center">
-                            <button
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                openDeleteModal(record);
-                              }}
-                              className="btn btn-ghost btn-sm text-error"
-                              title="Delete"
-                            >
-                              <TrashIcon className="w-4 h-4" />
-                            </button>
-                          </div>
+                          {!hideDeleteButton && (
+                            <div className="flex justify-center">
+                              <button
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  openDeleteModal(record);
+                                }}
+                                className="btn btn-ghost btn-sm text-error"
+                                title="Delete"
+                              >
+                                <TrashIcon className="w-4 h-4" />
+                              </button>
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}

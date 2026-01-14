@@ -7395,7 +7395,7 @@ const CollectionDueReport = () => {
     order: '',
     department: '',
     employee: '',
-    employeeType: 'case_handler', // 'case_handler' or 'actual_employee_due'
+    employeeType: 'actual_employee_due', // 'actual_employee_due' (Case Handler) or 'case_handler' (Actual Employee Due)
   }, {
     storage: 'sessionStorage',
   });
@@ -7736,7 +7736,7 @@ const CollectionDueReport = () => {
         newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
       }
 
-      const { data: newPayments, error: newError } = await newPaymentsQuery;
+      let { data: newPayments, error: newError } = await newPaymentsQuery;
       if (newError) {
         console.error('❌ Collection Due Report - Error fetching new payments:', newError);
         throw newError;
@@ -7997,13 +7997,242 @@ const CollectionDueReport = () => {
       }
 
       // Get unique lead IDs
-      const newLeadIds = Array.from(new Set((newPayments || []).map(p => p.lead_id).filter(Boolean)));
-      const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
+      let newLeadIds = Array.from(new Set((newPayments || []).map(p => p.lead_id).filter(Boolean)));
+      let legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
       
       console.log('🔍 Collection Due Report - Unique new lead IDs:', newLeadIds.length);
       console.log('🔍 Collection Due Report - Unique legacy lead IDs:', legacyLeadIds.length);
       console.log('🔍 DEBUG Employee 14 - Legacy lead IDs:', legacyLeadIds);
       console.log('🔍 DEBUG Employee 14 - Is 163739 in legacyLeadIds?', legacyLeadIds.includes(163739));
+
+      // Fetch subleads for new leads (optimized - batch queries instead of loops)
+      console.log('🔍 Collection Due Report - Fetching subleads for new leads...');
+      if (newLeadIds.length > 0) {
+        // First, get lead_numbers for the master leads to use for pattern matching
+        const { data: masterLeads, error: masterLeadsError } = await supabase
+          .from('leads')
+          .select('id, lead_number')
+          .in('id', newLeadIds);
+        
+        if (masterLeadsError) {
+          console.error('❌ Collection Due Report - Error fetching master lead numbers:', masterLeadsError);
+        } else if (masterLeads && masterLeads.length > 0) {
+          const allNewSubLeadIds = new Set<string | number>();
+          const masterLeadNumbers = masterLeads.map(l => l.lead_number).filter(Boolean);
+          const masterIds = masterLeads.map(l => l.id).filter(Boolean);
+          
+          // Batch query 1: Pattern matching - fetch all subleads with / and filter client-side
+          if (masterLeadNumbers.length > 0) {
+            const { data: patternSubLeads, error: patternError } = await supabase
+              .from('leads')
+              .select('id, lead_number, master_id')
+              .like('lead_number', '%/%')
+              .order('lead_number', { ascending: true })
+              .limit(1000); // Limit to prevent huge queries
+            
+            if (!patternError && patternSubLeads) {
+              // Filter to only include valid subleads that match our master leads
+              const masterLeadNumbersSet = new Set(masterLeadNumbers);
+              const masterIdsSet = new Set(masterIds.map(String));
+              
+              patternSubLeads.forEach(lead => {
+                const leadNumberValue = lead.lead_number || '';
+                if (!leadNumberValue.includes('/')) return;
+                
+                // Check if this sublead belongs to one of our master leads
+                const baseNumber = leadNumberValue.split('/')[0];
+                if (masterLeadNumbersSet.has(baseNumber)) {
+                  allNewSubLeadIds.add(lead.id);
+                } else if (lead.master_id) {
+                  const masterIdStr = String(lead.master_id).trim();
+                  if (masterIdsSet.has(masterIdStr)) {
+                    allNewSubLeadIds.add(lead.id);
+                  }
+                }
+              });
+            }
+          }
+          
+          // Batch query 2: Direct master_id matching - build OR conditions for all masters
+          if (masterIds.length > 0) {
+            const orConditions: string[] = [];
+            masterLeads.forEach(lead => {
+              const masterId = lead.id;
+              const masterLeadNumber = lead.lead_number;
+              if (masterId) {
+                orConditions.push(`master_id.eq.${masterId}`);
+                orConditions.push(`master_id.eq.${String(masterId)}`);
+              }
+              if (masterLeadNumber) {
+                orConditions.push(`master_id.eq.${masterLeadNumber}`);
+                const normalizedBase = masterLeadNumber.replace(/^C/, '').replace(/^L/, '');
+                orConditions.push(`master_id.eq.${normalizedBase}`);
+              }
+            });
+            
+            if (orConditions.length > 0) {
+              // Split into chunks if too many conditions (Supabase has limits)
+              const chunkSize = 50; // Conservative limit
+              for (let i = 0; i < orConditions.length; i += chunkSize) {
+                const chunk = orConditions.slice(i, i + chunkSize);
+                const { data: masterIdSubLeads, error: masterIdError } = await supabase
+                  .from('leads')
+                  .select('id, master_id')
+                  .or(chunk.join(','))
+                  .not('master_id', 'is', null);
+                
+                if (!masterIdError && masterIdSubLeads) {
+                  masterIdSubLeads.forEach(sl => {
+                    if (sl.id) allNewSubLeadIds.add(sl.id);
+                  });
+                }
+              }
+            }
+          }
+          
+          if (allNewSubLeadIds.size > 0) {
+            const newSubLeadIds = Array.from(allNewSubLeadIds);
+            console.log('✅ Collection Due Report - Found new subleads:', newSubLeadIds.length);
+            
+            // Fetch payment plans for new subleads
+            let newSubPaymentsQuery = supabase
+              .from('payment_plans')
+              .select(`
+                id,
+                lead_id,
+                value,
+                value_vat,
+                currency,
+                due_date,
+                cancel_date,
+                ready_to_pay,
+                ready_to_pay_by,
+                paid,
+                payment_order
+              `)
+              .eq('ready_to_pay', true)
+              .not('due_date', 'is', null)
+              .is('cancel_date', null)
+              .in('lead_id', newSubLeadIds);
+            
+            if (filters.fromDate) {
+              const fromDateTime = `${filters.fromDate}T00:00:00`;
+              newSubPaymentsQuery = newSubPaymentsQuery.gte('due_date', fromDateTime);
+            }
+            if (filters.toDate) {
+              const toDateTime = `${filters.toDate}T23:59:59`;
+              newSubPaymentsQuery = newSubPaymentsQuery.lte('due_date', toDateTime);
+            }
+            
+            const { data: newSubPayments, error: newSubPaymentsError } = await newSubPaymentsQuery;
+            if (newSubPaymentsError) {
+              console.error('❌ Collection Due Report - Error fetching new sublead payments:', newSubPaymentsError);
+            } else if (newSubPayments && newSubPayments.length > 0) {
+              console.log('✅ Collection Due Report - Found new sublead payments:', newSubPayments.length);
+              // Add sublead payments to the main payments array
+              const updatedNewPayments = [...(newPayments || []), ...newSubPayments];
+              newPayments = updatedNewPayments;
+              // Add sublead IDs to the lead IDs array
+              newLeadIds = Array.from(new Set([...newLeadIds, ...newSubLeadIds]));
+            }
+          }
+        }
+      }
+
+      // Fetch subleads for legacy leads (optimized - batch queries instead of loops)
+      console.log('🔍 Collection Due Report - Fetching subleads for legacy leads...');
+      if (legacyLeadIds.length > 0) {
+        const numericLegacyLeadIds = legacyLeadIds.map(id => typeof id === 'string' ? parseInt(id, 10) : id).filter(id => !Number.isNaN(id));
+        const allLegacySubLeadIds = new Set<number>();
+        
+        if (numericLegacyLeadIds.length > 0) {
+          // Build OR condition for all master IDs and their normalized variations
+          const orConditions: string[] = [];
+          numericLegacyLeadIds.forEach(masterId => {
+            const masterIdStr = String(masterId);
+            const normalizedId = masterIdStr.replace(/^C/, '');
+            orConditions.push(`master_id.eq.${masterIdStr}`);
+            if (normalizedId !== masterIdStr) {
+              orConditions.push(`master_id.eq.${normalizedId}`);
+            }
+          });
+          
+          // Split into chunks if too many conditions (Supabase has limits)
+          const chunkSize = 50; // Conservative limit
+          for (let i = 0; i < orConditions.length; i += chunkSize) {
+            const chunk = orConditions.slice(i, i + chunkSize);
+            const { data: legacySubLeads, error: legacySubLeadsError } = await supabase
+              .from('leads_lead')
+              .select('id, master_id, manual_id')
+              .or(chunk.join(','))
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+            
+            if (legacySubLeadsError) {
+              console.error('❌ Collection Due Report - Error fetching legacy subleads:', legacySubLeadsError);
+            } else if (legacySubLeads && legacySubLeads.length > 0) {
+              // Filter to only include valid subleads
+              const validLegacySubLeads = legacySubLeads.filter(lead => {
+                const hasMasterId = lead.master_id && String(lead.master_id).trim() !== '';
+                const hasManualId = lead.manual_id && String(lead.manual_id).trim() !== '';
+                return hasMasterId || hasManualId;
+              });
+              
+              validLegacySubLeads.forEach(sl => {
+                if (sl.id) allLegacySubLeadIds.add(Number(sl.id));
+              });
+            }
+          }
+        }
+        
+        if (allLegacySubLeadIds.size > 0) {
+          const legacySubLeadIds = Array.from(allLegacySubLeadIds);
+          console.log('✅ Collection Due Report - Found legacy subleads:', legacySubLeadIds.length);
+          
+          // Fetch payment plans for legacy subleads
+          let legacySubPaymentsQuery = supabase
+            .from('finances_paymentplanrow')
+            .select(`
+              id,
+              lead_id,
+              value,
+              value_base,
+              vat_value,
+              currency_id,
+              due_date,
+              date,
+              cancel_date,
+              ready_to_pay,
+              actual_date,
+              due_by_id,
+              order,
+              accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
+            `)
+            .not('due_date', 'is', null)
+            .is('cancel_date', null)
+            .in('lead_id', legacySubLeadIds);
+          
+          if (filters.fromDate) {
+            const fromDateTime = `${filters.fromDate}T00:00:00`;
+            legacySubPaymentsQuery = legacySubPaymentsQuery.gte('due_date', fromDateTime);
+          }
+          if (filters.toDate) {
+            const toDateTime = `${filters.toDate}T23:59:59`;
+            legacySubPaymentsQuery = legacySubPaymentsQuery.lte('due_date', toDateTime);
+          }
+          
+          const { data: legacySubPayments, error: legacySubPaymentsError } = await legacySubPaymentsQuery;
+          if (legacySubPaymentsError) {
+            console.error('❌ Collection Due Report - Error fetching legacy sublead payments:', legacySubPaymentsError);
+          } else if (legacySubPayments && legacySubPayments.length > 0) {
+            console.log('✅ Collection Due Report - Found legacy sublead payments:', legacySubPayments.length);
+            // Add sublead payments to the main payments array
+            filteredLegacyPayments.push(...legacySubPayments);
+            // Add sublead IDs to the lead IDs array
+            legacyLeadIds = Array.from(new Set([...legacyLeadIds, ...legacySubLeadIds]));
+          }
+        }
+      }
 
       // Fetch lead metadata
       let newLeadsMap = new Map();
@@ -8154,8 +8383,8 @@ const CollectionDueReport = () => {
       const allHandlerNames = new Set<string>(); // For new leads - handler is text field
       const allHandlerIds: number[] = []; // For legacy leads - case_handler_id or due_by_id is numeric
       
-      if (filters.employeeType === 'actual_employee_due') {
-        // Collect handler names/IDs from leads (actual employee due mode)
+      if (filters.employeeType === 'case_handler') {
+        // Collect handler names/IDs from leads (case handler mode - uses case_handler_id from leads)
         // Collect handler names from new leads
         if (newLeadsMap.size > 0) {
           console.log('🔍 Collection Due Report - Collecting handler names from new leads (actual employee due)...');
@@ -8202,7 +8431,7 @@ const CollectionDueReport = () => {
           });
         }
       } else {
-        // Default (case_handler): Collect ready_to_pay_by from new payments and due_by_id from legacy payments
+        // Default (actual_employee_due): Collect ready_to_pay_by from new payments and due_by_id from legacy payments
         // Collect ready_to_pay_by from new payments
         console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments (default)...');
         (newPayments || []).forEach((payment: any) => {
@@ -8323,13 +8552,13 @@ const CollectionDueReport = () => {
         if (!lead) return;
 
         // Get handler based on filter selection
-        // Default (case_handler): Use ready_to_pay_by from payment_plans table
-        // Actual employee due: Use handler from lead (handler text or case_handler_id)
+        // Default (actual_employee_due): Use ready_to_pay_by from payment_plans table
+        // Case handler: Use handler from lead (handler text or case_handler_id)
         let handlerId: number | null = null;
         let handlerName = '—';
         
-        if (filters.employeeType === 'actual_employee_due') {
-          // Use handler from lead if "Actual Employee Due" is selected
+        if (filters.employeeType === 'case_handler') {
+          // Use handler from lead if "Case Handler" is selected
           // For new leads, handler is stored as text (display_name) in the 'handler' column
           if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
             const handlerNameFromLead = lead.handler.trim();
@@ -8352,7 +8581,7 @@ const CollectionDueReport = () => {
             }
           }
         } else {
-          // Default (case_handler): Use ready_to_pay_by from payment_plans table
+          // Default (actual_employee_due): Use ready_to_pay_by from payment_plans table
           handlerId = normalizeHandlerId(payment.ready_to_pay_by);
           if (handlerId === 14) {
             console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
@@ -8500,7 +8729,7 @@ const CollectionDueReport = () => {
           // If we didn't find the leads, try a direct query without RLS to see if they exist
           if (missingLeads?.length === 0 && missingIdsArray.length > 0) {
             console.warn('⚠️ Collection Due Report - No leads found for IDs:', missingIdsArray);
-            console.warn('⚠️ This might be due to RLS policies or the leads not existing. Payments for these leads will be skipped unless employeeType is "actual_employee_due"');
+            console.warn('⚠️ This might be due to RLS policies or the leads not existing. Payments for these leads will be skipped unless employeeType is "case_handler"');
           }
           
           if (missingLeads) {
@@ -8512,7 +8741,7 @@ const CollectionDueReport = () => {
               }
               
               // Also collect handler IDs from newly fetched leads
-              if (filters.employeeType !== 'actual_employee_due') {
+              if (filters.employeeType === 'case_handler') {
                 const handlerId = normalizeHandlerId(lead.case_handler_id);
                 if (handlerId !== null && !allHandlerIds.includes(handlerId)) {
                   allHandlerIds.push(handlerId);
@@ -8526,7 +8755,7 @@ const CollectionDueReport = () => {
             console.log('🔍 DEBUG Employee 14 - Missing leads with case_handler_id 14:', missingLeads.filter((l: any) => Number(l.case_handler_id) === 14).map((l: any) => ({ id: l.id, case_handler_id: l.case_handler_id })));
             
             // Re-fetch handler data if we discovered new handler IDs from missing leads
-            if (filters.employeeType !== 'actual_employee_due') {
+            if (filters.employeeType === 'case_handler') {
               const newHandlerIds = missingLeads
                 .map((l: any) => normalizeHandlerId(l.case_handler_id))
                 .filter((id): id is number => id !== null && !handlerMap.has(id));
@@ -8588,12 +8817,12 @@ const CollectionDueReport = () => {
         
         // Get handler based on filter selection
         // Default (case_handler): Use due_by_id from finances_paymentplanrow table
-        // Actual employee due: Use case_handler_id from lead
+        // Case handler: Use case_handler_id from lead
         let handlerId: number | null = null;
         let handlerName = '—';
         
-        if (filters.employeeType === 'actual_employee_due') {
-          // Use case_handler_id from lead if "Actual Employee Due" is selected
+        if (filters.employeeType === 'case_handler') {
+          // Use case_handler_id from lead if "Case Handler" is selected
           // If lead doesn't exist, we can't get case_handler_id, so skip this payment
           if (!lead) {
             if (isLead183061) {
@@ -9125,7 +9354,43 @@ const CollectionDueReport = () => {
     }).format(amount);
   };
 
+  // Helper to convert numeric order back to descriptive text (matching FinancesTab.tsx)
+  const getOrderText = (orderNumber: number | string | null | undefined): string => {
+    // Handle string input (for new leads that might already be text)
+    if (typeof orderNumber === 'string') {
+      // If it's already a descriptive string, return it as-is
+      const lowerStr = orderNumber.toLowerCase();
+      if (lowerStr.includes('first') || lowerStr.includes('intermediate') || lowerStr.includes('final') || lowerStr.includes('single') || lowerStr.includes('expense')) {
+        return orderNumber;
+      }
+      // Try to parse as number
+      const num = parseInt(orderNumber, 10);
+      if (!isNaN(num)) {
+        orderNumber = num;
+      } else {
+        return orderNumber; // Return as-is if can't parse
+      }
+    }
+    
+    // Handle numeric input
+    if (typeof orderNumber === 'number') {
+      switch (orderNumber) {
+        case 1: return 'First Payment';
+        case 5: return 'Intermediate Payment';
+        case 9: return 'Final Payment';
+        case 90: return 'Single Payment';
+        case 99: return 'Expense (no VAT)';
+        default: return 'First Payment'; // Default fallback
+      }
+    }
+    
+    // Handle null/undefined
+    return 'First Payment';
+  };
+
   const handleOpenDrawer = async (leadIds: string[], title: string) => {
+    console.log('🔍 [Drawer] Opening drawer with title:', title);
+    console.log('🔍 [Drawer] Received leadIds:', leadIds.length, leadIds.slice(0, 10));
     setDrawerLoading(true);
     setIsDrawerOpen(true);
     setDrawerTitle(title);
@@ -9146,123 +9411,486 @@ const CollectionDueReport = () => {
         }
       });
 
-      const leadsData: any[] = [];
+      console.log('🔍 [Drawer] Separated leadIds - New:', newLeadIds.length, 'Legacy:', legacyLeadIds.length);
+      console.log('🔍 [Drawer] New leadIds sample:', newLeadIds.slice(0, 5));
+      console.log('🔍 [Drawer] Legacy leadIds sample:', legacyLeadIds.slice(0, 5));
 
-      // Fetch new leads
+      const paymentRows: any[] = [];
+
+      // Fetch all payment rows for new leads (from payment_plans table)
       if (newLeadIds.length > 0) {
-        const { data: newLeads, error: newLeadsError } = await supabase
-          .from('leads')
+        console.log('🔍 [Drawer] Fetching new payment plans for', newLeadIds.length, 'leads');
+        console.log('🔍 [Drawer] Date filters:', { fromDate: filters.fromDate, toDate: filters.toDate });
+        const paymentsStartTime = performance.now();
+        let newPaymentsQuery = supabase
+          .from('payment_plans')
           .select(`
             id,
-            lead_number,
-            name,
-            category_id,
-            topic,
-            balance,
-            balance_currency
+            lead_id,
+            value,
+            value_vat,
+            currency,
+            due_date,
+            cancel_date,
+            ready_to_pay,
+            ready_to_pay_by,
+            paid,
+            payment_order,
+            notes
           `)
-          .in('id', newLeadIds);
-
-        if (newLeadsError) {
-          console.error('Error fetching new leads for drawer:', newLeadsError);
-        } else {
-          // Fetch applicants count for new leads
-          const { data: contacts, error: contactsError } = await supabase
-            .from('contacts')
-            .select('lead_id')
-            .in('lead_id', newLeadIds)
-            .eq('is_persecuted', false);
-
-          const applicantsCountMap = new Map<string, number>();
-          if (!contactsError && contacts) {
-            contacts.forEach(contact => {
-              const count = applicantsCountMap.get(contact.lead_id) || 0;
-              applicantsCountMap.set(contact.lead_id, count + 1);
+          .eq('ready_to_pay', true)
+          .not('due_date', 'is', null)
+          .is('cancel_date', null)
+          .in('lead_id', newLeadIds);
+        
+        // Apply date filters if available
+        if (filters.fromDate) {
+          const fromDateTime = `${filters.fromDate}T00:00:00`;
+          newPaymentsQuery = newPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (filters.toDate) {
+          const toDateTime = `${filters.toDate}T23:59:59`;
+          newPaymentsQuery = newPaymentsQuery.lte('due_date', toDateTime);
+        }
+        
+        const { data: newPayments, error: newPaymentsError } = await newPaymentsQuery;
+        const paymentsTime = performance.now() - paymentsStartTime;
+        console.log(`⏱️ [Drawer] Payment plans fetch took ${paymentsTime.toFixed(2)}ms`);
+        
+        if (newPaymentsError) {
+          console.error('❌ [Drawer] Error fetching new payments:', newPaymentsError);
+          console.error('❌ [Drawer] Error details:', JSON.stringify(newPaymentsError, null, 2));
+        } else if (newPayments && newPayments.length > 0) {
+          console.log('✅ [Drawer] Found', newPayments.length, 'new payment plans');
+          
+          // Fetch lead metadata
+          const { data: newLeads, error: newLeadsError } = await supabase
+            .from('leads')
+            .select(`
+              id,
+              lead_number,
+              master_id,
+              name,
+              handler,
+              case_handler_id,
+              category_id,
+              category,
+              misc_category!category_id(
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id(
+                  id,
+                  name,
+                  department_id,
+                  tenant_departement!department_id(
+                    id,
+                    name
+                  )
+                )
+              )
+            `)
+            .in('id', newLeadIds);
+          
+          if (newLeadsError) {
+            console.error('❌ Collection Due Report Drawer - Error fetching new leads:', newLeadsError);
+          }
+          
+          // Fetch contacts for contact names (for new leads, use lead_leadcontact to get main contact)
+          const contactsByLead = new Map<string, string>();
+          const { data: leadContacts, error: leadContactsError } = await supabase
+            .from('lead_leadcontact')
+            .select('newlead_id, main, leads_contact:contact_id(name)')
+            .eq('main', 'true')
+            .in('newlead_id', newLeadIds);
+          
+          if (!leadContactsError && leadContacts) {
+            leadContacts.forEach((entry: any) => {
+              const leadId = entry.newlead_id?.toString();
+              const contactName = entry.leads_contact?.name;
+              if (leadId && contactName) {
+                contactsByLead.set(leadId, contactName);
+              }
             });
           }
-
-          newLeads?.forEach(lead => {
-            // Get payment value from paymentValueMap instead of lead balance
-            const paymentInfo = paymentValueMap.get(lead.id);
-            const paymentValue = paymentInfo?.value || 0;
-            const paymentCurrency = paymentInfo?.currency || lead.balance_currency || '₪';
+          
+          // Fallback: if no main contact found, fetch from contacts table
+          if (contactsByLead.size === 0) {
+            const { data: contacts, error: contactsError } = await supabase
+              .from('contacts')
+              .select('id, name, lead_id')
+              .in('lead_id', newLeadIds)
+              .eq('is_persecuted', false);
             
-            leadsData.push({
-              leadId: lead.id,
-              leadNumber: lead.lead_number, // For new leads, use lead_number column
-              clientName: lead.name,
-              categoryId: lead.category_id,
-              topic: lead.topic || '—',
-              applicants: applicantsCountMap.get(lead.id) || 0,
-              value: paymentValue, // Use payment value instead of lead balance
-              currency: paymentCurrency,
+            if (!contactsError && contacts) {
+              // Store the first contact name for each lead
+              contacts.forEach((contact: any) => {
+                if (contact.lead_id && contact.name) {
+                  if (!contactsByLead.has(contact.lead_id)) {
+                    contactsByLead.set(contact.lead_id, contact.name);
+                  }
+                }
+              });
+            }
+          }
+          
+          // Fetch handler names - ALWAYS use case_handler_id (actual case handler), never ready_to_pay_by
+          const handlerMap = new Map<number, string>();
+          const handlerIds = new Set<number>();
+          newLeads?.forEach(lead => {
+            if (lead.case_handler_id) {
+              const handlerId = Number(lead.case_handler_id);
+              if (!Number.isNaN(handlerId)) {
+                handlerIds.add(handlerId);
+              }
+            }
+          });
+          
+          if (handlerIds.size > 0) {
+            const { data: handlers, error: handlersError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', Array.from(handlerIds));
+            
+            if (!handlersError && handlers) {
+              handlers.forEach((handler: any) => {
+                if (handler.id && handler.display_name) {
+                  handlerMap.set(Number(handler.id), handler.display_name);
+                }
+              });
+            }
+          }
+          
+          // Process each payment row
+          newPayments.forEach(payment => {
+            const lead = newLeads?.find(l => l.id === payment.lead_id);
+            if (!lead) return;
+            
+            // Get contact name (for new leads, use the first contact for the lead)
+            const contactName = contactsByLead.get(payment.lead_id) || null;
+            
+            // Get handler name - ALWAYS use case_handler_id (actual case handler), never ready_to_pay_by
+            const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+            const handlerName = handlerId ? (handlerMap.get(handlerId) || '—') : '—';
+            
+            // Get category (main and sub)
+            const miscCategory: any = lead.misc_category;
+            const categoryEntry: any = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
+            const mainCategory: any = categoryEntry?.misc_maincategory;
+            let mainCategoryName: string | undefined = undefined;
+            if (Array.isArray(mainCategory) && mainCategory[0]) {
+              mainCategoryName = mainCategory[0]?.name;
+            } else if (mainCategory) {
+              mainCategoryName = mainCategory?.name;
+            }
+            const subCategoryName: string = categoryEntry?.name || lead.category || '—';
+            const categoryDisplay = mainCategoryName ? `${subCategoryName} (${mainCategoryName})` : subCategoryName;
+            
+            // Calculate amount
+            const value = Number(payment.value || 0);
+            let vat = Number(payment.value_vat || 0);
+            if (!vat && (payment.currency || '₪') === '₪') {
+              vat = Math.round(value * 0.18 * 100) / 100;
+            }
+            const amount = value + vat;
+            
+            // Get order - map to text using getOrderText function
+            const orderCode = payment.payment_order ? getOrderText(payment.payment_order) : '—';
+            
+            // Format case number with sublead suffix if applicable
+            let caseNumber: string;
+            if (lead.master_id) {
+              // It's a sublead - we need to calculate the suffix
+              // For now, if lead_number already has a /, use it; otherwise show as master_id/2
+              if (lead.lead_number && lead.lead_number.includes('/')) {
+                caseNumber = `#${lead.lead_number}`;
+              } else {
+                // Default to /2 for subleads without explicit suffix in lead_number
+                caseNumber = `#${lead.master_id}/2`;
+              }
+            } else {
+              // It's a master lead or standalone lead
+              caseNumber = lead.lead_number ? `#${lead.lead_number}` : `#${lead.id}`;
+            }
+            
+            paymentRows.push({
+              id: `new-${payment.id}`,
+              name: lead.name || '—', // Client name
+              client: contactName || '—', // Contact name
+              amount,
+              currency: payment.currency || '₪',
+              order: orderCode,
+              handler: handlerName,
+              case: caseNumber, // Lead number with sublead formatting
+              category: categoryDisplay,
+              notes: payment.notes || '—',
               leadType: 'new',
+              leadId: payment.lead_id,
             });
           });
         }
       }
 
-      // Fetch legacy leads
+      // Fetch all payment rows for legacy leads (from finances_paymentplanrow table)
       if (legacyLeadIds.length > 0) {
-        const { data: legacyLeads, error: legacyLeadsError } = await supabase
-          .from('leads_lead')
+        console.log('🔍 [Drawer] Fetching legacy payment plans for', legacyLeadIds.length, 'leads');
+        const legacyPaymentsStartTime = performance.now();
+        let legacyPaymentsQuery = supabase
+          .from('finances_paymentplanrow')
           .select(`
             id,
-            name,
-            category_id,
-            topic,
-            total,
+            lead_id,
+            client_id,
+            value,
+            value_base,
+            vat_value,
             currency_id,
-            no_of_applicants,
-            accounting_currencies!leads_lead_currency_id_fkey(name, iso_code)
+            due_date,
+            date,
+            cancel_date,
+            ready_to_pay,
+            actual_date,
+            due_by_id,
+            order,
+            notes,
+            accounting_currencies!finances_paymentplanrow_currency_id_fkey(name, iso_code)
           `)
-          .in('id', legacyLeadIds);
-
-        if (legacyLeadsError) {
-          console.error('Error fetching legacy leads for drawer:', legacyLeadsError);
-        } else {
+          .not('due_date', 'is', null)
+          .is('cancel_date', null)
+          .in('lead_id', legacyLeadIds);
+        
+        // Apply date filters if available
+        if (filters.fromDate) {
+          const fromDateTime = `${filters.fromDate}T00:00:00`;
+          legacyPaymentsQuery = legacyPaymentsQuery.gte('due_date', fromDateTime);
+        }
+        if (filters.toDate) {
+          const toDateTime = `${filters.toDate}T23:59:59`;
+          legacyPaymentsQuery = legacyPaymentsQuery.lte('due_date', toDateTime);
+        }
+        
+        console.log('🔍 [Drawer] Fetching payment plans for', legacyLeadIds.length, 'legacy leads');
+        const { data: legacyPayments, error: legacyPaymentsError } = await legacyPaymentsQuery;
+        const legacyPaymentsTime = performance.now() - legacyPaymentsStartTime;
+        console.log(`⏱️ [Drawer] Legacy payment plans fetch took ${legacyPaymentsTime.toFixed(2)}ms`);
+        
+        if (legacyPaymentsError) {
+          console.error('❌ [Drawer] Error fetching legacy payments:', legacyPaymentsError);
+          console.error('❌ [Drawer] Error details:', JSON.stringify(legacyPaymentsError, null, 2));
+        } else if (legacyPayments && legacyPayments.length > 0) {
+          console.log('✅ [Drawer] Found', legacyPayments.length, 'legacy payment plans');
+          
+          // Fetch lead metadata
+          console.log('🔍 [Drawer] Fetching legacy leads metadata for', legacyLeadIds.length, 'lead IDs');
+          const legacyLeadsStartTime = performance.now();
+          const { data: legacyLeads, error: legacyLeadsError } = await supabase
+            .from('leads_lead')
+            .select(`
+              id,
+              name,
+              lead_number,
+              manual_id,
+              master_id,
+              case_handler_id,
+              category_id,
+              category,
+              misc_category!category_id(
+                id,
+                name,
+                parent_id,
+                misc_maincategory!parent_id(
+                  id,
+                  name,
+                  department_id,
+                  tenant_departement!department_id(
+                    id,
+                    name
+                  )
+                )
+              )
+            `)
+            .in('id', legacyLeadIds);
+          const legacyLeadsTime = performance.now() - legacyLeadsStartTime;
+          console.log(`⏱️ [Drawer] Legacy leads metadata fetch took ${legacyLeadsTime.toFixed(2)}ms`);
+          
+          if (legacyLeadsError) {
+            console.error('❌ [Drawer] Error fetching legacy leads:', legacyLeadsError);
+            console.error('❌ [Drawer] Error details:', JSON.stringify(legacyLeadsError, null, 2));
+          } else {
+            console.log('✅ [Drawer] Fetched', legacyLeads?.length || 0, 'legacy leads');
+            console.log('🔍 [Drawer] Legacy lead IDs fetched:', legacyLeads?.map(l => l.id).slice(0, 10));
+          }
+          
+          // Fetch contacts for contact names (client_id in finances_paymentplanrow is contact_id)
+          const contactIds = Array.from(new Set(legacyPayments.map(p => p.client_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
+          const contactMap = new Map<number, string>();
+          if (contactIds.length > 0) {
+            const { data: contacts, error: contactsError } = await supabase
+              .from('leads_contact')
+              .select('id, name')
+              .in('id', contactIds);
+            
+            if (!contactsError && contacts) {
+              contacts.forEach((contact: any) => {
+                if (contact.id && contact.name) {
+                  contactMap.set(Number(contact.id), contact.name);
+                }
+              });
+            }
+          }
+          
+          // Fetch handler names - ALWAYS use case_handler_id (actual case handler), never due_by_id
+          const handlerMap = new Map<number, string>();
+          const handlerIds = new Set<number>();
           legacyLeads?.forEach(lead => {
-            const accountingCurrency: any = lead.accounting_currencies 
-              ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+            if (lead.case_handler_id) {
+              const handlerId = Number(lead.case_handler_id);
+              if (!Number.isNaN(handlerId)) {
+                handlerIds.add(handlerId);
+              }
+            }
+          });
+          
+          if (handlerIds.size > 0) {
+            const { data: handlers, error: handlersError } = await supabase
+              .from('tenants_employee')
+              .select('id, display_name')
+              .in('id', Array.from(handlerIds));
+            
+            if (!handlersError && handlers) {
+              handlers.forEach((handler: any) => {
+                if (handler.id && handler.display_name) {
+                  handlerMap.set(Number(handler.id), handler.display_name);
+                }
+              });
+            }
+          }
+          
+          // Process each payment row
+          console.log('🔍 [Drawer] Processing', legacyPayments.length, 'legacy payment rows');
+          let processedCount = 0;
+          let skippedNoLeadCount = 0;
+          
+          legacyPayments.forEach((payment, index) => {
+            // Try multiple ways to match the lead
+            const paymentLeadId = payment.lead_id;
+            const lead = legacyLeads?.find(l => {
+              // Try exact match
+              if (l.id === paymentLeadId) return true;
+              // Try string comparison
+              if (String(l.id) === String(paymentLeadId)) return true;
+              // Try number comparison
+              if (Number(l.id) === Number(paymentLeadId)) return true;
+              return false;
+            });
+            
+            if (!lead) {
+              skippedNoLeadCount++;
+              if (index < 5) {
+                console.warn(`⚠️ [Drawer] Payment ${index}: No lead found for payment.lead_id=${paymentLeadId} (type: ${typeof paymentLeadId})`);
+                console.warn(`⚠️ [Drawer] Available lead IDs:`, legacyLeads?.map(l => ({ id: l.id, type: typeof l.id })).slice(0, 10));
+              }
+              return;
+            }
+            
+            processedCount++;
+            
+            // Get contact name
+            const contactId = payment.client_id ? Number(payment.client_id) : null;
+            const contactName = contactId && !Number.isNaN(contactId) ? contactMap.get(contactId) : null;
+            
+            // Get handler name - ALWAYS use case_handler_id (actual case handler), never due_by_id
+            const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
+            const handlerName = handlerId && !Number.isNaN(handlerId) ? (handlerMap.get(handlerId) || '—') : '—';
+            
+            // Get category (main and sub)
+            const miscCategory: any = lead.misc_category;
+            const categoryEntry: any = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
+            const mainCategory: any = categoryEntry?.misc_maincategory;
+            let mainCategoryName: string | undefined = undefined;
+            if (Array.isArray(mainCategory) && mainCategory[0]) {
+              mainCategoryName = mainCategory[0]?.name;
+            } else if (mainCategory) {
+              mainCategoryName = mainCategory?.name;
+            }
+            const subCategoryName: string = categoryEntry?.name || lead.category || '—';
+            const categoryDisplay = mainCategoryName ? `${subCategoryName} (${mainCategoryName})` : subCategoryName;
+            
+            // Calculate amount
+            const value = Number(payment.value || payment.value_base || 0);
+            let vat = Number(payment.vat_value || 0);
+            const accountingCurrency: any = payment.accounting_currencies 
+              ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
               : null;
+            const currency = accountingCurrency?.name || accountingCurrency?.iso_code || 
+                           (payment.currency_id === 2 ? '€' : 
+                            payment.currency_id === 3 ? '$' : 
+                            payment.currency_id === 4 ? '£' : '₪');
+            if (!vat && currency === '₪') {
+              vat = Math.round(value * 0.18 * 100) / 100;
+            }
+            const amount = value + vat;
             
-            const currency = accountingCurrency?.name || accountingCurrency?.iso_code ||
-              (lead.currency_id === 2 ? '€' : 
-               lead.currency_id === 3 ? '$' : 
-               lead.currency_id === 4 ? '£' : '₪');
-
-            // Handle bigint null values for applicants
-            const applicantsCount = lead.no_of_applicants !== null && lead.no_of_applicants !== undefined
-              ? Number(lead.no_of_applicants)
-              : 0;
-
-            // Get payment value from paymentValueMap instead of lead total
-            const legacyLeadIdKey = `legacy_${lead.id}`;
-            const paymentInfo = paymentValueMap.get(legacyLeadIdKey);
-            const paymentValue = paymentInfo?.value || 0;
-            const paymentCurrency = paymentInfo?.currency || currency;
+            // Get order - map to text using getOrderText function
+            const orderCode = payment.order ? getOrderText(payment.order) : '—';
             
-            leadsData.push({
-              leadId: lead.id,
-              leadNumber: lead.id.toString(), // For legacy leads, use id column as lead number
-              clientName: lead.name,
-              categoryId: lead.category_id,
-              topic: lead.topic || '—',
-              applicants: applicantsCount,
-              value: paymentValue, // Use payment value instead of lead total
-              currency: paymentCurrency,
+            // Format case number with sublead suffix if applicable
+            let caseNumber: string;
+            if (lead.master_id) {
+              // It's a sublead - format as master_id/suffix
+              // For legacy leads, we'll use the master_id and default to /2
+              // If lead_number already has a pattern, use it
+              if (lead.lead_number && String(lead.lead_number).includes('/')) {
+                caseNumber = `#${lead.lead_number}`;
+              } else {
+                // Use master_id (or manual_id if available) with /2 suffix
+                const masterId = lead.master_id || lead.manual_id || lead.id;
+                caseNumber = `#${masterId}/2`;
+              }
+            } else {
+              // It's a master lead or standalone lead
+              const leadNumber = lead.lead_number || lead.manual_id || lead.id;
+              caseNumber = `#${leadNumber}`;
+            }
+            
+            paymentRows.push({
+              id: `legacy-${payment.id}`,
+              name: lead.name || '—', // Client name
+              client: contactName || '—', // Contact name
+              amount,
+              currency,
+              order: orderCode,
+              handler: handlerName,
+              case: caseNumber, // Lead number with sublead formatting
+              category: categoryDisplay,
+              notes: payment.notes || '—',
               leadType: 'legacy',
+              leadId: `legacy_${lead.id}`,
             });
           });
+          
+          console.log(`✅ [Drawer] Processed ${processedCount} legacy payment rows`);
+          if (skippedNoLeadCount > 0) {
+            console.warn(`⚠️ [Drawer] Skipped ${skippedNoLeadCount} legacy payment rows (no matching lead found)`);
+          }
         }
       }
 
-      setDrawerLeads(leadsData);
+      console.log('✅ [Drawer] Total payment rows collected:', paymentRows.length);
+      console.log('📊 [Drawer] Payment rows breakdown:', {
+        new: paymentRows.filter(r => r.leadType === 'new').length,
+        legacy: paymentRows.filter(r => r.leadType === 'legacy').length
+      });
+      
+      setDrawerLeads(paymentRows);
     } catch (error) {
-      console.error('Error fetching leads for drawer:', error);
+      console.error('❌ [Drawer] Fatal error fetching payment rows for drawer:', error);
+      console.error('❌ [Drawer] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      console.error('❌ [Drawer] Error details:', JSON.stringify(error, Object.getOwnPropertyNames(error), 2));
       setDrawerLeads([]);
     } finally {
       setDrawerLoading(false);
+      console.log('✅ [Drawer] Drawer loading completed');
     }
   };
 
@@ -9344,8 +9972,8 @@ const CollectionDueReport = () => {
                 handleFilterChange('employee', ''); // Reset employee filter when changing type
               }}
             >
-              <option value="case_handler">Case Handler</option>
-              <option value="actual_employee_due">Actual Employee Due</option>
+              <option value="actual_employee_due">Case Handler</option>
+              <option value="case_handler">Actual Employee Due</option>
             </select>
           </div>
         </div>
@@ -9534,40 +10162,42 @@ const CollectionDueReport = () => {
                   <table className="table w-full">
                     <thead>
                       <tr className="bg-gray-50">
-                        <th className="text-left">Lead</th>
+                        <th className="text-left">Name</th>
+                        <th className="text-left">Client</th>
+                        <th className="text-right">Amount</th>
+                        <th className="text-center">Order</th>
+                        <th className="text-left">Handler</th>
+                        <th className="text-left">Case</th>
                         <th className="text-left">Category</th>
-                        <th className="text-left">Topic</th>
-                        <th className="text-center">Applicants</th>
-                        <th className="text-right">Value</th>
+                        <th className="text-left">Notes</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {drawerLeads.map((lead, index) => (
+                      {drawerLeads.map((row, index) => (
                         <tr 
-                          key={index} 
+                          key={row.id || index} 
                           className="hover:bg-gray-50 cursor-pointer transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (lead.leadNumber) {
-                              navigate(`/clients/${lead.leadNumber}`);
+                            if (row.case) {
+                              const leadNumber = row.case.replace('#', '');
+                              navigate(`/clients/${leadNumber}`);
                             }
                           }}
                         >
-                          <td className="text-left">
-                            <div>
-                              <div className="font-semibold">#{lead.leadNumber}</div>
-                              <div className="text-sm text-gray-600">{lead.clientName}</div>
-                            </div>
-                          </td>
-                          <td className="text-left">{getCategoryName(lead.categoryId) || '—'}</td>
-                          <td className="text-left">{lead.topic || '—'}</td>
-                          <td className="text-center">{lead.applicants || 0}</td>
+                          <td className="text-left font-semibold">{row.name || '—'}</td>
+                          <td className="text-left">{row.client || '—'}</td>
                           <td className="text-right">
-                            {lead.value > 0 
-                              ? `${lead.value.toLocaleString()} ${lead.currency}`
+                            {row.amount > 0 
+                              ? `${row.currency || '₪'}${row.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
                               : '—'
                             }
                           </td>
+                          <td className="text-center">{row.order || '—'}</td>
+                          <td className="text-left">{row.handler || '—'}</td>
+                          <td className="text-left">{row.case || '—'}</td>
+                          <td className="text-left">{row.category || '—'}</td>
+                          <td className="text-left text-sm text-gray-600">{row.notes || '—'}</td>
                         </tr>
                       ))}
                     </tbody>

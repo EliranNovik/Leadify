@@ -1147,7 +1147,7 @@ const formatEmailBody = async (
             break;
           case 'reminder':
             enTemplateId = 163;
-            heTemplateId = 164;
+            heTemplateId = 167;
             break;
           case 'cancellation':
             enTemplateId = 153;

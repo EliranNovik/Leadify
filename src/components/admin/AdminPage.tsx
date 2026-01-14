@@ -779,7 +779,7 @@ const AdminPage: React.FC = () => {
                 const selectedSub = selectedTab?.subcategories[selected.sub];
 
                 if (selectedSub === 'Email Templates') {
-                  return <div className="w-full"><EmailTemplatesManager /></div>;
+                  return <div className="w-full"><EmailTemplatesManager isSuperUser={isSuperUser} /></div>;
                 } else if (selectedSub === 'Public messages') {
                   return <div className="w-full"><PublicMessagesManager /></div>;
                 }
@@ -1405,7 +1405,7 @@ const AdminPage: React.FC = () => {
               <div className="w-full"><LeadStageReasonsManager /></div>
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Email Templates' ? (
-              <div className="w-full"><EmailTemplatesManager /></div>
+              <div className="w-full"><EmailTemplatesManager isSuperUser={isSuperUser} /></div>
             ) : selectedTab?.label === 'Misc' &&
             selectedTab?.subcategories[selected.sub] === 'Email Templates Placement' ? (
               <div className="w-full"><EmailTemplatesPlacementManager /></div>
