@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect } from 'react';
 import { MagnifyingGlassIcon, Squares2X2Icon, ArrowUturnDownIcon, DocumentDuplicateIcon, ChartPieIcon, AdjustmentsHorizontalIcon, FunnelIcon, ClockIcon, ArrowPathIcon, CheckCircleIcon, BanknotesIcon, UserGroupIcon, UserIcon, AcademicCapIcon, StarIcon, PlusIcon, ClipboardDocumentCheckIcon, ChartBarIcon, ListBulletIcon, CurrencyDollarIcon, BriefcaseIcon, ArrowLeftIcon, InformationCircleIcon, RectangleStackIcon, DocumentTextIcon } from '@heroicons/react/24/solid';
-import { XMarkIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
+import { XMarkIcon, ArrowDownTrayIcon, ScaleIcon, GlobeAltIcon, HomeIcon, ShieldCheckIcon, UsersIcon, WrenchScrewdriverIcon, ClipboardDocumentListIcon, ExclamationTriangleIcon, BuildingOfficeIcon, HeartIcon, CogIcon } from '@heroicons/react/24/outline';
 import * as XLSX from 'xlsx';
 import { toast } from 'react-hot-toast';
 import FullSearchReport from './FullSearchReport';
@@ -7395,7 +7395,7 @@ const CollectionDueReport = () => {
     order: '',
     department: '',
     employee: '',
-    employeeType: 'actual_employee_due', // 'actual_employee_due' (Case Handler) or 'case_handler' (Actual Employee Due)
+    employeeType: 'actual_employee_due', // 'case_handler' (Case Handler - who clicked sent to finance) or 'actual_employee_due' (Actual Employee Due - actual handler saved in lead)
   }, {
     storage: 'sessionStorage',
   });
@@ -7411,6 +7411,7 @@ const CollectionDueReport = () => {
     storage: 'sessionStorage',
   });
   const [employees, setEmployees] = useState<{ id: number; name: string }[]>([]);
+  const [allEmployees, setAllEmployees] = useState<any[]>([]); // Store all employees with photo_url for image display
   const [departments, setDepartments] = useState<{ id: string; name: string }[]>([]);
   const [categories, setCategories] = useState<{ id: string; name: string }[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
@@ -7423,20 +7424,22 @@ const CollectionDueReport = () => {
   const [drawerLoading, setDrawerLoading] = useState(false);
   
   // Store maps for accessing leadIds when drawer opens
-  const [employeeMapStore, setEmployeeMapStore] = useState<Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
-  const [departmentMapStore, setDepartmentMapStore] = useState<Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
+  const [employeeMapStore, setEmployeeMapStore] = useState<Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
+  const [departmentMapStore, setDepartmentMapStore] = useState<Map<string, { departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>>(new Map());
   // Store payment values per lead for drawer display
   const [paymentValueMap, setPaymentValueMap] = useState<Map<string, { value: number; currency: string }>>(new Map());
 
   useEffect(() => {
     const fetchOptions = async () => {
-      // Fetch employees
+      // Fetch employees with photo_url for image display
       const { data: empData } = await supabase
         .from('tenants_employee')
-        .select('id, display_name')
+        .select('id, display_name, photo_url, photo')
         .order('display_name');
       if (empData) {
         setEmployees(empData.map(emp => ({ id: emp.id, name: emp.display_name || `Employee #${emp.id}` })));
+        // Store full employee data for image lookup
+        setAllEmployees(empData);
       }
 
       // Fetch departments from tenant_departement (like Dashboard does)
@@ -7495,6 +7498,219 @@ const CollectionDueReport = () => {
 
   const handleFilterChange = (field: string, value: any) => {
     setFilters(prev => ({ ...prev, [field]: value }));
+  };
+
+  // Helper function to get employee by ID or name (for image lookup)
+  const getEmployeeById = (employeeIdOrName: string | number | null | undefined) => {
+    if (!employeeIdOrName || employeeIdOrName === '---' || employeeIdOrName === '--' || employeeIdOrName === 'Unknown') {
+      return null;
+    }
+    
+    // First, try to match by ID
+    const employeeById = allEmployees.find((emp: any) => {
+      const empId = typeof emp.id === 'bigint' ? Number(emp.id) : emp.id;
+      const searchId = typeof employeeIdOrName === 'string' ? parseInt(employeeIdOrName, 10) : employeeIdOrName;
+      
+      if (isNaN(Number(searchId))) return false;
+      
+      if (empId.toString() === searchId.toString()) return true;
+      if (Number(empId) === Number(searchId)) return true;
+      
+      return false;
+    });
+    
+    if (employeeById) {
+      return employeeById;
+    }
+    
+    // If not found by ID, try to match by display name
+    if (typeof employeeIdOrName === 'string') {
+      const employeeByName = allEmployees.find((emp: any) => {
+        if (!emp.display_name) return false;
+        return emp.display_name.trim().toLowerCase() === employeeIdOrName.trim().toLowerCase();
+      });
+      
+      if (employeeByName) {
+        return employeeByName;
+      }
+    }
+    
+    return null;
+  };
+
+  // Helper function to get employee initials
+  const getEmployeeInitials = (name: string) => {
+    if (!name) return '--';
+    return name
+      .split(' ')
+      .map(n => n[0])
+      .join('')
+      .toUpperCase()
+      .slice(0, 2);
+  };
+
+  // Employee Avatar Component
+  const EmployeeAvatar: React.FC<{ 
+    employeeIdOrName: string | number | null | undefined;
+    size?: 'sm' | 'md';
+  }> = ({ employeeIdOrName, size = 'md' }) => {
+    const [imageError, setImageError] = useState(false);
+    const [imageLoaded, setImageLoaded] = useState(false);
+    const employee = getEmployeeById(employeeIdOrName);
+    
+    if (!employee) {
+      return null;
+    }
+
+    const photoUrl = employee.photo_url || employee.photo;
+    const initials = getEmployeeInitials(employee.display_name);
+    const sizeClasses = size === 'sm' ? 'w-10 h-10 text-sm' : 'w-12 h-12 text-base';
+    
+    // Validate photoUrl - must be a non-empty string that looks like a URL
+    const isValidPhotoUrl = photoUrl && 
+      typeof photoUrl === 'string' && 
+      photoUrl.trim() !== '' && 
+      (photoUrl.startsWith('http') || photoUrl.startsWith('data:') || photoUrl.startsWith('/'));
+
+    // If no valid photo URL or error occurred, show initials
+    if (imageError || !isValidPhotoUrl) {
+      return (
+        <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
+          {initials}
+        </div>
+      );
+    }
+
+    // Show initials while image is loading, then show image once loaded
+    return (
+      <div className={`${sizeClasses} rounded-full relative overflow-hidden bg-green-100`}>
+        {!imageLoaded && (
+          <div className={`${sizeClasses} absolute inset-0 rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
+            {initials}
+          </div>
+        )}
+        <img
+          src={photoUrl}
+          alt={employee.display_name}
+          className={`${sizeClasses} rounded-full object-cover ${imageLoaded ? 'opacity-100' : 'opacity-0'} transition-opacity duration-200`}
+          onError={() => {
+            setImageError(true);
+            setImageLoaded(false);
+          }}
+          onLoad={() => {
+            setImageLoaded(true);
+          }}
+        />
+      </div>
+    );
+  };
+
+  // Function to get the appropriate icon for each department (same as CalendarPage/DepartmentList)
+  const getDepartmentIcon = (departmentName: string) => {
+    const name = departmentName.toLowerCase();
+    
+    // Staff Meeting gets a special icon
+    if (name.includes('staff')) {
+      return <UsersIcon className="w-5 h-5" />;
+    }
+    
+    // Legal-related departments
+    if (name.includes('legal') || name.includes('law') || name.includes('attorney')) {
+      return <ScaleIcon className="w-5 h-5" />;
+    }
+    
+    // Immigration to Israel - Home icon (representing homeland)
+    if (name.includes('israel') || name.includes('israeli') || name.includes('aliyah')) {
+      return <HomeIcon className="w-5 h-5" />;
+    }
+    
+    // USA Immigration - Flag icon (using ShieldCheckIcon as flag representation)
+    if (name.includes('usa') || name.includes('united states') || name.includes('america') || name.includes('us immigration')) {
+      return <ShieldCheckIcon className="w-5 h-5" />;
+    }
+    
+    // Small cases - different icon from Austria/Germany
+    if (name.includes('small cases') || name.includes('small case')) {
+      return <DocumentTextIcon className="w-5 h-5" />;
+    }
+    
+    // Austria and Germany immigration - globe icon
+    if (name.includes('austria') || name.includes('german') || name.includes('germany')) {
+      return <GlobeAltIcon className="w-5 h-5" />;
+    }
+    
+    // General immigration-related departments
+    if (name.includes('immigration') || name.includes('citizenship') || name.includes('visa') || name.includes('passport')) {
+      return <GlobeAltIcon className="w-5 h-5" />;
+    }
+    
+    // Business/Corporate departments
+    if (name.includes('business') || name.includes('corporate') || name.includes('commercial')) {
+      return <BriefcaseIcon className="w-5 h-5" />;
+    }
+    
+    // HR/Personnel departments
+    if (name.includes('hr') || name.includes('human') || name.includes('personnel') || name.includes('staff')) {
+      return <UserGroupIcon className="w-5 h-5" />;
+    }
+    
+    // Finance/Accounting departments
+    if (name.includes('finance') || name.includes('accounting') || name.includes('financial') || name.includes('money')) {
+      return <BanknotesIcon className="w-5 h-5" />;
+    }
+    
+    // Marketing departments
+    if (name.includes('marketing') || name.includes('sales') || name.includes('advertising')) {
+      return <ChartBarIcon className="w-5 h-5" />;
+    }
+    
+    // IT/Technology departments
+    if (name.includes('it') || name.includes('technology') || name.includes('tech') || name.includes('computer')) {
+      return <CogIcon className="w-5 h-5" />;
+    }
+    
+    // Education/Training departments
+    if (name.includes('education') || name.includes('training') || name.includes('learning') || name.includes('academy')) {
+      return <AcademicCapIcon className="w-5 h-5" />;
+    }
+    
+    // Healthcare/Medical departments
+    if (name.includes('health') || name.includes('medical') || name.includes('healthcare') || name.includes('clinic')) {
+      return <HeartIcon className="w-5 h-5" />;
+    }
+    
+    // Real Estate departments
+    if (name.includes('real estate') || name.includes('property') || name.includes('housing')) {
+      return <HomeIcon className="w-5 h-5" />;
+    }
+    
+    // Security departments
+    if (name.includes('security') || name.includes('safety') || name.includes('protection')) {
+      return <ShieldCheckIcon className="w-5 h-5" />;
+    }
+    
+    // Operations departments
+    if (name.includes('operations') || name.includes('operational') || name.includes('management')) {
+      return <WrenchScrewdriverIcon className="w-5 h-5" />;
+    }
+    
+    // Documentation/Administration departments
+    if (name.includes('admin') || name.includes('administration') || name.includes('document') || name.includes('paperwork')) {
+      return <ClipboardDocumentListIcon className="w-5 h-5" />;
+    }
+    
+    // General department (default fallback)
+    if (name.includes('general')) {
+      return <BuildingOfficeIcon className="w-5 h-5" />;
+    }
+    
+    // Unassigned meetings
+    if (name.includes('unassigned') || name.includes('unknown') || name === '—' || name === '-') {
+      return <ExclamationTriangleIcon className="w-5 h-5" />;
+    }
+    
+    // Default icon for any other department
+    return <BuildingOfficeIcon className="w-5 h-5" />;
   };
 
   // Helper function to normalize order code (similar to CollectionFinancesReport)
@@ -8384,10 +8600,45 @@ const CollectionDueReport = () => {
       const allHandlerIds: number[] = []; // For legacy leads - case_handler_id or due_by_id is numeric
       
       if (filters.employeeType === 'case_handler') {
-        // Collect handler names/IDs from leads (case handler mode - uses case_handler_id from leads)
+        // Case Handler: Collect ready_to_pay_by from new payments and due_by_id from legacy payments (who clicked "sent to finance")
+        // Collect ready_to_pay_by from new payments
+        console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments (Case Handler - who clicked sent to finance)...');
+        (newPayments || []).forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.ready_to_pay_by);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            if (handlerId === 14) {
+              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from new payment ready_to_pay_by:', {
+                paymentId: payment.id,
+                leadId: payment.lead_id,
+                ready_to_pay_by: payment.ready_to_pay_by
+              });
+            }
+            console.log('✅ Added ready_to_pay_by:', handlerId);
+          }
+        });
+        
+        // Collect due_by_id from legacy payments
+        console.log('🔍 Collection Due Report - Collecting due_by_id from legacy payments (Case Handler - who clicked sent to finance)...');
+        filteredLegacyPayments.forEach((payment: any) => {
+          const handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId !== null) {
+            allHandlerIds.push(handlerId);
+            if (handlerId === 14) {
+              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy payment due_by_id:', {
+                paymentId: payment.id,
+                leadId: payment.lead_id,
+                due_by_id: payment.due_by_id
+              });
+            }
+            console.log('✅ Added due_by_id:', handlerId);
+          }
+        });
+      } else {
+        // Actual Employee Due: Collect handler names/IDs from leads (actual handler saved in leads)
         // Collect handler names from new leads
         if (newLeadsMap.size > 0) {
-          console.log('🔍 Collection Due Report - Collecting handler names from new leads (actual employee due)...');
+          console.log('🔍 Collection Due Report - Collecting handler names from new leads (Actual Employee Due - actual handler saved in lead)...');
           newLeadsMap.forEach((lead, leadId) => {
             console.log('📊 New lead handler info:', {
               leadId,
@@ -8403,6 +8654,9 @@ const CollectionDueReport = () => {
               const handlerId = normalizeHandlerId(lead.case_handler_id);
               if (handlerId !== null) {
                 allHandlerIds.push(handlerId);
+                if (handlerId === 14) {
+                  console.log('✅ DEBUG Employee 14 - Added handler ID 14 from new lead case_handler_id:', leadId);
+                }
                 console.log('✅ Added case_handler_id:', handlerId);
               }
             }
@@ -8411,7 +8665,7 @@ const CollectionDueReport = () => {
         
         // Collect case_handler_id from legacy leads
         if (legacyLeadsMap.size > 0) {
-          console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads (actual employee due)...');
+          console.log('🔍 Collection Due Report - Collecting handler IDs from legacy leads (Actual Employee Due - actual handler saved in lead)...');
           legacyLeadsMap.forEach((lead: any, leadId: any) => {
             console.log('📊 Legacy lead handler info:', {
               leadId,
@@ -8430,43 +8684,15 @@ const CollectionDueReport = () => {
             }
           });
         }
-      } else {
-        // Default (actual_employee_due): Collect ready_to_pay_by from new payments and due_by_id from legacy payments
-        // Collect ready_to_pay_by from new payments
-        console.log('🔍 Collection Due Report - Collecting ready_to_pay_by from new payments (default)...');
-        (newPayments || []).forEach((payment: any) => {
-          const handlerId = normalizeHandlerId(payment.ready_to_pay_by);
-          if (handlerId !== null) {
-            allHandlerIds.push(handlerId);
-            console.log('✅ Added ready_to_pay_by:', handlerId);
-          }
-        });
-        
-        // Collect due_by_id from legacy payments
-        console.log('🔍 Collection Due Report - Collecting due_by_id from legacy payments (default)...');
-        filteredLegacyPayments.forEach((payment: any) => {
-          const handlerId = normalizeHandlerId(payment.due_by_id);
-          if (handlerId !== null) {
-            allHandlerIds.push(handlerId);
-            if (handlerId === 14) {
-              console.log('✅ DEBUG Employee 14 - Added handler ID 14 from legacy payment due_by_id:', {
-                paymentId: payment.id,
-                leadId: payment.lead_id,
-                due_by_id: payment.due_by_id
-              });
-            }
-            console.log('✅ Added due_by_id:', handlerId);
-          }
-        });
       }
       console.log('📊 Collection Due Report - All collected handler names (new):', Array.from(allHandlerNames));
       console.log('📊 Collection Due Report - All collected handler IDs (legacy):', allHandlerIds);
       console.log('🔍 DEBUG Employee 14 - Employee 14 in allHandlerIds?', allHandlerIds.includes(14));
 
       // Fetch handler information:
-      // 1. For new leads (case_handler mode): fetch employees by display_name (handler text field) to get their IDs
-      // 2. For new leads (actual_employee_due mode): ready_to_pay_by IDs are collected into allHandlerIds
-      // 3. For legacy leads: fetch employees by ID (case_handler_id or due_by_id) to get their display_name
+      // 1. For new leads (Actual Employee Due mode): fetch employees by display_name (handler text field) to get their IDs
+      // 2. For new leads (Case Handler mode): ready_to_pay_by IDs are collected into allHandlerIds
+      // 3. For legacy leads: fetch employees by ID (case_handler_id for Actual Employee Due, or due_by_id for Case Handler) to get their display_name
       const handlerMap = new Map<number, string>(); // ID -> display_name
       const handlerNameToIdMap = new Map<string, number>(); // display_name -> ID (for new leads in case_handler mode)
       
@@ -8540,6 +8766,7 @@ const CollectionDueReport = () => {
         departmentId: string | null;
         departmentName: string;
         orderCode: string; // Store normalized order code for filtering
+        mainCategoryId: string | number | null; // Store main category ID for filtering
       };
 
       const payments: PaymentEntry[] = [];
@@ -8552,13 +8779,29 @@ const CollectionDueReport = () => {
         if (!lead) return;
 
         // Get handler based on filter selection
-        // Default (actual_employee_due): Use ready_to_pay_by from payment_plans table
-        // Case handler: Use handler from lead (handler text or case_handler_id)
+        // Case Handler (case_handler): Use ready_to_pay_by from payment_plans table (who clicked "sent to finance")
+        // Actual Employee Due (actual_employee_due): Use handler from lead (actual handler saved in lead)
         let handlerId: number | null = null;
         let handlerName = '—';
         
         if (filters.employeeType === 'case_handler') {
-          // Use handler from lead if "Case Handler" is selected
+          // Case Handler: Use ready_to_pay_by from payment_plans table (who clicked "sent to finance")
+          handlerId = normalizeHandlerId(payment.ready_to_pay_by);
+          if (handlerId === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              ready_to_pay_by: payment.ready_to_pay_by
+            });
+          }
+          if (handlerId !== null) {
+            handlerName = handlerMap.get(handlerId) || '—';
+            if (handlerId === 14) {
+              console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
+            }
+          }
+        } else {
+          // Actual Employee Due (actual_employee_due): Use handler from lead (actual handler saved in lead)
           // For new leads, handler is stored as text (display_name) in the 'handler' column
           if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
             const handlerNameFromLead = lead.handler.trim();
@@ -8576,24 +8819,14 @@ const CollectionDueReport = () => {
           } else if (lead.case_handler_id) {
             // Fallback to case_handler_id if handler text is not available
             handlerId = normalizeHandlerId(lead.case_handler_id);
+            if (handlerId === 14) {
+              console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new lead case_handler_id:', {
+                leadId: payment.lead_id,
+                case_handler_id: lead.case_handler_id
+              });
+            }
             if (handlerId !== null) {
               handlerName = handlerMap.get(handlerId) || '—';
-            }
-          }
-        } else {
-          // Default (actual_employee_due): Use ready_to_pay_by from payment_plans table
-          handlerId = normalizeHandlerId(payment.ready_to_pay_by);
-          if (handlerId === 14) {
-            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in new payment ready_to_pay_by:', {
-              paymentId: payment.id,
-              leadId: payment.lead_id,
-              ready_to_pay_by: payment.ready_to_pay_by
-            });
-          }
-          if (handlerId !== null) {
-            handlerName = handlerMap.get(handlerId) || '—';
-            if (handlerId === 14) {
-              console.log('🔍 DEBUG Employee 14 - Handler name from map:', handlerName);
             }
           }
         }
@@ -8605,6 +8838,21 @@ const CollectionDueReport = () => {
           lead.category_id, // category ID
           lead.misc_category // joined misc_category data
         );
+
+        // Extract main category ID for filtering
+        let mainCategoryId: string | number | null = null;
+        if (lead.misc_category) {
+          const categoryRecord = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+          if (categoryRecord?.misc_maincategory) {
+            const mainCategory = Array.isArray(categoryRecord.misc_maincategory) 
+              ? categoryRecord.misc_maincategory[0] 
+              : categoryRecord.misc_maincategory;
+            mainCategoryId = mainCategory?.id || null;
+          } else if (categoryRecord?.parent_id) {
+            // Fallback: use parent_id if misc_maincategory join is not available
+            mainCategoryId = categoryRecord.parent_id;
+          }
+        }
 
         const value = Number(payment.value || 0);
         let vat = Number(payment.value_vat || 0);
@@ -8626,6 +8874,7 @@ const CollectionDueReport = () => {
           departmentId,
           departmentName,
           orderCode,
+          mainCategoryId,
         });
       });
 
@@ -8816,13 +9065,27 @@ const CollectionDueReport = () => {
         }
         
         // Get handler based on filter selection
-        // Default (case_handler): Use due_by_id from finances_paymentplanrow table
-        // Case handler: Use case_handler_id from lead
+        // Case Handler (case_handler): Use due_by_id from finances_paymentplanrow table (who clicked "sent to finance")
+        // Actual Employee Due (actual_employee_due): Use case_handler_id from lead (actual handler saved in lead)
         let handlerId: number | null = null;
         let handlerName = '—';
         
         if (filters.employeeType === 'case_handler') {
-          // Use case_handler_id from lead if "Case Handler" is selected
+          // Case Handler: Use due_by_id from finances_paymentplanrow table (who clicked "sent to finance")
+          handlerId = normalizeHandlerId(payment.due_by_id);
+          if (handlerId === 14 || payment.due_by_id === 14) {
+            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy payment due_by_id:', {
+              paymentId: payment.id,
+              leadId: payment.lead_id,
+              due_by_id: payment.due_by_id,
+              normalizedHandlerId: handlerId
+            });
+          }
+          if (isLead183061) {
+            console.log('🔍 DEBUG Lead 183061 - Using due_by_id mode (Case Handler - who clicked sent to finance), handlerId:', handlerId);
+          }
+        } else {
+          // Actual Employee Due (actual_employee_due): Use case_handler_id from lead (actual handler saved in lead)
           // If lead doesn't exist, we can't get case_handler_id, so skip this payment
           if (!lead) {
             if (isLead183061) {
@@ -8854,21 +9117,7 @@ const CollectionDueReport = () => {
             });
           }
           if (isLead183061) {
-            console.log('🔍 DEBUG Lead 183061 - Using case_handler_id mode (actual employee due), handlerId:', handlerId, 'from case_handler_id:', lead.case_handler_id);
-          }
-        } else {
-          // Default (case_handler): Use due_by_id from finances_paymentplanrow table
-          handlerId = normalizeHandlerId(payment.due_by_id);
-          if (handlerId === 14 || payment.due_by_id === 14) {
-            console.log('🔍 DEBUG Employee 14 - Found handlerId 14 in legacy payment due_by_id:', {
-              paymentId: payment.id,
-              leadId: payment.lead_id,
-              due_by_id: payment.due_by_id,
-              normalizedHandlerId: handlerId
-            });
-          }
-          if (isLead183061) {
-            console.log('🔍 DEBUG Lead 183061 - Using due_by_id mode (default), handlerId:', handlerId);
+            console.log('🔍 DEBUG Lead 183061 - Using case_handler_id mode (Actual Employee Due - actual handler saved in lead), handlerId:', handlerId, 'from case_handler_id:', lead.case_handler_id);
           }
         }
         
@@ -8919,6 +9168,21 @@ const CollectionDueReport = () => {
           lead.misc_category // joined misc_category data
         );
 
+        // Extract main category ID for filtering
+        let mainCategoryId: string | number | null = null;
+        if (lead.misc_category) {
+          const categoryRecord = Array.isArray(lead.misc_category) ? lead.misc_category[0] : lead.misc_category;
+          if (categoryRecord?.misc_maincategory) {
+            const mainCategory = Array.isArray(categoryRecord.misc_maincategory) 
+              ? categoryRecord.misc_maincategory[0] 
+              : categoryRecord.misc_maincategory;
+            mainCategoryId = mainCategory?.id || null;
+          } else if (categoryRecord?.parent_id) {
+            // Fallback: use parent_id if misc_maincategory join is not available
+            mainCategoryId = categoryRecord.parent_id;
+          }
+        }
+
         // Use value for legacy payments (value_base may be null/0, value contains the actual amount)
         const value = Number(payment.value || payment.value_base || 0);
         let vat = Number(payment.vat_value || 0);
@@ -8961,7 +9225,8 @@ const CollectionDueReport = () => {
             handlerId,
             handlerName,
             departmentId,
-            departmentName
+            departmentName,
+            mainCategoryId
           });
         }
 
@@ -8976,6 +9241,7 @@ const CollectionDueReport = () => {
           departmentId,
           departmentName,
           orderCode,
+          mainCategoryId,
         });
       });
       
@@ -9043,10 +9309,33 @@ const CollectionDueReport = () => {
         }
       }
 
-      // Only filter by ready_to_pay and due_date - no other filters applied
-      // All payments marked as ready to pay with due_date in the date range are shown
+      // Filter payments by order and category if filters are selected
       let filteredPayments = payments;
-      console.log('✅ Collection Due Report - Payments (filtered only by ready_to_pay and due_date):', filteredPayments.length);
+      
+      // Apply order filter
+      if (filters.order && filters.order !== '') {
+        filteredPayments = filteredPayments.filter(payment => {
+          // Compare normalized order codes
+          return payment.orderCode === filters.order;
+        });
+        console.log(`✅ Collection Due Report - Payments filtered by order ${filters.order}:`, filteredPayments.length, 'out of', payments.length);
+      }
+      
+      // Apply category filter (by main category)
+      if (filters.category && filters.category !== '') {
+        const beforeCategoryFilter = filteredPayments.length;
+        filteredPayments = filteredPayments.filter(payment => {
+          // Compare main category ID (convert both to string for comparison)
+          return payment.mainCategoryId !== null && 
+                 payment.mainCategoryId !== undefined && 
+                 String(payment.mainCategoryId) === String(filters.category);
+        });
+        console.log(`✅ Collection Due Report - Payments filtered by main category ${filters.category}:`, filteredPayments.length, 'out of', beforeCategoryFilter);
+      }
+      
+      if (!filters.order && !filters.category) {
+        console.log('✅ Collection Due Report - Payments (filtered only by ready_to_pay and due_date):', filteredPayments.length);
+      }
 
       // Create a map of leadId -> payment value and currency for drawer display (from filtered payments)
       const paymentValueMapLocal = new Map<string, { value: number; currency: string }>();
@@ -9070,8 +9359,8 @@ const CollectionDueReport = () => {
       setPaymentValueMap(paymentValueMapLocal);
 
       // Group by employee
-      // Cases count uses a Set to ensure each lead is counted only once, even if there are multiple payments for the same lead
-      const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      // Cases count now represents the actual number of payment rows (not unique leads)
+      const employeeMap = new Map<string, { handlerId: number | null; handlerName: string; departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>();
       
       // Debug: Check if any payments have handlerId 14
       const paymentsWith14 = filteredPayments.filter(p => p.handlerId === 14);
@@ -9088,13 +9377,17 @@ const CollectionDueReport = () => {
           });
         }
         
-        const key = payment.handlerId?.toString() || 'unassigned';
+        // For unassigned payments (no handler), combine all together as "Unknown"
+        const key = payment.handlerId !== null && payment.handlerId !== undefined
+          ? payment.handlerId.toString()
+          : 'unknown';
+        
         if (!employeeMap.has(key)) {
           employeeMap.set(key, {
             handlerId: payment.handlerId,
-            handlerName: payment.handlerName,
-            departmentName: payment.departmentName,
-            cases: new Set(), // Set ensures unique lead IDs - no duplicates
+            handlerName: 'Unknown', // Display "Unknown" instead of "—"
+            departmentName: '', // Empty department for unknown rows
+            cases: 0, // Count of payment rows
             applicantsLeads: new Set(),
             applicants: 0,
             total: 0,
@@ -9109,7 +9402,7 @@ const CollectionDueReport = () => {
           }
         }
         const entry = employeeMap.get(key)!;
-        entry.cases.add(payment.leadId); // Set automatically prevents duplicate lead IDs
+        entry.cases++; // Count each payment row
         // Convert value to NIS before adding to total
         // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = payment.currency || 'NIS';
@@ -9122,7 +9415,7 @@ const CollectionDueReport = () => {
         
         if (payment.handlerId === 14) {
           console.log('🔍 DEBUG Employee 14 - Updated entry:', {
-            cases: entry.cases.size,
+            cases: entry.cases,
             total: entry.total,
             handlerName: entry.handlerName
           });
@@ -9254,15 +9547,41 @@ const CollectionDueReport = () => {
       console.log('🔍 DEBUG Employee 14 - Employee 14 in employeeMap?', employee14Entry ? 'YES' : 'NO', employee14Entry);
       console.log('🔍 DEBUG Employee 14 - All handlerIds in employeeMap:', Array.from(employeeMap.values()).map(e => e.handlerId));
       
-      const employeeDataArray = Array.from(employeeMap.values()).map(entry => ({
-        employee: entry.handlerName,
-        department: entry.departmentName,
-        cases: entry.cases.size,
-        applicants: entry.applicants,
-        total: entry.total,
-        handlerId: entry.handlerId, // Store handlerId for drawer access
-        leadIds: Array.from(entry.cases), // Store leadIds for drawer
-      })).sort((a, b) => b.total - a.total);
+      // Collect unique leadIds for drawer access (still need Set for this)
+      // Use same key structure as employeeMap: for unassigned, use 'unknown'
+      const leadIdsMap = new Map<string, Set<string>>();
+      filteredPayments.forEach(payment => {
+        const key = payment.handlerId !== null && payment.handlerId !== undefined
+          ? payment.handlerId.toString()
+          : 'unknown';
+        if (!leadIdsMap.has(key)) {
+          leadIdsMap.set(key, new Set());
+        }
+        leadIdsMap.get(key)!.add(payment.leadId);
+      });
+
+      const employeeDataArray = Array.from(employeeMap.entries()).map(([mapKey, entry]) => {
+        // Use the mapKey directly since it matches the leadIdsMap key structure
+        const leadIds = leadIdsMap.get(mapKey) || new Set();
+        return {
+          employee: entry.handlerName,
+          department: entry.departmentName,
+          cases: entry.cases, // Now represents actual payment row count
+          applicants: entry.applicants,
+          total: entry.total,
+          handlerId: entry.handlerId, // Store handlerId for drawer access
+          leadIds: Array.from(leadIds), // Store leadIds for drawer
+        };
+      }).sort((a, b) => {
+        // Sort alphabetically by employee name
+        // Put "Unknown" at the bottom of the table
+        const aIsUnknown = a.employee === 'Unknown' || a.employee === '—' || !a.employee || a.employee.trim() === '';
+        const bIsUnknown = b.employee === 'Unknown' || b.employee === '—' || !b.employee || b.employee.trim() === '';
+        
+        if (aIsUnknown && !bIsUnknown) return 1; // Unknown goes after regular employees
+        if (!aIsUnknown && bIsUnknown) return -1; // Regular employees go before Unknown
+        return a.employee.localeCompare(b.employee, undefined, { sensitivity: 'base' });
+      });
 
       // Debug: Check if employee 14 is in employeeDataArray
       const employee14InArray = employeeDataArray.find(e => e.handlerId === 14);
@@ -9275,24 +9594,29 @@ const CollectionDueReport = () => {
 
       // Group by department - use lead's category department (not employee's department)
       // Match leads by category to department, same as signed agreements table in Dashboard
-      const departmentMap = new Map<string, { departmentName: string; cases: Set<string>; applicantsLeads: Set<string>; applicants: number; total: number }>();
+      // Cases count now represents the actual number of payment rows (not unique leads)
+      // Payments without category (departmentName is '—') should be combined into "General" department
+      const departmentMap = new Map<string, { departmentName: string; cases: number; applicantsLeads: Set<string>; applicants: number; total: number }>();
       filteredPayments.forEach(payment => {
         // Get department from lead's category -> main category -> department
         // This is already extracted in payment.departmentId and payment.departmentName
-        const departmentName = payment.departmentName || '—';
+        // If departmentName is '—' (no category), use "General" instead
+        const departmentName = payment.departmentName && payment.departmentName !== '—' 
+          ? payment.departmentName 
+          : 'General';
         const key = departmentName;
         
         if (!departmentMap.has(key)) {
           departmentMap.set(key, {
             departmentName: departmentName,
-            cases: new Set(),
+            cases: 0, // Count of payment rows
             applicantsLeads: new Set(),
             applicants: 0,
             total: 0,
           });
         }
         const entry = departmentMap.get(key)!;
-        entry.cases.add(payment.leadId);
+        entry.cases++; // Count each payment row
         // Convert value to NIS before adding to total
         // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = payment.currency || 'NIS';
@@ -9320,13 +9644,29 @@ const CollectionDueReport = () => {
       // Store department map for drawer access
       setDepartmentMapStore(departmentMap);
       
-      const departmentDataArray = Array.from(departmentMap.values()).map(entry => ({
-        department: entry.departmentName,
-        cases: entry.cases.size,
-        applicants: entry.applicants,
-        total: entry.total,
-        leadIds: Array.from(entry.cases), // Store leadIds for drawer
-      })).sort((a, b) => b.total - a.total);
+      // Collect unique leadIds for drawer access (still need Set for this)
+      const departmentLeadIdsMap = new Map<string, Set<string>>();
+      filteredPayments.forEach(payment => {
+        // Use same logic as department grouping: '—' becomes "General"
+        const departmentName = payment.departmentName && payment.departmentName !== '—' 
+          ? payment.departmentName 
+          : 'General';
+        if (!departmentLeadIdsMap.has(departmentName)) {
+          departmentLeadIdsMap.set(departmentName, new Set());
+        }
+        departmentLeadIdsMap.get(departmentName)!.add(payment.leadId);
+      });
+      
+      const departmentDataArray = Array.from(departmentMap.values()).map(entry => {
+        const leadIds = departmentLeadIdsMap.get(entry.departmentName) || new Set();
+        return {
+          department: entry.departmentName,
+          cases: entry.cases, // Now represents actual payment row count
+          applicants: entry.applicants,
+          total: entry.total,
+          leadIds: Array.from(leadIds), // Store leadIds for drawer
+        };
+      }).sort((a, b) => b.total - a.total);
 
       console.log('✅ Collection Due Report - Department data array:', departmentDataArray.length, 'departments');
       console.log('📊 Collection Due Report - Department data:', departmentDataArray);
@@ -9930,7 +10270,7 @@ const CollectionDueReport = () => {
               value={filters.category}
               onChange={e => handleFilterChange('category', e.target.value)}
             >
-              <option value="">---------</option>
+              <option value="">ALL</option>
               {categories.map(cat => (
                 <option key={cat.id} value={cat.id}>{cat.name}</option>
               ))}
@@ -9943,10 +10283,12 @@ const CollectionDueReport = () => {
               value={filters.order}
               onChange={e => handleFilterChange('order', e.target.value)}
             >
-              <option value="">- ALL -</option>
+              <option value="">ALL</option>
               <option value="1">First Payment</option>
               <option value="5">Intermediate Payment</option>
               <option value="9">Final Payment</option>
+              <option value="90">Single Payment</option>
+              <option value="99">Expense (no VAT)</option>
             </select>
           </div>
           <div className="form-control">
@@ -9956,7 +10298,7 @@ const CollectionDueReport = () => {
               value={filters.department}
               onChange={e => handleFilterChange('department', e.target.value)}
             >
-              <option value="">All</option>
+              <option value="">ALL</option>
               {departments.map(dept => (
                 <option key={dept.id} value={dept.id}>{dept.name}</option>
               ))}
@@ -9972,12 +10314,12 @@ const CollectionDueReport = () => {
                 handleFilterChange('employee', ''); // Reset employee filter when changing type
               }}
             >
-              <option value="actual_employee_due">Case Handler</option>
               <option value="case_handler">Actual Employee Due</option>
+              <option value="actual_employee_due">Case Handler</option>
             </select>
           </div>
         </div>
-        <div className="mt-4">
+        <div className="mt-4 flex items-center gap-4">
           <button
             className="btn btn-primary"
             onClick={handleSearch}
@@ -9985,22 +10327,21 @@ const CollectionDueReport = () => {
           >
             {loading ? 'Loading...' : 'Show'}
           </button>
+          {searchPerformed && (
+            <div className="bg-green-500 text-white px-4 py-2 rounded-lg">
+              <span className="text-2xl font-bold">{formatCurrency(totalDue)}</span>
+            </div>
+          )}
         </div>
       </div>
 
       {/* Results */}
       {searchPerformed && (
         <div>
-          {/* Total Due Summary */}
-          <div className="mb-6">
-            <span className="text-lg font-semibold mr-2">Total Due:</span>
-            <div className="bg-green-500 text-white px-4 py-2 rounded-lg inline-block">
-              <span className="text-2xl font-bold">{formatCurrency(totalDue)}</span>
-            </div>
-          </div>
 
-          {/* By Employee Table */}
-          <div className="-mx-4 sm:-mx-6 md:mx-0 mb-6">
+          {/* Tables Container - Side by side on larger screens */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 lg:gap-16 -mx-4 sm:-mx-6 md:mx-0">
+            {/* By Employee Table */}
             <div className="px-4 sm:px-6 md:px-0">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold">By Employee</h3>
@@ -10018,11 +10359,11 @@ const CollectionDueReport = () => {
                   <table className="table w-full">
                   <thead>
                     <tr>
-                      <th className="text-left">Employee</th>
-                      <th className="text-left">Department</th>
-                      <th className="text-center">Cases</th>
-                      <th className="text-center">Applicants</th>
-                      <th className="text-right">Total</th>
+                      <th className="text-left lg:px-3">Employee</th>
+                      <th className="text-left lg:px-3">Department</th>
+                      <th className="text-center lg:px-3">Cases</th>
+                      <th className="text-center lg:px-3">Applicants</th>
+                      <th className="text-right lg:px-3">Total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -10035,11 +10376,16 @@ const CollectionDueReport = () => {
                     ) : employeeData.length > 0 ? (
                       employeeData.map((row, index) => (
                         <tr key={index}>
-                          <td className="text-left font-medium">{row.employee}</td>
-                          <td className="text-left">{row.department}</td>
-                          <td className="text-center">{row.cases}</td>
-                          <td className="text-center">{row.applicants}</td>
-                          <td className="text-right font-semibold">
+                          <td className="text-left font-medium lg:px-3">
+                            <div className="flex items-center gap-2">
+                              <EmployeeAvatar employeeIdOrName={row.handlerId || row.employee} size="md" />
+                              <span>{row.employee}</span>
+                            </div>
+                          </td>
+                          <td className="text-left lg:px-3">{row.department}</td>
+                          <td className="text-center lg:px-3">{row.cases}</td>
+                          <td className="text-center lg:px-3">{row.applicants}</td>
+                          <td className="text-right font-semibold lg:px-3">
                             {formatCurrency(row.total)}
                             <InformationCircleIcon 
                               className="w-4 h-4 inline-block ml-2 text-gray-400 hover:text-primary cursor-pointer transition-colors" 
@@ -10059,10 +10405,8 @@ const CollectionDueReport = () => {
                 </div>
               </div>
             </div>
-          </div>
 
-          {/* By Department Table */}
-          <div className="-mx-4 sm:-mx-6 md:mx-0">
+            {/* By Department Table */}
             <div className="px-4 sm:px-6 md:px-0">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-xl font-bold">By Department</h3>
@@ -10080,10 +10424,10 @@ const CollectionDueReport = () => {
                   <table className="table w-full">
                   <thead>
                     <tr>
-                      <th className="text-left">Department</th>
-                      <th className="text-center">Cases</th>
-                      <th className="text-center">Applicants</th>
-                      <th className="text-right">Total</th>
+                      <th className="text-left lg:px-3">Department</th>
+                      <th className="text-center lg:px-3">Cases</th>
+                      <th className="text-center lg:px-3">Applicants</th>
+                      <th className="text-right lg:px-3">Total</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -10096,10 +10440,15 @@ const CollectionDueReport = () => {
                     ) : departmentData.length > 0 ? (
                       departmentData.map((row, index) => (
                         <tr key={index}>
-                          <td className="text-left font-medium">{row.department}</td>
-                          <td className="text-center">{row.cases}</td>
-                          <td className="text-center">{row.applicants}</td>
-                          <td className="text-right font-semibold">
+                          <td className="text-left font-medium lg:px-3">
+                            <div className="flex items-center gap-2">
+                              {getDepartmentIcon(row.department)}
+                              <span>{row.department}</span>
+                            </div>
+                          </td>
+                          <td className="text-center lg:px-3">{row.cases}</td>
+                          <td className="text-center lg:px-3">{row.applicants}</td>
+                          <td className="text-right font-semibold lg:px-3">
                             {formatCurrency(row.total)}
                             <InformationCircleIcon 
                               className="w-4 h-4 inline-block ml-2 text-gray-400 hover:text-primary cursor-pointer transition-colors" 
