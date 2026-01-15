@@ -2861,27 +2861,21 @@ useEffect(() => {
             ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
             : null;
           
-          // Convert currency_id to symbol (like legacy leads)
+          // Use accounting_currencies.name directly (like SchedulerToolPage.tsx)
+          // The accounting_currencies.name column contains the symbol (₪, $, €, £)
           const currencySymbol = (() => {
-            if (currencyRecord?.iso_code) {
-              const isoCode = currencyRecord.iso_code.toUpperCase();
-              if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
-              if (isoCode === 'USD') return '$';
-              if (isoCode === 'EUR') return '€';
-              if (isoCode === 'GBP') return '£';
-              if (isoCode === 'CAD') return 'C$';
-              if (isoCode === 'AUD') return 'A$';
-              if (isoCode === 'JPY') return '¥';
-              return currencyRecord.name || isoCode || '₪';
+            if (currencyRecord && currencyRecord.name) {
+              // Use name directly - it contains the symbol (₪, $, €, £)
+              return currencyRecord.name;
             }
-            // Fallback: if we have currency_id but no joined data, use simple mapping
+            // Fallback: if no joined data, use currency_id mapping
             if (data.currency_id) {
               const currencyId = Number(data.currency_id);
               switch (currencyId) {
-                case 1: return '₪'; break; // ILS
-                case 2: return '€'; break; // EUR
-                case 3: return '$'; break; // USD
-                case 4: return '£'; break; // GBP
+                case 1: return '₪'; break;
+                case 2: return '€'; break;
+                case 3: return '$'; break;
+                case 4: return '£'; break;
                 default: return '₪';
               }
             }
@@ -11394,17 +11388,28 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
                 }
                 
-                // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
-                let balanceCurrency = selectedClient.balance_currency;
-                if (!balanceCurrency && isLegacy) {
+                // Get currency symbol - SIMPLE: use balance_currency directly (it's already the symbol from accounting_currencies.name)
+                // balance_currency is set from accounting_currencies.name which contains the symbol (₪, $, €, £)
+                let balanceCurrency = selectedClient.balance_currency || '₪';
+                
+                // If balance_currency is not set or empty, fall back to currency_id mapping
+                if (!balanceCurrency || balanceCurrency.trim() === '') {
                   const currencyId = (selectedClient as any).currency_id;
-                  if (currencyId) {
-                    balanceCurrency = getCurrencySymbol(currencyId, '₪');
+                  if (currencyId !== null && currencyId !== undefined && currencyId !== '') {
+                    const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                    if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+                      // Mapping: 1=₪, 2=€, 3=$, 4=£ (matches accounting_currencies table)
+                      switch (numericCurrencyId) {
+                        case 1: balanceCurrency = '₪'; break;
+                        case 2: balanceCurrency = '€'; break;
+                        case 3: balanceCurrency = '$'; break;
+                        case 4: balanceCurrency = '£'; break;
+                        default: balanceCurrency = '₪';
+                      }
+                    }
                   } else {
                     balanceCurrency = '₪';
                   }
-                } else if (!balanceCurrency) {
-                  balanceCurrency = '₪';
                 }
                 
                 if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {

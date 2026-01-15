@@ -1,10 +1,12 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../lib/supabase';
 import { toast } from 'react-hot-toast';
+import { usePersistedFilters, usePersistedState } from '../hooks/usePersistedState';
+import { useRef } from 'react';
 import SchedulerWhatsAppModal from '../components/SchedulerWhatsAppModal';
 import SchedulerEmailThreadModal from '../components/SchedulerEmailThreadModal';
-import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon, EllipsisVerticalIcon, FolderIcon } from '@heroicons/react/24/outline';
+import { PhoneIcon, EnvelopeIcon, ChevronDownIcon, XMarkIcon, ChevronUpIcon, ChevronUpDownIcon, ChevronRightIcon, PencilSquareIcon, EyeIcon, ClockIcon, ChatBubbleLeftRightIcon, Squares2X2Icon, TableCellsIcon, EllipsisVerticalIcon, FolderIcon, StarIcon } from '@heroicons/react/24/outline';
 import { FaWhatsapp } from 'react-icons/fa';
 import { fetchStageNames, areStagesEquivalent, getStageName, getStageColour } from '../lib/stageUtils';
 import DocumentModal from '../components/DocumentModal';
@@ -12,6 +14,16 @@ import { format, parseISO } from 'date-fns';
 import { getUSTimezoneFromPhone } from '../lib/timezoneHelpers';
 import { convertToNIS } from '../lib/currencyConversion';
 import CallOptionsModal from '../components/CallOptionsModal';
+
+// Add a helper for currency symbol
+const getCurrencySymbol = (currency?: string) => {
+  switch (currency) {
+    case 'USD': return '$';
+    case 'EUR': return '€';
+    case 'NIS':
+    default: return '₪';
+  }
+};
 
 export interface SchedulerLead {
   id: string;
@@ -28,6 +40,8 @@ export interface SchedulerLead {
   total: string;
   balance_currency: string;
   lead_type: 'new' | 'legacy';
+  currency_id?: number | null;
+  total_base?: number | null;
   phone?: string;
   mobile?: string;
   email?: string;
@@ -77,8 +91,26 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 
 const SchedulerToolPage: React.FC = () => {
   const navigate = useNavigate();
-  const [leads, setLeads] = useState<SchedulerLead[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [leads, setLeads] = usePersistedFilters<SchedulerLead[]>('schedulerTool_leads', [], {
+    storage: 'sessionStorage',
+  });
+  // Initialize loading to false if we have persisted state (for faster initial render)
+  const [loading, setLoading] = useState(() => {
+    // Check if we have persisted state on initial mount
+    try {
+      const persistedLeads = sessionStorage.getItem('persisted_state_filters_schedulerTool_leads');
+      const persistedFilteredLeads = sessionStorage.getItem('persisted_state_filters_schedulerTool_filteredLeads');
+      if (persistedLeads || persistedFilteredLeads) {
+        const parsed = persistedLeads ? JSON.parse(persistedLeads) : (persistedFilteredLeads ? JSON.parse(persistedFilteredLeads) : null);
+        if (parsed && Array.isArray(parsed) && parsed.length > 0) {
+          return false; // We have persisted data, don't show loading
+        }
+      }
+    } catch (e) {
+      // Ignore errors, default to loading
+    }
+    return true; // No persisted data, show loading
+  });
   const [error, setError] = useState<string | null>(null);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [allSources, setAllSources] = useState<any[]>([]);
@@ -92,7 +124,7 @@ const SchedulerToolPage: React.FC = () => {
   const [schedulerStageIds, setSchedulerStageIds] = useState<number[]>(FALLBACK_SCHEDULER_STAGE_IDS);
   
   // Filter states
-  const [filters, setFilters] = useState({
+  const [filters, setFilters] = usePersistedFilters('schedulerTool_filters', {
     stage: '',
     language: '',
     source: '',
@@ -100,8 +132,12 @@ const SchedulerToolPage: React.FC = () => {
     topic: '',
     tags: '',
     country: ''
+  }, {
+    storage: 'sessionStorage',
   });
-  const [filteredLeads, setFilteredLeads] = useState<SchedulerLead[]>([]);
+  const [filteredLeads, setFilteredLeads] = usePersistedFilters<SchedulerLead[]>('schedulerTool_filteredLeads', [], {
+    storage: 'sessionStorage',
+  });
   const [showDropdowns, setShowDropdowns] = useState({
     stage: false,
     language: false,
@@ -113,20 +149,38 @@ const SchedulerToolPage: React.FC = () => {
   });
   
   // Sorting state
-  const [sortConfig, setSortConfig] = useState<{
+  const [sortConfig, setSortConfig] = usePersistedState<{
     key: string | null;
     direction: 'asc' | 'desc' | null;
-  }>({ key: null, direction: null });
+  }>('schedulerTool_sortConfig', { key: null, direction: null }, {
+    storage: 'sessionStorage',
+  });
   
   // Search state
-  const [searchTerm, setSearchTerm] = useState('');
+  const [searchTerm, setSearchTerm] = usePersistedState<string>('schedulerTool_searchTerm', '', {
+    storage: 'sessionStorage',
+  });
   
   // Date filter state
-  const [dateFrom, setDateFrom] = useState('');
-  const [dateTo, setDateTo] = useState('');
+  const [dateFrom, setDateFrom] = usePersistedState<string>('schedulerTool_dateFrom', '', {
+    storage: 'sessionStorage',
+  });
+  const [dateTo, setDateTo] = usePersistedState<string>('schedulerTool_dateTo', '', {
+    storage: 'sessionStorage',
+  });
   
-  // Collapsible rows state
-  const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
+  // Collapsible rows state (convert Set to Array for persistence)
+  const [expandedRowsArray, setExpandedRowsArray] = usePersistedState<string[]>('schedulerTool_expandedRows', [], {
+    storage: 'sessionStorage',
+  });
+  const expandedRows = useMemo(() => new Set(expandedRowsArray), [expandedRowsArray]);
+  const setExpandedRows = useCallback((newRows: Set<string> | ((prev: Set<string>) => Set<string>)) => {
+    if (typeof newRows === 'function') {
+      setExpandedRowsArray(prev => Array.from(newRows(new Set(prev))));
+    } else {
+      setExpandedRowsArray(Array.from(newRows));
+    }
+  }, [setExpandedRowsArray]);
   
   // Contact dropdown state
   const [openContactDropdown, setOpenContactDropdown] = useState<string | null>(null);
@@ -142,7 +196,9 @@ const SchedulerToolPage: React.FC = () => {
   const [callLeadName, setCallLeadName] = useState<string>('');
   
   // View mode state (box view is default on mobile)
-  const [viewMode, setViewMode] = useState<'table' | 'box'>('box');
+  const [viewMode, setViewMode] = usePersistedState<'table' | 'box'>('schedulerTool_viewMode', 'box', {
+    storage: 'sessionStorage',
+  });
   
   // Editing state
   const [editingField, setEditingField] = useState<{leadId: string, field: string} | null>(null);
@@ -173,6 +229,9 @@ const SchedulerToolPage: React.FC = () => {
   
   // Current user state
   const [currentUser, setCurrentUser] = useState<{id: string, email: string, employee_id: string | null} | null>(null);
+  
+  // Track if we've already loaded from persisted state to prevent refetching
+  const hasLoadedFromStorageRef = useRef(false);
 
   // Fetch current user information
   const fetchCurrentUser = async () => {
@@ -205,6 +264,79 @@ const SchedulerToolPage: React.FC = () => {
 
   useEffect(() => {
     const loadData = async () => {
+      // Check if we have persisted state in sessionStorage
+      let hasPersistedState = false;
+      try {
+        // Check multiple persisted state keys to confirm we have data
+        const persistedLeads = sessionStorage.getItem('persisted_state_filters_schedulerTool_leads');
+        const persistedFilteredLeads = sessionStorage.getItem('persisted_state_filters_schedulerTool_filteredLeads');
+        const persistedFilters = sessionStorage.getItem('persisted_state_filters_schedulerTool_filters');
+        
+        if (persistedLeads) {
+          const parsed = JSON.parse(persistedLeads);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            hasPersistedState = true;
+          }
+        } else if (persistedFilteredLeads) {
+          const parsed = JSON.parse(persistedFilteredLeads);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            hasPersistedState = true;
+          }
+        } else if (persistedFilters) {
+          // Even if just filters exist, we might have state
+          hasPersistedState = true;
+        }
+      } catch (e) {
+        // Ignore errors
+      }
+      
+      // If leads are already loaded from persisted state OR we have persisted state in storage, skip fetching
+      if (leads.length > 0 || filteredLeads.length > 0 || (hasPersistedState && !hasLoadedFromStorageRef.current)) {
+        console.log('✅ SchedulerToolPage: Using persisted state, skipping fetch', {
+          leadsLength: leads.length,
+          filteredLeadsLength: filteredLeads.length,
+          hasPersistedState,
+          hasLoadedFromStorage: hasLoadedFromStorageRef.current
+        });
+        hasLoadedFromStorageRef.current = true;
+        setLoading(false);
+        // Still need to fetch reference data for dropdowns
+        const [, categoriesData, sourcesData, stagesData, tagsData, countriesData, stageMapResult] = await Promise.all([
+          Promise.resolve(null), // Skip user fetch if leads exist
+          fetchCategories(),
+          fetchSources(),
+          fetchStages(),
+          fetchTags(),
+          fetchCountries(),
+          fetchStageNames().catch(err => {
+            console.error('Error resolving scheduler stage IDs from lead_stages:', err);
+            return {};
+          })
+        ]);
+        
+        // Resolve stage IDs from stage map
+        let resolvedStageIds = FALLBACK_SCHEDULER_STAGE_IDS;
+        try {
+          const matchedIds = Object.entries(stageMapResult)
+            .filter(([, stageName]) =>
+              SCHEDULER_STAGE_TARGETS.some(target => areStagesEquivalent(stageName, target))
+            )
+            .map(([id]) => Number(id))
+            .filter(id => !Number.isNaN(id));
+
+          if (matchedIds.length > 0) {
+            resolvedStageIds = Array.from(new Set(matchedIds));
+          }
+        } catch (error) {
+          console.error('Error resolving scheduler stage IDs:', error);
+        }
+        setSchedulerStageIds(resolvedStageIds);
+        return;
+      }
+      
+      // Mark that we're doing a fresh fetch (not from storage)
+      hasLoadedFromStorageRef.current = false;
+
       // Fetch current user and all reference data in parallel for faster loading
       const [userData, categoriesData, sourcesData, stagesData, tagsData, countriesData, stageMapResult] = await Promise.all([
         fetchCurrentUser(),
@@ -255,7 +387,8 @@ const SchedulerToolPage: React.FC = () => {
       );
     };
     loadData();
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount - leads check is inside the effect
 
   // Fetch additional data for edit lead drawer
   useEffect(() => {
@@ -868,6 +1001,13 @@ const SchedulerToolPage: React.FC = () => {
           topic,
           balance,
           balance_currency,
+          currency_id,
+          proposal_total,
+          accounting_currencies!leads_currency_id_fkey (
+            id,
+            name,
+            iso_code
+          ),
           scheduler,
           phone,
           mobile,
@@ -968,7 +1108,13 @@ const SchedulerToolPage: React.FC = () => {
           category_id,
           topic,
           total,
+          total_base,
           currency_id,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            id,
+            name,
+            iso_code
+          ),
           meeting_scheduler_id,
           phone,
           email,
@@ -1076,7 +1222,13 @@ const SchedulerToolPage: React.FC = () => {
                     category_id,
                     topic,
                     total,
+                    total_base,
                     currency_id,
+                    accounting_currencies!leads_lead_currency_id_fkey (
+                      id,
+                      name,
+                      iso_code
+                    ),
                     meeting_scheduler_id,
                     phone,
                     email,
@@ -1353,6 +1505,42 @@ const SchedulerToolPage: React.FC = () => {
           // This ensures subleads navigate to their own page, not the master's page
           const leadNumberForNavigation = lead.lead_number || String(lead.id);
           
+          // Process currency data from joined table (same as CalendarPage.tsx)
+          // Always prioritize joined currency data over database balance_currency field
+          let balanceCurrency = '₪'; // Default
+          const currencyRecord = (lead as any).accounting_currencies
+            ? (Array.isArray((lead as any).accounting_currencies) ? (lead as any).accounting_currencies[0] : (lead as any).accounting_currencies)
+            : null;
+          
+          if (currencyRecord && currencyRecord.name) {
+            // Use name directly - it contains the symbol (₪, $, €, £)
+            balanceCurrency = currencyRecord.name;
+          } else if ((lead as any).currency_id) {
+            // If no joined currency data but we have currency_id, use fallback mapping
+            const currencyId = Number((lead as any).currency_id);
+            switch (currencyId) {
+              case 1: balanceCurrency = '₪'; break;
+              case 2: balanceCurrency = '€'; break;
+              case 3: balanceCurrency = '$'; break;
+              case 4: balanceCurrency = '£'; break;
+              default: balanceCurrency = '₪';
+            }
+          } else if (lead.balance_currency) {
+            // Last resort: use balance_currency from database if it exists
+            // But convert codes to symbols if needed
+            const dbCurrency = lead.balance_currency;
+            if (dbCurrency === 'NIS' || dbCurrency === 'ILS') balanceCurrency = '₪';
+            else if (dbCurrency === 'USD') balanceCurrency = '$';
+            else if (dbCurrency === 'EUR') balanceCurrency = '€';
+            else if (dbCurrency === 'GBP') balanceCurrency = '£';
+            else if (dbCurrency === 'CAD') balanceCurrency = 'C$';
+            else if (dbCurrency === 'AUD') balanceCurrency = 'A$';
+            else if (dbCurrency === 'JPY') balanceCurrency = '¥';
+            // If it's already a symbol, use it as is
+            else if (['₪', '$', '€', '£', 'C$', 'A$', '¥'].includes(dbCurrency)) balanceCurrency = dbCurrency;
+            else balanceCurrency = '₪'; // Unknown format, default to NIS
+          }
+          
           return {
             id: lead.id,
             lead_number: leadNumberDisplay, // Display format (e.g., "12345/2" for subleads)
@@ -1366,8 +1554,9 @@ const SchedulerToolPage: React.FC = () => {
             category: categoryName || '',
             topic: lead.topic || '',
             total: lead.balance || '',
-            balance_currency: lead.balance_currency || '₪',
+            balance_currency: balanceCurrency,
             lead_type: 'new' as const,
+            currency_id: (lead as any).currency_id,
             phone: lead.phone || '',
             mobile: lead.mobile || '',
             email: lead.email || '',
@@ -1425,16 +1614,32 @@ const SchedulerToolPage: React.FC = () => {
             topic: lead.topic || '',
             total: lead.total || '',
             balance_currency: (() => {
-              // Fallback currency mapping based on currency_id
-              switch (lead.currency_id) {
-                case 1: return '₪';
-                case 2: return '€';
-                case 3: return '$';
-                case 4: return '£';
-                default: return '₪';
+              // Extract currency data from joined table - USE NAME DIRECTLY (like edit drawer does)
+              // The accounting_currencies.name column contains the symbol (₪, $, €, £)
+              const currencyRecord = lead.accounting_currencies
+                ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+                : null;
+              
+              if (currencyRecord && currencyRecord.name) {
+                // Use name directly - it contains the symbol (₪, $, €, £)
+                return currencyRecord.name;
+              } else if (lead.currency_id) {
+                // Fallback: if no joined data, use currency_id mapping
+                const currencyId = Number(lead.currency_id);
+                switch (currencyId) {
+                  case 1: return '₪';
+                  case 2: return '€';
+                  case 3: return '$';
+                  case 4: return '£';
+                  default: return '₪';
+                }
               }
+              return '₪';
             })(),
             lead_type: 'legacy' as const,
+            // Store currency_id and total_base for value calculation
+            currency_id: lead.currency_id,
+            total_base: lead.total_base,
             phone: lead.phone || '',
             mobile: '', // Legacy leads don't have mobile field
             email: lead.email || '',
@@ -1522,7 +1727,71 @@ const SchedulerToolPage: React.FC = () => {
     }
   };
 
-  const formatCurrency = (amount: string, currency: string) => {
+  const formatCurrency = (amount: string, currency: string, lead?: SchedulerLead) => {
+    // Same logic as CalendarPage.tsx balance badge
+    if (lead) {
+      const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+      let balanceValue: any;
+      
+      if (isLegacy) {
+        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+        const currencyId = lead.currency_id ?? (lead as any).currency_id;
+        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+          numericCurrencyId = 1; // Default to NIS
+        }
+        if (numericCurrencyId === 1) {
+          balanceValue = lead.total_base ?? (lead as any).total_base ?? null;
+        } else {
+          balanceValue = lead.total ?? null;
+        }
+      } else {
+        balanceValue = amount || (lead as any).proposal_total;
+      }
+      
+      // Get currency symbol - SIMPLE: use balance_currency directly (it's already the symbol from accounting_currencies.name)
+      // balance_currency is set from accounting_currencies.name which contains the symbol (₪, $, €, £)
+      let currencySymbol = lead.balance_currency || '₪';
+      
+      // If balance_currency is not set or empty, fall back to currency_id mapping
+      if (!currencySymbol || currencySymbol.trim() === '') {
+        const currencyId = (lead as any).currency_id;
+        if (currencyId !== null && currencyId !== undefined && currencyId !== '') {
+          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+          if (!isNaN(numericCurrencyId) && numericCurrencyId > 0) {
+            // Mapping: 1=₪, 2=€, 3=$, 4=£ (matches accounting_currencies table)
+            switch (numericCurrencyId) {
+              case 1: currencySymbol = '₪'; break;
+              case 2: currencySymbol = '€'; break;
+              case 3: currencySymbol = '$'; break;
+              case 4: currencySymbol = '£'; break;
+              default: currencySymbol = '₪';
+            }
+          }
+        }
+      }
+      
+      if (balanceValue === '--') {
+        return '--';
+      }
+      
+      // Handle 0 values - show currency symbol
+      if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
+        return `${currencySymbol}0`;
+      }
+      
+      if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
+        const formattedValue = typeof balanceValue === 'number' 
+          ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
+          : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+        return `${currencySymbol}${formattedValue}`;
+      }
+      
+      // Default: show 0 with currency symbol
+      return `${currencySymbol}0`;
+    }
+    
+    // Fallback to old logic if no lead provided
     if (!amount || amount === '0') return '₪0';
     try {
       const numAmount = parseFloat(amount);
@@ -2793,7 +3062,9 @@ const SchedulerToolPage: React.FC = () => {
     setShowActionMenu(false);
   }, [selectedRowId]);
 
-  if (loading) {
+  // Don't block the UI with a loading screen - show content immediately if we have persisted state
+  // Only show loading spinner if we have no data at all
+  if (loading && leads.length === 0 && filteredLeads.length === 0) {
     return (
       <div className="p-6">
         <div className="flex items-center justify-center h-64">
@@ -2823,7 +3094,7 @@ const SchedulerToolPage: React.FC = () => {
   return (
     <div className="p-6">
       <div className="mb-6">
-        <div className="flex items-center justify-between">
+        <div className="flex items-center justify-between gap-4">
           <div className="flex items-center gap-3">
             <h1 className="text-3xl font-bold text-gray-900">Hot Leads</h1>
             <div className="badge badge-primary badge-lg">
@@ -2834,31 +3105,8 @@ const SchedulerToolPage: React.FC = () => {
             </div>
           </div>
           
-          {/* View Toggle */}
-          <button
-            onClick={toggleViewMode}
-            className="btn btn-sm btn-primary gap-2"
-            title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
-          >
-            {viewMode === 'box' ? (
-              <>
-                <TableCellsIcon className="w-4 h-4" />
-                <span className="hidden sm:inline">Table View</span>
-              </>
-            ) : (
-              <>
-                <Squares2X2Icon className="w-4 h-4" />
-                <span className="hidden sm:inline">Box View</span>
-              </>
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Search Bar */}
-      <div className="mb-6">
-        <div className="flex items-center gap-3">
-          <div className="relative max-w-md flex-1">
+          {/* Search Bar - Center */}
+          <div className="relative flex-1 max-w-md mx-4">
             <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none">
               <svg className="h-5 w-5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
@@ -2880,6 +3128,25 @@ const SchedulerToolPage: React.FC = () => {
               </button>
             )}
           </div>
+          
+          {/* View Toggle */}
+          <button
+            onClick={toggleViewMode}
+            className="btn btn-sm btn-primary gap-2"
+            title={viewMode === 'box' ? 'Switch to Table View' : 'Switch to Box View'}
+          >
+            {viewMode === 'box' ? (
+              <>
+                <TableCellsIcon className="w-4 h-4" />
+                <span className="hidden sm:inline">Table View</span>
+              </>
+            ) : (
+              <>
+                <Squares2X2Icon className="w-4 h-4" />
+                <span className="hidden sm:inline">Box View</span>
+              </>
+            )}
+          </button>
         </div>
       </div>
 
@@ -3135,21 +3402,22 @@ const SchedulerToolPage: React.FC = () => {
               />
             </div>
           </div>
-        </div>
-        
-        {/* Clear Filters Button */}
-        <div className="mt-4 flex justify-end">
-          <button 
-            className="btn btn-outline btn-sm"
-            onClick={() => {
-              clearFilters();
-              setDateFrom('');
-              setDateTo('');
-            }}
-            disabled={Object.values(filters).every(f => f === '') && !searchTerm && !dateFrom && !dateTo}
-          >
-            Clear Filters
-          </button>
+
+          {/* Clear Filters Button */}
+          <div className="relative filter-dropdown">
+            <label className="block text-sm font-medium text-gray-700 mb-1 opacity-0">Clear</label>
+            <button 
+              className="btn btn-outline w-full h-[2.5rem]"
+              onClick={() => {
+                clearFilters();
+                setDateFrom('');
+                setDateTo('');
+              }}
+              disabled={Object.values(filters).every(f => f === '') && !searchTerm && !dateFrom && !dateTo}
+            >
+              Clear Filters
+            </button>
+          </div>
         </div>
       </div>
 
@@ -3251,7 +3519,7 @@ const SchedulerToolPage: React.FC = () => {
                     </div>
                     <div className="flex items-center gap-2" title="Value">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
-                      <span className="font-medium truncate">{formatCurrency(lead.total, lead.balance_currency)}</span>
+                      <span className="font-medium truncate">{formatCurrency(lead.total, lead.balance_currency, lead)}</span>
                     </div>
                     <div className="flex items-center gap-2" title="Tags">
                       <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A1.994 1.994 0 013 12V7a4 4 0 014-4z" /></svg>
@@ -3576,7 +3844,7 @@ const SchedulerToolPage: React.FC = () => {
                       </div>
                     </td>
                     <td className="text-xs sm:text-sm font-medium text-gray-900">
-                      {formatCurrency(lead.total, lead.balance_currency)}
+                      {formatCurrency(lead.total, lead.balance_currency, lead)}
                     </td>
                     <td className="text-xs sm:text-sm text-gray-600 break-words">
                       {lead.tags || 'N/A'}
@@ -3895,6 +4163,23 @@ const SchedulerToolPage: React.FC = () => {
                   title="Documents"
                 >
                   <FolderIcon className="w-6 h-6" />
+                </button>
+              </div>
+
+              {/* Highlight Button */}
+              <div className="flex items-center gap-3">
+                <span className="text-sm font-semibold text-white whitespace-nowrap drop-shadow-lg bg-black/50 px-3 py-1 rounded-lg">Highlight</span>
+                <button
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleHighlight(selectedLead);
+                    setShowActionMenu(false);
+                    setSelectedRowId(null);
+                  }}
+                  className="btn btn-circle btn-lg shadow-2xl btn-primary hover:scale-110 transition-all duration-300"
+                  title="Highlight"
+                >
+                  <StarIcon className="w-6 h-6 text-white" style={{ color: '#ffffff' }} />
                 </button>
               </div>
             </div>

@@ -49,6 +49,8 @@ import ProformaLegacyViewPage from './pages/ProformaLegacyViewPage';
 import ProformaLegacyCreatePage from './pages/ProformaLegacyCreatePage';
 import ReportsPage from './pages/ReportsPage';
 import CollectionFinancesReport from './pages/CollectionFinancesReport';
+import CollectionDueReportPage from './pages/CollectionDueReportPage';
+import EditContractsPage from './pages/EditContractsPage';
 import MasterLeadPage from './components/MasterLeadPage';
 import SettingsPage from './pages/SettingsPage';
 import TimelinePage from './components/TimelinePage';
@@ -584,6 +586,8 @@ const AppContentInner: React.FC = () => {
                     <Route path="/proforma-legacy/create/:leadId" element={<ProformaLegacyCreatePage />} />
                     <Route path="/reports" element={<ReportsPage />} />
                     <Route path="/reports/collection-finances" element={<CollectionFinancesReport />} />
+                    <Route path="/reports/collection-due" element={<CollectionDueReportPage />} />
+                    <Route path="/reports/edit-contracts" element={<EditContractsPage />} />
                     <Route path="/sales/signed" element={<SignedSalesReportPage />} />
                     <Route path="/settings" element={<SettingsPage />} />
                     <Route path="/test-meeting-summary" element={<MeetingSummaryTestPage />} />
