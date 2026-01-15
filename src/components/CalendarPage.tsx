@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../lib/supabase';
 import { Link, useNavigate, useNavigationType, useLocation } from 'react-router-dom';
 import { useCachedFetch } from '../hooks/useCachedFetch';
@@ -13,7 +13,6 @@ import { loginRequest } from '../msalConfig';
 import { toast } from 'react-hot-toast';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import { useRef } from 'react';
 import sanitizeHtml from 'sanitize-html';
 import { buildApiUrl } from '../lib/api';
 import { fetchStageNames, getStageName, refreshStageNames, getStageColour } from '../lib/stageUtils';
@@ -313,6 +312,7 @@ const CalendarPage: React.FC = () => {
   const [selectedRowId, setSelectedRowId] = useState<string | number | null>(null);
   const [showActionMenu, setShowActionMenu] = useState(false);
   const [selectedLeadForActions, setSelectedLeadForActions] = useState<any>(null);
+  const [currencyMap, setCurrencyMap] = useState<Record<number, { name?: string; iso_code?: string }>>({});
 
   // WhatsApp functionality
   const [isWhatsAppOpen, setIsWhatsAppOpen] = useState(false);
@@ -449,6 +449,10 @@ const CalendarPage: React.FC = () => {
   const [meetingLocations, setMeetingLocations] = useState<{[locationId: number]: string}>({});
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<{[locationName: string]: string}>({});
+  // Map of meeting location name -> location ID (for reverse lookup)
+  const [meetingLocationNameToId, setMeetingLocationNameToId] = useState<{[locationName: string]: number}>({});
+  // Set of location IDs that should show a meeting link button (from tenants_meetinglocation with default_link)
+  const meetingLocationIdsWithLink = new Set([3, 4, 15, 16, 17, 19, 21, 22, 23, 24, 25, 26, 27, 28, 29]);
   const [dropdownPosition, setDropdownPosition] = useState<{ x: number; y: number; width: number } | null>(null);
   const [activeDropdown, setActiveDropdown] = useState<{ meetingId: string | number; type: 'manager' | 'helper' } | null>(null);
   const [dropdownStates, setDropdownStates] = useState<{
@@ -580,6 +584,9 @@ const CalendarPage: React.FC = () => {
       .slice(0, 2);
   };
 
+  // Track image errors per employee to prevent flickering (persists across re-renders)
+  const imageErrorCache = useRef<Map<string | number, boolean>>(new Map());
+
   // Helper component for employee avatar with image error fallback (like CallsLedgerPage)
   const EmployeeAvatar: React.FC<{ 
     employeeId: string | number | null | undefined; 
@@ -589,10 +596,11 @@ const CalendarPage: React.FC = () => {
     const [imageError, setImageError] = useState(false);
     const employee = getEmployeeById(employeeId);
     
-    console.log('🖼️ EmployeeAvatar - Input:', employeeId, 'Found employee:', employee?.display_name || 'NOT FOUND');
+    // Check cache first to prevent flickering
+    const cacheKey = employeeId?.toString() || '';
+    const cachedError = imageErrorCache.current.get(cacheKey) || false;
     
     if (!employee) {
-      console.log('🖼️ EmployeeAvatar - No employee found for:', employeeId, 'showPlaceholder:', showPlaceholder);
       // Return null if no placeholder should be shown (for unassigned roles)
       if (!showPlaceholder) {
         return null;
@@ -609,10 +617,11 @@ const CalendarPage: React.FC = () => {
     const initials = getEmployeeInitials(employee.display_name);
     const sizeClasses = size === 'sm' ? 'w-8 h-8 text-xs' : 'w-10 h-10 text-sm';
 
-    console.log('🖼️ EmployeeAvatar - Employee:', employee.display_name, 'photo_url:', employee.photo_url, 'photo:', employee.photo, 'Final photoUrl:', photoUrl, 'imageError:', imageError);
+    // Use cached error if available, otherwise use state
+    const hasError = cachedError || imageError;
 
-    if (imageError || !photoUrl) {
-      console.log('🖼️ EmployeeAvatar - Showing initials for:', employee.display_name, 'Reason:', imageError ? 'Image error' : 'No photo URL');
+    // If we know there's no photo URL or we have a cached error, show initials immediately
+    if (hasError || !photoUrl) {
       return (
         <div className={`${sizeClasses} rounded-full flex items-center justify-center bg-green-100 text-green-700 font-semibold`}>
           {initials}
@@ -620,18 +629,18 @@ const CalendarPage: React.FC = () => {
       );
     }
 
-    console.log('🖼️ EmployeeAvatar - Rendering image for:', employee.display_name, 'URL:', photoUrl);
+    // Try to render image
     return (
       <img
         src={photoUrl}
         alt={employee.display_name}
         className={`${sizeClasses} rounded-full object-cover`}
         onError={(e) => {
-          console.error('🖼️ EmployeeAvatar - Image load ERROR for:', photoUrl, 'Employee:', employee.display_name, 'Error event:', e);
+          // Cache the error to prevent flickering on re-renders
+          if (cacheKey) {
+            imageErrorCache.current.set(cacheKey, true);
+          }
           setImageError(true);
-        }}
-        onLoad={() => {
-          console.log('🖼️ EmployeeAvatar - Image loaded SUCCESS for:', photoUrl, 'Employee:', employee.display_name);
         }}
       />
     );
@@ -994,7 +1003,16 @@ const CalendarPage: React.FC = () => {
       // Fetch legacy leads with minimal fields
       const { data: legacyData, error: legacyError } = await supabase
         .from('leads_lead')
-        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination')
+        .select(`
+          id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
+          meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, 
+          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            id,
+            name,
+            iso_code
+          )
+        `)
         .gte('meeting_date', fromDate)
         .lte('meeting_date', toDate)
         .not('meeting_date', 'is', null)
@@ -1012,27 +1030,53 @@ const CalendarPage: React.FC = () => {
       
       if (!legacyData || legacyData.length === 0) return [];
       
-      // Fetch currencies separately if we have legacy data (both currency_id and meeting_total_currency_id)
-      let currencyMap: Record<number, { name?: string; iso_code?: string }> = {};
-      const currencyIds = [
-        ...new Set([
-          ...legacyData.map((l: any) => l.currency_id).filter(Boolean),
-          ...legacyData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
-        ])
-      ];
-      if (currencyIds.length > 0) {
-        const { data: currencies } = await supabase
-          .from('accounting_currencies')
-          .select('id, name, iso_code')
-          .in('id', currencyIds);
+      // Process legacy data and convert currency to symbols
+      legacyData.forEach((legacyLead: any) => {
+        // Extract currency data from joined table and convert to symbol
+        const currencyRecord = legacyLead.accounting_currencies 
+          ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
+          : null;
         
-        if (currencies) {
-          currencyMap = currencies.reduce((acc, curr) => {
-            acc[curr.id] = { name: curr.name, iso_code: curr.iso_code };
-            return acc;
-          }, {} as Record<number, { name?: string; iso_code?: string }>);
+        if (currencyRecord) {
+          // Convert iso_code to symbol
+          const currencySymbol = (() => {
+            if (currencyRecord.iso_code) {
+              const isoCode = currencyRecord.iso_code.toUpperCase();
+              if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+              if (isoCode === 'USD') return '$';
+              if (isoCode === 'EUR') return '€';
+              if (isoCode === 'GBP') return '£';
+              if (isoCode === 'CAD') return 'C$';
+              if (isoCode === 'AUD') return 'A$';
+              if (isoCode === 'JPY') return '¥';
+              return currencyRecord.name || isoCode || '₪';
+            }
+            if (legacyLead.currency_id) {
+              const currencyId = Number(legacyLead.currency_id);
+              switch (currencyId) {
+                case 1: return '₪'; break;
+                case 2: return '€'; break;
+                case 3: return '$'; break;
+                case 4: return '£'; break;
+                default: return '₪';
+              }
+            }
+            return '₪';
+          })();
+          legacyLead.balance_currency = currencySymbol;
+        } else if (legacyLead.currency_id) {
+          const currencyId = Number(legacyLead.currency_id);
+          switch (currencyId) {
+            case 1: legacyLead.balance_currency = '₪'; break;
+            case 2: legacyLead.balance_currency = '€'; break;
+            case 3: legacyLead.balance_currency = '$'; break;
+            case 4: legacyLead.balance_currency = '£'; break;
+            default: legacyLead.balance_currency = '₪';
+          }
+        } else {
+          legacyLead.balance_currency = '₪';
         }
-      }
+      });
       
       // Process legacy meetings
       const processedLegacyMeetings = legacyData.map((legacyLead: any) => {
@@ -1048,15 +1092,8 @@ const CalendarPage: React.FC = () => {
           teams_meeting_url: null,
           meeting_brief: null,
           meeting_amount: parseFloat(legacyLead.total || '0'),
-          meeting_currency: (() => {
-            const currencyId = legacyLead.meeting_total_currency_id;
-            if (currencyId && currencyMap[currencyId]) {
-              return currencyMap[currencyId].iso_code || currencyMap[currencyId].name || 'NIS';
-            }
-            return currencyId === 1 ? 'NIS' : 
-                   currencyId === 2 ? 'USD' : 
-                   currencyId === 3 ? 'EUR' : 'NIS';
-          })(),
+          // Use balance_currency that's already set to a symbol from JOIN processing above
+          meeting_currency: legacyLead.balance_currency || '₪',
           meeting_complexity: 'Simple',
           meeting_car_no: null,
           meeting_paid: false,
@@ -1075,15 +1112,9 @@ const CalendarPage: React.FC = () => {
             manager: getEmployeeDisplayNameLocal(legacyLead.meeting_manager_id, employees),
             helper: getEmployeeDisplayNameLocal(legacyLead.meeting_lawyer_id, employees),
             balance: parseFloat(legacyLead.total || '0'),
-            balance_currency: (() => {
-              const currencyId = legacyLead.meeting_total_currency_id;
-              if (currencyId && currencyMap[currencyId]) {
-                return currencyMap[currencyId].iso_code || currencyMap[currencyId].name || 'NIS';
-              }
-              return currencyId === 1 ? 'NIS' : 
-                     currencyId === 2 ? 'USD' : 
-                     currencyId === 3 ? 'EUR' : 'NIS';
-            })(),
+            // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
+            // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
+            balance_currency: legacyLead.balance_currency || '₪',
             expert: getEmployeeDisplayNameLocal(legacyLead.expert_id, employees),
             expert_examination: legacyLead.expert_examination || '',
             probability: parseFloat(legacyLead.probability || '0'),
@@ -1537,24 +1568,34 @@ const CalendarPage: React.FC = () => {
         const dateRangeTo = appliedToDate && datesManuallySet ? appliedToDate : today;
         
         // Fetch ALL data in parallel: regular meetings + legacy meetings + past stages
-        console.log('🔍 Fetching all meetings in parallel...');
+        console.log('🔍 Fetching all meetings in parallel...', { dateRangeFrom, dateRangeTo, datesManuallySet });
         // Use allEmployees state if available, otherwise fallback to employeesAndCategoriesData
         const employeesForLegacy = allEmployees.length > 0 ? allEmployees : (employeesAndCategoriesData?.employees || []);
+        
+        // Build regular meetings query with date filtering if dates are manually set
+        let regularMeetingsQuery = supabase
+          .from('meetings')
+          .select(`
+            id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
+            meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
+            attendance_probability, complexity, car_number, calendar_type
+          `)
+          .or('status.is.null,status.neq.canceled');
+        
+        // Apply date filtering if dates are manually set
+        if (datesManuallySet && dateRangeFrom && dateRangeTo) {
+          regularMeetingsQuery = regularMeetingsQuery
+            .gte('meeting_date', dateRangeFrom)
+            .lte('meeting_date', dateRangeTo);
+        }
+        
         const [
           { data: allMeetingsData, error: allMeetingsError },
           legacyMeetings,
           pastStagesData
         ] = await Promise.all([
-          // Fetch ALL regular meetings (not just today's)
-          supabase
-            .from('meetings')
-            .select(`
-              id, meeting_date, meeting_time, meeting_manager, helper, meeting_location, teams_meeting_url,
-              meeting_amount, meeting_currency, status, client_id, legacy_lead_id,
-              attendance_probability, complexity, car_number, calendar_type
-            `)
-            .or('status.is.null,status.neq.canceled')
-            .order('meeting_date', { ascending: false }),
+          // Fetch regular meetings (filtered by date range if dates are manually set)
+          regularMeetingsQuery.order('meeting_date', { ascending: false }),
           // Fetch legacy meetings
           fetchLegacyMeetingsForDateRange(dateRangeFrom, dateRangeTo, employeesForLegacy),
           // Fetch past stages data
@@ -1580,10 +1621,15 @@ const CalendarPage: React.FC = () => {
               .from('leads')
               .select(`
                 id, name, lead_number, onedrive_folder_link, stage, manager, helper, category, category_id,
-                balance, balance_currency, expert_notes, expert, probability, phone, email, 
+                balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, 
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
                 meeting_manager_id, meeting_lawyer_id,
+                accounting_currencies!leads_currency_id_fkey (
+                  id,
+                  name,
+                  iso_code
+                ),
                 misc_category!category_id(
                   id, name, parent_id,
                   misc_maincategory!parent_id(
@@ -1595,7 +1641,65 @@ const CalendarPage: React.FC = () => {
               .in('id', clientIds);
             
             if (newLeadsData) {
-              newLeadsData.forEach(lead => {
+              // Process each lead and extract currency data from the join
+              newLeadsData.forEach((lead: any) => {
+                // Extract currency data from joined table (same as Clients.tsx)
+                const currencyRecord = lead.accounting_currencies 
+                  ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+                  : null;
+                
+                // Convert currency_id to symbol (same logic as Clients.tsx)
+                if (currencyRecord) {
+                  // Store in currency map for later use
+                  allMeetingsCurrencyMap[currencyRecord.id] = { 
+                    name: currencyRecord.name, 
+                    iso_code: currencyRecord.iso_code 
+                  };
+                  
+                  // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889)
+                  const currencySymbol = (() => {
+                    if (currencyRecord.iso_code) {
+                      const isoCode = currencyRecord.iso_code.toUpperCase();
+                      if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+                      if (isoCode === 'USD') return '$';
+                      if (isoCode === 'EUR') return '€';
+                      if (isoCode === 'GBP') return '£';
+                      if (isoCode === 'CAD') return 'C$';
+                      if (isoCode === 'AUD') return 'A$';
+                      if (isoCode === 'JPY') return '¥';
+                      return currencyRecord.name || isoCode || '₪';
+                    }
+                    // Fallback: if we have currency_id but no joined data, use simple mapping
+                    if (lead.currency_id) {
+                      const currencyId = Number(lead.currency_id);
+                      switch (currencyId) {
+                        case 1: return '₪'; break; // ILS
+                        case 2: return '€'; break; // EUR
+                        case 3: return '$'; break; // USD
+                        case 4: return '£'; break; // GBP
+                        default: return '₪';
+                      }
+                    }
+                    return '₪'; // Default fallback
+                  })();
+                  
+                  // Set balance_currency to the symbol (same as Clients.tsx line 2919)
+                  lead.balance_currency = currencySymbol;
+                } else if (lead.currency_id) {
+                  // If no joined currency data but we have currency_id, use fallback mapping
+                  const currencyId = Number(lead.currency_id);
+                  switch (currencyId) {
+                    case 1: lead.balance_currency = '₪'; break;
+                    case 2: lead.balance_currency = '€'; break;
+                    case 3: lead.balance_currency = '$'; break;
+                    case 4: lead.balance_currency = '£'; break;
+                    default: lead.balance_currency = '₪';
+                  }
+                } else {
+                  // Default to NIS if no currency_id
+                  lead.balance_currency = lead.balance_currency || '₪';
+                }
+                
                 newLeadsMap.set(lead.id, lead);
               });
             }
@@ -1612,6 +1716,11 @@ const CalendarPage: React.FC = () => {
                 id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
                 total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
                 meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
+                accounting_currencies!leads_lead_currency_id_fkey (
+                  id,
+                  name,
+                  iso_code
+                ),
                 misc_category!category_id(
                   id, name, parent_id,
                   misc_maincategory!parent_id(
@@ -1622,31 +1731,66 @@ const CalendarPage: React.FC = () => {
               `)
               .in('id', numericLegacyLeadIds);
             
-            // Fetch currencies separately for legacy leads (both currency_id and meeting_total_currency_id)
             if (legacyLeadsData && legacyLeadsData.length > 0) {
-              const currencyIds = [
-                ...new Set([
-                  ...legacyLeadsData.map((l: any) => l.currency_id).filter(Boolean),
-                  ...legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
-                ])
-              ];
-              if (currencyIds.length > 0) {
-                const { data: currencies } = await supabase
-                  .from('accounting_currencies')
-                  .select('id, name, iso_code')
-                  .in('id', currencyIds);
+              // Process each legacy lead and extract currency data from the join
+              legacyLeadsData.forEach((lead: any) => {
+                // Extract currency data from joined table (same as Clients.tsx)
+                const currencyRecord = lead.accounting_currencies 
+                  ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+                  : null;
                 
-                if (currencies) {
-                  allMeetingsCurrencyMap = currencies.reduce((acc, curr) => {
-                    acc[curr.id] = { name: curr.name, iso_code: curr.iso_code };
-                    return acc;
-                  }, {} as Record<number, { name?: string; iso_code?: string }>);
+                // Convert currency_id to symbol (same logic as new leads and Clients.tsx)
+                if (currencyRecord) {
+                  // Store in currency map for later use
+                  allMeetingsCurrencyMap[currencyRecord.id] = { 
+                    name: currencyRecord.name, 
+                    iso_code: currencyRecord.iso_code 
+                  };
+                  
+                  // Convert iso_code to symbol (same as Clients.tsx lines 2865-2889 and new leads above)
+                  const currencySymbol = (() => {
+                    if (currencyRecord.iso_code) {
+                      const isoCode = currencyRecord.iso_code.toUpperCase();
+                      if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+                      if (isoCode === 'USD') return '$';
+                      if (isoCode === 'EUR') return '€';
+                      if (isoCode === 'GBP') return '£';
+                      if (isoCode === 'CAD') return 'C$';
+                      if (isoCode === 'AUD') return 'A$';
+                      if (isoCode === 'JPY') return '¥';
+                      return currencyRecord.name || isoCode || '₪';
+                    }
+                    // Fallback: if we have currency_id but no joined data, use simple mapping
+                    if (lead.currency_id) {
+                      const currencyId = Number(lead.currency_id);
+                      switch (currencyId) {
+                        case 1: return '₪'; break; // ILS
+                        case 2: return '€'; break; // EUR
+                        case 3: return '$'; break; // USD
+                        case 4: return '£'; break; // GBP
+                        default: return '₪';
+                      }
+                    }
+                    return '₪'; // Default fallback
+                  })();
+                  
+                  // Set balance_currency to the symbol (same as new leads and Clients.tsx)
+                  lead.balance_currency = currencySymbol;
+                } else if (lead.currency_id) {
+                  // If no joined currency data but we have currency_id, use fallback mapping
+                  const currencyId = Number(lead.currency_id);
+                  switch (currencyId) {
+                    case 1: lead.balance_currency = '₪'; break;
+                    case 2: lead.balance_currency = '€'; break;
+                    case 3: lead.balance_currency = '$'; break;
+                    case 4: lead.balance_currency = '£'; break;
+                    default: lead.balance_currency = '₪';
+                  }
+                } else {
+                  // Default to NIS if no currency_id
+                  lead.balance_currency = '₪';
                 }
-              }
-            }
-            
-            if (legacyLeadsData) {
-              legacyLeadsData.forEach(lead => {
+                
                 legacyLeadsMap.set(lead.id, lead);
                 legacyLeadsMap.set(String(lead.id), lead);
               });
@@ -1707,21 +1851,9 @@ const CalendarPage: React.FC = () => {
                       return meeting.legacy_lead.total ?? null;
                     }
                   })(),
-                  balance_currency: (() => {
-                    const currencyId = meeting.legacy_lead.currency_id;
-                    let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                    if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                      numericCurrencyId = 1; // Default to NIS
-                    }
-                    // Use currency_id for currency symbol lookup
-                    if (numericCurrencyId && allMeetingsCurrencyMap[numericCurrencyId]) {
-                      return allMeetingsCurrencyMap[numericCurrencyId].iso_code || allMeetingsCurrencyMap[numericCurrencyId].name || 'NIS';
-                    }
-                    // Fallback to hardcoded mapping
-                    return numericCurrencyId === 1 ? 'NIS' : 
-                           numericCurrencyId === 2 ? 'USD' : 
-                           numericCurrencyId === 3 ? 'EUR' : 'NIS';
-                  })(),
+                  // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
+                  // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
+                  balance_currency: meeting.legacy_lead.balance_currency || '₪',
                   expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
                   category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
                   lead_number: meeting.legacy_lead.lead_number || meeting.legacy_lead.id?.toString(),
@@ -1749,6 +1881,11 @@ const CalendarPage: React.FC = () => {
                       ? getEmployeeDisplayName(meeting.lead.expert)
                       : meeting.lead.expert
                     : '--',
+                  // Store currency_id for reference
+                  currency_id: meeting.lead.currency_id ?? null,
+                  // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
+                  // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
+                  balance_currency: meeting.lead.balance_currency || '₪',
                   department_name: meeting.lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
                   department_id: meeting.lead.misc_category?.misc_maincategory?.department_id
                 };
@@ -1806,7 +1943,7 @@ const CalendarPage: React.FC = () => {
     // DISABLED: Meeting counts query removed to prevent timeouts
     // fetchMeetingCountsAndPreviousManagers().catch(error => {
     // });
-  }, [location.pathname]); // Run when pathname changes (navigation). Meetings are persisted separately via usePersistedState
+  }, [location.pathname, appliedFromDate, appliedToDate, datesManuallySet]); // Run when pathname changes or when date range changes
 
   // Re-render when categories are loaded to update category names
   useEffect(() => {
@@ -2301,14 +2438,68 @@ const CalendarPage: React.FC = () => {
       if (uniqueClientIds.length > 0) {
         const { data: leadsData, error: leadsError } = await supabase
           .from('leads')
-          .select('id, name, lead_number, stage, manager, helper, category, category_id, balance, balance_currency, expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status')
+          .select(`
+            id, name, lead_number, stage, manager, helper, category, category_id, balance, balance_currency, 
+            expert_notes, expert, probability, phone, email, language, number_of_applicants_meeting, eligibility_status,
+            currency_id,
+            accounting_currencies!leads_currency_id_fkey (
+              id,
+              name,
+              iso_code
+            )
+          `)
           .in('id', uniqueClientIds)
           .limit(500);
 
         if (leadsError) {
           console.error('Error fetching leads:', leadsError);
         } else if (leadsData) {
-          leadsData.forEach(lead => {
+          leadsData.forEach((lead: any) => {
+            // Extract currency data from joined table and convert to symbol
+            const currencyRecord = lead.accounting_currencies 
+              ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
+              : null;
+            
+            if (currencyRecord) {
+              // Convert iso_code to symbol
+              const currencySymbol = (() => {
+                if (currencyRecord.iso_code) {
+                  const isoCode = currencyRecord.iso_code.toUpperCase();
+                  if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+                  if (isoCode === 'USD') return '$';
+                  if (isoCode === 'EUR') return '€';
+                  if (isoCode === 'GBP') return '£';
+                  if (isoCode === 'CAD') return 'C$';
+                  if (isoCode === 'AUD') return 'A$';
+                  if (isoCode === 'JPY') return '¥';
+                  return currencyRecord.name || isoCode || '₪';
+                }
+                if (lead.currency_id) {
+                  const currencyId = Number(lead.currency_id);
+                  switch (currencyId) {
+                    case 1: return '₪'; break;
+                    case 2: return '€'; break;
+                    case 3: return '$'; break;
+                    case 4: return '£'; break;
+                    default: return '₪';
+                  }
+                }
+                return '₪';
+              })();
+              lead.balance_currency = currencySymbol;
+            } else if (lead.currency_id) {
+              const currencyId = Number(lead.currency_id);
+              switch (currencyId) {
+                case 1: lead.balance_currency = '₪'; break;
+                case 2: lead.balance_currency = '€'; break;
+                case 3: lead.balance_currency = '$'; break;
+                case 4: lead.balance_currency = '£'; break;
+                default: lead.balance_currency = '₪';
+              }
+            } else {
+              lead.balance_currency = lead.balance_currency || '₪';
+            }
+            
             leadsMap[lead.id] = lead;
           });
         }
@@ -2318,38 +2509,67 @@ const CalendarPage: React.FC = () => {
       if (uniqueLegacyLeadIds.length > 0) {
         const { data: legacyLeadsData, error: legacyLeadsError } = await supabase
           .from('leads_lead')
-          .select('id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, total, total_base, currency_id, meeting_total_currency_id, probability, phone, email, mobile, topic, language_id')
+          .select(`
+            id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id, 
+            total, total_base, currency_id, meeting_total_currency_id, probability, phone, email, mobile, topic, language_id,
+            accounting_currencies!leads_lead_currency_id_fkey (
+              id,
+              name,
+              iso_code
+            )
+          `)
           .in('id', uniqueLegacyLeadIds)
           .limit(500);
         
-        // Fetch currencies separately for legacy leads (both currency_id and meeting_total_currency_id)
-        let assignStaffCurrencyMap: Record<number, { name?: string; iso_code?: string }> = {};
-        if (legacyLeadsData && legacyLeadsData.length > 0) {
-          const currencyIds = [
-            ...new Set([
-              ...legacyLeadsData.map((l: any) => l.currency_id).filter(Boolean),
-              ...legacyLeadsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean)
-            ])
-          ];
-          if (currencyIds.length > 0) {
-            const { data: currencies } = await supabase
-              .from('accounting_currencies')
-              .select('id, name, iso_code')
-              .in('id', currencyIds);
-            
-            if (currencies) {
-              assignStaffCurrencyMap = currencies.reduce((acc, curr) => {
-                acc[curr.id] = { name: curr.name, iso_code: curr.iso_code };
-                return acc;
-              }, {} as Record<number, { name?: string; iso_code?: string }>);
-            }
-          }
-        }
-
         if (legacyLeadsError) {
           console.error('Error fetching legacy leads:', legacyLeadsError);
         } else if (legacyLeadsData) {
-          legacyLeadsData.forEach(legacyLead => {
+          legacyLeadsData.forEach((legacyLead: any) => {
+            // Extract currency data from joined table and convert to symbol
+            const currencyRecord = legacyLead.accounting_currencies 
+              ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
+              : null;
+            
+            if (currencyRecord) {
+              // Convert iso_code to symbol
+              const currencySymbol = (() => {
+                if (currencyRecord.iso_code) {
+                  const isoCode = currencyRecord.iso_code.toUpperCase();
+                  if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+                  if (isoCode === 'USD') return '$';
+                  if (isoCode === 'EUR') return '€';
+                  if (isoCode === 'GBP') return '£';
+                  if (isoCode === 'CAD') return 'C$';
+                  if (isoCode === 'AUD') return 'A$';
+                  if (isoCode === 'JPY') return '¥';
+                  return currencyRecord.name || isoCode || '₪';
+                }
+                if (legacyLead.currency_id) {
+                  const currencyId = Number(legacyLead.currency_id);
+                  switch (currencyId) {
+                    case 1: return '₪'; break;
+                    case 2: return '€'; break;
+                    case 3: return '$'; break;
+                    case 4: return '£'; break;
+                    default: return '₪';
+                  }
+                }
+                return '₪';
+              })();
+              legacyLead.balance_currency = currencySymbol;
+            } else if (legacyLead.currency_id) {
+              const currencyId = Number(legacyLead.currency_id);
+              switch (currencyId) {
+                case 1: legacyLead.balance_currency = '₪'; break;
+                case 2: legacyLead.balance_currency = '€'; break;
+                case 3: legacyLead.balance_currency = '$'; break;
+                case 4: legacyLead.balance_currency = '£'; break;
+                default: legacyLead.balance_currency = '₪';
+              }
+            } else {
+              legacyLead.balance_currency = '₪';
+            }
+            
             legacyLeadsMap[String(legacyLead.id)] = legacyLead;
           });
         }
@@ -2362,30 +2582,70 @@ const CalendarPage: React.FC = () => {
       let directLegacyMeetings: any[] = [];
       const { data: directLegacyMeetingsData, error: directLegacyError } = await supabase
         .from('leads_lead')
-        .select('id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id')
+        .select(`
+          id, name, meeting_date, meeting_time, lead_number, category, category_id, stage, 
+          meeting_manager_id, meeting_lawyer_id, total, total_base, currency_id, meeting_total_currency_id, 
+          expert_id, probability, phone, email, mobile, meeting_location_id, expert_examination, topic, language_id,
+          accounting_currencies!leads_lead_currency_id_fkey (
+            id,
+            name,
+            iso_code
+          )
+        `)
         .gte('meeting_date', sevenDaysAgo)
         .lte('meeting_date', thirtyDaysFromNow)
         .not('meeting_date', 'is', null)
         .not('name', 'is', null)
         .limit(500);
       
-      // Fetch currencies separately for direct legacy meetings
-      let directLegacyCurrencyMap: Record<number, { name?: string; iso_code?: string }> = {};
+      // Process direct legacy meetings and convert currency to symbols
       if (directLegacyMeetingsData && directLegacyMeetingsData.length > 0) {
-        const currencyIds = [...new Set(directLegacyMeetingsData.map((l: any) => l.meeting_total_currency_id).filter(Boolean))];
-        if (currencyIds.length > 0) {
-          const { data: currencies } = await supabase
-            .from('accounting_currencies')
-            .select('id, name, iso_code')
-            .in('id', currencyIds);
+        directLegacyMeetingsData.forEach((legacyLead: any) => {
+          // Extract currency data from joined table and convert to symbol
+          const currencyRecord = legacyLead.accounting_currencies 
+            ? (Array.isArray(legacyLead.accounting_currencies) ? legacyLead.accounting_currencies[0] : legacyLead.accounting_currencies)
+            : null;
           
-          if (currencies) {
-            directLegacyCurrencyMap = currencies.reduce((acc, curr) => {
-              acc[curr.id] = { name: curr.name, iso_code: curr.iso_code };
-              return acc;
-            }, {} as Record<number, { name?: string; iso_code?: string }>);
+          if (currencyRecord) {
+            // Convert iso_code to symbol
+            const currencySymbol = (() => {
+              if (currencyRecord.iso_code) {
+                const isoCode = currencyRecord.iso_code.toUpperCase();
+                if (isoCode === 'ILS' || isoCode === 'NIS') return '₪';
+                if (isoCode === 'USD') return '$';
+                if (isoCode === 'EUR') return '€';
+                if (isoCode === 'GBP') return '£';
+                if (isoCode === 'CAD') return 'C$';
+                if (isoCode === 'AUD') return 'A$';
+                if (isoCode === 'JPY') return '¥';
+                return currencyRecord.name || isoCode || '₪';
+              }
+              if (legacyLead.currency_id) {
+                const currencyId = Number(legacyLead.currency_id);
+                switch (currencyId) {
+                  case 1: return '₪'; break;
+                  case 2: return '€'; break;
+                  case 3: return '$'; break;
+                  case 4: return '£'; break;
+                  default: return '₪';
+                }
+              }
+              return '₪';
+            })();
+            legacyLead.balance_currency = currencySymbol;
+          } else if (legacyLead.currency_id) {
+            const currencyId = Number(legacyLead.currency_id);
+            switch (currencyId) {
+              case 1: legacyLead.balance_currency = '₪'; break;
+              case 2: legacyLead.balance_currency = '€'; break;
+              case 3: legacyLead.balance_currency = '$'; break;
+              case 4: legacyLead.balance_currency = '£'; break;
+              default: legacyLead.balance_currency = '₪';
+            }
+          } else {
+            legacyLead.balance_currency = '₪';
           }
-        }
+        });
       }
 
       if (directLegacyError) {
@@ -2442,21 +2702,9 @@ const CalendarPage: React.FC = () => {
                 return legacyLead.total ?? null;
               }
             })(),
-            balance_currency: (() => {
-              const currencyId = legacyLead.currency_id;
-              let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-              if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                numericCurrencyId = 1; // Default to NIS
-              }
-              // Use currency_id for currency symbol lookup
-              if (numericCurrencyId && directLegacyCurrencyMap[numericCurrencyId]) {
-                return directLegacyCurrencyMap[numericCurrencyId].iso_code || directLegacyCurrencyMap[numericCurrencyId].name || 'NIS';
-              }
-              // Fallback to hardcoded mapping if currency not found
-              return numericCurrencyId === 1 ? 'NIS' : 
-                     numericCurrencyId === 2 ? 'USD' : 
-                     numericCurrencyId === 3 ? 'EUR' : 'NIS';
-            })(),
+            // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
+            // Use it directly (same as Clients.tsx balance badge which uses selectedClient.balance_currency)
+            balance_currency: legacyLead.balance_currency || '₪',
             expert: getEmployeeDisplayName(legacyLead.expert_id),
             expert_examination: legacyLead.expert_examination || '',
             probability: parseFloat(legacyLead.probability || '0'),
@@ -2563,15 +2811,20 @@ const CalendarPage: React.FC = () => {
 
       const locationsMap: {[locationId: number]: string} = {};
       const linksMap: {[locationName: string]: string} = {};
+      const nameToIdMap: {[locationName: string]: number} = {};
       locationsData?.forEach(location => {
         locationsMap[location.id] = location.name;
-        if (location.name && location.default_link) {
-          linksMap[location.name] = location.default_link;
+        if (location.name) {
+          nameToIdMap[location.name] = location.id;
+          if (location.default_link) {
+            linksMap[location.name] = location.default_link;
+          }
         }
       });
 
       setMeetingLocations(locationsMap);
       setMeetingLocationLinks(linksMap);
+      setMeetingLocationNameToId(nameToIdMap);
     } catch (error) {
       console.error('Error fetching meeting locations:', error);
     }
@@ -3507,26 +3760,40 @@ const CalendarPage: React.FC = () => {
                   />
                 </label>
               )}
-              {/* Only show join button if there is a valid link and either:
-                  - the location is online/Teams, or
-                  - the location has a default_link configured,
-                  OR it's a staff meeting */}
+              {/* Only show join button if location ID is in the allowed list from SQL file, OR if it's Teams with teams_meeting_url */}
               {(() => {
+                // Get location ID - try meeting_location_id first (for legacy leads), then look up by name
+                let locationIdNum: number | null = null;
+                if (meeting.meeting_location_id) {
+                  locationIdNum = typeof meeting.meeting_location_id === 'string' 
+                    ? parseInt(meeting.meeting_location_id, 10) 
+                    : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
+                }
+                // If no ID, try to look up by location name
                 const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                const fallbackLink = meetingLocationLinks[locationName] || '';
-                const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
-                const hasLink = !!url;
-                const hasDefaultForLocation = !!meetingLocationLinks[locationName];
-                const isTeamsLike = isOnlineLocation(locationName || '');
-                return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
+                if (locationIdNum === null && locationName && locationName !== 'N/A') {
+                  locationIdNum = meetingLocationNameToId[locationName] || null;
+                }
+                
+                // Check if location ID is in the allowed list
+                const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
+                
+                // Also show for Teams meetings that have a teams_meeting_url
+                const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
+                
+                // Also show for staff meetings (they have teams_meeting_url)
+                const isStaffMeeting = meeting.calendar_type === 'staff';
+                
+                return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
               })() && (
                 <button
                   className="btn btn-outline btn-primary btn-sm"
                   onClick={(e) => {
                     e.stopPropagation();
+                    // Use teams_meeting_url if available, otherwise use default_link from location
                     const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                    const fallbackLink = meetingLocationLinks[locationName] || '';
-                    const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+                    const defaultLink = meetingLocationLinks[locationName] || '';
+                    const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
                     if (url) {
                       window.open(url, '_blank');
                     } else {
@@ -3637,21 +3904,26 @@ const CalendarPage: React.FC = () => {
                     balanceValue = lead.balance || (lead as any).proposal_total;
                   }
                   
-                  // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
+                  // Get currency symbol - for both legacy and new leads, use currency_id if available
                   let balanceCurrency = lead.balance_currency;
-                  if (!balanceCurrency && isLegacy) {
+                  if (!balanceCurrency) {
                     const currencyId = (lead as any).currency_id;
                     if (currencyId) {
-                      // Fallback to hardcoded mapping if currency not found
                       const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                      balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
-                                       numericCurrencyId === 2 ? 'USD' : 
-                                       numericCurrencyId === 3 ? 'EUR' : 'NIS';
+                      // First try to get from currency map (most accurate)
+                      if (currencyMap[numericCurrencyId]) {
+                        balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
+                      } else {
+                        // Fallback to hardcoded mapping if currency not found in map
+                        balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
+                                         numericCurrencyId === 2 ? 'USD' :
+                                         numericCurrencyId === 3 ? 'EUR' :
+                                         numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                      }
                     } else {
-                      balanceCurrency = 'NIS';
+                      // If no currency_id, try meeting currency or default to NIS
+                      balanceCurrency = meeting.meeting_currency || 'NIS';
                     }
-                  } else if (!balanceCurrency) {
-                    balanceCurrency = meeting.meeting_currency || 'NIS';
                   }
                   
                   // Fallback to meeting amount if no balance
@@ -4020,21 +4292,26 @@ const CalendarPage: React.FC = () => {
                 balanceValue = lead.balance || (lead as any).proposal_total;
               }
               
-              // Get currency symbol - for legacy leads, use balance_currency or get from currency_id
+              // Get currency symbol - for both legacy and new leads, use currency_id if available
               let balanceCurrency = lead.balance_currency;
-              if (!balanceCurrency && isLegacy) {
+              if (!balanceCurrency) {
                 const currencyId = (lead as any).currency_id;
                 if (currencyId) {
-                  // Fallback to hardcoded mapping if currency not found
                   const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                  balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
-                                   numericCurrencyId === 2 ? 'USD' : 
-                                   numericCurrencyId === 3 ? 'EUR' : 'NIS';
+                  // First try to get from currency map (most accurate)
+                  if (currencyMap[numericCurrencyId]) {
+                    balanceCurrency = currencyMap[numericCurrencyId].iso_code || currencyMap[numericCurrencyId].name || 'NIS';
+                  } else {
+                    // Fallback to hardcoded mapping if currency not found in map
+                    balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
+                                     numericCurrencyId === 2 ? 'USD' : 
+                                     numericCurrencyId === 3 ? 'EUR' : 
+                                     numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                  }
                 } else {
-                  balanceCurrency = 'NIS';
+                  // If no currency_id, try meeting currency or default to NIS
+                  balanceCurrency = meeting.meeting_currency || 'NIS';
                 }
-              } else if (!balanceCurrency) {
-                balanceCurrency = meeting.meeting_currency || 'NIS';
               }
               
               // Fallback to meeting amount if no balance
@@ -4258,25 +4535,39 @@ const CalendarPage: React.FC = () => {
                   />
                 </label>
               )}
-              {/* Only show join button if there is a valid link and either:
-                  - the location is online/Teams, or
-                  - the location has a default_link configured,
-                  OR it's a staff meeting */}
+              {/* Only show join button if location ID is in the allowed list from SQL file, OR if it's Teams with teams_meeting_url */}
               {(() => {
+                // Get location ID - try meeting_location_id first (for legacy leads), then look up by name
+                let locationIdNum: number | null = null;
+                if (meeting.meeting_location_id) {
+                  locationIdNum = typeof meeting.meeting_location_id === 'string' 
+                    ? parseInt(meeting.meeting_location_id, 10) 
+                    : (typeof meeting.meeting_location_id === 'number' ? meeting.meeting_location_id : null);
+                }
+                // If no ID, try to look up by location name
                 const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                const fallbackLink = meetingLocationLinks[locationName] || '';
-                const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
-                const hasLink = !!url;
-                const hasDefaultForLocation = !!meetingLocationLinks[locationName];
-                const isTeamsLike = isOnlineLocation(locationName || '');
-                return hasLink && (isTeamsLike || hasDefaultForLocation || meeting.calendar_type === 'staff');
+                if (locationIdNum === null && locationName && locationName !== 'N/A') {
+                  locationIdNum = meetingLocationNameToId[locationName] || null;
+                }
+                
+                // Check if location ID is in the allowed list
+                const hasAllowedLocationId = locationIdNum !== null && meetingLocationIdsWithLink.has(locationIdNum);
+                
+                // Also show for Teams meetings that have a teams_meeting_url
+                const isTeamsWithUrl = locationName && locationName.toLowerCase() === 'teams' && !!meeting.teams_meeting_url;
+                
+                // Also show for staff meetings (they have teams_meeting_url)
+                const isStaffMeeting = meeting.calendar_type === 'staff';
+                
+                return hasAllowedLocationId || isTeamsWithUrl || isStaffMeeting;
               })() && (
                 <button 
                   className="btn btn-primary btn-xs sm:btn-sm"
                   onClick={() => {
+                    // Use teams_meeting_url if available, otherwise use default_link from location
                     const locationName = getMeetingLocationName(meeting.meeting_location || meeting.location);
-                    const fallbackLink = meetingLocationLinks[locationName] || '';
-                    const url = getValidTeamsLink(meeting.teams_meeting_url || fallbackLink);
+                    const defaultLink = meetingLocationLinks[locationName] || '';
+                    const url = getValidTeamsLink(meeting.teams_meeting_url || defaultLink);
                     if (url) {
                       window.open(url, '_blank');
                     } else {

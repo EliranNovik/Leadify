@@ -625,6 +625,7 @@ const NewCasesPage: React.FC = () => {
               .from('leads')
               .select(baseSelect)
               .in('stage', createdFilters)
+              .or('scheduler.is.null,scheduler.eq.') // Exclude leads that already have a scheduler
           )
             .order('created_at', { ascending: false }),
           buildBaseQuery(
@@ -649,25 +650,17 @@ const NewCasesPage: React.FC = () => {
           ...(schedulerResult.data || []),
         ];
 
-        // Filter out leads where scheduler matches any employee display_name or id
-        if (employeeDisplayNames.length > 0 || employeeIds.length > 0) {
-          allLeads = allLeads.filter(lead => {
-            const scheduler = lead.scheduler;
-            if (!scheduler) return true; // Keep leads with no scheduler
-            
-            // Check if scheduler matches any employee display name
-            if (employeeDisplayNames.includes(scheduler)) {
-              return false;
-            }
-            
-            // Check if scheduler matches any employee ID
-            if (employeeIds.includes(scheduler.toString())) {
-              return false;
-            }
-            
+        // Filter out leads that already have a scheduler assigned
+        // Exclude any lead with a scheduler value (not null, not empty, not '---')
+        allLeads = allLeads.filter(lead => {
+          const scheduler = lead.scheduler;
+          // Keep leads with no scheduler, empty scheduler, or default '---' value
+          if (!scheduler || scheduler.trim() === '' || scheduler.trim() === '---' || scheduler.trim().toLowerCase() === 'not assigned') {
             return true;
-          });
-        }
+          }
+          // Exclude any lead that has a scheduler value
+          return false;
+        });
 
         const uniqueLeads = allLeads.filter((lead, index, self) =>
           index === self.findIndex(l => l.id === lead.id)

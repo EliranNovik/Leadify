@@ -4157,6 +4157,42 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     return null;
   }, [selectedConversation, currentUser, messages]);
 
+  // Find the newest unread message (most recent unread)
+  // Works for both direct chats and group chats
+  const findNewestUnreadMessage = useCallback((): Message | null => {
+    if (!selectedConversation || !currentUser || messages.length === 0) return null;
+    
+    // Get the current user's participant info
+    const userParticipant = selectedConversation.participants?.find(
+      p => p.user_id === currentUser.id && p.is_active
+    );
+    
+    if (!userParticipant) {
+      return null;
+    }
+    
+    if (!userParticipant.last_read_at) {
+      // If no last_read_at, find the newest message from any other participant
+      const unreadMessages = messages
+        .filter(m => m.sender_id !== currentUser.id && !m.is_deleted)
+        .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
+      return unreadMessages[0] || null;
+    }
+    
+    // Find all unread messages (sent after last_read_at, not by current user, not deleted)
+    const lastReadAt = new Date(userParticipant.last_read_at);
+    const unreadMessages = messages
+      .filter(m => {
+        if (m.is_deleted) return false;
+        const messageSentAt = new Date(m.sent_at);
+        return messageSentAt > lastReadAt && m.sender_id !== currentUser.id;
+      })
+      .sort((a, b) => new Date(b.sent_at).getTime() - new Date(a.sent_at).getTime());
+    
+    // Return the newest unread message (most recent)
+    return unreadMessages[0] || null;
+  }, [selectedConversation, currentUser, messages]);
+
   // Scroll to a specific message by ID
   const scrollToMessage = useCallback((messageId: number, behavior: 'smooth' | 'instant' = 'instant') => {
     // Find the message element in the DOM
@@ -4517,7 +4553,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
   const prevMessageCountRef = useRef(0);
   const isScrollingRef = useRef(false);
 
-  // Auto-scroll to bottom when new messages arrive (only if should auto-scroll)
+  // Auto-scroll to newest unread message or bottom when new messages arrive (only if should auto-scroll)
   useEffect(() => {
     // Clear any pending scroll attempts
     if (scrollTimeoutRef.current) {
@@ -4529,14 +4565,28 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
       // Reset new messages count when auto-scrolling
       setNewMessagesCount(0);
       
+      // Find newest unread message first
+      const newestUnreadMessage = findNewestUnreadMessage();
+      
       // Use a single controlled scroll attempt after DOM updates
       isScrollingRef.current = true;
       scrollTimeoutRef.current = setTimeout(() => {
-        scrollToBottom('smooth');
-        // Reset scrolling flag after scroll completes
-              setTimeout(() => {
-          isScrollingRef.current = false;
-        }, 300);
+        if (newestUnreadMessage) {
+          // Scroll to newest unread message (instant, no animation)
+          // This will position the user at the newest unread message
+          scrollToMessage(newestUnreadMessage.id, 'instant');
+          setTimeout(() => {
+            scrollToMessage(newestUnreadMessage.id, 'instant');
+            isScrollingRef.current = false;
+          }, 50);
+        } else {
+          // No unread messages, scroll to bottom
+          scrollToBottom('instant');
+          setTimeout(() => {
+            scrollToBottom('instant');
+            isScrollingRef.current = false;
+          }, 50);
+        }
       }, 100);
     } else if (!shouldAutoScroll && messages.length > prevMessageCountRef.current && selectedConversation) {
       // User is scrolled up and new messages arrived - increment count
@@ -4553,29 +4603,43 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         clearTimeout(scrollTimeoutRef.current);
       }
     };
-  }, [messages.length, shouldAutoScroll, selectedConversation?.id]);
+  }, [messages.length, shouldAutoScroll, selectedConversation?.id, findNewestUnreadMessage, scrollToMessage]);
 
-  // Scroll to bottom when conversation is first selected or changes
+  // Scroll to newest unread message or bottom when conversation is first selected or changes
   useEffect(() => {
-    if (selectedConversation) {
+    if (selectedConversation && messages.length > 0) {
       // Reset auto-scroll state when conversation changes
       setShouldAutoScroll(true);
       setIsUserScrolling(false);
       setNewMessagesCount(0);
-      prevMessageCountRef.current = 0;
+      prevMessageCountRef.current = messages.length;
+      
+      // Find newest unread message first
+      const newestUnreadMessage = findNewestUnreadMessage();
       
       // Wait for messages to load and DOM to render, then scroll
       if (!isScrollingRef.current) {
         isScrollingRef.current = true;
         setTimeout(() => {
-          scrollToBottom('instant');
-          setTimeout(() => {
-            isScrollingRef.current = false;
-          }, 100);
+          if (newestUnreadMessage) {
+            // Scroll to newest unread message (instant, no animation)
+            scrollToMessage(newestUnreadMessage.id, 'instant');
+            setTimeout(() => {
+              scrollToMessage(newestUnreadMessage.id, 'instant');
+              isScrollingRef.current = false;
+            }, 50);
+          } else {
+            // No unread messages, scroll to bottom
+            scrollToBottom('instant');
+            setTimeout(() => {
+              scrollToBottom('instant');
+              isScrollingRef.current = false;
+            }, 50);
+          }
         }, 100);
       }
     }
-  }, [selectedConversation?.id]);
+  }, [selectedConversation?.id, messages.length, findNewestUnreadMessage, scrollToMessage]);
 
   useEffect(() => {
     resetInputHeights();
@@ -4684,7 +4748,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen, initialUserId, currentUser?.id, selectedConversation?.id, conversations.length]);
 
-  // Auto-scroll to bottom when conversation changes (initial load only)
+  // Auto-scroll to newest unread message or bottom when conversation changes (initial load only)
   useEffect(() => {
     if (selectedConversation && messages.length > 0) {
       const isInitialLoad = initialLoadRef.current !== selectedConversation.id;
@@ -4698,23 +4762,25 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         setIsUserScrolling(false);
         setNewMessagesCount(0);
         
-        // Find first unread message (works for both direct chats and group chats)
-        const firstUnreadMessage = findFirstUnreadMessage();
-        firstUnreadMessageIdRef.current = firstUnreadMessage?.id || null;
+        // Find newest unread message (works for both direct chats and group chats)
+        const newestUnreadMessage = findNewestUnreadMessage();
+        firstUnreadMessageIdRef.current = newestUnreadMessage?.id || null;
         
-        // Scroll to first unread message if it exists, otherwise scroll to bottom
+        // Scroll to newest unread message if it exists, otherwise scroll to bottom
         // Works for both direct chats (1-on-1) and group chats (multiple participants)
-        // Use instant scroll - no visible animation
+        // Use instant scroll - no visible animation, appears automatically
         requestAnimationFrame(() => {
           setTimeout(() => {
-            if (firstUnreadMessage) {
-              scrollToMessage(firstUnreadMessage.id, 'instant');
+            if (newestUnreadMessage) {
+              // Scroll to newest unread message (instant, no animation)
+              scrollToMessage(newestUnreadMessage.id, 'instant');
               requestAnimationFrame(() => {
                 setTimeout(() => {
-                  scrollToMessage(firstUnreadMessage.id, 'instant');
+                  scrollToMessage(newestUnreadMessage.id, 'instant');
                 }, 100);
               });
             } else {
+              // No unread messages, scroll to bottom
               scrollToBottom('instant');
               requestAnimationFrame(() => {
                 setTimeout(() => {
@@ -4726,7 +4792,7 @@ const RMQMessagesPage: React.FC<MessagingModalProps> = ({ isOpen, onClose, initi
         });
       }
     }
-  }, [selectedConversation?.id, messages.length, findFirstUnreadMessage, scrollToMessage]); // Trigger when conversation ID or message count changes
+  }, [selectedConversation?.id, messages.length, findNewestUnreadMessage, scrollToMessage]); // Trigger when conversation ID or message count changes
 
   // Set initial message when conversation is selected and initialMessage/lead info is provided
   useEffect(() => {

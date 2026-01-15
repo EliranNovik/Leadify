@@ -632,7 +632,7 @@ const PublicContractView: React.FC = () => {
         const { error: leadUpdateError } = await supabase
           .from('leads')
           .update({
-            stage: 'Client signed agreement',
+            stage: stageId,
             stage_changed_at: timestamp,
           })
           .eq('id', updatedContract.client_id);
