@@ -3692,6 +3692,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .is('unactivated_at', null); // Exclude leads that have been unactivated
       };
 
+      // Fetch all leads for the stages, then filter client-side (matching NewCasesPage logic)
+      // This ensures we don't miss any leads with no scheduler
       const [createdResult, schedulerResult] = await Promise.all([
         buildBaseQuery(
           supabase
@@ -3704,7 +3706,6 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             .from('leads')
             .select('id, scheduler')
             .in('stage', schedulerFilters)
-            .or('scheduler.is.null,scheduler.eq.')
         ),
       ]);
 
@@ -3723,28 +3724,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         ...(schedulerResult.data || []),
       ];
 
-      // Filter out leads where scheduler matches any employee display_name or id
-      // This must match the exact logic in NewCasesPage.tsx
-      if (employeeDisplayNames.length > 0 || employeeIds.length > 0) {
-        allLeads = allLeads.filter(lead => {
-          const scheduler = lead.scheduler;
-          if (!scheduler || scheduler === '' || scheduler === '---') {
-            return true; // Keep leads with no scheduler
-          }
-          
-          // Check if scheduler matches any employee display name
-          if (employeeDisplayNames.includes(scheduler)) {
-            return false;
-          }
-          
-          // Check if scheduler matches any employee ID
-          if (employeeIds.includes(scheduler.toString())) {
-            return false;
-          }
-          
+      // Filter to only show leads with no scheduler assigned
+      // This matches exactly how NewCasesPage.tsx handles unassigned scheduler (null, '---', empty, or 'not assigned')
+      // This matches the logic in RolesTab.tsx where unassigned scheduler is saved as null
+      allLeads = allLeads.filter(lead => {
+        const scheduler = lead.scheduler;
+        // Keep leads with no scheduler: null, undefined, empty string, '---', or 'not assigned'
+        if (scheduler === null || scheduler === undefined) {
           return true;
-        });
-      }
+        }
+        // Handle string values
+        if (typeof scheduler === 'string') {
+          const trimmed = scheduler.trim();
+          return trimmed === '' || trimmed === '---' || trimmed.toLowerCase() === 'not assigned';
+        }
+        // Exclude any lead that has a non-null, non-empty scheduler value
+        return false;
+      });
 
       // Remove duplicates (matching NewCasesPage logic)
       const uniqueLeads = allLeads.filter((lead, index, self) =>

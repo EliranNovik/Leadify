@@ -602,16 +602,6 @@ const NewCasesPage: React.FC = () => {
           )
         `;
 
-        // Build exclusion conditions for scheduler field
-        // Exclude leads where scheduler matches any employee display_name or id
-        const schedulerExclusions: string[] = [];
-        employeeDisplayNames.forEach(name => {
-          schedulerExclusions.push(`scheduler.neq.${name}`);
-        });
-        employeeIds.forEach(id => {
-          schedulerExclusions.push(`scheduler.neq.${id}`);
-        });
-
         // Base query builder that excludes inactive leads
         const buildBaseQuery = (query: any) => {
           return query
@@ -619,13 +609,15 @@ const NewCasesPage: React.FC = () => {
             .is('unactivated_at', null); // Exclude leads that have been unactivated
         };
 
+        // Fetch all leads for the stages, then filter client-side
+        // This ensures we don't miss any leads with no scheduler
+        // According to RolesTab.tsx, unassigned scheduler is saved as null
         const [createdResult, schedulerResult] = await Promise.all([
           buildBaseQuery(
             supabase
               .from('leads')
               .select(baseSelect)
               .in('stage', createdFilters)
-              .or('scheduler.is.null,scheduler.eq.') // Exclude leads that already have a scheduler
           )
             .order('created_at', { ascending: false }),
           buildBaseQuery(
@@ -633,7 +625,6 @@ const NewCasesPage: React.FC = () => {
               .from('leads')
               .select(baseSelect)
               .in('stage', schedulerFilters)
-              .or('scheduler.is.null,scheduler.eq.')
           )
             .order('created_at', { ascending: false }),
         ]);
@@ -650,15 +641,21 @@ const NewCasesPage: React.FC = () => {
           ...(schedulerResult.data || []),
         ];
 
-        // Filter out leads that already have a scheduler assigned
-        // Exclude any lead with a scheduler value (not null, not empty, not '---')
+        // Filter to only show leads with no scheduler assigned
+        // This matches how RolesTab.tsx handles unassigned scheduler (null, '---', empty, or 'not assigned')
         allLeads = allLeads.filter(lead => {
           const scheduler = lead.scheduler;
-          // Keep leads with no scheduler, empty scheduler, or default '---' value
-          if (!scheduler || scheduler.trim() === '' || scheduler.trim() === '---' || scheduler.trim().toLowerCase() === 'not assigned') {
+          // Keep leads with no scheduler: null, undefined, empty string, '---', or 'not assigned'
+          // This matches the logic in RolesTab.tsx where unassigned scheduler is saved as null
+          if (scheduler === null || scheduler === undefined) {
             return true;
           }
-          // Exclude any lead that has a scheduler value
+          // Handle string values
+          if (typeof scheduler === 'string') {
+            const trimmed = scheduler.trim();
+            return trimmed === '' || trimmed === '---' || trimmed.toLowerCase() === 'not assigned';
+          }
+          // Exclude any lead that has a non-null, non-empty scheduler value
           return false;
         });
 
