@@ -9913,18 +9913,18 @@ const CollectionDueReport = () => {
             const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
             const handlerName = handlerId ? (handlerMap.get(handlerId) || '—') : '—';
             
-            // Get category (main and sub)
-            const miscCategory: any = lead.misc_category;
-            const categoryEntry: any = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
-            const mainCategory: any = categoryEntry?.misc_maincategory;
-            let mainCategoryName: string | undefined = undefined;
-            if (Array.isArray(mainCategory) && mainCategory[0]) {
-              mainCategoryName = mainCategory[0]?.name;
-            } else if (mainCategory) {
-              mainCategoryName = mainCategory?.name;
+            // Get category (main and sub) - use getCategoryName function to properly map category_id
+            // This matches how categories are displayed elsewhere on the page (e.g., ExpertPipelineReport)
+            // The function properly maps category_id to category name with main category in parentheses
+            let categoryDisplay = '—';
+            if (lead.category_id) {
+              // Use the getCategoryName function which properly maps category_id to category name with main category
+              // It looks up the category in allCategories and formats as "Subcategory (Main Category)"
+              categoryDisplay = getCategoryName(lead.category_id, lead.category);
+            } else if (lead.category) {
+              // Fallback: if no category_id but we have category text, try to find it in allCategories
+              categoryDisplay = getCategoryName(null, lead.category);
             }
-            const subCategoryName: string = categoryEntry?.name || lead.category || '—';
-            const categoryDisplay = mainCategoryName ? `${subCategoryName} (${mainCategoryName})` : subCategoryName;
             
             // Calculate amount
             const value = Number(payment.value || 0);
@@ -9938,15 +9938,23 @@ const CollectionDueReport = () => {
             const orderCode = payment.payment_order ? getOrderText(payment.payment_order) : '—';
             
             // Format case number with sublead suffix if applicable
-            let caseNumber: string;
+            // Store both the actual lead_number (for navigation) and formatted display (for UI)
+            const actualLeadNumber = lead.lead_number || lead.id?.toString() || '';
+            let caseNumber: string; // Formatted display number
+            let isSubLead = false;
+            
             if (lead.master_id) {
               // It's a sublead - we need to calculate the suffix
-              // For now, if lead_number already has a /, use it; otherwise show as master_id/2
+              isSubLead = true;
+              // If lead_number already has a /, use it; otherwise show as master_id/2
               if (lead.lead_number && lead.lead_number.includes('/')) {
                 caseNumber = `#${lead.lead_number}`;
               } else {
                 // Default to /2 for subleads without explicit suffix in lead_number
-                caseNumber = `#${lead.master_id}/2`;
+                // Find the master lead_number to format properly
+                const masterLead = newLeads?.find(l => l.id === lead.master_id);
+                const masterLeadNumber = masterLead?.lead_number || lead.master_id?.toString() || '';
+                caseNumber = `#${masterLeadNumber}/2`;
               }
             } else {
               // It's a master lead or standalone lead
@@ -9961,7 +9969,9 @@ const CollectionDueReport = () => {
               currency: payment.currency || '₪',
               order: orderCode,
               handler: handlerName,
-              case: caseNumber, // Lead number with sublead formatting
+              case: caseNumber, // Lead number with sublead formatting (for display)
+              caseNav: actualLeadNumber, // Actual lead_number for navigation (like lead_number_nav in SchedulerToolPage)
+              isSubLead, // Flag to indicate if this is a sublead
               category: categoryDisplay,
               notes: payment.notes || '—',
               leadType: 'new',
@@ -10175,17 +10185,23 @@ const CollectionDueReport = () => {
             const orderCode = payment.order ? getOrderText(payment.order) : '—';
             
             // Format case number with sublead suffix if applicable
-            let caseNumber: string;
+            // Store both the actual lead ID (for navigation) and formatted display (for UI)
+            const actualLeadId = lead.id?.toString() || '';
+            let caseNumber: string; // Formatted display number
+            let isSubLead = false;
+            
             if (lead.master_id) {
               // It's a sublead - format as master_id/suffix
-              // For legacy leads, we'll use the master_id and default to /2
+              isSubLead = true;
               // If lead_number already has a pattern, use it
               if (lead.lead_number && String(lead.lead_number).includes('/')) {
                 caseNumber = `#${lead.lead_number}`;
               } else {
                 // Use master_id (or manual_id if available) with /2 suffix
-                const masterId = lead.master_id || lead.manual_id || lead.id;
-                caseNumber = `#${masterId}/2`;
+                // Find the master lead to format properly
+                const masterLead = legacyLeads?.find(l => l.id === lead.master_id);
+                const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || lead.master_id?.toString() || '';
+                caseNumber = `#${masterLeadNumber}/2`;
               }
             } else {
               // It's a master lead or standalone lead
@@ -10201,7 +10217,9 @@ const CollectionDueReport = () => {
               currency,
               order: orderCode,
               handler: handlerName,
-              case: caseNumber, // Lead number with sublead formatting
+              case: caseNumber, // Lead number with sublead formatting (for display)
+              caseNav: actualLeadId, // Actual lead ID for navigation (numeric ID for legacy leads)
+              isSubLead, // Flag to indicate if this is a sublead
               category: categoryDisplay,
               notes: payment.notes || '—',
               leadType: 'legacy',
@@ -10528,9 +10546,33 @@ const CollectionDueReport = () => {
                           className="hover:bg-gray-50 cursor-pointer transition-colors"
                           onClick={(e) => {
                             e.stopPropagation();
-                            if (row.case) {
+                            // Handle navigation for new leads with subleads (matching SchedulerToolPage logic)
+                            if (row.leadType === 'new' && row.caseNav) {
+                              const isSubLead = row.isSubLead || (row.case && row.case.includes('/'));
+                              if (isSubLead) {
+                                // Sublead: path uses actual lead_number, query uses formatted display
+                                const formattedCase = row.case?.replace('#', '') || '';
+                                navigate(`/clients/${encodeURIComponent(row.caseNav)}?lead=${encodeURIComponent(formattedCase)}`);
+                              } else {
+                                // Regular new lead: just use lead_number
+                                navigate(`/clients/${encodeURIComponent(row.caseNav)}`);
+                              }
+                            } else if (row.leadType === 'legacy' && row.caseNav) {
+                              // Legacy lead: use caseNav which contains the actual lead ID
+                              const legacyId = row.caseNav;
+                              const isSubLead = row.isSubLead || (row.case && row.case.includes('/'));
+                              if (isSubLead) {
+                                // Legacy sublead: use numeric ID in path, formatted lead_number in query
+                                const formattedCase = row.case?.replace('#', '') || '';
+                                navigate(`/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(formattedCase)}`);
+                              } else {
+                                // Legacy master lead: use numeric ID
+                                navigate(`/clients/${encodeURIComponent(legacyId)}`);
+                              }
+                            } else if (row.case) {
+                              // Fallback: use case number directly
                               const leadNumber = row.case.replace('#', '');
-                              navigate(`/clients/${leadNumber}`);
+                              navigate(`/clients/${encodeURIComponent(leadNumber)}`);
                             }
                           }}
                         >

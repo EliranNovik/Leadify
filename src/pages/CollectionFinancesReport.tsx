@@ -1423,36 +1423,36 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
   }
   
   // Fetch proforma dates from proformainvoice table for legacy leads
-  // Match by both lead_id AND client_id (contact_id) to get the correct proforma for each contact
-  const proformaDateMap = new Map<string, string | null>(); // Key: "lead_id_client_id"
+  // IMPORTANT: Match by ppr_id (payment plan row id) to get the correct proforma for each specific payment row
+  // This aligns with FinancesTab.tsx which matches proformas by ppr_id === payment.id
+  const proformaDateMap = new Map<number, string | null>(); // Key: ppr_id (payment plan row id)
   if (leadIds.length > 0) {
     const numericLeadIds = leadIds.map((id) => parseInt(id, 10)).filter((id) => !Number.isNaN(id));
     if (numericLeadIds.length > 0) {
       const { data: proformas, error: proformasError } = await supabase
         .from('proformainvoice')
-        .select('lead_id, client_id, cdate')
+        .select('ppr_id, cdate')
         .in('lead_id', numericLeadIds)
-        .is('cxd_date', null); // Only get active proformas (not cancelled)
+        .is('cxd_date', null) // Only get active proformas (not cancelled)
+        .not('ppr_id', 'is', null); // Only get proformas linked to specific payment rows
       
       if (!proformasError && proformas) {
         proformas.forEach((proforma: any) => {
-          if (proforma.lead_id) {
-            const normalizedDate = normalizeDate(proforma.cdate);
-            // Create composite key: lead_id_client_id (client_id can be null)
-            const clientId = proforma.client_id ? Number(proforma.client_id) : null;
-            const compositeKey = clientId 
-              ? `${proforma.lead_id}_${clientId}` 
-              : `${proforma.lead_id}_null`;
-            
-            // If multiple proformas exist for the same lead+client combination, keep the most recent one
-            const existingDate = proformaDateMap.get(compositeKey);
-            if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
-              proformaDateMap.set(compositeKey, normalizedDate);
+          if (proforma.ppr_id) {
+            const pprId = Number(proforma.ppr_id);
+            if (!Number.isNaN(pprId)) {
+              const normalizedDate = normalizeDate(proforma.cdate);
+              
+              // If multiple proformas exist for the same ppr_id, keep the most recent one
+              const existingDate = proformaDateMap.get(pprId);
+              if (!existingDate || (normalizedDate && existingDate && normalizedDate > existingDate)) {
+                proformaDateMap.set(pprId, normalizedDate);
+              }
             }
           }
         });
       }
-      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates (matched by lead_id + client_id)`);
+      console.log(`✅ [fetchLegacyPayments] Fetched ${proformaDateMap.size} proforma dates (matched by ppr_id)`);
     }
   }
 
@@ -1486,20 +1486,16 @@ async function fetchLegacyPayments(filters: Filters): Promise<PaymentRow[]> {
     const dueDate = normalizeDate(dueSource);
     const actualDate = normalizeDate(plan.actual_date);
     
-    // Get proforma date for this lead+client combination
-    // Match by both lead_id AND client_id (contact_id) to get the correct proforma for each contact
-    const numericLeadId = parseInt(leadIdKey, 10);
+    // Get proforma date for this specific payment row
+    // IMPORTANT: Match by ppr_id (payment plan row id) to get the correct proforma for each payment row
+    // This aligns with FinancesTab.tsx which matches proformas by ppr_id === payment.id
+    const paymentRowId = plan.id ? (typeof plan.id === 'number' ? plan.id : Number(plan.id)) : null;
     let proformaDate: string | null = null;
-    if (!Number.isNaN(numericLeadId)) {
-      // Create composite key: lead_id_client_id
-      // This ensures we match the correct proforma for the specific contact (client_id)
-      const compositeKey = clientId 
-        ? `${numericLeadId}_${clientId}` 
-        : `${numericLeadId}_null`;
-      proformaDate = proformaDateMap.get(compositeKey) || null;
+    if (paymentRowId !== null && !Number.isNaN(paymentRowId)) {
+      proformaDate = proformaDateMap.get(paymentRowId) || null;
     }
     
-    // Determine if there's a proforma for this specific lead+client combination
+    // Determine if there's a proforma for this specific payment row
     const hasProforma = proformaDate !== null;
     
     // Debug for 199849
