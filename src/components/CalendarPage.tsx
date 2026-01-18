@@ -1620,7 +1620,7 @@ const CalendarPage: React.FC = () => {
             const { data: newLeadsData } = await supabase
               .from('leads')
               .select(`
-                id, name, lead_number, onedrive_folder_link, stage, manager, helper, category, category_id,
+                id, name, lead_number, master_id, onedrive_folder_link, stage, manager, helper, category, category_id,
                 balance, balance_currency, currency_id, expert_notes, expert, probability, phone, email, 
                 meeting_confirmation, meeting_confirmation_by, eligibility_status,
                 manual_interactions, number_of_applicants_meeting, meeting_collection_id,
@@ -1713,7 +1713,7 @@ const CalendarPage: React.FC = () => {
             const { data: legacyLeadsData } = await supabase
               .from('leads_lead')
               .select(`
-                id, name, lead_number, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
+                id, name, lead_number, master_id, stage, meeting_manager_id, meeting_lawyer_id, category, category_id,
                 total, total_base, currency_id, meeting_total_currency_id, expert_id, probability, phone, email, no_of_applicants, expert_examination,
                 meeting_location_id, meeting_collection_id, meeting_confirmation, meeting_confirmation_by,
                 accounting_currencies!leads_lead_currency_id_fkey (
@@ -1822,6 +1822,22 @@ const CalendarPage: React.FC = () => {
               let leadData = null;
               
               if (meeting.legacy_lead) {
+                // Format lead_number for legacy subleads (similar to CollectionDueReportPage)
+                const actualLegacyLeadNumber = meeting.legacy_lead.lead_number || meeting.legacy_lead.id?.toString() || '';
+                let displayLegacyLeadNumber = actualLegacyLeadNumber;
+                if (meeting.legacy_lead.master_id) {
+                  // It's a sublead - format appropriately
+                  if (displayLegacyLeadNumber && displayLegacyLeadNumber.includes('/')) {
+                    // lead_number already has /, use it as is
+                    displayLegacyLeadNumber = displayLegacyLeadNumber;
+                  } else {
+                    // Find master lead number to format properly
+                    const masterLegacyLead = legacyLeadsMap.get(meeting.legacy_lead.master_id) || legacyLeadsMap.get(String(meeting.legacy_lead.master_id)) || legacyLeadsMap.get(Number(meeting.legacy_lead.master_id));
+                    const masterLegacyLeadNumber = masterLegacyLead?.lead_number || meeting.legacy_lead.master_id?.toString() || '';
+                    displayLegacyLeadNumber = `${masterLegacyLeadNumber}/2`; // Default to /2
+                  }
+                }
+                
                 leadData = {
                   ...meeting.legacy_lead,
                   lead_type: 'legacy',
@@ -1856,12 +1872,30 @@ const CalendarPage: React.FC = () => {
                   balance_currency: meeting.legacy_lead.balance_currency || '₪',
                   expert: getEmployeeDisplayName(meeting.legacy_lead.expert_id),
                   category: meeting.legacy_lead.category || meeting.legacy_lead.category_id,
-                  lead_number: meeting.legacy_lead.lead_number || meeting.legacy_lead.id?.toString(),
+                  // Store formatted lead_number for display (with sublead suffix if applicable)
+                  lead_number: displayLegacyLeadNumber,
                   manual_interactions: [],
                   department_name: meeting.legacy_lead.misc_category?.misc_maincategory?.tenant_departement?.name || 'Unassigned',
                   department_id: meeting.legacy_lead.misc_category?.misc_maincategory?.department_id
                 };
               } else if (meeting.lead) {
+                // Format lead_number for subleads (similar to CollectionDueReportPage)
+                // Keep the actual lead_number for navigation, but format for display if it's a sublead
+                const actualLeadNumber = meeting.lead.lead_number || meeting.lead.id?.toString() || '';
+                let displayLeadNumber = actualLeadNumber;
+                if (meeting.lead.master_id) {
+                  // It's a sublead - format appropriately for display
+                  if (displayLeadNumber && displayLeadNumber.includes('/')) {
+                    // lead_number already has /, use it as is
+                    displayLeadNumber = displayLeadNumber;
+                  } else {
+                    // Find master lead number to format properly
+                    const masterLead = newLeadsMap.get(meeting.lead.master_id);
+                    const masterLeadNumber = masterLead?.lead_number || meeting.lead.master_id?.toString() || '';
+                    displayLeadNumber = `${masterLeadNumber}/2`; // Default to /2
+                  }
+                }
+                
                 leadData = {
                   ...meeting.lead,
                   lead_type: 'new',
@@ -1881,6 +1915,9 @@ const CalendarPage: React.FC = () => {
                       ? getEmployeeDisplayName(meeting.lead.expert)
                       : meeting.lead.expert
                     : '--',
+                  // Store formatted lead_number for display (with sublead suffix if applicable)
+                  lead_number: displayLeadNumber,
+                  // Keep original lead_number for navigation (buildClientRoute uses lead_number which should have / if sublead)
                   // Store currency_id for reference
                   currency_id: meeting.lead.currency_id ?? null,
                   // balance_currency is already set to a symbol (₪, $, €, £, etc.) from the JOIN processing above
@@ -2149,13 +2186,37 @@ const CalendarPage: React.FC = () => {
       let currency = 'NIS'; // Default currency
       let source = 'none';
       
-      // First try to get amount from lead.balance
-      if (typeof lead.balance === 'number' && lead.balance > 0) {
+      // Determine if this is a legacy lead
+      const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+      
+      // Get balance value using same logic as balance badge
+      if (isLegacy) {
+        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+        const currencyId = (lead as any).currency_id;
+        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+          numericCurrencyId = 1; // Default to NIS
+        }
+        if (numericCurrencyId === 1) {
+          amount = (lead as any).total_base ?? 0;
+        } else {
+          amount = (lead as any).total ?? 0;
+        }
+        // Get currency symbol - balance_currency should already be set from JOIN
+        currency = lead.balance_currency || '₪';
+        source = isLegacy ? 'legacy_lead.total_base_or_total' : 'lead.balance';
+      } else if (typeof lead.balance === 'number' && lead.balance > 0) {
+        // For new leads, use balance
         amount = lead.balance;
-        currency = lead.balance_currency || 'NIS';
+        currency = lead.balance_currency || '₪';
         source = 'lead.balance';
+      } else if ((lead as any).proposal_total && typeof (lead as any).proposal_total === 'number') {
+        // Fallback to proposal_total for new leads
+        amount = (lead as any).proposal_total;
+        currency = (lead as any).proposal_currency || lead.balance_currency || '₪';
+        source = 'lead.proposal_total';
       }
-      // Fallback to meeting_amount if lead.balance is not available
+      // Fallback to meeting_amount if lead balance is not available
       else if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
         amount = meeting.meeting_amount;
         currency = meeting.meeting_currency || 'NIS';
@@ -2168,9 +2229,16 @@ const CalendarPage: React.FC = () => {
         source = 'staff_meeting';
       }
       
+      // Normalize currency symbol to code for conversion
+      let currencyCode = currency;
+      if (currency === '₪') currencyCode = 'NIS';
+      else if (currency === '€') currencyCode = 'EUR';
+      else if (currency === '$') currencyCode = 'USD';
+      else if (currency === '£') currencyCode = 'GBP';
+      else if (currency === 'ILS') currencyCode = 'NIS';
       
       // Convert to NIS and add to total
-      const amountInNIS = convertToNIS(amount, currency);
+      const amountInNIS = convertToNIS(amount, currencyCode);
       return sum + amountInNIS;
     }, 0);
     
@@ -2272,6 +2340,49 @@ const CalendarPage: React.FC = () => {
     return '';
   };
 
+  // Helper function to build client route (similar to SchedulerToolPage and Clients.tsx)
+  const buildClientRoute = (lead: any): string => {
+    if (!lead) return '/clients';
+    
+    // For new leads
+    if (lead.lead_type === 'new' && lead.lead_number) {
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        // Sublead: extract base lead_number (before '/') for path, use full lead_number in query
+        const baseLeadNumber = lead.lead_number.split('/')[0];
+        return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        // Regular new lead: just use lead_number
+        return `/clients/${encodeURIComponent(lead.lead_number)}`;
+      }
+    } 
+    // For legacy leads
+    else if (lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_')) {
+      const legacyId = lead.id?.toString().replace('legacy_', '') || lead.id;
+      const isSubLead = lead.lead_number && lead.lead_number.includes('/');
+      
+      if (isSubLead) {
+        // Legacy sublead: use numeric ID in path, formatted lead_number in query
+        return `/clients/${encodeURIComponent(legacyId)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        // Legacy master lead: use numeric ID
+        return `/clients/${encodeURIComponent(legacyId)}`;
+      }
+    }
+    // Fallback: check if lead_number contains '/' (sublead pattern)
+    else if (lead.lead_number) {
+      const isSubLead = lead.lead_number.includes('/');
+      if (isSubLead) {
+        const baseLeadNumber = lead.lead_number.split('/')[0];
+        return `/clients/${encodeURIComponent(baseLeadNumber)}?lead=${encodeURIComponent(lead.lead_number)}`;
+      } else {
+        return `/clients/${encodeURIComponent(lead.lead_number)}`;
+      }
+    }
+    
+    return '/clients';
+  };
+
   // Handle row selection (for action menu)
   const handleRowSelect = (meetingId: string | number) => {
     setSelectedRowId(meetingId);
@@ -2292,8 +2403,18 @@ const CalendarPage: React.FC = () => {
     }
   };
 
-  const handleViewClient = (lead: any) => {
-    navigate(`/clients/${lead.lead_number}`);
+  const handleViewClient = (lead: any, event?: React.MouseEvent) => {
+    const isNewTab = event?.metaKey || event?.ctrlKey;
+    const navigationUrl = buildClientRoute(lead);
+    
+    if (isNewTab) {
+      // Open in new tab
+      window.open(navigationUrl, '_blank');
+      return;
+    }
+    
+    // Normal navigation in same tab
+    navigate(navigationUrl);
   };
 
   const handleEmail = (lead: any, meeting: any) => {
@@ -2305,11 +2426,17 @@ const CalendarPage: React.FC = () => {
   };
 
   const handleTimeline = (lead: any) => {
-    navigate(`/clients/${lead.lead_number}?tab=interactions`);
+    const baseUrl = buildClientRoute(lead);
+    // Add tab parameter if baseUrl already has query params, otherwise use &
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    navigate(`${baseUrl}${separator}tab=interactions`);
   };
 
   const handleEditLead = (lead: any) => {
-    navigate(`/clients/${lead.lead_number}?tab=info`);
+    const baseUrl = buildClientRoute(lead);
+    // Add tab parameter if baseUrl already has query params, otherwise use &
+    const separator = baseUrl.includes('?') ? '&' : '?';
+    navigate(`${baseUrl}${separator}tab=info`);
   };
 
   const handleDocuments = (lead: any, meeting: any) => {
@@ -4211,7 +4338,7 @@ const CalendarPage: React.FC = () => {
               ) : (
                 <>
                   <Link 
-                    to={`/clients/${lead.lead_number || meeting.lead_number}`} 
+                    to={buildClientRoute(lead)} 
                     className="hover:opacity-80 text-xs sm:text-sm"
                     style={{ color: '#3b28c7' }}
                   >
@@ -5403,7 +5530,7 @@ const CalendarPage: React.FC = () => {
                                       </span>
                                     ) : (
                                       <Link 
-                                        to={`/clients/${meeting.lead?.lead_number || meeting.lead_number}`}
+                                        to={buildClientRoute(meeting.lead)}
                                         className="hover:underline font-medium"
                                         style={{ color: '#3b28c7' }}
                                         onMouseEnter={(e) => e.currentTarget.style.opacity = '0.8'}

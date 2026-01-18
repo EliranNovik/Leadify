@@ -1006,11 +1006,13 @@ const CollectionDueReport = () => {
       // Fetch subleads for new leads (optimized - batch queries instead of loops)
       console.log('🔍 Collection Due Report - Fetching subleads for new leads...');
       if (newLeadIds.length > 0) {
-        // First, get lead_numbers for the master leads to use for pattern matching
+        // First, get lead_numbers for the master leads (NOT subleads) to use for pattern matching
+        // IMPORTANT: Only fetch master leads (master_id IS NULL) to avoid finding subleads of subleads
         const { data: masterLeads, error: masterLeadsError } = await supabase
           .from('leads')
-          .select('id, lead_number')
-          .in('id', newLeadIds);
+          .select('id, lead_number, master_id')
+          .in('id', newLeadIds)
+          .is('master_id', null); // Only get master leads, not subleads
         
         if (masterLeadsError) {
           console.error('❌ Collection Due Report - Error fetching master lead numbers:', masterLeadsError);
@@ -1231,6 +1233,14 @@ const CollectionDueReport = () => {
           }
         }
       }
+      
+      // Debug: Log total legacy payments count after sublead addition
+      console.log('📊 Collection Due Report - Total legacy payments (main + sublead):', {
+        main: (legacyPayments || []).length,
+        sublead: filteredLegacyPayments.length - (legacyPayments || []).length,
+        total: filteredLegacyPayments.length,
+        dateRange: filters.fromDate && filters.toDate ? `${filters.fromDate} to ${filters.toDate}` : 'no date filter'
+      });
 
       // Fetch lead metadata
       let newLeadsMap = new Map();

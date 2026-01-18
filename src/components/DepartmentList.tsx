@@ -342,19 +342,49 @@ const DepartmentList: React.FC<DepartmentListProps> = ({
             let amount = 0;
             let currency = 'NIS';
             
-            // Get amount and currency from lead.balance first
-            if (typeof lead.balance === 'number' && lead.balance > 0) {
+            // Determine if this is a legacy lead
+            const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
+            
+            // Get balance value using same logic as balance badge
+            if (isLegacy) {
+              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+              const currencyId = (lead as any).currency_id;
+              let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+              if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                numericCurrencyId = 1; // Default to NIS
+              }
+              if (numericCurrencyId === 1) {
+                amount = (lead as any).total_base ?? 0;
+              } else {
+                amount = (lead as any).total ?? 0;
+              }
+              // Get currency symbol - balance_currency should already be set from JOIN
+              currency = lead.balance_currency || '₪';
+            } else if (typeof lead.balance === 'number' && lead.balance > 0) {
+              // For new leads, use balance
               amount = lead.balance;
-              currency = lead.balance_currency || 'NIS';
-            } 
-            // Fallback to meeting_amount if lead.balance is not available
+              currency = lead.balance_currency || '₪';
+            } else if ((lead as any).proposal_total && typeof (lead as any).proposal_total === 'number') {
+              // Fallback to proposal_total for new leads
+              amount = (lead as any).proposal_total;
+              currency = (lead as any).proposal_currency || lead.balance_currency || '₪';
+            }
+            // Fallback to meeting_amount if lead balance is not available
             else if (typeof meeting.meeting_amount === 'number' && meeting.meeting_amount > 0) {
               amount = meeting.meeting_amount;
               currency = meeting.meeting_currency || 'NIS';
             }
             
+            // Normalize currency symbol to code for conversion
+            let currencyCode = currency;
+            if (currency === '₪') currencyCode = 'NIS';
+            else if (currency === '€') currencyCode = 'EUR';
+            else if (currency === '$') currencyCode = 'USD';
+            else if (currency === '£') currencyCode = 'GBP';
+            else if (currency === 'ILS') currencyCode = 'NIS';
+            
             // Convert to NIS using the conversion function
-            const amountInNIS = convertToNIS(amount, currency);
+            const amountInNIS = convertToNIS(amount, currencyCode);
             return sum + amountInNIS;
           }, 0);
 

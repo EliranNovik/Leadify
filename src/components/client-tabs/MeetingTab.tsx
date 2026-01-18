@@ -2237,19 +2237,30 @@ const formatEmailBody = async (
         return;
       }
 
-      // Get current user's full_name from database
+      // Get current user's full_name and employee_id from database
       let currentUserFullName = '';
+      let currentUserEmployeeId: number | null = null;
       try {
         const { data: userData } = await supabase
           .from('users')
-          .select('full_name')
+          .select(`
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
           .eq('email', account.username)
           .single();
-        if (userData?.full_name) {
-          currentUserFullName = userData.full_name;
+        if (userData) {
+          // Prefer display_name from tenants_employee if available, otherwise use full_name
+          const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+          currentUserFullName = employee?.display_name || userData.full_name || '';
+          currentUserEmployeeId = userData.employee_id || null;
         }
       } catch (error) {
-        console.log('Could not fetch user full_name');
+        console.log('Could not fetch user data:', error);
       }
 
       let teamsMeetingUrl = '';
@@ -2394,8 +2405,26 @@ const formatEmailBody = async (
       const managerEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(scheduleMeetingFormData.helper);
       
-      // Resolve scheduler employee ID
-      const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+      // Resolve scheduler employee ID - use employee_id directly if available (most reliable)
+      let schedulerEmployeeId: number | null = null;
+      if (currentUserEmployeeId !== null) {
+        // Verify the employee exists in allEmployees
+        const employee = allEmployees.find((emp: any) => emp.id === currentUserEmployeeId);
+        if (employee) {
+          schedulerEmployeeId = currentUserEmployeeId;
+          console.log('✅ Found scheduler by employee_id:', schedulerEmployeeId, employee.display_name);
+        } else {
+          console.warn(`⚠️ Employee ID ${currentUserEmployeeId} not found in allEmployees, falling back to display_name matching`);
+          // Fallback to display_name matching
+          schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+        }
+      } else {
+        // Fallback to display_name matching if employee_id is not available
+        schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
+        if (schedulerEmployeeId === null && currentUserFullName) {
+          console.warn(`⚠️ Could not resolve scheduler employee ID for "${currentUserFullName}" - employee_id was not available and display_name did not match`);
+        }
+      }
       
       // Resolve expert employee ID
       const expertEmployeeId = getEmployeeIdFromDisplayName(client.expert);
@@ -2819,19 +2848,30 @@ const formatEmailBody = async (
         console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
       }
 
-      // Get current user's full_name from database
+      // Get current user's full_name and employee_id from database
       let currentUserFullName = '';
+      let currentUserEmployeeId: number | null = null;
       try {
         const { data: userData } = await supabase
           .from('users')
-          .select('full_name')
+          .select(`
+            full_name,
+            employee_id,
+            tenants_employee!employee_id(
+              id,
+              display_name
+            )
+          `)
           .eq('email', account.username)
           .single();
-        if (userData?.full_name) {
-          currentUserFullName = userData.full_name;
+        if (userData) {
+          // Prefer display_name from tenants_employee if available, otherwise use full_name
+          const employee = Array.isArray(userData.tenants_employee) ? userData.tenants_employee[0] : userData.tenants_employee;
+          currentUserFullName = employee?.display_name || userData.full_name || '';
+          currentUserEmployeeId = userData.employee_id || null;
         }
       } catch (error) {
-        console.log('Could not fetch user full_name');
+        console.log('Could not fetch user data:', error);
       }
 
       // Create the new meeting

@@ -1859,7 +1859,11 @@ const CollectionPage: React.FC = () => {
                       <span className="text-xs font-bold ml-2 px-2 py-1 rounded bg-[#3b28c7] text-white">
                         {lead.lead_type === 'legacy' 
                           ? (lead.stage_name || `Stage ${lead.stage}`)
-                          : (lead.stage ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase()) : 'N/A')
+                          : (lead.stage 
+                              ? (typeof lead.stage === 'string' 
+                                  ? lead.stage.replace(/_/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase())
+                                  : `Stage ${lead.stage}`)
+                              : 'N/A')
                         }
                       </span>
                     </div>
