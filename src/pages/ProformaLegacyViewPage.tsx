@@ -9,6 +9,32 @@ import { loginRequest } from '../msalConfig';
 import toast from 'react-hot-toast';
 import { createPaymentLink } from '../lib/supabase';
 
+// Helper function to calculate VAT rate based on date for legacy leads
+// 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
+const getVatRateForLegacyLead = (dateString: string | null | undefined): number => {
+  if (!dateString) {
+    // If no date provided, default to 18% (current rate)
+    return 0.18;
+  }
+  
+  const paymentDate = new Date(dateString);
+  if (isNaN(paymentDate.getTime())) {
+    // If date is invalid, default to 18%
+    return 0.18;
+  }
+  
+  // VAT rate change date: 2025-01-01
+  const vatChangeDate = new Date('2025-01-01T00:00:00');
+  
+  // If payment date is before 2025-01-01, use 17% VAT
+  if (paymentDate < vatChangeDate) {
+    return 0.17;
+  }
+  
+  // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
+  return 0.18;
+};
+
 // MinimalInvoice: style-isolated, hex/rgb only, no class names
 const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { proforma: any, getCurrencySymbol: (currency?: string) => string }, ref: React.Ref<HTMLDivElement>) => {
   // Add null check to prevent rendering when proforma is null
@@ -88,17 +114,23 @@ const MinimalInvoice = React.forwardRef(({ proforma, getCurrencySymbol }: { prof
       <div style={{ width: '100%', maxWidth: 400, background: '#f3f4f6', borderRadius: 16, padding: 24, border: '1px solid #e5e7eb', fontFamily: 'Inter, Arial, sans-serif', marginLeft: 'auto', marginRight: 0 }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
           <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>Subtotal</span>
-          <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {proforma.sub_total || proforma.total_base}</span>
+          <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}</span>
         </div>
-        {proforma.add_vat === 't' && (
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
-            <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>VAT (18%)</span>
-            <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {proforma.vat_value || 0}</span>
-          </div>
-        )}
+        {proforma.add_vat === 't' && (() => {
+          // Determine VAT rate based on payment plan date or proforma creation date
+          const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
+          const vatRate = getVatRateForLegacyLead(vatDate);
+          const vatPercentage = Math.round(vatRate * 100);
+          return (
+            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 18, marginBottom: 8 }}>
+              <span style={{ color: '#404040', fontWeight: 600, fontFamily: 'Inter, Arial, sans-serif' }}>VAT ({vatPercentage}%)</span>
+              <span style={{ color: '#18181b', fontWeight: 700, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.vat_value || 0).toFixed(2)}</span>
+            </div>
+          );
+        })()}
         <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 22, marginTop: 16, borderTop: '1px solid #e5e7eb', paddingTop: 16, fontWeight: 800 }}>
           <span style={{ color: '#18181b', fontFamily: 'Inter, Arial, sans-serif' }}>Total</span>
-          <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {proforma.total}</span>
+          <span style={{ color: '#006BB1', fontWeight: 800, fontFamily: 'Inter, Arial, sans-serif' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.total || 0).toFixed(2)}</span>
         </div>
       </div>
     </div>
@@ -180,12 +212,26 @@ const ProformaLegacyViewPage: React.FC = () => {
         .eq('id', id)
         .single();
       
-      // Fetch cxd_by_id, creator_id, cxd_date, and cdate from proformainvoice table (for both view and direct fetch paths)
+      // Fetch cxd_by_id, creator_id, cxd_date, cdate, and ppr_id from proformainvoice table (for both view and direct fetch paths)
       const { data: proformaData, error: proformaError } = await supabase
         .from('proformainvoice')
-        .select('cxd_by_id, creator_id, cxd_date, cdate')
+        .select('cxd_by_id, creator_id, cxd_date, cdate, ppr_id')
         .eq('id', id)
         .single();
+      
+      // Fetch payment plan row date if ppr_id exists
+      let paymentPlanDate: string | null = null;
+      if (!proformaError && proformaData?.ppr_id) {
+        const { data: pprData } = await supabase
+          .from('finances_paymentplanrow')
+          .select('date, due_date')
+          .eq('id', proformaData.ppr_id)
+          .single();
+        
+        if (pprData) {
+          paymentPlanDate = pprData.date || pprData.due_date || null;
+        }
+      }
       
       if (!proformaError && proformaData) {
         // Use cdate (creation date) as issued date (cxd_date is cancellation date, which is NULL for active proformas)
@@ -456,10 +502,11 @@ const ProformaLegacyViewPage: React.FC = () => {
           issuedDate: issuedDate
         };
       } else {
-        // Add issued by information to view data
+        // Add issued by information and payment plan date to view data
         if (data) {
           data.issuedBy = issuedBy;
           data.issuedDate = issuedDate;
+          data.paymentPlanDate = paymentPlanDate; // Store payment plan date for VAT rate display
         }
       }
       
@@ -771,17 +818,23 @@ const ProformaLegacyViewPage: React.FC = () => {
           <div className="w-full md:w-1/2 bg-gray-50 rounded-xl p-6 border border-gray-200">
             <div className="flex justify-between text-lg mb-2">
               <span className="font-semibold text-gray-700">Subtotal</span>
-              <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {proforma.sub_total || proforma.total_base}</span>
+              <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {Number(proforma.sub_total || proforma.total_base || 0).toFixed(2)}</span>
             </div>
-            {proforma.add_vat === 't' && (
-              <div className="flex justify-between text-lg mb-2">
-                <span className="font-semibold text-gray-700">VAT (18%)</span>
-                <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {proforma.vat_value || 0}</span>
-              </div>
-            )}
+            {proforma.add_vat === 't' && (() => {
+              // Determine VAT rate based on payment plan date or proforma creation date
+              const vatDate = proforma.paymentPlanDate || proforma.cdate || null;
+              const vatRate = getVatRateForLegacyLead(vatDate);
+              const vatPercentage = Math.round(vatRate * 100);
+              return (
+                <div className="flex justify-between text-lg mb-2">
+                  <span className="font-semibold text-gray-700">VAT ({vatPercentage}%)</span>
+                  <span className="font-bold text-gray-900">{getCurrencySymbol(proforma.currency_code)} {Number(proforma.vat_value || 0).toFixed(2)}</span>
+                </div>
+              );
+            })()}
             <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
               <span>Total</span>
-              <span style={{ color: '#006BB1' }}>{getCurrencySymbol(proforma.currency_code)} {proforma.total}</span>
+              <span style={{ color: '#006BB1' }}>{getCurrencySymbol(proforma.currency_code)} {Number(proforma.total || 0).toFixed(2)}</span>
             </div>
           </div>
         </div>

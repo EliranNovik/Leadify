@@ -5,6 +5,32 @@ import toast from 'react-hot-toast';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, XMarkIcon, CheckIcon, PrinterIcon, EnvelopeIcon, ArrowDownTrayIcon } from '@heroicons/react/24/outline';
 import { generateProformaName } from '../lib/proforma';
 
+// Helper function to calculate VAT rate based on date for legacy leads
+// 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
+const getVatRateForLegacyLead = (dateString: string | null | undefined): number => {
+  if (!dateString) {
+    // If no date provided, default to 18% (current rate)
+    return 0.18;
+  }
+  
+  const paymentDate = new Date(dateString);
+  if (isNaN(paymentDate.getTime())) {
+    // If date is invalid, default to 18%
+    return 0.18;
+  }
+  
+  // VAT rate change date: 2025-01-01
+  const vatChangeDate = new Date('2025-01-01T00:00:00');
+  
+  // If payment date is before 2025-01-01, use 17% VAT
+  if (paymentDate < vatChangeDate) {
+    return 0.17;
+  }
+  
+  // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
+  return 0.18;
+};
+
 const ProformaLegacyCreatePage: React.FC = () => {
   const { leadId } = useParams<{ leadId: string }>();
   const navigate = useNavigate();
@@ -58,7 +84,7 @@ const ProformaLegacyCreatePage: React.FC = () => {
         
         const { data: fetchedPprData, error: pprError } = await supabase
           .from('finances_paymentplanrow')
-          .select('"order", notes, value, value_base, vat_value, currency_id')
+          .select('"order", notes, value, value_base, vat_value, currency_id, date, due_date')
           .eq('id', pprId)
           .single();
         
@@ -247,11 +273,15 @@ const ProformaLegacyCreatePage: React.FC = () => {
         finalVatAmount: vatAmount
       });
       
+      // Get payment plan row date for VAT calculation (use date or due_date)
+      const paymentPlanDate = pprData?.date || pprData?.due_date || null;
+      
       setProformaData({
         client: data.name || 'Client',
         clientId: data.id,
         leadId: data.id,
         pprId: pprId, // Store the payment plan row ID
+        paymentPlanDate: paymentPlanDate, // Store payment plan date for VAT calculation
         payment: paymentAmount,
         base: baseAmount,
         vat: vatAmount,
@@ -367,10 +397,12 @@ const ProformaLegacyCreatePage: React.FC = () => {
       const total = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
       const totalBase = total;
       
-      // Calculate VAT if needed
+      // Calculate VAT if needed - use date-based rate for legacy leads
       let vat = 0;
       if (proformaData.addVat) {
-        vat = Math.round(total * 0.18 * 100) / 100;
+        const paymentPlanDate = proformaData.paymentPlanDate;
+        const vatRate = getVatRateForLegacyLead(paymentPlanDate);
+        vat = Math.round(total * vatRate * 100) / 100;
       }
       const totalWithVat = total + vat;
 
@@ -640,7 +672,11 @@ const ProformaLegacyCreatePage: React.FC = () => {
                   checked={proformaData.addVat} 
                   onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
                 />
-                <span className="label-text font-medium">Add VAT (18%)</span>
+                <span className="label-text font-medium">
+                  Add VAT ({proformaData?.paymentPlanDate 
+                    ? `${Math.round(getVatRateForLegacyLead(proformaData.paymentPlanDate) * 100)}%`
+                    : '18%'})
+                </span>
               </label>
             </div>
             <div className="form-control">
@@ -752,15 +788,32 @@ const ProformaLegacyCreatePage: React.FC = () => {
                 <span className="font-semibold text-gray-700">Subtotal</span>
                 <span className="font-bold text-gray-900">{proformaData.currency} {proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}</span>
               </div>
-              {proformaData.addVat && (
-                <div className="flex justify-between text-lg mb-2">
-                  <span className="font-semibold text-gray-700">VAT (18%)</span>
-                  <span className="font-bold text-gray-900">{proformaData.currency} {(Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 0.18 * 100) / 100).toFixed(2)}</span>
-                </div>
-              )}
+              {proformaData.addVat && (() => {
+                const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
+                const paymentPlanDate = proformaData.paymentPlanDate;
+                const vatRate = getVatRateForLegacyLead(paymentPlanDate);
+                const vatAmount = Math.round(subtotal * vatRate * 100) / 100;
+                const vatPercentage = Math.round(vatRate * 100);
+                return (
+                  <div className="flex justify-between text-lg mb-2">
+                    <span className="font-semibold text-gray-700">VAT ({vatPercentage}%)</span>
+                    <span className="font-bold text-gray-900">{proformaData.currency} {vatAmount.toFixed(2)}</span>
+                  </div>
+                );
+              })()}
               <div className="flex justify-between text-xl mt-4 border-t pt-4 font-extrabold">
                 <span>Total</span>
-                <span style={{ color: '#006BB1' }}>{proformaData.currency} {proformaData.addVat ? (Math.round(proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0) * 1.18 * 100) / 100).toFixed(2) : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}</span>
+                <span style={{ color: '#006BB1' }}>
+                  {proformaData.currency} {proformaData.addVat 
+                    ? (() => {
+                        const subtotal = proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
+                        const paymentPlanDate = proformaData.paymentPlanDate;
+                        const vatRate = getVatRateForLegacyLead(paymentPlanDate);
+                        const totalWithVat = Math.round(subtotal * (1 + vatRate) * 100) / 100;
+                        return totalWithVat.toFixed(2);
+                      })()
+                    : proformaData.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0)}
+                </span>
               </div>
             </div>
           </div>

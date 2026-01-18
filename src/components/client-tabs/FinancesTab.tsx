@@ -61,6 +61,32 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const year = date.getFullYear();
     return `${day}/${month}/${year}`;
   };
+
+  // Helper function to calculate VAT rate based on date for legacy leads
+  // 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
+  const getVatRateForLegacyLead = (dateString: string | null | undefined): number => {
+    if (!dateString) {
+      // If no date provided, default to 18% (current rate)
+      return 0.18;
+    }
+
+    const paymentDate = new Date(dateString);
+    if (isNaN(paymentDate.getTime())) {
+      // If date is invalid, default to 18%
+      return 0.18;
+    }
+
+    // VAT rate change date: 2025-01-01
+    const vatChangeDate = new Date('2025-01-01T00:00:00');
+
+    // If payment date is before 2025-01-01, use 17% VAT
+    if (paymentDate < vatChangeDate) {
+      return 0.17;
+    }
+
+    // Otherwise, use 18% VAT (for dates on or after 2025-01-01)
+    return 0.18;
+  };
   const { instance } = useMsal();
   const [financePlan, setFinancePlan] = useState<FinancePlan | null>(null);
   const [isLoadingFinancePlan, setIsLoadingFinancePlan] = useState<boolean>(true);
@@ -1161,9 +1187,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               }
               
               // For NIS (currency_id = 1), ensure VAT calculation is correct
-              // If vat_value is 0 or null, calculate it based on the value
+              // If vat_value is 0 or null, calculate it based on the value and date
+              // Use 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
               if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
-                valueVat = Math.round(value * 0.18 * 100) / 100;
+                const paymentDate = plan.date || plan.due_date;
+                const vatRate = getVatRateForLegacyLead(paymentDate);
+                valueVat = Math.round(value * vatRate * 100) / 100;
               }
               
               const paymentTotal = value + valueVat;
@@ -1674,8 +1703,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
             
             // For NIS (currency_id = 1), ensure VAT calculation is correct
+            // Use 17% VAT for dates before 2026-01-01, 18% VAT for dates on or after 2026-01-01
             if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
-              valueVat = Math.round(value * 0.18 * 100) / 100;
+              const paymentDate = plan.date || plan.due_date;
+              const vatRate = getVatRateForLegacyLead(paymentDate);
+              valueVat = Math.round(value * vatRate * 100) / 100;
             }
             
             const paymentTotal = value + valueVat;
