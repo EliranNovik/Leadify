@@ -1121,12 +1121,14 @@ const LeadSearchPage: React.FC = () => {
         if (error) throw error;
         
         const languages = data?.map(language => language.name) || [];
-        setLanguageOptions(languages);
+        // Add "N/A" option to filter for leads with null language_id and language
+        setLanguageOptions([...languages, 'N/A']);
       } catch (error) {
         console.error('Error fetching language options:', error);
         // Fallback to hardcoded options if database fetch fails
+        // Add "N/A" option to filter for leads with null language_id and language
         setLanguageOptions([
-          "English", "Hebrew", "German", "French", "Russian", "Other"
+          "English", "Hebrew", "German", "French", "Russian", "Other", "N/A"
         ]);
       }
     };
@@ -1861,7 +1863,156 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for new leads:', filters.language);
-        newLeadsQuery = newLeadsQuery.in('language', filters.language);
+        
+        // Check if filtering for N/A
+        const hasNAFilter = filters.language.some(lang => 
+          lang.toUpperCase() === 'N/A' || lang === 'N/A'
+        );
+        const nonNALanguages = filters.language.filter(lang => 
+          lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
+        );
+        
+        if (hasNAFilter && nonNALanguages.length === 0) {
+          // Only filtering for N/A - find leads where language_id is null AND language is null/empty/N/A
+          console.log('🌐 Filtering for N/A language (null language_id AND null/empty/N/A language)');
+          // Use chained filters: language_id must be null (this creates an AND condition with subsequent filters)
+          // Then we'll check language field - but we need to ensure BOTH conditions are met
+          // Since Supabase PostgREST doesn't support complex nested AND/OR easily,
+          // we'll filter by language_id first, then handle language null/empty/N/A in the query
+          // The safest approach: filter by language_id null first (main indicator)
+          newLeadsQuery = newLeadsQuery.is('language_id', null);
+          // Then also check that language is null or empty or "N/A"
+          // We can't use .or() after .is() easily, so we'll filter by language_id null first
+          // and accept that this is the primary check. Leads with language_id null but language set
+          // are edge cases that shouldn't exist in normal data.
+          // For strict matching, we'd need to filter client-side or use a custom query
+        } else if (hasNAFilter && nonNALanguages.length > 0) {
+          // Filtering for both N/A and specific languages
+          console.log('🌐 Filtering for both N/A and specific languages:', nonNALanguages);
+          
+          // Map language codes to full names for matching
+          const languageCodeToFullName: Record<string, string> = {
+            'EN': 'English',
+            'ENGLISH': 'English',
+            'HE': 'Hebrew',
+            'HEBREW': 'Hebrew',
+            'DE': 'German',
+            'GERMAN': 'German',
+            'FR': 'French',
+            'FRENCH': 'French',
+            'ES': 'Spanish',
+            'SPANISH': 'Spanish',
+            'RU': 'Russian',
+            'RUSSIAN': 'Russian',
+            'AR': 'Arabic',
+            'ARABIC': 'Arabic',
+            'PT': 'Portuguese',
+            'POR': 'Portuguese',
+            'PORTUGUESE': 'Portuguese',
+          };
+          
+          // Expand filter array to include both codes and full names for non-N/A languages
+          const expandedLanguageFilter = new Set<string>();
+          nonNALanguages.forEach(lang => {
+            const upperLang = lang.toUpperCase();
+            expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
+            expandedLanguageFilter.add(upperLang); // Add uppercase version
+            
+            // If it's a code, also add the full name
+            if (languageCodeToFullName[upperLang]) {
+              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+            }
+            
+            // If it's already a full name, also try to find if it maps to a code
+            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+              if (fullName.toLowerCase() === lang.toLowerCase()) {
+                expandedLanguageFilter.add(code);
+                expandedLanguageFilter.add(fullName);
+              }
+            });
+          });
+          
+          const expandedFilterArray = Array.from(expandedLanguageFilter);
+          
+          // OR condition: (language_id is null OR language is null/N/A) OR language in expanded array
+          // Build OR condition string
+          const orConditions = [
+            'language_id.is.null',
+            'language.is.null',
+            'language.eq.N/A'
+          ];
+          
+          // Add language matches
+          expandedFilterArray.forEach(lang => {
+            orConditions.push(`language.eq.${lang}`);
+          });
+          
+          newLeadsQuery = newLeadsQuery.or(orConditions.join(','));
+          
+          console.log('🌐 Mixed language filter (N/A + specific languages):', {
+            original: filters.language,
+            expanded: expandedFilterArray,
+            orConditions
+          });
+        } else {
+          // Only filtering for specific languages (not N/A) - exclude N/A/null values
+          // Map language codes to full names for matching
+          const languageCodeToFullName: Record<string, string> = {
+            'EN': 'English',
+            'ENGLISH': 'English',
+            'HE': 'Hebrew',
+            'HEBREW': 'Hebrew',
+            'DE': 'German',
+            'GERMAN': 'German',
+            'FR': 'French',
+            'FRENCH': 'French',
+            'ES': 'Spanish',
+            'SPANISH': 'Spanish',
+            'RU': 'Russian',
+            'RUSSIAN': 'Russian',
+            'AR': 'Arabic',
+            'ARABIC': 'Arabic',
+            'PT': 'Portuguese',
+            'POR': 'Portuguese',
+            'PORTUGUESE': 'Portuguese',
+          };
+          
+          // Expand filter array to include both codes and full names
+          const expandedLanguageFilter = new Set<string>();
+          nonNALanguages.forEach(lang => {
+            const upperLang = lang.toUpperCase();
+            expandedLanguageFilter.add(lang); // Add original value (case-sensitive match)
+            expandedLanguageFilter.add(upperLang); // Add uppercase version
+            
+            // If it's a code, also add the full name
+            if (languageCodeToFullName[upperLang]) {
+              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+            }
+            
+            // If it's already a full name, also try to find if it maps to a code
+            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+              if (fullName.toLowerCase() === lang.toLowerCase()) {
+                expandedLanguageFilter.add(code);
+                expandedLanguageFilter.add(fullName);
+              }
+            });
+          });
+          
+          const expandedFilterArray = Array.from(expandedLanguageFilter);
+          console.log('🌐 Expanded language filter (excluding N/A):', {
+            original: filters.language,
+            expanded: expandedFilterArray
+          });
+          
+          // Use in() to match specific languages
+          // Exclude null/empty/N/A language values to prevent matching leads with N/A language
+          // Note: We don't check language_id because some leads might only have language text
+          newLeadsQuery = newLeadsQuery
+            .in('language', expandedFilterArray)
+            .not('language', 'is', null)
+            .neq('language', '')
+            .neq('language', 'N/A');
+        }
       }
       if (filters.status && filters.status.length > 0) {
         console.log('📊 Adding status filter for new leads (Active/Not active):', filters.status);
@@ -2194,12 +2345,121 @@ const LeadSearchPage: React.FC = () => {
       }
       if (filters.language && filters.language.length > 0) {
         console.log('🌐 Adding language filter for legacy leads:', filters.language);
-        if (filters.language.length === 1) {
-          // Single language - use exact match
-          legacyLeadsQuery = legacyLeadsQuery.eq('misc_language.name', filters.language[0]);
+        
+        // Check if filtering for N/A
+        const hasNAFilter = filters.language.some(lang => 
+          lang.toUpperCase() === 'N/A' || lang === 'N/A'
+        );
+        const nonNALanguages = filters.language.filter(lang => 
+          lang.toUpperCase() !== 'N/A' && lang !== 'N/A'
+        );
+        
+        // Map language codes to full names for matching
+        const languageCodeToFullName: Record<string, string> = {
+          'EN': 'English',
+          'ENGLISH': 'English',
+          'HE': 'Hebrew',
+          'HEBREW': 'Hebrew',
+          'DE': 'German',
+          'GERMAN': 'German',
+          'FR': 'French',
+          'FRENCH': 'French',
+          'ES': 'Spanish',
+          'SPANISH': 'Spanish',
+          'RU': 'Russian',
+          'RUSSIAN': 'Russian',
+          'AR': 'Arabic',
+          'ARABIC': 'Arabic',
+          'PT': 'Portuguese',
+          'POR': 'Portuguese',
+          'PORTUGUESE': 'Portuguese',
+        };
+        
+        if (hasNAFilter && nonNALanguages.length === 0) {
+          // Only filtering for N/A - find leads where language_id is null
+          // For legacy leads, language_id is the primary field, so we just check that
+          console.log('🌐 Filtering for N/A language (null language_id) for legacy leads');
+          legacyLeadsQuery = legacyLeadsQuery.is('language_id', null);
+        } else if (hasNAFilter && nonNALanguages.length > 0) {
+          // Filtering for both N/A and specific languages
+          console.log('🌐 Filtering for both N/A and specific languages for legacy leads:', nonNALanguages);
+          
+          // Expand filter array to include both codes and full names for non-N/A languages
+          const expandedLanguageFilter = new Set<string>();
+          nonNALanguages.forEach(lang => {
+            const upperLang = lang.toUpperCase();
+            expandedLanguageFilter.add(lang); // Add original value
+            expandedLanguageFilter.add(upperLang); // Add uppercase version
+            
+            // If it's a code, also add the full name
+            if (languageCodeToFullName[upperLang]) {
+              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+            }
+            
+            // If it's already a full name, also try to find if it maps to a code
+            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+              if (fullName.toLowerCase() === lang.toLowerCase()) {
+                expandedLanguageFilter.add(code);
+                expandedLanguageFilter.add(fullName);
+              }
+            });
+          });
+          
+          const expandedFilterArray = Array.from(expandedLanguageFilter);
+          
+          // OR condition: language_id is null OR misc_language.name in expanded array
+          const orConditions = ['language_id.is.null'];
+          expandedFilterArray.forEach(lang => {
+            orConditions.push(`misc_language.name.eq.${lang}`);
+          });
+          
+          legacyLeadsQuery = legacyLeadsQuery.or(orConditions.join(','));
+          
+          console.log('🌐 Mixed language filter (N/A + specific languages) for legacy leads:', {
+            original: filters.language,
+            expanded: expandedFilterArray,
+            orConditions
+          });
         } else {
-          // Multiple languages - use IN operator for exact matches
-          legacyLeadsQuery = legacyLeadsQuery.in('misc_language.name', filters.language);
+          // Only filtering for specific languages (not N/A) - exclude N/A/null values
+          // Expand filter array to include both codes and full names
+          const expandedLanguageFilter = new Set<string>();
+          nonNALanguages.forEach(lang => {
+            const upperLang = lang.toUpperCase();
+            expandedLanguageFilter.add(lang); // Add original value
+            expandedLanguageFilter.add(upperLang); // Add uppercase version
+            
+            // If it's a code, also add the full name
+            if (languageCodeToFullName[upperLang]) {
+              expandedLanguageFilter.add(languageCodeToFullName[upperLang]);
+            }
+            
+            // If it's already a full name, also try to find if it maps to a code
+            Object.entries(languageCodeToFullName).forEach(([code, fullName]) => {
+              if (fullName.toLowerCase() === lang.toLowerCase()) {
+                expandedLanguageFilter.add(code);
+                expandedLanguageFilter.add(fullName);
+              }
+            });
+          });
+          
+          const expandedFilterArray = Array.from(expandedLanguageFilter);
+          console.log('🌐 Expanded language filter (excluding N/A) for legacy leads:', {
+            original: filters.language,
+            expanded: expandedFilterArray
+          });
+          
+          // Use in() to match specific languages and explicitly exclude null language_id
+          // This prevents matching leads with N/A language
+          if (expandedFilterArray.length === 1) {
+            legacyLeadsQuery = legacyLeadsQuery
+              .eq('misc_language.name', expandedFilterArray[0])
+              .not('language_id', 'is', null);
+          } else {
+            legacyLeadsQuery = legacyLeadsQuery
+              .in('misc_language.name', expandedFilterArray)
+              .not('language_id', 'is', null);
+          }
         }
       }
       if (filters.status && filters.status.length > 0) {
@@ -2768,12 +3028,84 @@ const LeadSearchPage: React.FC = () => {
       };
 
       console.log('🔄 Processing new leads...');
+      
+      // If filtering for N/A only, filter out leads with non-empty language values
+      const hasNAFilterOnly = filters.language && 
+        filters.language.length === 1 && 
+        (filters.language[0].toUpperCase() === 'N/A' || filters.language[0] === 'N/A') &&
+        filters.language.every(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
+      
+      // Filter leads if N/A only filter is active
+      let filteredNewLeads = newLeadsResult.data || [];
+      if (hasNAFilterOnly) {
+        console.log('🌐 Applying client-side N/A filter to new leads');
+        filteredNewLeads = filteredNewLeads.filter(lead => {
+          // language_id must be null AND language must be null/empty/N/A
+          const languageIdNull = lead.language_id === null || lead.language_id === undefined;
+          const languageEmpty = !lead.language || 
+                                lead.language === null || 
+                                lead.language === '' || 
+                                lead.language === 'N/A' ||
+                                String(lead.language).trim() === '';
+          return languageIdNull && languageEmpty;
+        });
+        console.log('🌐 Client-side N/A filter result:', {
+          before: (newLeadsResult.data || []).length,
+          after: filteredNewLeads.length
+        });
+      }
+      
+      // Calculate sublead suffixes for new leads (similar to Clients.tsx)
+      // Group subleads by master_id and calculate suffixes based on id ordering
+      const newSubLeadSuffixMap = new Map<string, number>();
+      const newLeadsWithMaster = filteredNewLeads.filter((l: any) => l.master_id);
+      const newMasterIds = Array.from(new Set(newLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
+      
+      for (const masterId of newMasterIds) {
+        const sameMasterLeads = filteredNewLeads.filter((l: any) => l.master_id?.toString() === masterId);
+        // Sort by id ascending (same as Clients.tsx)
+        sameMasterLeads.sort((a: any, b: any) => {
+          const aId = typeof a.id === 'string' ? parseInt(a.id) || 0 : (a.id || 0);
+          const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
+          return aId - bId;
+        });
+        
+        sameMasterLeads.forEach((lead: any, index: number) => {
+          const leadKey = lead.id?.toString();
+          if (leadKey) {
+            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+            newSubLeadSuffixMap.set(leadKey, index + 2);
+          }
+        });
+      }
+      
       // Map new leads with proper category formatting and role information
-      let mappedNewLeads = (newLeadsResult.data || []).map(lead => {
+      let mappedNewLeads = filteredNewLeads.map(lead => {
         const anyLead = lead as any;
-        // Display logic similar to MyCasesPage: prefer manual_id, then lead_number, then id
-        const displayLeadNumber =
-          anyLead.manual_id || anyLead.lead_number || anyLead.id?.toString?.() || '';
+        
+        // Format lead number with sublead handling (similar to Clients.tsx)
+        let displayLeadNumber: string;
+        if (anyLead.master_id) {
+          // It's a sublead - format as master_id/suffix
+          // If lead_number already has a /, use it; otherwise calculate suffix
+          if (anyLead.lead_number && String(anyLead.lead_number).includes('/')) {
+            displayLeadNumber = anyLead.lead_number;
+          } else {
+            // Calculate suffix based on position in ordered list of subleads with same master_id
+            const leadKey = anyLead.id?.toString();
+            const suffix = leadKey ? newSubLeadSuffixMap.get(leadKey) : undefined;
+            
+            // Find the master lead to get its lead_number or manual_id
+            const masterLead = filteredNewLeads.find((l: any) => l.id === anyLead.master_id);
+            const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || anyLead.master_id?.toString() || '';
+            
+            // Use calculated suffix if available, otherwise default to /2
+            displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
+          }
+        } else {
+          // It's a master lead or standalone lead
+          displayLeadNumber = anyLead.manual_id || anyLead.lead_number || anyLead.id?.toString?.() || '';
+        }
 
         return {
           ...lead,
@@ -2853,8 +3185,52 @@ const LeadSearchPage: React.FC = () => {
         console.log('⚠️ Failed to load source/stage/category/employee mapping:', error);
       }
       
+      // If filtering for N/A only, filter out legacy leads with non-null language_id
+      const hasNAFilterOnlyLegacy = filters.language && 
+        filters.language.length === 1 && 
+        (filters.language[0].toUpperCase() === 'N/A' || filters.language[0] === 'N/A') &&
+        filters.language.every(lang => lang.toUpperCase() === 'N/A' || lang === 'N/A');
+      
+      // Filter legacy leads if N/A only filter is active
+      let filteredLegacyLeads = legacyLeadsResult.data || [];
+      if (hasNAFilterOnlyLegacy) {
+        console.log('🌐 Applying client-side N/A filter to legacy leads');
+        filteredLegacyLeads = filteredLegacyLeads.filter(lead => {
+          // For legacy leads, language_id must be null
+          return lead.language_id === null || lead.language_id === undefined;
+        });
+        console.log('🌐 Client-side N/A filter result for legacy leads:', {
+          before: (legacyLeadsResult.data || []).length,
+          after: filteredLegacyLeads.length
+        });
+      }
+      
+      // Calculate sublead suffixes for legacy leads (similar to Clients.tsx)
+      // Group subleads by master_id and calculate suffixes based on id ordering
+      const legacySubLeadSuffixMap = new Map<string, number>();
+      const legacyLeadsWithMaster = filteredLegacyLeads.filter((l: any) => l.master_id);
+      const legacyMasterIds = Array.from(new Set(legacyLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
+      
+      for (const masterId of legacyMasterIds) {
+        const sameMasterLeads = filteredLegacyLeads.filter((l: any) => l.master_id?.toString() === masterId);
+        // Sort by id ascending (same as Clients.tsx)
+        sameMasterLeads.sort((a: any, b: any) => {
+          const aId = typeof a.id === 'string' ? parseInt(a.id) || 0 : (a.id || 0);
+          const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
+          return aId - bId;
+        });
+        
+        sameMasterLeads.forEach((lead: any, index: number) => {
+          const leadKey = lead.id?.toString();
+          if (leadKey) {
+            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+            legacySubLeadSuffixMap.set(leadKey, index + 2);
+          }
+        });
+      }
+      
       // Map legacy leads to match new leads format using joined data
-      let mappedLegacyLeads = (legacyLeadsResult.data || []).map(legacyLead => {
+      let mappedLegacyLeads = filteredLegacyLeads.map(legacyLead => {
         const sourceName = legacyLead.source_id ? 
           sourceMapping.get(legacyLead.source_id) || legacyLead.source_external_id || 'Unknown' :
           legacyLead.source_external_id || 'Unknown';
@@ -2878,12 +3254,33 @@ const LeadSearchPage: React.FC = () => {
           case_handler: getEmployeeName(legacyLead.case_handler_id),
         };
           
-        // Display logic similar to MyCasesPage: prefer manual_id, then lead_number, then id
-        const displayLeadNumber =
-          (legacyLead as any).manual_id ||
-          legacyLead.lead_number ||
-          legacyLead.id?.toString?.() ||
-          '';
+        // Format lead number with sublead handling (similar to Clients.tsx)
+        let displayLeadNumber: string;
+        const legacyLeadAny = legacyLead as any;
+        if (legacyLeadAny.master_id) {
+          // It's a sublead - format as master_id/suffix
+          // If lead_number already has a /, use it; otherwise calculate suffix
+          if (legacyLead.lead_number && String(legacyLead.lead_number).includes('/')) {
+            displayLeadNumber = legacyLead.lead_number;
+          } else {
+            // Calculate suffix based on position in ordered list of subleads with same master_id
+            const leadKey = legacyLead.id?.toString();
+            const suffix = leadKey ? legacySubLeadSuffixMap.get(leadKey) : undefined;
+            
+            // Find the master lead to get its lead_number or manual_id
+            const masterLead = filteredLegacyLeads.find((l: any) => l.id === legacyLeadAny.master_id);
+            const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || legacyLeadAny.master_id?.toString() || '';
+            
+            // Use calculated suffix if available, otherwise default to /2
+            displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
+          }
+        } else {
+          // It's a master lead or standalone lead
+          displayLeadNumber = legacyLeadAny.manual_id ||
+            legacyLead.lead_number ||
+            legacyLead.id?.toString?.() ||
+            '';
+        }
 
         return {
           // Basic Info

@@ -1,33 +1,9 @@
-import { supabase } from './supabase';
-import { generateSearchVariants } from './transliteration';
+import { supabase } from "./supabase";
+import { generateSearchVariants } from "./transliteration";
 
 // -----------------------------------------------------
 // Types
 // -----------------------------------------------------
-
-export interface LegacyLead {
-  id: bigint;
-  cdate: string | null;
-  name: string | null;
-  email: string | null;
-  phone: string | null;
-  mobile: string | null;
-  topic: string | null;
-  stage: bigint | null;
-  lead_number: bigint | null;
-}
-
-export interface NewLead {
-  id: string;
-  lead_number: string;
-  name: string;
-  email: string;
-  phone: string;
-  mobile: string;
-  topic: string;
-  stage: string;
-  created_at: string;
-}
 
 export interface CombinedLead {
   id: string;
@@ -49,1617 +25,766 @@ export interface CombinedLead {
   category: string;
   language: string;
   balance: string;
-  lead_type: 'legacy' | 'new';
+  lead_type: "legacy" | "new";
   unactivation_reason: string | null;
   deactivate_note: string | null;
   isFuzzyMatch: boolean;
   isContact?: boolean;
   contactName?: string;
   isMainContact?: boolean;
-  status?: number | string | null; // For legacy: number (0=active, 10=inactive), for new: string ('active'|'inactive') or null
+  status?: number | string | null;
+}
+
+type SearchIntent =
+  | { kind: "email"; email: string }
+  | { kind: "lead"; raw: string; digits: string; hasPrefix: boolean; master: number | null; suffix: number | null }
+  | { kind: "phone"; digits: string; raw: string }
+  | { kind: "name"; raw: string; variants: string[] };
+
+type SearchOptions = {
+  limit?: number;
+  contactsLimit?: number;
+  leadsLimit?: number;
+  legacyLimit?: number;
+  timeoutMs?: number;
+};
+
+const DEFAULTS: Required<SearchOptions> = {
+  limit: 40, // Reduced from 60 for faster queries
+  contactsLimit: 30, // Reduced from 50 for faster queries
+  leadsLimit: 25, // Reduced from 40 for faster queries
+  legacyLimit: 25, // Reduced from 40 for faster queries
+  timeoutMs: 1500, // Reduced from 3500ms to 1.5s for faster response
+};
+
+// -----------------------------------------------------
+// Helpers
+// -----------------------------------------------------
+
+const normalize = (s: string) => s.trim();
+const lower = (s: string) => s.trim().toLowerCase();
+const digitsOnly = (s: string) => s.replace(/\D/g, "");
+const looksLikeEmail = (s: string) => s.includes("@");
+const hasLeadPrefix = (s: string) => /^[LC]/i.test(s.trim());
+const stripLeadPrefix = (s: string) => s.trim().replace(/^[LC]/i, "");
+
+function parseSubLead(raw: string): { master: number | null; suffix: number | null } {
+  const t = raw.trim();
+  if (!t.includes("/")) return { master: null, suffix: null };
+  const parts = t.split("/");
+  if (parts.length !== 2) return { master: null, suffix: null };
+  const masterPart = parts[0].replace(/^[LC]/i, "");
+  const suffixPart = parts[1];
+  const master = parseInt(masterPart, 10);
+  const suffix = parseInt(suffixPart, 10);
+  if (Number.isNaN(master) || Number.isNaN(suffix)) return { master: null, suffix: null };
+  return { master, suffix };
+}
+
+/**
+ * Phone pattern builder with strict suffix matching.
+ * Matches from the END of phone numbers only, never from the middle.
+ * 
+ * Rules:
+ * - Strip everything to digits only
+ * - Normalize leading zero variants
+ * - Match only suffixes (endsWith logic, not contains)
+ * - Require minimum length (5-6 digits)
+ * 
+ * Example:
+ * - Search "7825" on "972507825939" → NO match (middle fragment)
+ * - Search "507825939" on "972507825939" → Match (suffix)
+ * - Search "07825939" on "972507825939" → Match (with leading zero variant)
+ */
+function buildPhoneOr(digits: string): string {
+  const d = digitsOnly(digits);
+  
+  // Require minimum length: 5-6 digits for meaningful suffix matching
+  // Shorter queries can match too many false positives
+  if (d.length < 5) return "";
+  
+  const patterns: string[] = [];
+  
+  // Normalize leading zero: handle both with and without leading zero
+  const hadZero = d.startsWith("0");
+  const noZero = hadZero ? d.slice(1) : d;
+  const withZero = hadZero ? d : `0${d}`;
+  
+  // Only use the full search string (not fragments)
+  // This ensures we match suffixes, not middle fragments
+  // Use both with/without leading zero variants
+  if (noZero.length >= 5 && noZero.length <= 15) {
+    patterns.push(noZero);
+  }
+  if (withZero.length >= 6 && withZero.length <= 16 && withZero !== noZero) {
+    patterns.push(withZero);
+  }
+  
+  const uniq = Array.from(new Set(patterns)).filter((p) => p.length >= 5);
+  if (uniq.length === 0) return "";
+  
+  // Use suffix matching: %pattern (no trailing %) means "ends with"
+  // This prevents middle-of-number matches
+  const clauses = uniq.flatMap((p) => [`phone.ilike.%${p}`, `mobile.ilike.%${p}`]);
+  return clauses.join(",");
+}
+
+/**
+ * Decide intent with stable rules and minimal ambiguity.
+ */
+function detectIntent(query: string): SearchIntent | null {
+  const raw = normalize(query);
+  if (!raw) return null;
+
+  if (looksLikeEmail(raw)) {
+    return { kind: "email", email: lower(raw) };
+  }
+
+  const d = digitsOnly(raw);
+  const hasPrefix = hasLeadPrefix(raw);
+  const rawNoPrefix = stripLeadPrefix(raw);
+
+  const { master, suffix } = parseSubLead(raw);
+
+  // Lead intent triggers:
+  // - explicit prefix L/C
+  // - contains "/" (sub-lead)
+  // - pure numeric length 1-6 and not phone-like
+  const isPureNumeric = rawNoPrefix.length > 0 && /^\d+$/.test(rawNoPrefix) && rawNoPrefix === d;
+  const startsWithZero = d.startsWith("0") && d.length >= 4;
+
+  const leadLike = hasPrefix || raw.includes("/") || (isPureNumeric && d.length <= 6 && !startsWithZero);
+
+  if (leadLike) {
+    return { kind: "lead", raw, digits: rawNoPrefix, hasPrefix, master, suffix };
+  }
+
+  // Phone intent triggers:
+  // - starts with 0 and 4+ digits
+  // - 7+ digits always phone
+  // - formatted numbers (raw length > digits length) with 4+ digits
+  const formatted = raw.length > d.length;
+  const phoneLike = (startsWithZero && d.length >= 4) || d.length >= 7 || (formatted && d.length >= 4);
+
+  if (phoneLike) {
+    return { kind: "phone", digits: d, raw };
+  }
+
+  // Default name intent
+  const variants = generateSearchVariants(raw).map((v) => v.trim().toLowerCase()).filter(Boolean);
+  const uniqVariants = Array.from(new Set(variants.length ? variants : [lower(raw)]));
+  return { kind: "name", raw, variants: uniqVariants };
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, msg: string): Promise<T> {
+  return Promise.race([
+    p,
+    new Promise<T>((_, reject) => setTimeout(() => reject(new Error(msg)), ms)),
+  ]) as Promise<T>;
 }
 
 // -----------------------------------------------------
-// Utilities
+// Query functions (small and predictable)
 // -----------------------------------------------------
 
-const normalizeQuery = (q: string) => q.trim().toLowerCase();
-const getDigits = (q: string) => q.replace(/\D/g, '');
-const looksLikeEmail = (q: string) => q.includes('@');
-const stripLeadPrefix = (q: string) => q.replace(/^[LC]/i, '');
+async function searchNewLeads(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+  const selectFields = "id, lead_number, name, email, phone, mobile, topic, stage, created_at, status";
 
-// Build phone search OR condition - match by last 6-8 digits
-// Phone numbers are stored WITH country code (could be any country code), 
-// sometimes with "050" after it, sometimes just "50"
-// Examples: "972507825939", "1507825939", "9720507825939", etc.
-// User might search: "0507825939" or "507825939"
-const buildPhoneSearchOrCondition = (digits: string): string => {
-  if (!digits || digits.length < 4) {
-    return ''; // Need at least 4 digits for meaningful search
-  }
-  
-  let searchDigits = digits;
-  const hadLeadingZero = searchDigits.startsWith('0');
-  const normalizedDigits = hadLeadingZero ? searchDigits.slice(1) : searchDigits;
-  
-  const patterns: string[] = [];
-  const minLength = 4; // Minimum 4 digits for meaningful matches
-  
-  // Strategy: Generate patterns that match numbers stored as:
-  // - "XXX507825939" (country code + number without leading zero)
-  // - "XXX0507825939" (country code + number with leading zero)
-  // - "0507825939" (stored without country code)
-  
-  // Pattern 1: Last digits of normalized (without leading zero) - MOST RELIABLE
-  // These match the end of numbers stored as "XXX507825939"
-  // Generate last 8, 7, 6, 5, 4 digits
-  for (let len = Math.min(normalizedDigits.length, 8); len >= minLength; len--) {
-    patterns.push(normalizedDigits.slice(-len));
-  }
-  
-  // Pattern 2: Full normalized number (matches "XXX507825939" after country code)
-  if (normalizedDigits.length >= minLength) {
-    patterns.push(normalizedDigits);
-  }
-  
-  // Pattern 3: If user searched with leading zero, also search for patterns WITH zero
-  if (hadLeadingZero && searchDigits.length >= minLength) {
-    // Full pattern with zero (matches "XXX0507825939" after country code, or stored as-is)
-    patterns.push(searchDigits);
-    
-    // Last digits with zero (for numbers like "XXX0507825939")
-    // Generate patterns from the full search digits
-    for (let len = Math.min(searchDigits.length, 10); len >= minLength; len--) {
-      patterns.push(searchDigits.slice(-len));
+  let qb = supabase.from("leads").select(selectFields);
+
+  if (intent.kind === "lead") {
+    const searchDigits = intent.digits || stripLeadPrefix(intent.raw);
+    const baseOr = [
+      `lead_number.ilike.${searchDigits}%`,
+      `lead_number.ilike.L${searchDigits}%`,
+      `lead_number.ilike.C${searchDigits}%`,
+    ].join(",");
+
+    qb = qb.or(baseOr);
+
+    // sub-lead: also match master/xxx
+    if (intent.master != null) {
+      qb = qb.or(
+        [
+          `lead_number.ilike.%${intent.master}/%`,
+          `lead_number.ilike.L%${intent.master}/%`,
+          `lead_number.ilike.C%${intent.master}/%`,
+        ].join(","),
+      );
     }
-    
-    // Also generate patterns starting from position 1 (after the zero)
-    // This helps match "XXX507825939" when searching "0507825939"
-    if (normalizedDigits.length >= minLength) {
-      for (let len = Math.min(normalizedDigits.length, 8); len >= minLength; len--) {
-        patterns.push(normalizedDigits.slice(-len));
+  } else if (intent.kind === "email") {
+    qb = qb.ilike("email", `${intent.email}%`);
+  } else if (intent.kind === "phone") {
+    const cond = buildPhoneOr(intent.digits);
+    if (!cond) return [];
+    qb = qb.or(cond);
+  } else if (intent.kind === "name") {
+    // Starts-with is fast and avoids scanning everything
+    if (intent.variants.length > 1) {
+      qb = qb.or(intent.variants.map((v) => `name.ilike.${v}%`).join(","));
+    } else {
+      qb = qb.ilike("name", `${intent.variants[0]}%`);
+    }
+  }
+
+  const { data, error } = await withTimeout(qb.limit(opts.leadsLimit), opts.timeoutMs, "new leads search timeout").catch(
+    () => ({ data: [], error: null as any }),
+  );
+
+  if (error || !data) return [];
+  return data;
+}
+
+async function searchContacts(intent: SearchIntent, opts: Required<SearchOptions>): Promise<any[]> {
+  // For very short name searches, contacts search is expensive and noisy.
+  if (intent.kind === "name" && intent.raw.trim().length < 2) return [];
+
+  let qb = supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id");
+
+  if (intent.kind === "email") {
+    // Use prefix matching instead of contains to avoid matching middle of emails
+    // This prevents matches like "john123@example.com" when searching "john@example.com"
+    qb = qb.ilike("email", `${intent.email}%`);
+  } else if (intent.kind === "phone") {
+    const cond = buildPhoneOr(intent.digits);
+    if (!cond) return [];
+    qb = qb.or(cond);
+  } else if (intent.kind === "name") {
+    if (intent.variants.length > 1) {
+      qb = qb.or(intent.variants.map((v) => `name.ilike.%${v}%`).join(","));
+    } else {
+      qb = qb.ilike("name", `%${intent.variants[0]}%`);
+    }
+  } else if (intent.kind === "lead") {
+    // When searching by lead number, contacts are obtained via junction,
+    // so here we return empty and do the junction-based flow.
+    return [];
+  }
+
+  const { data, error } = await withTimeout(qb.limit(opts.contactsLimit), opts.timeoutMs, "contacts search timeout").catch(
+    () => ({ data: [], error: null as any }),
+  );
+
+  if (error || !data) return [];
+  return data;
+}
+
+/**
+ * Junction-based contact discovery when lead number is searched.
+ * Finds contact ids linked to new leads and legacy leads.
+ */
+async function findContactsForLeadSearch(
+  leadIntent: Extract<SearchIntent, { kind: "lead" }>,
+  newLeadRows: any[],
+  opts: Required<SearchOptions>,
+): Promise<{ rels: any[]; contacts: any[]; legacyLeads: any[] }> {
+  const rels: any[] = [];
+  const contacts: any[] = [];
+  const legacyLeads: any[] = [];
+
+  const newLeadIds = newLeadRows.map((l) => l.id).filter(Boolean);
+
+  // legacy: try exact id only for 1-6 digits
+  const legacyExactId = (() => {
+    const base = leadIntent.master != null ? String(leadIntent.master) : stripLeadPrefix(leadIntent.raw).split("/")[0];
+    if (!base) return null;
+    if (!/^\d+$/.test(base)) return null;
+    if (base.length > 6) return null;
+    return parseInt(base, 10);
+  })();
+
+  // Fetch legacy lead exact match (safe, no range scanning)
+  if (legacyExactId != null && !Number.isNaN(legacyExactId)) {
+    const { data } = await withTimeout(
+      supabase
+        .from("leads_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .eq("id", legacyExactId)
+        .limit(1),
+      opts.timeoutMs,
+      "legacy exact search timeout",
+    ).catch(() => ({ data: [] as any[] }));
+
+    if (data && data.length) legacyLeads.push(...data);
+  }
+
+  // Junction queries
+  const junctionQueries: Promise<any>[] = [];
+
+  if (newLeadIds.length) {
+    junctionQueries.push(
+      supabase
+        .from("lead_leadcontact")
+        .select("contact_id, newlead_id, lead_id, main")
+        .in("newlead_id", newLeadIds)
+        .limit(150), // Reduced from 250 for faster queries
+    );
+  }
+
+  // If legacy lead exact found, pull its contacts as well
+  if (legacyLeads.length) {
+    const legacyIds = legacyLeads.map((l) => l.id);
+    junctionQueries.push(
+      supabase
+        .from("lead_leadcontact")
+        .select("contact_id, newlead_id, lead_id, main")
+        .in("lead_id", legacyIds)
+        .limit(150), // Reduced from 250 for faster queries
+    );
+  }
+
+  const junctionResults = await Promise.all(junctionQueries);
+  junctionResults.forEach((r) => {
+    if (r?.data) rels.push(...r.data);
+  });
+
+  const contactIds = Array.from(new Set(rels.map((x) => x.contact_id).filter(Boolean)));
+
+  if (contactIds.length) {
+    const { data } = await withTimeout(
+      supabase.from("leads_contact").select("id, name, email, phone, mobile, newlead_id").in("id", contactIds).limit(opts.contactsLimit),
+      opts.timeoutMs,
+      "contacts fetch for lead search timeout",
+    ).catch(() => ({ data: [] as any[] }));
+    if (data) contacts.push(...data);
+  }
+
+  return { rels, contacts, legacyLeads };
+}
+
+async function fetchNewLeadsByIds(ids: string[], opts: Required<SearchOptions>): Promise<any[]> {
+  if (!ids.length) return [];
+  const { data, error } = await withTimeout(
+    supabase
+      .from("leads")
+      .select("id, lead_number, topic, stage, created_at, status")
+      .in("id", ids)
+      .limit(opts.leadsLimit),
+    opts.timeoutMs,
+    "fetch new leads by ids timeout",
+  ).catch(() => ({ data: [], error: null as any }));
+  if (error || !data) return [];
+  return data;
+}
+
+async function fetchLegacyLeadsByIds(ids: number[], opts: Required<SearchOptions>): Promise<any[]> {
+  if (!ids.length) return [];
+  const { data, error } = await withTimeout(
+    supabase
+      .from("leads_lead")
+      .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+      .in("id", ids)
+      .limit(opts.legacyLimit),
+    opts.timeoutMs,
+    "fetch legacy leads by ids timeout",
+  ).catch(() => ({ data: [], error: null as any }));
+  if (error || !data) return [];
+  return data;
+}
+
+// -----------------------------------------------------
+// Mapping and ranking
+// -----------------------------------------------------
+
+function mapNewLeadRow(row: any): CombinedLead {
+  return {
+    id: String(row.id),
+    lead_number: row.lead_number || "",
+    manual_id: row.lead_number || null,
+    name: row.name || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    mobile: row.mobile || "",
+    topic: row.topic || "",
+    stage: String(row.stage ?? ""),
+    source: "",
+    created_at: row.created_at || "",
+    updated_at: row.created_at || "",
+    notes: "",
+    special_notes: "",
+    next_followup: "",
+    probability: "",
+    category: "",
+    language: "",
+    balance: "",
+    lead_type: "new",
+    unactivation_reason: null,
+    deactivate_note: null,
+    isFuzzyMatch: false,
+    status: row.status ?? null,
+  };
+}
+
+function mapLegacyLeadRow(row: any): CombinedLead {
+  const leadNumber = row.master_id ? `${row.master_id}` : String(row.id);
+  return {
+    id: String(row.id),
+    lead_number: leadNumber,
+    manual_id: leadNumber,
+    name: row.name || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    mobile: row.mobile || "",
+    topic: row.topic || "",
+    stage: String(row.stage ?? ""),
+    source: "",
+    created_at: row.cdate || "",
+    updated_at: row.cdate || "",
+    notes: "",
+    special_notes: "",
+    next_followup: "",
+    probability: "",
+    category: "",
+    language: "",
+    balance: "",
+    lead_type: "legacy",
+    unactivation_reason: null,
+    deactivate_note: null,
+    isFuzzyMatch: false,
+    status: row.status ?? null,
+  };
+}
+
+function scoreResult(intent: SearchIntent, r: CombinedLead): number {
+  // Higher score = better
+  const qRaw = intent.kind === "email" ? intent.email : lower(intent.kind === "phone" ? intent.raw : intent.raw);
+  const qDigits = intent.kind === "phone" ? digitsOnly(intent.digits) : digitsOnly(intent.kind === "lead" ? intent.digits : "");
+  const name = lower(r.contactName || r.name || "");
+  const email = lower(r.email || "");
+  const phone = digitsOnly(r.phone || "");
+  const mobile = digitsOnly(r.mobile || "");
+  const leadNum = lower(String(r.lead_number || ""));
+
+  let s = 0;
+
+  // Base: prefer lead itself over contact entry
+  if (!r.isContact) s += 5;
+  if (r.isMainContact) s += 2;
+
+  // Intent-specific scoring
+  // For email: only exact matches or starts-with matches count as high scores
+  // Contains matches (middle of email) are too lenient and create false direct matches
+  if (intent.kind === "email") {
+    if (email === qRaw) s += 100;
+    else if (email.startsWith(qRaw)) s += 70;
+    // Removed includes() check - it was too lenient and matched emails with different letters/numbers
+  } else if (intent.kind === "lead") {
+    const q = lower(intent.raw);
+    const qNoPrefix = lower(stripLeadPrefix(intent.raw));
+    if (leadNum === q || leadNum === qNoPrefix) s += 100;
+    else if (leadNum.startsWith(qNoPrefix)) s += 70;
+    else if (leadNum.includes(qNoPrefix)) s += 40;
+  } else if (intent.kind === "phone") {
+    if (qDigits && (phone === qDigits || mobile === qDigits)) s += 100;
+    else if (qDigits && (phone.endsWith(qDigits) || mobile.endsWith(qDigits))) s += 70;
+    else if (qDigits && (phone.includes(qDigits) || mobile.includes(qDigits))) s += 40;
+  } else {
+    const q = lower(intent.raw);
+    if (name === q) s += 80;
+    else if (name.startsWith(q)) s += 55;
+    else if (name.includes(q)) s += 35;
+  }
+
+  // Slight prefer newer leads if tie
+  const t = Date.parse(r.created_at || "") || 0;
+  s += Math.min(10, Math.floor(t / 1e12)); // tiny stable bias
+
+  return s;
+}
+
+function markFuzzy(intent: SearchIntent, r: CombinedLead): boolean {
+  // Fuzzy means "not exact and not a clean prefix"
+  const q = lower(intent.kind === "email" ? intent.email : intent.raw);
+  const nm = lower(r.contactName || r.name || "");
+  const em = lower(r.email || "");
+  const ld = lower(String(r.lead_number || ""));
+  const qDigits = digitsOnly(intent.kind === "phone" ? intent.digits : intent.kind === "lead" ? intent.digits : "");
+  const pd = digitsOnly(r.phone || "");
+  const md = digitsOnly(r.mobile || "");
+
+  // For email: mark as fuzzy if not exact match or starts-with match
+  // Removed includes() check - it was too lenient
+  if (intent.kind === "email") return !(em === q || em.startsWith(q));
+  if (intent.kind === "lead") {
+    const qNo = lower(stripLeadPrefix(intent.raw));
+    return !(ld === q || ld === qNo || ld.startsWith(qNo));
+  }
+  if (intent.kind === "phone") return !(qDigits && (pd.includes(qDigits) || md.includes(qDigits)));
+  return !(nm === q || nm.startsWith(q));
+}
+
+// -----------------------------------------------------
+// Main Search (public)
+// -----------------------------------------------------
+
+export async function searchLeads(query: string, options: SearchOptions = {}): Promise<CombinedLead[]> {
+  const opts = { ...DEFAULTS, ...options };
+  const intent = detectIntent(query);
+  if (!intent) return [];
+
+  // Very short queries: return only fast new lead prefix matches
+  if (intent.kind === "name" && intent.raw.trim().length < 2) {
+    const rows = await searchNewLeads(intent, opts);
+    const mapped = rows.map(mapNewLeadRow);
+    mapped.forEach((r) => (r.isFuzzyMatch = markFuzzy(intent, r)));
+    return mapped.slice(0, opts.limit);
+  }
+
+  // 1) Search new leads (always) - parallelize with contacts for non-lead searches
+  let newRows: any[];
+  let contactRows: any[] = [];
+  let rels: any[] = [];
+  let legacyDirectRows: any[] = [];
+
+  if (intent.kind === "lead") {
+    // For lead search: search new leads first, then get contacts via junction
+    newRows = await searchNewLeads(intent, opts);
+    const leadFlow = await findContactsForLeadSearch(intent, newRows, opts);
+    contactRows = leadFlow.contacts;
+    rels = leadFlow.rels;
+    legacyDirectRows = leadFlow.legacyLeads;
+  } else {
+    // For non-lead searches: parallelize new leads and contacts search
+    const [newRowsResult, contactRowsResult] = await Promise.all([
+      searchNewLeads(intent, opts),
+      searchContacts(intent, opts),
+    ]);
+    newRows = newRowsResult;
+    contactRows = contactRowsResult;
+
+    // Junction to collect legacy and extra new leads for found contacts
+    const contactIds = contactRows.map((c) => c.id).filter(Boolean);
+    if (contactIds.length) {
+      const { data } = await withTimeout(
+        supabase
+          .from("lead_leadcontact")
+          .select("contact_id, newlead_id, lead_id, main")
+          .in("contact_id", contactIds)
+          .limit(150), // Reduced from 300 for faster queries
+        opts.timeoutMs,
+        "junction search timeout",
+      ).catch(() => ({ data: [] as any[] }));
+      rels = data || [];
+    }
+  }
+
+  // 3) Fetch missing leads from ids collected via contacts and junction
+  const directNewIds = Array.from(new Set(contactRows.map((c) => c.newlead_id).filter(Boolean)));
+  const junctionNewIds = Array.from(new Set(rels.map((r) => r.newlead_id).filter(Boolean)));
+  const allNewIds = Array.from(new Set([...newRows.map((r: any) => r.id), ...directNewIds, ...junctionNewIds]));
+
+  const junctionLegacyIds = Array.from(new Set(rels.map((r) => r.lead_id).filter((x) => x != null))) as number[];
+  const legacyIds = Array.from(new Set([...legacyDirectRows.map((l: any) => l.id), ...junctionLegacyIds]));
+
+  const [newLeadsExtra, legacyLeadsFetched] = await Promise.all([
+    fetchNewLeadsByIds(allNewIds.filter(Boolean), opts),
+    fetchLegacyLeadsByIds(legacyIds.filter((x) => typeof x === "number"), opts),
+  ]);
+
+  // Maps
+  const newMap = new Map<string, any>(newLeadsExtra.map((l: any) => [l.id, l]));
+  const legacyMap = new Map<number, any>(legacyLeadsFetched.map((l: any) => [l.id, l]));
+
+  const relByContact = new Map<string, any[]>();
+  rels.forEach((r: any) => {
+    if (!r.contact_id) return;
+    const key = String(r.contact_id);
+    if (!relByContact.has(key)) relByContact.set(key, []);
+    relByContact.get(key)!.push(r);
+  });
+
+  // 4) Build results
+  const results: CombinedLead[] = [];
+  const seen = new Set<string>();
+
+  // Add new leads directly found (lead rows)
+  newRows.forEach((row: any) => {
+    const l = newMap.get(row.id) || row;
+    const r = mapNewLeadRow(l);
+    const key = `new:${r.id}:lead`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      results.push(r);
+    }
+  });
+
+  // Add results from contacts and junction
+  contactRows.forEach((c: any) => {
+    const contactId = String(c.id);
+    const relList = relByContact.get(contactId) || [];
+
+    // Direct new lead relation
+    if (c.newlead_id && newMap.has(c.newlead_id)) {
+      const l = newMap.get(c.newlead_id);
+      const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
+      r.isContact = true;
+      r.contactName = c.name || "";
+      r.isMainContact = false;
+
+      const key = `new:${r.id}:contact:${contactId}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        results.push(r);
       }
     }
-  }
-  
-  // Pattern 4: If user searched WITHOUT leading zero, also try with zero prefix
-  if (!hadLeadingZero && searchDigits.length >= minLength) {
-    const withZeroPrefix = '0' + searchDigits;
-    // Full pattern with zero prefix (matches "XXX0507825939" after country code)
-    patterns.push(withZeroPrefix);
-    
-    // Last digits with zero prefix
-    for (let len = Math.min(withZeroPrefix.length, 10); len >= minLength + 1; len--) {
-      patterns.push(withZeroPrefix.slice(-len));
-    }
-    
-    // Full normalized (matches "XXX507825939" after country code)
-    patterns.push(searchDigits);
-  }
-  
-  // Pattern 5: Full search query as-is (in case stored without country code)
-  if (searchDigits.length >= minLength) {
-    patterns.push(searchDigits);
-  }
-  
-  // Remove duplicates and filter out patterns that are too short
-  const uniquePatterns = Array.from(new Set(patterns.filter(p => p && p.length >= minLength)));
-  
-  if (uniquePatterns.length === 0) {
-    return '';
-  }
-  
-  // Build OR condition: search for all patterns in both phone and mobile columns
-  // Using contains search (%pattern%) to find the digits anywhere in the number
-  const conditions = uniquePatterns.flatMap(pattern => [
-    `phone.ilike.%${pattern}%`,
-    `mobile.ilike.%${pattern}%`
-  ]);
-  
-  return conditions.join(',');
-};
 
-const withTimeout = async <T>(
-  promise: Promise<T>,
-  timeoutMs: number,
-  errorMessage: string,
-): Promise<T> => {
-  return Promise.race([
-    promise,
-    new Promise<T>((_, reject) =>
-      setTimeout(() => reject(new Error(errorMessage)), timeoutMs),
-    ),
-  ]) as Promise<T>;
-};
+    // Junction relations
+    relList.forEach((rel: any) => {
+      const isMain = rel.main === true || rel.main === "true";
+
+      if (rel.newlead_id && newMap.has(rel.newlead_id)) {
+        const l = newMap.get(rel.newlead_id);
+        const r = mapNewLeadRow({ ...l, name: c.name, email: c.email, phone: c.phone, mobile: c.mobile });
+        r.isContact = !isMain;
+        r.contactName = c.name || "";
+        r.isMainContact = isMain;
+
+        const key = `new:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push(r);
+        }
+      }
+
+      if (rel.lead_id != null) {
+        const legacy = legacyMap.get(rel.lead_id);
+        const r = legacy ? mapLegacyLeadRow(legacy) : mapLegacyLeadRow({ id: rel.lead_id });
+        // attach contact data for display
+        r.name = c.name || r.name;
+        r.email = c.email || r.email;
+        r.phone = c.phone || r.phone;
+        r.mobile = c.mobile || r.mobile;
+
+        r.isContact = !isMain;
+        r.contactName = c.name || "";
+        r.isMainContact = isMain;
+
+        const key = `legacy:${r.id}:contact:${contactId}:main:${isMain ? "1" : "0"}`;
+        if (!seen.has(key)) {
+          seen.add(key);
+          results.push(r);
+        }
+      }
+    });
+  });
+
+  // 5) Add legacy lead itself if found (even if no contacts)
+  legacyLeadsFetched.forEach((l: any) => {
+    const r = mapLegacyLeadRow(l);
+    const key = `legacy:${r.id}:lead`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      results.push(r);
+    }
+  });
+
+  // 6) Rank and mark fuzzy
+  results.forEach((r) => {
+    r.isFuzzyMatch = markFuzzy(intent, r);
+  });
+
+  results.sort((a, b) => scoreResult(intent, b) - scoreResult(intent, a));
+
+  return results.slice(0, opts.limit);
+}
 
 // -----------------------------------------------------
-// Fetch all leads
+// Fetch All Leads (for navigation to latest lead)
 // -----------------------------------------------------
 
 export async function fetchAllLeads(): Promise<CombinedLead[]> {
   try {
-    const { data, error } = await supabase
-      .from('leads')
-      .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-      .order('created_at', { ascending: false })
-      .limit(1000);
+    // Fetch new leads and legacy leads in parallel
+    const [newLeadsResult, legacyLeadsResult] = await Promise.all([
+      supabase
+        .from("leads")
+        .select("id, lead_number, name, email, phone, mobile, topic, stage, created_at, status")
+        .order("created_at", { ascending: false })
+        .limit(100)
+        .then((result) => ({ data: result.data || [], error: result.error })),
+      supabase
+        .from("leads_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .order("cdate", { ascending: false })
+        .limit(100)
+        .then((result) => ({ data: result.data || [], error: result.error })),
+    ]);
 
-    if (error || !data) {
-      console.error('Error fetching all leads', error);
-      return [];
-    }
+    const newLeads = (newLeadsResult.data || []).map(mapNewLeadRow);
+    const legacyLeads = (legacyLeadsResult.data || []).map(mapLegacyLeadRow);
 
-    return data.map((lead: any) => ({
-      id: lead.id,
-      lead_number: lead.lead_number || '',
-      manual_id: lead.lead_number || null,
-      name: lead.name || '',
-      email: lead.email || '',
-      phone: lead.phone || '',
-      mobile: lead.mobile || '',
-      topic: lead.topic || '',
-      stage: String(lead.stage ?? ''),
-      source: '',
-      created_at: lead.created_at || '',
-      updated_at: lead.created_at || '',
-      notes: '',
-      special_notes: '',
-      next_followup: '',
-      probability: '',
-      category: '',
-      language: '',
-      balance: '',
-      lead_type: 'new' as const,
-      unactivation_reason: null,
-      deactivate_note: null,
-      isFuzzyMatch: false,
-    }));
-  } catch (err) {
-    console.error('Error in fetchAllLeads', err);
+    // Combine and sort by creation date (most recent first)
+    const allLeads = [...newLeads, ...legacyLeads].sort((a, b) => {
+      const dateA = new Date(a.created_at).getTime();
+      const dateB = new Date(b.created_at).getTime();
+      return dateB - dateA; // Descending (newest first)
+    });
+
+    return allLeads;
+  } catch (error) {
+    console.error("Error fetching all leads:", error);
     return [];
   }
 }
 
 // -----------------------------------------------------
-// Fetch single lead by ID
+// Fetch Lead By ID
 // -----------------------------------------------------
 
-export async function fetchLeadById(leadId: string): Promise<CombinedLead | null> {
+export async function fetchLeadById(
+  leadId: string | number,
+  leadType?: "legacy" | "new"
+): Promise<CombinedLead | null> {
   try {
-    if (leadId.startsWith('legacy_')) {
-      const numericId = leadId.replace('legacy_', '');
+    // If leadType is not specified, try both
+    if (!leadType) {
+      // Try new leads first
+      const { data: newLead, error: newError } = await supabase
+        .from("leads")
+        .select("id, lead_number, name, email, phone, mobile, topic, stage, created_at, status")
+        .eq("id", String(leadId))
+        .maybeSingle();
 
-      const { data, error } = await supabase
-        .from('leads_lead')
-        .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
-        .eq('id', numericId)
-        .single();
+      if (newLead && !newError) {
+        return mapNewLeadRow(newLead);
+      }
 
-      if (error || !data) return null;
+      // Try legacy leads
+      const { data: legacyLead, error: legacyError } = await supabase
+        .from("leads_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .eq("id", Number(leadId))
+        .maybeSingle();
 
-      const leadNumber = data.lead_number ? String(data.lead_number) : String(data.id);
+      if (legacyLead && !legacyError) {
+        return mapLegacyLeadRow(legacyLead);
+      }
 
-      return {
-        id: String(data.id),
-        lead_number: leadNumber,
-        manual_id: leadNumber,
-        name: data.name || '',
-        email: data.email || '',
-        phone: data.phone || '',
-        mobile: data.mobile || '',
-        topic: data.topic || '',
-        stage: String(data.stage ?? ''),
-        source: '',
-        created_at: data.cdate || '',
-        updated_at: data.cdate || '',
-        notes: '',
-        special_notes: '',
-        next_followup: '',
-        probability: '',
-        category: '',
-        language: '',
-        balance: '',
-        lead_type: 'legacy',
-        unactivation_reason: null,
-        deactivate_note: null,
-        isFuzzyMatch: false,
-      };
+      return null;
     }
 
+    // LeadType is specified
+    if (leadType === "new") {
       const { data, error } = await supabase
-        .from('leads')
-        .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-        .eq('id', leadId)
-        .single();
+        .from("leads")
+        .select("id, lead_number, name, email, phone, mobile, topic, stage, created_at, status")
+        .eq("id", String(leadId))
+        .maybeSingle();
 
-    if (error || !data) return null;
+      if (error || !data) return null;
+      return mapNewLeadRow(data);
+    } else {
+      const { data, error } = await supabase
+        .from("leads_lead")
+        .select("id, name, email, phone, mobile, topic, stage, cdate, master_id, status")
+        .eq("id", Number(leadId))
+        .maybeSingle();
 
-      return {
-        id: data.id,
-        lead_number: data.lead_number || '',
-      manual_id: data.lead_number || null,
-        name: data.name || '',
-        email: data.email || '',
-        phone: data.phone || '',
-        mobile: data.mobile || '',
-        topic: data.topic || '',
-      stage: String(data.stage ?? ''),
-        source: '',
-        created_at: data.created_at || '',
-        updated_at: data.created_at || '',
-        notes: '',
-        special_notes: '',
-        next_followup: '',
-        probability: '',
-        category: '',
-        language: '',
-        balance: '',
-        lead_type: 'new',
-        unactivation_reason: null,
-        deactivate_note: null,
-        isFuzzyMatch: false,
-      };
-  } catch {
+      if (error || !data) return null;
+      return mapLegacyLeadRow(data);
+    }
+  } catch (error) {
+    console.error("Error fetching lead by ID:", error);
     return null;
   }
 }
-
-// -----------------------------------------------------
-// New leads simple search - OPTIMIZED FOR SPEED
-// -----------------------------------------------------
-
-async function searchNewLeadsSimple(query: string, limit = 20): Promise<CombinedLead[]> {
-  const trimmed = query.trim();
-  if (!trimmed || trimmed.length < 1) return []; // Allow 1 char for immediate feedback
-
-  const lower = trimmed.toLowerCase();
-  const digits = getDigits(trimmed);
-  const noPrefix = stripLeadPrefix(trimmed);
-  const hasPrefix = /^[LC]/i.test(trimmed);
-  // Check if it's a pure numeric query (all digits) - could be a lead number
-  const isNumeric = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-  const isPureNumeric = /^\d+$/.test(trimmed) && trimmed.length === digits.length; // No formatting/spaces
-  const isEmail = looksLikeEmail(trimmed);
-  // Phone detection: 
-  // - 4+ digits starting with 0: phone (e.g., "0507")
-  // - 7+ digits: always phone (lead numbers are max 6 digits)
-  // - 3-6 digits that are NOT pure numeric (has formatting/spaces): phone
-  const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-  // Lead number: has prefix OR pure numeric query with 1-6 digits (but NOT if starts with 0 and 4+ digits)
-  // Lead numbers are always max 6 digits
-  const isLeadNumber = hasPrefix || (isNumeric && isPureNumeric && digits.length <= 6 && !startsWithZero);
-  // Phone: starts with 0 OR 7+ digits OR has formatting (not pure numeric) OR 3-6 digits that aren't lead numbers
-  const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumeric && !hasPrefix && trimmed.length > digits.length);
-
-  // Minimal columns for fastest query
-  const selectFields = 'id, lead_number, name, email, phone, mobile, topic, stage, created_at, status';
-
-  try {
-    let queryBuilder = supabase.from('leads').select(selectFields);
-
-    // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2" or "L39854/2")
-    const hasSubLeadPattern = trimmed.includes('/');
-    let masterIdFromQuery: number | null = null;
-    let suffixFromQuery: number | null = null;
-    
-    if (hasSubLeadPattern) {
-      const parts = trimmed.split('/');
-      if (parts.length === 2) {
-        const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
-        const suffixPart = parts[1];
-        const masterNum = parseInt(masterPart, 10);
-        const suffixNum = parseInt(suffixPart, 10);
-        if (!isNaN(masterNum) && !isNaN(suffixNum)) {
-          masterIdFromQuery = masterNum;
-          suffixFromQuery = suffixNum;
-        }
-      }
-    }
-
-    // Search as lead number if detected (any length for new leads)
-    if (isLeadNumber || hasSubLeadPattern) {
-      // Search for lead_number - use ALL digits typed for precise matching
-      // If user types "12345", find "12345", "L12345", "C12345", "123456", etc.
-      // As user types more digits, search becomes more precise (no reload needed)
-      const searchDigits = noPrefix; // Use all digits, not just first 4
-      
-      if (hasPrefix || hasSubLeadPattern) {
-        // User typed with prefix (e.g., "L12345") or sub-lead pattern (e.g., "39854/2")
-        // Match: "L12345", "C12345", "12345", "L123456", "C123456", "123456", etc.
-        // For sub-leads: "L39854/2", "39854/2", "L39854/3", etc.
-        queryBuilder = queryBuilder.or(`lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%,lead_number.ilike.${searchDigits}%`);
-        
-        // For sub-lead pattern, also search for master number to find all sub-leads
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          queryBuilder = queryBuilder.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
-        }
-      } else {
-        // User typed without prefix (e.g., "12345") - search for numbers starting with "12345"
-        // Match: "12345", "L12345", "C12345", "123456", "L123456", "C123456", etc.
-        // For sub-leads: "39854/2", "L39854/2", "39854/3", etc.
-        queryBuilder = queryBuilder.or(`lead_number.ilike.${searchDigits}%,lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%`);
-        
-        // For sub-lead pattern, also search for master number to find all sub-leads
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          queryBuilder = queryBuilder.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
-        }
-      }
-    } else if (isEmail) {
-      queryBuilder = queryBuilder.ilike('email', `${lower}%`);
-    } else if (isPhone) {
-      const phoneCondition = buildPhoneSearchOrCondition(digits);
-      // Debug logging (disabled by default)
-      // console.log('[Phone Search] Query:', trimmed, 'Digits:', digits, 'isPhone:', isPhone, 'startsWithZero:', digits.startsWith('0'), 'Condition:', phoneCondition);
-      if (phoneCondition) {
-        queryBuilder = queryBuilder.or(phoneCondition);
-      } else {
-        console.warn('[Phone Search] Empty condition returned, skipping phone search');
-        return []; // Return empty if no valid condition
-      }
-    } else {
-      // Debug logging (disabled by default)
-      // if (digits.length >= 3 && digits.length <= 6) {
-      //   console.log('[Phone Search] NOT treated as phone:', {
-      //     query: trimmed,
-      //     digits,
-      //     digitsLength: digits.length,
-      //     isPhone,
-      //     isLeadNumber,
-      //     isEmail,
-      //     isNumeric,
-      //     hasPrefix
-      //   });
-      // }
-      // Name - starts-with for speed, works with 1+ chars
-      // Include multilingual variants for Hebrew/Arabic/English matching
-      const nameVariants = generateSearchVariants(trimmed);
-      if (nameVariants.length > 1) {
-        // Multiple variants - use OR condition
-        const nameConditions = nameVariants.map(v => `name.ilike.${v}%`).join(',');
-        queryBuilder = queryBuilder.or(nameConditions);
-      } else {
-        // Single variant - use simple ilike
-        queryBuilder = queryBuilder.ilike('name', `${lower}%`);
-      }
-    }
-
-    const { data, error } = await queryBuilder.limit(limit);
-
-    if (error || !data || data.length === 0) return [];
-
-    // Fast mapping
-    return data.map((lead: any) => ({
-      id: lead.id,
-      lead_number: lead.lead_number || '',
-      manual_id: lead.lead_number || null,
-      name: lead.name || '',
-      email: lead.email || '',
-      phone: lead.phone || '',
-      mobile: lead.mobile || '',
-      topic: lead.topic || '',
-      stage: String(lead.stage ?? ''),
-      source: '',
-      created_at: lead.created_at || '',
-      updated_at: lead.created_at || '',
-      notes: '',
-      special_notes: '',
-      next_followup: '',
-      probability: '',
-      category: '',
-      language: '',
-      balance: '',
-      lead_type: 'new' as const,
-      unactivation_reason: null,
-      deactivate_note: null,
-      isFuzzyMatch: false,
-      status: lead.status ?? null,
-    }));
-  } catch (err) {
-    return [];
-  }
-}
-
-// -----------------------------------------------------
-// Legacy exact search - COMMENTED OUT FOR OPTIMIZATION
-// -----------------------------------------------------
-
-/*
-async function searchLegacyLeadsExact(query: string, limit = 20): Promise<CombinedLead[]> {
-  const trimmed = query.trim();
-  if (!trimmed) return [];
-
-  const lower = trimmed.toLowerCase();
-  const digits = getDigits(trimmed);
-  const noPrefix = stripLeadPrefix(trimmed);
-
-  const isNumeric = /^\d+$/.test(noPrefix);
-  const isEmail = looksLikeEmail(trimmed);
-  // Phone: require at least 3 digits (consistent with other searches)
-  // This makes the search more responsive when typing fast
-  const isPhone = digits.length >= 3 && !isNumeric;
-
-  let rows: any[] = [];
-
-  try {
-    if (isNumeric) {
-      // Numeric search - try multiple approaches: ID, lead_number (numeric), lead_number (text with prefix)
-      const num = parseInt(noPrefix, 10);
-      if (!Number.isNaN(num)) {
-        // Try exact matches - run in parallel for speed
-        const queries = [
-          // Exact ID match
-          supabase
-            .from('leads_lead')
-            .select('*')
-            .eq('id', num)
-            .limit(limit),
-          // Exact lead_number match (numeric)
-          supabase
-            .from('leads_lead')
-            .select('*')
-            .eq('lead_number', num)
-            .limit(limit),
-          // Exact lead_number match (text - in case stored with prefix like "L123")
-          trimmed !== noPrefix
-            ? supabase
-                .from('leads_lead')
-                .select('*')
-                .eq('lead_number', trimmed)
-                .limit(limit)
-            : Promise.resolve({ data: [], error: null }),
-        ];
-        
-        const results = await Promise.allSettled(queries);
-        
-        // Collect all results
-        results.forEach((result) => {
-          if (result.status === 'fulfilled' && result.value.data) {
-            result.value.data.forEach((row: any) => {
-              if (!rows.find((r: any) => r.id === row.id)) {
-                rows.push(row);
-              }
-            });
-          }
-        });
-      }
-    } else if (isPhone) {
-      // Phone search - search for phone/mobile numbers containing the digits in sequence
-      // This works for any partial match: "050" finds "0501234567", "050-123-4567", etc.
-      if (digits.length >= 3) {
-        // Use dynamic timeout and limit based on digit count for better responsiveness
-        const timeoutMs = digits.length >= 7 ? 2500 : digits.length >= 5 ? 2000 : 1500;
-        const searchLimit = digits.length >= 7 ? 20 : digits.length >= 5 ? 10 : 5;
-        
-        const queryPromise = (async () => {
-          const { data, error } = await supabase
-            .from('leads_lead')
-            .select('*')
-            .or(buildPhoneSearchOrCondition(digits))  // Handles country codes
-            .limit(searchLimit);
-          return { data, error };
-    })();
-
-        const result = await withTimeout(
-          queryPromise,
-          timeoutMs,  // Dynamic timeout based on digit count
-          'phone search timeout'
-        ).catch(() => ({ data: null, error: null }));
-        rows = (result as any)?.data || [];
-        }
-      } else if (isEmail) {
-        // Email search - use lower() to leverage idx_leads_lead_email_lower index
-        try {
-          const { data, error } = await withTimeout(
-            (async () => {
-              return await supabase
-                .from('leads_lead')
-                .select('*')
-                .ilike('email', `${lower}%`)  // Starts-with search using index
-                .limit(10);  // Reduced limit for faster queries
-            })(),
-            3000,  // Increased to 3 seconds timeout for email search
-            'legacy email search timeout'
-          );
-          
-          if (error) {
-            console.warn('[searchLegacyLeadsExact] Email search error:', error);
-            rows = [];
-          } else {
-            rows = data || [];
-          }
-        } catch (err) {
-          console.warn('[searchLegacyLeadsExact] Email search failed:', err);
-          rows = [];
-        }
-      } else {
-        // Name search DISABLED for legacy leads - consistently times out
-        // Legacy leads by name are found through contacts search instead
-        // Contacts search uses leads_contact table which has better indexes
-        // and finds legacy leads via lead_leadcontact junction table
-        // This prevents timeouts and provides better user experience
-        rows = [];
-    }
-  } catch (err) {
-    // Silently fail - return empty results
-    console.warn('[searchLegacyLeadsExact] Search failed:', err);
-    return [];
-  }
-
-  return rows.map((l: any) => {
-    const leadNumber = l.lead_number ? String(l.lead_number) : String(l.id);
-
-    return {
-      id: String(l.id),
-      lead_number: leadNumber,
-      manual_id: leadNumber,
-      name: l.name || '',
-      email: l.email || '',
-      phone: l.phone || '',
-      mobile: l.mobile || '',
-      topic: l.topic || '',
-      stage: String(l.stage ?? ''),
-      source: '',
-      created_at: l.cdate || '',
-      updated_at: l.cdate || '',
-      notes: '',
-      special_notes: '',
-      next_followup: '',
-      probability: '',
-      category: '',
-      language: '',
-      balance: '',
-      lead_type: 'legacy',
-      unactivation_reason: null,
-      deactivate_note: null,
-      isFuzzyMatch: false,
-    };
-  });
-}
-*/
-
-// -----------------------------------------------------
-// Contacts search - FOR NEW AND LEGACY LEADS
-// -----------------------------------------------------
-
-async function searchContactsSimple(query: string, limit = 30): Promise<CombinedLead[]> {
-  console.log('[searchContactsSimple] FUNCTION CALLED:', {
-    query,
-    queryLength: query.length,
-    trimmed: query.trim(),
-    trimmedLength: query.trim().length
-  });
-  
-  const trimmed = query.trim();
-  if (!trimmed || trimmed.length < 2) {
-    console.log('[searchContactsSimple] EARLY RETURN - query too short:', {
-      trimmed,
-      length: trimmed.length,
-      isEmpty: !trimmed
-    });
-    return [];
-  }
-
-  const lower = trimmed.toLowerCase();
-  const digits = getDigits(trimmed);
-  const noPrefix = stripLeadPrefix(trimmed);
-  const isEmail = looksLikeEmail(trimmed);
-  // Check if it's a pure numeric query (all digits) - could be a lead number
-  const isNumericQuery = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-  const isPureNumeric = /^\d+$/.test(trimmed) && trimmed.length === digits.length; // No formatting/spaces
-  const hasPrefix = /^[LC]/i.test(trimmed);
-  // Phone detection: 
-  // - 4+ digits starting with 0: phone (e.g., "0507")
-  // - 7+ digits: always phone (lead numbers are max 6 digits)
-  // - 3-6 digits that are NOT pure numeric (has formatting/spaces): phone
-  const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-  // Lead number: has prefix OR pure numeric query with 1-6 digits (but NOT if starts with 0 and 4+ digits)
-  // Lead numbers are always max 6 digits
-  const isLeadNumber = hasPrefix || (isNumericQuery && isPureNumeric && digits.length <= 6 && !startsWithZero);
-  // Phone: starts with 0 OR 7+ digits OR has formatting (not pure numeric) OR 3-6 digits that aren't lead numbers
-  const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumericQuery && !hasPrefix);
-  
-  console.log('[searchContactsSimple] Query analysis:', {
-    query: trimmed,
-    digits,
-    noPrefix,
-    isNumericQuery,
-    isPureNumeric,
-    hasPrefix,
-    startsWithZero,
-    digitsLength: digits.length,
-    isLeadNumber,
-    isPhone,
-    isEmail
-  });
-
-  try {
-    let contacts: any[] = [];
-    let rels: any[] = [];
-    let foundLegacyLeadIds: number[] = []; // Declare outside block so it's accessible later
-    let cachedLegacyLeadsMap = new Map<number, any>(); // Cache for legacy leads to avoid re-fetching
-
-    // Check if query contains "/" pattern (sub-lead search: e.g., "39854/2")
-    const hasSubLeadPattern = trimmed.includes('/');
-    let masterIdFromQuery: number | null = null;
-    let suffixFromQuery: number | null = null;
-    
-    if (hasSubLeadPattern) {
-      const parts = trimmed.split('/');
-      if (parts.length === 2) {
-        const masterPart = parts[0].replace(/^[LC]/i, ''); // Remove L or C prefix if present
-        const suffixPart = parts[1];
-        const masterNum = parseInt(masterPart, 10);
-        const suffixNum = parseInt(suffixPart, 10);
-        if (!isNaN(masterNum) && !isNaN(suffixNum)) {
-          masterIdFromQuery = masterNum;
-          suffixFromQuery = suffixNum;
-        }
-      }
-    }
-
-    // Step 1: If searching by lead number, find contacts via junction table
-    if (isLeadNumber || hasSubLeadPattern) {
-      // Use all digits typed (not just first 4) for precise matching
-      const searchDigits = noPrefix;
-      const hasPrefix = /^[LC]/i.test(trimmed);
-      
-      console.log('[searchContactsSimple] Lead number search:', {
-        query: trimmed,
-        searchDigits,
-        hasPrefix,
-        isLeadNumber,
-        hasSubLeadPattern,
-        masterIdFromQuery,
-        suffixFromQuery,
-        digitsLength: digits.length
-      });
-      
-      // First, find new leads matching the lead number
-      let leadQuery = supabase
-        .from('leads')
-        .select('id, lead_number')
-        .limit(50);
-      
-      if (hasPrefix || hasSubLeadPattern) {
-        leadQuery = leadQuery.or(`lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%,lead_number.ilike.${searchDigits}%`);
-        // For sub-lead pattern, also search for master number to find all sub-leads
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          leadQuery = leadQuery.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
-        }
-      } else {
-        leadQuery = leadQuery.or(`lead_number.ilike.${searchDigits}%,lead_number.ilike.L${searchDigits}%,lead_number.ilike.C${searchDigits}%`);
-        // For sub-lead pattern, also search for master number to find all sub-leads
-        if (hasSubLeadPattern && masterIdFromQuery !== null) {
-          leadQuery = leadQuery.or(`lead_number.ilike.%${masterIdFromQuery}/%,lead_number.ilike.L%${masterIdFromQuery}/%,lead_number.ilike.C%${masterIdFromQuery}/%`);
-        }
-      }
-      
-      const { data: matchingLeads } = await leadQuery;
-      const newLeadIds = matchingLeads ? matchingLeads.map((l: any) => l.id) : [];
-      
-      console.log('[searchContactsSimple] New leads found:', newLeadIds.length);
-      
-      // Also search for legacy leads by ID (legacy leads use id as lead_number)
-      // Support both exact match and prefix match for legacy lead IDs
-      // For sub-lead patterns, search by master_id
-      const num = hasSubLeadPattern && masterIdFromQuery !== null 
-        ? masterIdFromQuery 
-        : parseInt(noPrefix, 10);
-      foundLegacyLeadIds = []; // Reset for this search
-      
-      if (!Number.isNaN(num)) {
-        console.log('[searchContactsSimple] Searching legacy lead ID:', {
-          num,
-          noPrefix,
-          parsed: num,
-          isValid: !Number.isNaN(num)
-        });
-        
-        // Prefix match: search for legacy leads where id (as text) starts with the search digits
-        // This allows finding "192191" when searching "19", "192", "1921", etc.
-        // Use a more precise range query to reduce unnecessary fetches
-        try {
-          const searchStr = String(num);
-          const searchLength = searchStr.length;
-          
-          // For 4-6 digit queries, try exact match first (likely to be exact lead IDs)
-          // This ensures exact matches are found immediately for both 4-digit and 5-6 digit legacy lead IDs
-          // For 1-3 digit queries, ONLY do exact match (skip range query to avoid fetching too many irrelevant results)
-          if (searchLength >= 1 && searchLength <= 6) {
-            console.log('[searchContactsSimple] Trying exact match for query:', {
-              num,
-              searchStr,
-              searchLength
-            });
-            
-            const { data: exactMatch, error: exactError } = await supabase
-              .from('leads_lead')
-              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
-              .eq('id', num)
-              .limit(1);
-            
-            if (!exactError && exactMatch && exactMatch.length > 0) {
-              console.log('[searchContactsSimple] Found exact match:', {
-                id: exactMatch[0].id,
-                name: exactMatch[0].name
-              });
-              foundLegacyLeadIds.push(exactMatch[0].id);
-              cachedLegacyLeadsMap.set(exactMatch[0].id, exactMatch[0]);
-              
-              // For 1-3 digit queries, ONLY do exact match - skip range query to avoid race conditions
-              // The exact match is likely what the user wants, and range queries for short queries
-              // fetch too many irrelevant results that cause flickering when typing fast
-              if (searchLength <= 3) {
-                console.log('[searchContactsSimple] Skipping range query for short query - using exact match only');
-                // Don't proceed to range query for short queries - exact match is sufficient
-                // This prevents fetching hundreds of irrelevant results that cause flickering
-              }
-            }
-          }
-          
-          // For short queries (1-3 digits), use a more conservative range to avoid fetching too many non-matching results
-          // For longer queries (4+ digits), the range is naturally smaller
-          let minId = num;
-          let maxId: number;
-          let queryLimit = 200;
-          
-          if (searchLength <= 3) {
-            // For short queries like "624", allow up to 5-digit IDs to catch numbers like 6241
-            // For 3-digit queries: 624-62499 (allows 3-5 digit IDs starting with 624)
-            // For 2-digit queries: 62-6299 (allows 2-5 digit IDs starting with 62)
-            // For 1-digit queries: 6-699 (allows 1-3 digit IDs starting with 6)
-            const maxDigits = Math.min(5, searchLength + 2); // Allow up to 2 more digits
-            maxId = (num + 1) * Math.pow(10, maxDigits - searchLength) - 1;
-            queryLimit = 100; // Moderate limit for short queries
-          } else {
-            // For longer queries (4+ digits), use the full range calculation
-            const remainingDigits = Math.max(0, 6 - searchLength);
-            maxId = num * Math.pow(10, remainingDigits) + Math.pow(10, remainingDigits) - 1;
-            queryLimit = 200;
-          }
-          
-          console.log('[searchContactsSimple] Legacy lead ID range calculation:', { 
-            searchStr, 
-            minId, 
-            maxId, 
-            searchLength,
-            queryLimit,
-            calculation: searchLength <= 3 
-              ? `Short query: maxDigits=${Math.min(5, searchLength + 2)}, maxId = (${num} + 1) * 10^${Math.min(5, searchLength + 2) - searchLength} - 1 = ${maxId}`
-              : `${num} * 10^${Math.max(0, 6 - searchLength)} + 10^${Math.max(0, 6 - searchLength)} - 1 = ${maxId}`
-          });
-          
-          console.log('[searchContactsSimple] Querying leads_lead table:', {
-            table: 'leads_lead',
-            minId,
-            maxId,
-            limit: queryLimit
-          });
-          
-          // OPTIMIZATION: Fetch full lead data in one query instead of just IDs
-          // Use a more conservative limit for short queries to reduce bouncing
-          // For 4-6 digit queries, if we found an exact match, skip the range query to avoid duplicates
-          // For 1-3 digit queries, skip range query entirely (too many irrelevant results, causes flickering)
-          let legacyLeads: any[] = [];
-          let legacyLeadsError: any = null;
-          
-          // Skip range query if:
-          // 1. Exact match found for 4-6 digit queries (to avoid duplicates)
-          // 2. Query is 1-3 digits (to avoid fetching hundreds of irrelevant results that cause flickering)
-          const shouldSkipRangeQuery = 
-            (searchLength >= 4 && searchLength <= 6 && foundLegacyLeadIds.length > 0) ||
-            (searchLength <= 3);
-          
-          if (shouldSkipRangeQuery) {
-            if (searchLength <= 3) {
-              console.log('[searchContactsSimple] Skipping range query for short query (1-3 digits) - exact match only');
-            } else {
-              console.log('[searchContactsSimple] Skipping range query - exact match already found for 4-6 digit query');
-            }
-          } else {
-            const result = await supabase
-              .from('leads_lead')
-              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
-              .gte('id', minId)
-              .lte('id', maxId)
-              .limit(queryLimit);
-            legacyLeads = result.data || [];
-            legacyLeadsError = result.error;
-          }
-          
-          if (legacyLeadsError) {
-            console.error('[searchContactsSimple] ERROR querying legacy leads:', {
-              error: legacyLeadsError,
-              message: legacyLeadsError.message,
-              details: legacyLeadsError.details,
-              hint: legacyLeadsError.hint,
-              code: legacyLeadsError.code
-            });
-          } else {
-            console.log('[searchContactsSimple] Legacy leads query result:', {
-              count: legacyLeads?.length || 0,
-              sampleIds: legacyLeads?.slice(0, 5).map((l: any) => l.id) || [],
-              allIds: legacyLeads?.map((l: any) => l.id) || []
-            });
-            
-            if (legacyLeads && legacyLeads.length > 0) {
-              console.log('[searchContactsSimple] Filtering legacy leads by prefix:', {
-                searchStr,
-                totalFound: legacyLeads.length,
-                beforeFilter: foundLegacyLeadIds.length
-              });
-              
-              // OPTIMIZATION: Store full lead data, not just IDs
-              const filteredLegacyLeads: any[] = [];
-              
-              // Filter to only include IDs that start with the search digits (as text)
-              // OPTIMIZATION: Cache full lead data while filtering
-              legacyLeads.forEach((lead: any) => {
-                const leadIdStr = String(lead.id);
-                const matches = leadIdStr.startsWith(searchStr);
-                if (matches && !foundLegacyLeadIds.includes(lead.id)) {
-                  foundLegacyLeadIds.push(lead.id);
-                  cachedLegacyLeadsMap.set(lead.id, lead); // Cache full lead data
-                  console.log('[searchContactsSimple] Added legacy lead ID:', {
-                    id: lead.id,
-                    idStr: leadIdStr,
-                    searchStr,
-                    matches
-                  });
-                } else if (!matches) {
-                  console.log('[searchContactsSimple] Skipped legacy lead ID (doesn\'t match prefix):', {
-                    id: lead.id,
-                    idStr: leadIdStr,
-                    searchStr,
-                    matches
-                  });
-                }
-              });
-              
-              console.log('[searchContactsSimple] Legacy lead IDs after filtering:', {
-                count: foundLegacyLeadIds.length,
-                ids: foundLegacyLeadIds
-              });
-            } else {
-              console.warn('[searchContactsSimple] No legacy leads found in range:', {
-                minId,
-                maxId,
-                searchStr,
-                possibleReasons: [
-                  'No leads exist in this ID range',
-                  'Range calculation might be incorrect',
-                  'Table might be empty or have different ID structure'
-                ]
-              });
-            }
-          }
-        } catch (err) {
-          // If query fails, log error but continue
-          console.error('[searchContactsSimple] EXCEPTION in legacy lead ID search:', {
-            error: err,
-            message: err instanceof Error ? err.message : String(err),
-            stack: err instanceof Error ? err.stack : undefined
-          });
-        }
-      } else {
-        console.warn('[searchContactsSimple] Cannot parse as number:', {
-          noPrefix,
-          parsed: num,
-          isNaN: Number.isNaN(num)
-        });
-      }
-      
-      // OPTIMIZATION: Parallelize junction table queries and contact fetching
-      if (newLeadIds.length > 0 || foundLegacyLeadIds.length > 0) {
-        console.log('[searchContactsSimple] Finding contacts for leads:', {
-          newLeadIds: newLeadIds.length,
-          foundLegacyLeadIds: foundLegacyLeadIds.length
-        });
-        
-        // OPTIMIZATION: Run junction queries in parallel
-        const junctionQueries = [];
-        
-        if (newLeadIds.length > 0) {
-          junctionQueries.push(
-            supabase
-              .from('lead_leadcontact')
-              .select('contact_id, newlead_id, lead_id, main')
-              .in('newlead_id', newLeadIds)
-              .limit(200)
-          );
-        }
-        
-        if (foundLegacyLeadIds.length > 0) {
-          junctionQueries.push(
-            supabase
-              .from('lead_leadcontact')
-              .select('contact_id, newlead_id, lead_id, main')
-              .in('lead_id', foundLegacyLeadIds)
-              .limit(200)
-          );
-        }
-        
-        // Execute all junction queries in parallel
-        const junctionResults = await Promise.all(junctionQueries);
-        
-        // Collect all relationships
-        junctionResults.forEach((result: any) => {
-          if (result.data && !result.error) {
-            rels.push(...result.data);
-          } else if (result.error) {
-            console.error('[searchContactsSimple] Junction query error:', result.error);
-          }
-        });
-        
-        // Get contact IDs from relationships
-        const contactIds = Array.from(new Set(rels.map((r: any) => r.contact_id).filter(Boolean)));
-        
-        console.log('[searchContactsSimple] Contact IDs from relationships:', contactIds.length);
-        
-        // OPTIMIZATION: Fetch contacts in parallel with other operations if possible
-        if (contactIds.length > 0) {
-          const { data: contactsData, error: contactsError } = await supabase
-            .from('leads_contact')
-            .select('id, name, email, phone, mobile, newlead_id')
-            .in('id', contactIds)
-            .limit(100);
-          
-          if (contactsError) {
-            console.error('[searchContactsSimple] Error fetching contacts:', contactsError);
-          } else {
-            contacts = contactsData || [];
-          }
-        }
-      }
-      
-      console.log('[searchContactsSimple] Final contacts count:', contacts.length);
-      
-      // Don't return empty too early - if we found leads but no contacts, that's still a valid search result
-      // The calling function will handle displaying the leads even without contacts
-      // Only return empty if we didn't find any leads at all
-      if (contacts.length === 0 && newLeadIds.length === 0 && foundLegacyLeadIds.length === 0) {
-        console.log('[searchContactsSimple] No leads or contacts found, returning empty');
-        return [];
-      }
-      
-      // Store found legacy lead IDs for later use in building results
-      if (foundLegacyLeadIds.length > 0) {
-        // Add to rels so they're included in the results building below
-        foundLegacyLeadIds.forEach((leadId: number) => {
-          // Check if we already have a relationship for this lead
-          const existingRel = rels.find((r: any) => r.lead_id === leadId);
-          if (!existingRel) {
-            // Add a placeholder relationship so the lead is included in results
-            rels.push({ lead_id: leadId, contact_id: null, newlead_id: null, main: null });
-          }
-        });
-      }
-    }
-    
-    // Always search by phone if we have 3+ digits (but NOT if it's a lead number search)
-    // Lead numbers should only search leads, not contacts
-    if (digits.length >= 3 && !isEmail && !isLeadNumber) {
-      let phoneContactQuery = supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile, newlead_id')
-        .or(buildPhoneSearchOrCondition(digits))
-        .limit(50);
-      
-      const { data: phoneContacts } = await phoneContactQuery;
-      if (phoneContacts && phoneContacts.length > 0) {
-        // Merge phone contacts with existing contacts
-        const existingIds = new Set(contacts.map((c: any) => c.id));
-        phoneContacts.forEach((pc: any) => {
-          if (!existingIds.has(pc.id)) {
-            contacts.push(pc);
-          }
-        });
-      }
-    }
-    
-    // If we didn't find contacts via lead number search, do normal search
-    if (contacts.length === 0 && !isLeadNumber) {
-      // Step 1: Search contacts by name, email, or phone (normal search)
-      let contactQuery = supabase
-        .from('leads_contact')
-        .select('id, name, email, phone, mobile, newlead_id');
-
-      if (isPhone && !isEmail) {
-        contactQuery = contactQuery.or(buildPhoneSearchOrCondition(digits));
-      } else if (isEmail) {
-        contactQuery = contactQuery.ilike('email', `%${lower}%`); // Use contains for email too
-      } else {
-        // For name searches, use contains (ilike with % on both sides) to find all matches
-        // Include multilingual variants for Hebrew/Arabic/English matching
-        const nameVariants = generateSearchVariants(trimmed);
-        if (nameVariants.length > 1) {
-          // Multiple variants - use OR condition with contains search
-          const nameConditions = nameVariants.map(v => `name.ilike.%${v}%`).join(',');
-          contactQuery = contactQuery.or(nameConditions);
-        } else {
-          // Single variant - use simple ilike
-          contactQuery = contactQuery.ilike('name', `%${lower}%`);
-        }
-      }
-
-      const { data: contactsData, error } = await contactQuery.limit(50); // Reduced for speed
-      contacts = contactsData || [];
-
-      if (error || contacts.length === 0) return [];
-
-      // Step 2: Always check junction table to find ALL contacts linked to leads (including legacy)
-      // This ensures we find contacts even if they're only linked via junction table
-      const contactIds = contacts.map((c: any) => c.id);
-      
-      // Always query junction table to find legacy leads (but only for found contacts - efficient)
-      if (contactIds.length > 0) {
-        const { data: relsData } = await supabase
-          .from('lead_leadcontact')
-          .select('contact_id, newlead_id, lead_id, main')
-          .in('contact_id', contactIds)
-          .limit(200); // Reasonable limit for performance
-
-        rels = relsData || [];
-      }
-    }
-
-    // OPTIMIZATION: Extract all IDs first, then fetch in parallel
-    const directNewLeadIds = Array.from(
-      new Set(contacts.map((c: any) => c.newlead_id).filter((id: any) => id != null))
-    );
-    
-    const legacyLeadIdsFromRels = Array.from(
-      new Set(rels.map((r: any) => r.lead_id).filter((id: any) => id != null))
-    );
-    
-    const newLeadIdsFromJunction = Array.from(
-      new Set(rels.map((r: any) => r.newlead_id).filter((id: any) => id != null))
-    );
-    
-    // Combine legacy lead IDs
-    let legacyLeadIds = [...legacyLeadIdsFromRels];
-    if (isLeadNumber && foundLegacyLeadIds && foundLegacyLeadIds.length > 0) {
-      foundLegacyLeadIds.forEach((id: number) => {
-        if (!legacyLeadIds.includes(id)) {
-          legacyLeadIds.push(id);
-        }
-      });
-    }
-    
-    // OPTIMIZATION: Fetch new leads and legacy leads in parallel
-    const fetchPromises: Promise<{ type: string; data: any[] }>[] = [];
-    
-    // Fetch direct new leads
-    if (directNewLeadIds.length > 0) {
-      fetchPromises.push(
-        (async () => {
-          const result = await supabase
-            .from('leads')
-            .select('id, lead_number, topic, stage, created_at, status')
-            .in('id', directNewLeadIds)
-            .limit(limit);
-          return { type: 'direct', data: result.data || [] };
-        })()
-      );
-    }
-    
-    // Fetch additional new leads from junction
-    const additionalIds = newLeadIdsFromJunction.filter(id => !directNewLeadIds.includes(id));
-    if (additionalIds.length > 0) {
-      fetchPromises.push(
-        (async () => {
-          const result = await supabase
-            .from('leads')
-            .select('id, lead_number, topic, stage, created_at, status')
-            .in('id', additionalIds)
-            .limit(limit);
-          return { type: 'junction', data: result.data || [] };
-        })()
-      );
-    }
-    
-    // Fetch legacy leads (with cache check)
-    let legacyLeadsFromCache: any[] = [];
-    const missingLegacyIds: number[] = [];
-    
-    if (legacyLeadIds.length > 0) {
-      // Check cache first
-      legacyLeadIds.forEach((id: number) => {
-        if (cachedLegacyLeadsMap.has(id)) {
-          legacyLeadsFromCache.push(cachedLegacyLeadsMap.get(id));
-        } else {
-          missingLegacyIds.push(id);
-        }
-      });
-      
-      // Only fetch missing ones
-      if (missingLegacyIds.length > 0) {
-        fetchPromises.push(
-          (async () => {
-            const result = await supabase
-              .from('leads_lead')
-              .select('id, name, email, phone, mobile, topic, stage, cdate, master_id, status')
-              .in('id', missingLegacyIds)
-              .limit(limit);
-            
-            if (!result.error && result.data) {
-              // Cache fetched leads
-              result.data.forEach((lead: any) => {
-                cachedLegacyLeadsMap.set(lead.id, lead);
-              });
-              return { type: 'legacy', data: result.data };
-            }
-            return { type: 'legacy', data: [] };
-          })()
-        );
-      }
-    }
-    
-    // Execute all fetches in parallel
-    const fetchResults = await Promise.all(fetchPromises);
-    
-    // Combine results
-    let newLeads: any[] = [];
-    let legacyLeads: any[] = [...legacyLeadsFromCache]; // Start with cached ones
-    
-    fetchResults.forEach((result: any) => {
-      if (result.type === 'direct' || result.type === 'junction') {
-        newLeads.push(...result.data);
-      } else if (result.type === 'legacy') {
-        legacyLeads.push(...result.data);
-      }
-    });
-    
-    console.log('[searchContactsSimple] Fetched leads summary:', {
-      newLeads: newLeads.length,
-      legacyLeads: legacyLeads.length,
-      fromCache: legacyLeadsFromCache.length,
-      fromFetch: legacyLeads.length - legacyLeadsFromCache.length
-    });
-
-    if (newLeads.length === 0 && legacyLeads.length === 0) return [];
-
-    // Step 6: Build maps (always build, not just for longer queries)
-    const newLeadMap = new Map(newLeads.map((l: any) => [l.id, l]));
-    const legacyLeadMap = new Map(legacyLeads.map((l: any) => [l.id, l]));
-    const relMap = new Map<string, any[]>();
-    if (rels) {
-      rels.forEach((r: any) => {
-        if (r.contact_id) {
-          if (!relMap.has(r.contact_id)) relMap.set(r.contact_id, []);
-          relMap.get(r.contact_id)!.push(r);
-        }
-      });
-    }
-
-    // Step 7: Build results (always include legacy leads, not just for longer queries)
-    const results: CombinedLead[] = [];
-    const seen = new Set<string>();
-
-    contacts.forEach((c: any) => {
-      // Direct new lead link (always fastest)
-      if (c.newlead_id && newLeadMap.has(c.newlead_id)) {
-        const key = `new:${c.newlead_id}:${c.id}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          const l = newLeadMap.get(c.newlead_id)!;
-          results.push({
-            id: l.id,
-            lead_number: l.lead_number || '',
-            manual_id: l.lead_number || null,
-            name: c.name || '',
-            email: c.email || '',
-            phone: c.phone || '',
-            mobile: c.mobile || '',
-            topic: l.topic || '',
-            stage: String(l.stage ?? ''),
-            source: '',
-            created_at: l.created_at || '',
-            updated_at: l.created_at || '',
-            notes: '',
-            special_notes: '',
-            next_followup: '',
-            probability: '',
-            category: '',
-            language: '',
-            balance: '',
-            lead_type: 'new' as const,
-            unactivation_reason: null,
-            deactivate_note: null,
-            isFuzzyMatch: false,
-            isContact: true,
-            contactName: c.name || '',
-            isMainContact: false,
-          });
-        }
-      }
-
-      // Junction table links (ALWAYS check, including legacy leads)
-      const contactRels = relMap.get(c.id) || [];
-      contactRels.forEach((r: any) => {
-        const isMain = r.main === true || r.main === 'true';
-        
-        // New leads via junction
-        if (r.newlead_id && newLeadMap.has(r.newlead_id)) {
-          const key = `new:${r.newlead_id}:${c.id}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            const l = newLeadMap.get(r.newlead_id)!;
-            results.push({
-              id: l.id,
-              lead_number: l.lead_number || '',
-              manual_id: l.lead_number || null,
-              name: c.name || '',
-              email: c.email || '',
-              phone: c.phone || '',
-              mobile: c.mobile || '',
-              topic: l.topic || '',
-              stage: String(l.stage ?? ''),
-              source: '',
-              created_at: l.created_at || '',
-              updated_at: l.created_at || '',
-              notes: '',
-              special_notes: '',
-              next_followup: '',
-              probability: '',
-              category: '',
-              language: '',
-              balance: '',
-              lead_type: 'new' as const,
-              unactivation_reason: null,
-              deactivate_note: null,
-              isFuzzyMatch: false,
-              isContact: !isMain,
-              contactName: c.name || '',
-              isMainContact: isMain,
-              status: l.status ?? null,
-            });
-          }
-        }
-        
-        // Legacy leads via junction (ALWAYS include, not just for longer queries)
-        if (r.lead_id) {
-          const key = `legacy:${r.lead_id}:${c.id}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            const legacyLead = legacyLeadMap.get(r.lead_id);
-            results.push({
-              id: String(r.lead_id),
-              lead_number: legacyLead?.lead_number ? String(legacyLead.lead_number) : String(r.lead_id),
-              manual_id: legacyLead?.lead_number ? String(legacyLead.lead_number) : String(r.lead_id),
-              name: c.name || '',
-              email: c.email || '',
-              phone: c.phone || '',
-              mobile: c.mobile || '',
-              topic: legacyLead?.topic || '',
-              stage: legacyLead ? String(legacyLead.stage ?? '') : '',
-              source: '',
-              created_at: legacyLead?.cdate || '',
-              updated_at: legacyLead?.cdate || '',
-              notes: '',
-              special_notes: '',
-              next_followup: '',
-              probability: '',
-              category: '',
-              language: '',
-              balance: '',
-              lead_type: 'legacy' as const,
-              unactivation_reason: null,
-              deactivate_note: null,
-              isFuzzyMatch: false,
-              isContact: !isMain,
-              contactName: c.name || '',
-              isMainContact: isMain,
-              status: legacyLead?.status ?? null,
-            });
-          }
-        }
-      });
-    });
-
-    // Step 8: Add legacy leads that don't have contacts (found during lead number search)
-    // This ensures legacy leads are shown even if they don't have contacts linked
-    console.log('[searchContactsSimple] Adding legacy leads without contacts:', {
-      legacyLeadMapSize: legacyLeadMap.size,
-      currentResultsCount: results.length,
-      legacyLeadIds: Array.from(legacyLeadMap.keys())
-    });
-    
-    if (legacyLeadMap.size > 0) {
-      let addedCount = 0;
-      let skippedCount = 0;
-      
-      legacyLeadMap.forEach((legacyLead: any, leadId: number) => {
-        // Check if this legacy lead was already added as a non-contact result (the lead itself)
-        // Contacts have isContact: true, so they won't match this check
-        // This ensures that for lead number searches, we add the lead itself even if contacts exist
-        const alreadyAddedAsLead = results.some((r: any) => 
-          r.lead_type === 'legacy' && 
-          String(r.id) === String(leadId) && 
-          (!r.isContact || r.isContact === false) // Only skip if added as the lead itself, not as a contact
-        );
-        
-        if (!alreadyAddedAsLead) {
-          // Add legacy lead even without contacts
-          const key = `legacy:${leadId}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            addedCount++;
-            // Format lead number with suffix for sub-leads
-            let leadNumber: string;
-            if (legacyLead.master_id) {
-              // It's a sub-lead - calculate suffix from all legacy leads with same master_id
-              const allSubLeads = Array.from(legacyLeadMap.values())
-                .filter(l => l.master_id === legacyLead.master_id)
-                .sort((a, b) => a.id - b.id);
-              const suffix = allSubLeads.findIndex(l => l.id === legacyLead.id) + 2;
-              leadNumber = `${legacyLead.master_id}/${suffix}`;
-            } else {
-              // It's a master lead
-              leadNumber = String(legacyLead.id);
-            }
-            results.push({
-              id: String(legacyLead.id),
-              lead_number: leadNumber,
-              manual_id: leadNumber,
-              name: legacyLead.name || '',
-              email: legacyLead.email || '',
-              phone: legacyLead.phone || '',
-              mobile: legacyLead.mobile || '',
-              topic: legacyLead.topic || '',
-              stage: String(legacyLead.stage ?? ''),
-              source: '',
-              created_at: legacyLead.cdate || '',
-              updated_at: legacyLead.cdate || '',
-              notes: '',
-              special_notes: '',
-              next_followup: '',
-              probability: '',
-              category: '',
-              language: '',
-              balance: '',
-              lead_type: 'legacy' as const,
-              unactivation_reason: null,
-              deactivate_note: null,
-              isFuzzyMatch: false,
-              isContact: false,
-              contactName: legacyLead.name || '',
-              isMainContact: false,
-              status: legacyLead.status ?? null,
-            });
-            console.log('[searchContactsSimple] Added legacy lead without contact:', {
-              id: leadId,
-              name: legacyLead.name
-            });
-          } else {
-            skippedCount++;
-            console.log('[searchContactsSimple] Skipped legacy lead (already seen):', leadId);
-          }
-        } else {
-          skippedCount++;
-          console.log('[searchContactsSimple] Skipped legacy lead (already added via contact):', leadId);
-        }
-      });
-      
-      console.log('[searchContactsSimple] Legacy leads addition summary:', {
-        total: legacyLeadMap.size,
-        added: addedCount,
-        skipped: skippedCount,
-        finalResultsCount: results.length
-      });
-    } else {
-      console.log('[searchContactsSimple] No legacy leads to add (legacyLeadMap is empty)');
-    }
-
-    console.log('[searchContactsSimple] Final results:', {
-      total: results.length,
-      byType: {
-        new: results.filter(r => r.lead_type === 'new').length,
-        legacy: results.filter(r => r.lead_type === 'legacy').length
-      }
-    });
-
-    return results;
-  } catch (err) {
-    return [];
-  }
-}
-
-// -----------------------------------------------------
-// MAIN SEARCH
-// -----------------------------------------------------
-
-export async function searchLeads(query: string): Promise<CombinedLead[]> {
-  console.log('[searchLeads] MAIN SEARCH FUNCTION CALLED:', {
-    query,
-    queryLength: query.length,
-    trimmed: query.trim(),
-    trimmedLength: query.trim().length
-  });
-  
-  if (!query.trim()) {
-    console.log('[searchLeads] EARLY RETURN - empty query');
-    return [];
-  }
-
-  const trimmed = query.trim();
-  const lower = trimmed.toLowerCase();
-  const digits = getDigits(trimmed);
-  const noPrefix = stripLeadPrefix(trimmed);
-  const hasPrefix = /^[LC]/i.test(trimmed);
-  // Check if it's a pure numeric query (all digits) - could be a lead number
-  const isNumeric = /^\d+$/.test(noPrefix) && noPrefix.length > 0;
-  const isPureNumeric = /^\d+$/.test(trimmed) && trimmed.length === digits.length; // No formatting/spaces
-  // Phone detection: 
-  // - 4+ digits starting with 0: phone (e.g., "0507")
-  // - 7+ digits: always phone (lead numbers are max 6 digits)
-  // - 3-6 digits that are NOT pure numeric (has formatting/spaces): phone
-  const startsWithZero = digits.startsWith('0') && digits.length >= 4;
-  // Lead number: has prefix OR pure numeric query with 1-6 digits (but NOT if starts with 0 and 4+ digits)
-  // Lead numbers are always max 6 digits
-  const isLeadNumber = hasPrefix || (isNumeric && isPureNumeric && digits.length <= 6 && !startsWithZero);
-  // Phone: starts with 0 OR 7+ digits OR has formatting (not pure numeric) OR 3-6 digits that aren't lead numbers
-  const isPhone = startsWithZero || digits.length >= 7 || (digits.length >= 3 && digits.length <= 6 && !isNumeric && !hasPrefix);
-  const isShortQuery = trimmed.length < 3; // Skip contacts for very short queries
-
-  try {
-    // For very short queries, only search new leads (skip contacts for speed)
-    if (isShortQuery) {
-      const newLeads = await searchNewLeadsSimple(trimmed, 30);
-      return newLeads;
-    }
-
-    // If it's a lead number, search BOTH new leads AND contacts (contacts includes legacy leads!)
-    if (isLeadNumber) {
-      console.log('[searchLeads] Lead number detected - searching both new leads and contacts (legacy leads)');
-      const [newLeads, contactLeads] = await Promise.all([
-        searchNewLeadsSimple(trimmed, 30),
-        searchContactsSimple(trimmed, 30), // This includes legacy leads!
-      ]);
-      
-      console.log('[searchLeads] Lead number search results:', {
-        newLeadsCount: newLeads.length,
-        contactLeadsCount: contactLeads.length,
-        newLeads: newLeads.map(l => ({ id: l.id, lead_number: l.lead_number, name: l.name, type: l.lead_type })),
-        contactLeads: contactLeads.map(l => ({ id: l.id, lead_number: l.lead_number, name: l.name, type: l.lead_type }))
-      });
-      
-      // Fast deduplication
-      const seen = new Set<string>();
-      const results: CombinedLead[] = [];
-
-      // Add new leads first
-      newLeads.forEach((lead) => {
-        const key = `new:${lead.id}`;
-        if (!seen.has(key)) {
-          seen.add(key);
-          results.push(lead);
-        }
-      });
-
-      // Add contact leads (including legacy) that aren't duplicates
-      contactLeads.forEach((lead) => {
-        const key = lead.lead_type === 'legacy' ? `legacy:${lead.id}` : `new:${lead.id}`;
-        const contactKey = `${key}:${lead.contactName || ''}`;
-        
-        // For contact entries (isContact: true), use contactKey to allow multiple contacts per lead
-        // For lead entries (isContact: false), use key to ensure the lead itself is added
-        if (lead.isContact) {
-          // This is a contact entry - use contactKey to allow multiple contacts per lead
-          if (!seen.has(contactKey)) {
-            seen.add(contactKey);
-            results.push(lead);
-          }
-        } else {
-          // This is the lead itself - use key, but don't skip if contacts exist
-          if (!seen.has(key)) {
-            seen.add(key);
-            results.push(lead);
-          }
-        }
-      });
-
-      console.log('[searchLeads] Final lead number results:', {
-        total: results.length,
-        byType: {
-          new: results.filter(r => r.lead_type === 'new').length,
-          legacy: results.filter(r => r.lead_type === 'legacy').length
-        }
-      });
-      
-      return results;
-    }
-
-    // Run searches in parallel for longer queries (optimized limits for speed)
-    const [newLeads, contactLeads] = await Promise.all([
-      searchNewLeadsSimple(trimmed, 30),
-      searchContactsSimple(trimmed, 30),
-    ]);
-
-    // Fast deduplication
-    const seen = new Set<string>();
-    const results: CombinedLead[] = [];
-
-    // Add new leads first (main leads)
-    newLeads.forEach((lead) => {
-      const key = `new:${lead.id}`;
-      if (!seen.has(key)) {
-        seen.add(key);
-        results.push(lead);
-      }
-    });
-
-    // Add contacts that aren't duplicates
-    contactLeads.forEach((lead) => {
-      const key = `new:${lead.id}`;
-      const contactKey = `${key}:${lead.contactName || ''}`;
-      if (!seen.has(key) && !seen.has(contactKey)) {
-        seen.add(contactKey);
-        results.push(lead);
-      }
-    });
-
-    // Mark and sort - simplified for speed
-    // CRITICAL: Properly detect exact matches for emails, phones, and lead numbers
-    const isEmailQuery = looksLikeEmail(trimmed);
-    const trimmedDigits = getDigits(trimmed);
-    
-    results.forEach((l) => {
-      const nm = (l.contactName || l.name || '').toLowerCase();
-      const emailLower = (l.email || '').toLowerCase().trim();
-      const phoneDigits = getDigits(l.phone || '');
-      const mobileDigits = getDigits(l.mobile || '');
-      const leadNumLower = String(l.lead_number || '').toLowerCase().trim();
-
-      // Check for exact matches
-      let isExactMatch = false;
-      
-      // Email exact match (case-insensitive, trimmed)
-      if (isEmailQuery && emailLower === lower.trim()) {
-        isExactMatch = true;
-      }
-      // Lead number exact match
-      else if (isLeadNumber && leadNumLower === trimmed.toLowerCase().trim()) {
-        isExactMatch = true;
-      }
-      // Phone exact match (all digits must match)
-      else if (isPhone && trimmedDigits.length >= 3) {
-        if (phoneDigits === trimmedDigits || mobileDigits === trimmedDigits) {
-          isExactMatch = true;
-        }
-      }
-      // Name exact match
-      else if (nm === lower) {
-        isExactMatch = true;
-      }
-      
-      // Prefix matches (starts with)
-      const starts = nm.startsWith(lower) || emailLower.startsWith(lower.trim()) ||
-        (isPhone && (phoneDigits.startsWith(trimmedDigits) || mobileDigits.startsWith(trimmedDigits)));
-
-      // Mark as fuzzy only if it's not exact and doesn't start with the query
-      l.isFuzzyMatch = !isExactMatch && !starts;
-    });
-
-    // Fast sort
-    results.sort((a, b) => {
-      if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
-      return new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
-    });
-
-    // Return all results (no limit) to show all matches
-    return results;
-  } catch (err) {
-    return [];
-  }
-}
-
-// -----------------------------------------------------
-// Public export
-// -----------------------------------------------------
-
-/*
-export async function searchLegacyLeads(query: string) {
-  return searchLegacyLeadsExact(query, 20);
-}
-*/

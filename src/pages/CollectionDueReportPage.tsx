@@ -2684,6 +2684,8 @@ const CollectionDueReport = () => {
           }
           
           // Process each payment row
+          // IMPORTANT: Each payment row already has due_date (filtered by query)
+          // We use this specific payment row's data (value, currency, etc.) - not from other rows
           newPayments.forEach(payment => {
             const lead = newLeads?.find(l => l.id === payment.lead_id);
             if (!lead) return;
@@ -2708,13 +2710,11 @@ const CollectionDueReport = () => {
               categoryDisplay = getCategoryName(null, lead.category);
             }
             
-            // Calculate amount
+            // Calculate amount - NEVER include VAT (use value only)
+            // IMPORTANT: Use the payment row that has due_date (already filtered by query)
             const value = Number(payment.value || 0);
-            let vat = Number(payment.value_vat || 0);
-            if (!vat && (payment.currency || '₪') === '₪') {
-              vat = Math.round(value * 0.18 * 100) / 100;
-            }
-            const amount = value + vat;
+            // Don't calculate or include VAT - amount should be value only
+            const amount = value;
             
             // Get order - map to text using getOrderText function
             const orderCode = payment.payment_order ? getOrderText(payment.payment_order) : '—';
@@ -2899,6 +2899,8 @@ const CollectionDueReport = () => {
           }
           
           // Process each payment row
+          // IMPORTANT: Each payment row already has due_date (filtered by query)
+          // We use this specific payment row's data (value, value_base, currency, etc.) - not from other rows
           console.log('🔍 [Drawer] Processing', legacyPayments.length, 'legacy payment rows');
           let processedCount = 0;
           let skippedNoLeadCount = 0;
@@ -2948,9 +2950,9 @@ const CollectionDueReport = () => {
             const subCategoryName: string = categoryEntry?.name || lead.category || '—';
             const categoryDisplay = mainCategoryName ? `${subCategoryName} (${mainCategoryName})` : subCategoryName;
             
-            // Calculate amount
+            // Calculate amount - NEVER include VAT (use value only)
+            // IMPORTANT: Use the payment row that has due_date (already filtered by query)
             const value = Number(payment.value || payment.value_base || 0);
-            let vat = Number(payment.vat_value || 0);
             const accountingCurrency: any = payment.accounting_currencies 
               ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
               : null;
@@ -2958,10 +2960,8 @@ const CollectionDueReport = () => {
                            (payment.currency_id === 2 ? '€' : 
                             payment.currency_id === 3 ? '$' : 
                             payment.currency_id === 4 ? '£' : '₪');
-            if (!vat && currency === '₪') {
-              vat = Math.round(value * 0.18 * 100) / 100;
-            }
-            const amount = value + vat;
+            // Don't calculate or include VAT - amount should be value only
+            const amount = value;
             
             // Get order - map to text using getOrderText function
             const orderCode = payment.order ? getOrderText(payment.order) : '—';

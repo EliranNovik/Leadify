@@ -573,16 +573,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const lower = trimmed.toLowerCase();
     const digits = trimmed.replace(/\D/g, '');
     const isEmail = trimmed.includes('@');
-    const isPhoneLike = digits.length >= 3;
-    const isLeadNumber = /^[LC]?\d{1,6}$/i.test(trimmed.replace(/[^\dLC]/gi, ''));
+    const isPhoneLike = digits.length >= 3 && /^[\d\s\-\(\)\+]+$/.test(trimmed);
+    const startsWithZero = digits.startsWith('0');
+    const isPurelyDigits = /^[\d\s\-\(\)\+]+$/.test(trimmed);
+    const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
+    const numPartOnly = leadNumQuery.replace(/^[lc]/i, '');
+    // Lead numbers NEVER start with "0" - exclude them (0-prefixed numbers are phone numbers)
+    const isLeadNumber = /^[LC]?\d{1,6}$/i.test(leadNumQuery) && !numPartOnly.startsWith('0');
+    const looksLikeLeadNumber = !isEmail && digits.length >= 1 && digits.length <= 6 && !startsWithZero && /^\d+$/.test(trimmed.replace(/[^0-9]/g, ''));
+    
+    // Skip name/email search for phone numbers and lead numbers (performance optimization)
+    // Phone numbers starting with "0" or containing only digits (5+ digits) should go straight to phone search
+    // Lead numbers (1-6 digits without "0" prefix) should go straight to lead number search
+    // This prevents unnecessary slow name/email searches for phone/lead number queries
+    const shouldSkipNameEmailSearch = (
+      (startsWithZero || (isPurelyDigits && digits.length >= 5)) || // Phone numbers
+      looksLikeLeadNumber // Lead numbers (1-6 digits, no leading zero)
+    ) && !isEmail;
     
     const results: CombinedLead[] = [];
     const seen = new Set<string>();
 
     try {
       // ALWAYS search by name and email immediately (for queries 2+ chars)
-      // This allows users to find leads by typing just a few letters
-      if (trimmed.length >= 2) {
+      // BUT: Skip for phone numbers to avoid slow unnecessary searches
+      if (trimmed.length >= 2 && !shouldSkipNameEmailSearch) {
         console.log('🔍 [Header Immediate Search] Starting name and email search for:', trimmed);
         
         // Generate name variants for multilingual search
@@ -592,25 +607,66 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           : `name.ilike.${lower}%`;
         
         // Email prefix search (works even without @ symbol)
+        // Once @ is detected, only search emails (skip name search for better performance)
+        const hasAtSymbol = isEmail;
         const emailPrefix = lower.split('@')[0] || lower;
-        const emailConditions = [
-          `email.ilike.${emailPrefix}%`,
-          `email.ilike.${lower}%`
-        ].join(',');
+        
+        // Build email conditions - escape and sanitize to avoid SQL injection and malformed queries
+        const emailConditions: string[] = [];
+        if (emailPrefix && emailPrefix.length >= 1) {
+          // Clean prefix: remove commas and other problematic characters from the SQL pattern
+          const cleanPrefix = emailPrefix.replace(/[,\\]/g, '');
+          if (cleanPrefix) {
+            emailConditions.push(`email.ilike.${cleanPrefix}%`);
+          }
+        }
+        // If has domain part (after @), also search for exact email match
+        if (hasAtSymbol) {
+          const domainPart = lower.split('@')[1] || '';
+          if (domainPart) {
+            const cleanFullEmail = lower.replace(/[,\\]/g, '');
+            if (cleanFullEmail) {
+              emailConditions.push(`email.ilike.${cleanFullEmail}%`);
+            }
+          }
+        } else if (lower !== emailPrefix && lower.length > 0) {
+          // No @ symbol yet, but query is different from prefix (unlikely but safe)
+          const cleanLower = lower.replace(/[,\\]/g, '');
+          if (cleanLower) {
+            emailConditions.push(`email.ilike.${cleanLower}%`);
+          }
+        }
+        
+        // Only use name search if no @ symbol (once @ is typed, focus on email only)
+        const shouldSearchNames = !hasAtSymbol;
 
-        // Search new leads by name and email in parallel
-        const [newLeadsByName, newLeadsByEmail] = await Promise.all([
-          supabase
-            .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-            .or(nameConditions)
-            .limit(20),
-          supabase
-            .from('leads')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-            .or(emailConditions)
-            .limit(20)
-        ]);
+        // Search new leads by name and email in parallel (reduced limits for faster response)
+        // Skip name search if query has @ (email-only search is faster and more relevant)
+        const searchPromises: any[] = [];
+        
+        if (shouldSearchNames) {
+          searchPromises.push(
+            supabase
+              .from('leads')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+              .or(nameConditions)
+              .limit(15)
+          );
+        }
+        
+        if (emailConditions.length > 0) {
+          searchPromises.push(
+            supabase
+              .from('leads')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+              .or(emailConditions.join(','))
+              .limit(15)
+          );
+        }
+        
+        const searchResults = await Promise.all(searchPromises);
+        const newLeadsByName = shouldSearchNames ? searchResults[0] : { data: null, error: null };
+        const newLeadsByEmail = shouldSearchNames ? (searchResults[1] || { data: null, error: null }) : (searchResults[0] || { data: null, error: null });
 
         // Process name matches
         if (newLeadsByName.data) {
@@ -688,19 +744,33 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           });
         }
 
-        // Search legacy leads by name and email in parallel
-        const [legacyLeadsByName, legacyLeadsByEmail] = await Promise.all([
-          supabase
-            .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
-            .or(nameConditions)
-            .limit(20),
-          supabase
-            .from('leads_lead')
-            .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
-            .or(emailConditions)
-            .limit(20)
-        ]);
+        // Search legacy leads by name and email in parallel (reduced limits for faster response)
+        // Skip name search if query has @ (email-only search is faster and more relevant)
+        const legacySearchPromises: any[] = [];
+        
+        if (shouldSearchNames) {
+          legacySearchPromises.push(
+            supabase
+              .from('leads_lead')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+              .or(nameConditions)
+              .limit(15)
+          );
+        }
+        
+        if (emailConditions.length > 0) {
+          legacySearchPromises.push(
+            supabase
+              .from('leads_lead')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+              .or(emailConditions.join(','))
+              .limit(15)
+          );
+        }
+        
+        const legacySearchResults = await Promise.all(legacySearchPromises);
+        const legacyLeadsByName = shouldSearchNames ? legacySearchResults[0] : { data: null, error: null };
+        const legacyLeadsByEmail = shouldSearchNames ? (legacySearchResults[1] || { data: null, error: null }) : (legacySearchResults[0] || { data: null, error: null });
 
         // Process legacy name matches
         if (legacyLeadsByName.data) {
@@ -812,7 +882,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 newlead_id
               )
             `)
-            .or(emailConditions)
+            .or(emailConditions.join(','))
             .limit(20)
         ]);
 
@@ -1160,7 +1230,25 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       // Lead number prefix search - use searchLeads for proper exact match and contact handling
       // MUST come BEFORE phone search to prioritize lead numbers over phone numbers
-      if (isLeadNumber || (digits.length <= 6 && !isPhoneLike)) {
+      // IMPORTANT: Lead numbers NEVER start with "0" - exclude them to avoid confusion with phone numbers
+      // Only search for lead numbers if: (1) explicitly matches lead number pattern without "0", OR
+      // (2) digits are 1-6 chars, NOT phone-like, and DON'T start with "0"
+      const shouldSearchLeadNumber = isLeadNumber || 
+        (!startsWithZero && digits.length >= 1 && digits.length <= 6 && !isPhoneLike);
+      
+      // Debug: verify condition for queries starting with "0"
+      if (startsWithZero && shouldSearchLeadNumber) {
+        console.warn('[performImmediateSearch] Query starts with "0" but shouldSearchLeadNumber is true:', {
+          query: trimmed,
+          isLeadNumber,
+          startsWithZero,
+          digitsLength: digits.length,
+          isPhoneLike,
+          shouldSearchLeadNumber
+        });
+      }
+      
+      if (shouldSearchLeadNumber) {
         const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
         const numPart = leadNumQuery.replace(/[^\d]/g, '');
         
@@ -1179,11 +1267,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }))
           });
           
+          // Deduplicate results from searchLeads (may return same lead multiple times via contacts)
+          const leadResultsDeduped = new Map<string, CombinedLead>();
+          for (const result of leadResults) {
+            const resultId = result.id?.toString() || '';
+            const resultLeadNum = (result.lead_number || '').toString().trim();
+            // Create unique key: lead_type + id + lead_number
+            // For contacts, prefer the lead itself (isContact: false) if both exist
+            const uniqueKey = `${result.lead_type || ''}_${resultId}_${resultLeadNum}`.toLowerCase();
+            const existing = leadResultsDeduped.get(uniqueKey);
+            // Keep non-contact entries over contact entries for the same lead
+            if (!existing || (existing.isContact && !result.isContact)) {
+              leadResultsDeduped.set(uniqueKey, result);
+            }
+          }
+          const deduplicatedResults = Array.from(leadResultsDeduped.values());
+          
           // Mark exact matches based on lead_number
           // For lead number searches, only the lead itself (isContact: false) should be exact match
           // Contacts should be fuzzy matches even if they share the same lead_number
           const numPartLower = numPart.toLowerCase().trim();
-          const processedResults = leadResults.map(result => {
+          const processedResults = deduplicatedResults.map(result => {
             const resultLeadNum = (result.lead_number || '').toLowerCase().trim();
             // Remove any "L" or "C" prefix from result lead_number for comparison
             const resultLeadNumNoPrefix = resultLeadNum.replace(/^[lc]/i, '');
@@ -1229,9 +1333,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
 
-      // Phone/Mobile prefix search - immediate results (handles various formats)
+      // Phone/Mobile suffix search - immediate results (handles various formats)
       // Only run if NOT a lead number query (lead numbers take priority)
-      if (isPhoneLike && digits.length >= 3 && !isLeadNumber) {
+      // IMPORTANT: Numbers starting with "0" are ALWAYS phones, never lead numbers
+      // Use suffix matching only (matches from end of phone numbers) - start at 5 digits for earlier results
+      const shouldSearchPhone = isPhoneLike && digits.length >= 5 && (!isLeadNumber || startsWithZero);
+      if (shouldSearchPhone) {
         // Normalize the search digits - handle formats like 00972, 972, 050, 50
         // Remove leading zeros and country code prefixes for better matching
         let normalizedDigits = digits;
@@ -1315,18 +1422,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         };
 
         // Build OR conditions for all variants
-        // Use prefix matching (variant%) and suffix matching (%variant) but NOT contains matching (%variant%)
-        // Only include variants that are long enough for meaningful matches
+        // Use SUFFIX matching only (%variant) for performance - matches from the end of phone numbers
+        // This matches the optimized phone search logic in legacyLeadsApi.ts
         const phoneConditions: string[] = [];
         const mobileConditions: string[] = [];
         searchVariants.forEach(variant => {
-          // Prefix match: phone starts with variant (only if variant is at least 6 digits)
-          if (variant.length >= 6) {
-            phoneConditions.push(`phone.ilike.${variant}%`);
-            mobileConditions.push(`mobile.ilike.${variant}%`);
-          }
-          // Suffix match: phone ends with variant (only if variant is at least 7 digits for stricter matching)
-          if (variant.length >= 7) {
+          // Suffix match only: phone ends with variant (minimum 5 digits, like legacyLeadsApi)
+          // This prevents middle-of-number matches and is much faster
+          if (variant.length >= 5) {
             phoneConditions.push(`phone.ilike.%${variant}`);
             mobileConditions.push(`mobile.ilike.%${variant}`);
           }
@@ -2198,24 +2301,246 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       return;
     }
 
+    // Check if this is an extension of the previous query (user is continuing to type)
+    // An extension means: the new query is longer AND starts with the previous query
+    // In this case, filter existing results client-side instead of searching again
+    const previousQuery = previousSearchQueryRef.current.trim();
+    const previousDigits = previousQuery.replace(/\D/g, '');
+    const currentDigits = trimmedQuery.replace(/\D/g, '');
+    
+    // Detect search types to avoid incompatible filtering (e.g., filtering lead numbers by phone)
+    const previousDigitsOnly = previousDigits;
+    const currentDigitsOnly = currentDigits;
+    const previousIsLeadNumber = previousDigitsOnly.length <= 6 && previousDigitsOnly.length > 0 && 
+      !previousDigitsOnly.startsWith('0') && /^\d+$/.test(previousQuery.replace(/[^\d]/g, ''));
+    const currentIsLeadNumber = currentDigitsOnly.length <= 6 && currentDigitsOnly.length > 0 && 
+      !currentDigitsOnly.startsWith('0') && /^\d+$/.test(trimmedQuery.replace(/[^\d]/g, ''));
+    const currentIsPhoneSearch = currentDigitsOnly.length >= 5 && /^[\d\s\-\(\)\+]+$/.test(trimmedQuery);
+    const previousWasLeadNumberSearch = previousIsLeadNumber && !previousQuery.includes('@');
+    const currentIsLeadNumberSearch = currentIsLeadNumber && !trimmedQuery.includes('@');
+    
+    // Don't use client-side filtering when switching between incompatible search types
+    // Lead number results can't be filtered by phone number - they're different result sets
+    // But lead number extensions (e.g., "343" → "3436") are compatible
+    const isSearchTypeIncompatible = previousWasLeadNumberSearch && currentIsPhoneSearch;
+    
+    // Email extension: when query has @, treat as email extension (for email searches)
+    const previousHasAt = previousQuery.includes('@');
+    const currentHasAt = trimmedQuery.includes('@');
+    const isEmailExtension = previousHasAt && currentHasAt && 
+      trimmedQuery.length > previousQuery.length && 
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase());
+    
+    // Lead number extension: current digits extend previous lead number (e.g., "343" → "3436")
+    // Only if both are lead numbers (1-6 digits, no leading zero)
+    const isLeadNumberExtension = previousIsLeadNumber && currentIsLeadNumberSearch && 
+      currentDigitsOnly.length > previousDigitsOnly.length && 
+      currentDigitsOnly.startsWith(previousDigitsOnly);
+    
+    // Phone extension: current digits start with previous digits (for phone number searches)
+    // Allow phone extensions even when digits length changes (e.g., 6 digits -> 7+ digits)
+    const isPhoneExtension = !currentHasAt && previousDigits.length >= 3 && 
+      currentDigits.length > previousDigits.length && 
+      currentDigits.startsWith(previousDigits) &&
+      !isSearchTypeIncompatible && // Don't use if search types are incompatible
+      !isLeadNumberExtension; // Don't use if it's a lead number extension
+    // Regular extension: current query starts with previous query (for text searches)
+    const isRegularExtension = !currentHasAt && previousQuery && 
+      trimmedQuery.length > previousQuery.length && 
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
+      !isSearchTypeIncompatible && // Don't use if search types are incompatible
+      !isLeadNumberExtension && // Don't use if it's a lead number extension
+      !isPhoneExtension; // Don't use if it's a phone extension
+    // Combined: either a regular extension, phone extension, lead number extension, OR email extension
+    // For email/lead/phone extensions, always use client-side filtering (much faster)
+    const hasCachedResults = masterSearchResultsRef.current.length > 0;
+    const isQueryExtension = (isEmailExtension || isRegularExtension || isPhoneExtension || isLeadNumberExtension) && 
+      hasCachedResults &&
+      previousQuery.length >= 1 && // At least 1 char
+      !isSearchTypeIncompatible; // Don't use if search types are incompatible
+    
+    // Debug logging for extension detection (remove in production)
+    if (previousQuery && trimmedQuery.length > previousQuery.length) {
+      console.log('🔍 [Extension Check]', {
+        previousQuery,
+        currentQuery: trimmedQuery,
+        previousHasAt,
+        currentHasAt,
+        isEmailExtension,
+        previousDigits,
+        currentDigits,
+        isPhoneExtension,
+        isRegularExtension,
+        hasCachedResults,
+        isQueryExtension,
+        isSearchTypeIncompatible,
+        cachedResultsCount: masterSearchResultsRef.current.length
+      });
+    }
+    
+    // Client-side filtering for query extensions (optimization - avoids repeated searches)
+    if (isQueryExtension) {
+      // Pre-compute all normalized values once (performance optimization)
+      const lowerTrimmed = trimmedQuery.toLowerCase().trim();
+      const trimmedDigits = trimmedQuery.replace(/\D/g, '');
+      const isEmail = trimmedQuery.includes('@');
+      const isPhoneLike = trimmedDigits.length >= 3 && /^[\d\s\-\+\(\)]+$/.test(trimmedQuery);
+      const leadNumQuery = trimmedQuery.replace(/[^\dLC]/gi, '');
+      const isLeadNumber = /^[LC]?\d+$/i.test(leadNumQuery);
+      const hasDomainCheck = isEmail && lowerTrimmed.includes('@') && lowerTrimmed.split('@').length > 1 && lowerTrimmed.split('@')[1].length > 0;
+      const leadNumNumeric = isLeadNumber ? leadNumQuery.replace(/^[lc]/i, '').toLowerCase().trim() : '';
+      
+      // Single-pass filter and exact-match evaluation (combined for performance)
+      const exactMatches: CombinedLead[] = [];
+      const fuzzyMatches: CombinedLead[] = [];
+      const seenIds = new Set<string>(); // Deduplication: track IDs we've already processed
+      
+      // Pre-normalize query for exact match checks
+      const queryLower = lowerTrimmed;
+      const queryDigits = trimmedDigits;
+      
+      for (const result of masterSearchResultsRef.current) {
+        // Deduplication: create unique identifier for this result
+        const resultId = result.id?.toString() || '';
+        const resultLeadNum = result.lead_number?.toString().trim() || '';
+        const uniqueId = `${result.lead_type || ''}_${resultId}_${resultLeadNum}`.toLowerCase();
+        
+        // Skip if we've already processed this result (deduplication)
+        if (seenIds.has(uniqueId)) continue;
+        seenIds.add(uniqueId);
+        
+        // Pre-normalize result fields once
+        const name = (result.contactName || result.name || '').toLowerCase();
+        const email = (result.email || '').toLowerCase();
+        const phone = (result.phone || '').replace(/\D/g, '');
+        const mobile = (result.mobile || '').replace(/\D/g, '');
+        const leadNumber = (result.lead_number || '').toLowerCase();
+        
+        // Quick filter check - early return if no match
+        let matches = false;
+        
+        // Detect lead number extension in client-side filtering
+        const queryIsLeadNumber = /^[LC]?\d+$/i.test(trimmedQuery.replace(/[^\dLC]/gi, ''));
+        const queryDigitsOnly = trimmedQuery.replace(/[^\dLC]/gi, '').replace(/^[lc]/i, '');
+        
+        if (isEmail) {
+          matches = email.startsWith(queryLower);
+        } else if (isPhoneLike) {
+          // Phone suffix matching: check if phone/mobile ends with query digits
+          // Also handle variants (with/without country code, with/without leading 0)
+          const phoneNormalized = phone.replace(/^\+?972|^00/, ''); // Remove country code variants
+          const mobileNormalized = mobile.replace(/^\+?972|^00/, ''); // Remove country code variants
+          matches = phone.endsWith(queryDigits) || mobile.endsWith(queryDigits) ||
+                    phoneNormalized.endsWith(queryDigits) || mobileNormalized.endsWith(queryDigits) ||
+                    phone === queryDigits || mobile === queryDigits; // Also check exact match
+        } else if (queryIsLeadNumber || isLeadNumber) {
+          // Lead number filtering: check if lead_number starts with or includes the query
+          const resultLeadNumNoPrefix = leadNumber.replace(/^[lc]/i, '');
+          matches = resultLeadNumNoPrefix.includes(queryDigitsOnly) || 
+                    resultLeadNumNoPrefix.startsWith(queryDigitsOnly);
+        } else {
+          matches = name.includes(queryLower) || email.startsWith(queryLower);
+        }
+        
+        if (!matches) continue; // Skip non-matching results early
+        
+        // Check for exact match (only if it passes filter)
+        let isExactMatch = false;
+        
+        if (hasDomainCheck && email === queryLower) {
+          isExactMatch = true;
+        } else if (isPhoneLike && (phone === queryDigits || mobile === queryDigits)) {
+          isExactMatch = true;
+        } else if (isLeadNumber && result.lead_number) {
+          const resultLeadNumNoPrefix = leadNumber.replace(/^[lc]/i, '');
+          if (resultLeadNumNoPrefix === leadNumNumeric && !result.isContact) {
+            isExactMatch = true;
+          }
+        }
+        
+        // Create result with correct fuzzy flag (only modify if needed)
+        const resultWithFlag = isExactMatch 
+          ? (result.isFuzzyMatch ? { ...result, isFuzzyMatch: false } : result)
+          : (isLeadNumber && result.isContact 
+            ? (result.isFuzzyMatch ? result : { ...result, isFuzzyMatch: true })
+            : result);
+        
+        if (isExactMatch) {
+          exactMatches.push(resultWithFlag);
+        } else {
+          fuzzyMatches.push(resultWithFlag);
+        }
+      }
+      
+      // Sort: exact matches first (no need for full sort since we already separated them)
+      const sortedResults = [...exactMatches, ...fuzzyMatches];
+      
+      // Update refs and state
+      currentSearchQueryRef.current = trimmedQuery;
+      // IMPORTANT: Only update masterSearchResultsRef if we have results
+      // This prevents clearing cached results when filtering produces empty results
+      // Empty filtered results don't mean the original search was wrong - user is just narrowing down
+      if (sortedResults.length > 0) {
+        masterSearchResultsRef.current = sortedResults;
+      }
+      // Still update exactMatches and fuzzyMatches even if empty (for UI state)
+      exactMatchesRef.current = exactMatches;
+      fuzzyMatchesRef.current = fuzzyMatches;
+      setSearchResults(sortedResults);
+      setIsSearching(false);
+      isSearchingRef.current = false;
+      previousSearchQueryRef.current = trimmedQuery;
+      
+      // Handle "no exact match" state
+      if (exactMatches.length === 0) {
+        showNoExactMatchTimeoutRef.current = setTimeout(() => {
+          if (currentSearchQueryRef.current === trimmedQuery && !isSearchingRef.current && exactMatchesRef.current.length === 0) {
+            setShowNoExactMatch(true);
+          }
+        }, 500);
+      } else {
+        setShowNoExactMatch(false);
+      }
+      
+      return; // Exit early - no need to search again
+    }
+
     // Update current search query ref to track which query we're processing
     currentSearchQueryRef.current = trimmedQuery;
 
-    // Perform immediate prefix search (no delay for emails, phones, lead numbers)
-    setIsSearching(true);
-    isSearchingRef.current = true;
+    // Show previous results immediately while searching (better UX - no blank loading screen)
+    // Only show loading if we have no cached results to display
+    if (masterSearchResultsRef.current.length === 0) {
+      setIsSearching(true);
+      isSearchingRef.current = true;
+    } else {
+      // Keep showing previous results while new search is in progress
+      setIsSearching(false);
+      isSearchingRef.current = false;
+    }
     
     (async () => {
       try {
         // First, try immediate prefix search (for emails, phones, lead numbers)
         const immediateResults = await performImmediateSearch(trimmedQuery);
+
+        // Check if query has changed while we were searching
+        // Use a more lenient check: allow results if current query is an extension of the search query
+        // This prevents discarding useful results when user is typing quickly
+        const searchQuery = trimmedQuery;
+        const currentQuery = currentSearchQueryRef.current;
+        const queryChanged = currentQuery !== searchQuery;
+        const isCurrentQueryExtension = currentQuery && 
+          searchQuery && 
+          currentQuery.length > searchQuery.length && 
+          currentQuery.toLowerCase().startsWith(searchQuery.toLowerCase());
         
-        // CRITICAL: Check if query has changed while we were searching
-        if (currentSearchQueryRef.current !== trimmedQuery) {
-          // Query changed, ignore these results
+        // Only discard results if query changed significantly (not just an extension)
+        if (queryChanged && !isCurrentQueryExtension) {
+          // Query changed significantly, ignore these results
           return;
         }
-        
+
         if (immediateResults.length > 0) {
           // Re-evaluate exact matches based on the trimmed query to ensure accuracy for ALL search types
           const lowerTrimmed = trimmedQuery.toLowerCase().trim();
@@ -2297,11 +2622,8 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
           const prefixMatches = sortedResults.filter(r => r.isFuzzyMatch);
           
-          // CRITICAL: Double-check query hasn't changed before updating state
-          if (currentSearchQueryRef.current !== trimmedQuery) {
-            return;
-          }
-          
+          // Always update results immediately when available (better UX)
+          // Don't block updates due to race conditions - show partial results as they arrive
           // CRITICAL: Set refs and state together, and only mark as not searching AFTER results are set
           exactMatchesRef.current = exactMatches;
           fuzzyMatchesRef.current = prefixMatches;
@@ -2309,6 +2631,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           
           // Set results FIRST, then mark as not searching
           // This ensures exact matches are available when the UI renders
+          // Update results immediately - don't wait for race condition checks
           setSearchResults(sortedResults);
           
           // Only mark as not searching AFTER results are set
