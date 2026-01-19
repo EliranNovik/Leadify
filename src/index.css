@@ -6,6 +6,7 @@
   from {
     transform: translateX(100%);
   }
+
   to {
     transform: translateX(0);
   }
@@ -20,6 +21,7 @@
     transform: translateY(100%);
     opacity: 0;
   }
+
   to {
     transform: translateY(0);
     opacity: 1;
@@ -35,6 +37,7 @@
     transform: translateY(-100%);
     opacity: 0;
   }
+
   to {
     transform: translateY(0);
     opacity: 1;
@@ -46,14 +49,17 @@
 }
 
 @keyframes gradient-move {
+
   0%,
   100% {
     background-position: 0% 50%;
   }
+
   50% {
     background-position: 100% 50%;
   }
 }
+
 .animated-gradient {
   background-size: 200% 200%;
   animation: gradient-move 8s ease-in-out infinite;
@@ -63,21 +69,26 @@
   0% {
     transform: translateY(0) scale(1);
   }
+
   100% {
     transform: translateY(40px) scale(1.1);
   }
 }
+
 @keyframes move2 {
   0% {
     transform: translateX(0) scale(1);
   }
+
   100% {
     transform: translateX(-40px) scale(1.05);
   }
 }
+
 .animate-move1 {
   animation: move1 10s ease-in-out infinite alternate;
 }
+
 .animate-move2 {
   animation: move2 12s ease-in-out infinite alternate;
 }
@@ -86,10 +97,12 @@
   from {
     opacity: 0;
   }
+
   to {
     opacity: 1;
   }
 }
+
 .fade-in {
   animation: fadeIn 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
@@ -99,11 +112,13 @@
     opacity: 0;
     transform: translateY(30px);
   }
+
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
+
 .slide-fade-in {
   animation: slideFadeIn 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
@@ -113,18 +128,22 @@
     transform: scale(0.5);
     opacity: 0;
   }
+
   60% {
     transform: scale(1.2);
     opacity: 1;
   }
+
   80% {
     transform: scale(0.95);
   }
+
   100% {
     transform: scale(1);
     opacity: 1;
   }
 }
+
 .checkmark-pop {
   animation: checkmarkPop 0.7s cubic-bezier(0.4, 0, 0.2, 1) both;
 }
@@ -146,11 +165,13 @@ html,
     padding-top: 0.5rem;
     padding-bottom: 0.5rem;
   }
+
   .navbar img {
     height: 4.5rem !important;
     max-height: 4.5rem !important;
     margin-top: 0 !important;
   }
+
   .navbar .btn,
   .navbar .btn-circle,
   .navbar .btn-square {
@@ -160,11 +181,13 @@ html,
     width: 2.75rem;
     font-size: 1.25rem;
   }
+
   .navbar .w-6,
   .navbar .h-6 {
     width: 2rem !important;
     height: 2rem !important;
   }
+
   .navbar .text-base,
   .navbar .font-medium,
   .navbar .font-semibold {
@@ -177,6 +200,7 @@ html,
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
 .scrollbar-hide::-webkit-scrollbar {
   display: none;
 }
@@ -531,11 +555,9 @@ html.dark [class*="RMQ"] {
 
 /* RMQ main container background */
 html.dark .z-50.fixed.inset-0.bg-gradient-to-br {
-  background: linear-gradient(
-    to bottom right,
-    rgba(15, 23, 42, 0.95),
-    rgba(11, 30, 61, 0.95)
-  ) !important;
+  background: linear-gradient(to bottom right,
+      rgba(15, 23, 42, 0.95),
+      rgba(11, 30, 61, 0.95)) !important;
 }
 
 /* RMQ sidebar and main containers */
@@ -603,8 +625,8 @@ html.dark .lead-search-dropdown {
 }
 
 /* RMQ modal dialogs (create group, etc) */
-html.dark .z-50 > div > .bg-white.rounded-2xl,
-html.dark .z-50 > div > .bg-white.rounded-lg {
+html.dark .z-50>div>.bg-white.rounded-2xl,
+html.dark .z-50>div>.bg-white.rounded-lg {
   background: rgba(15, 23, 42, 0.95) !important;
   backdrop-filter: blur(20px) !important;
   -webkit-backdrop-filter: blur(20px) !important;
@@ -629,7 +651,7 @@ html.dark .z-50 .bg-purple-50 {
 }
 
 /* RMQ dividers */
-html.dark .z-50 .divide-gray-100 > * {
+html.dark .z-50 .divide-gray-100>* {
   border-color: rgba(71, 85, 105, 0.3) !important;
 }
 
@@ -826,24 +848,25 @@ input[type="number"].no-arrows::-webkit-outer-spin-button {
   -webkit-appearance: none;
   margin: 0;
 }
+
 input[type="number"].no-arrows {
   -moz-appearance: textfield;
 }
 
 /* Hide ClientInformationBox header on mobile when using side-by-side layout */
 @media (max-width: 768px) {
-  .hide-client-header-mobile > div.text-black > div:first-child {
+  .hide-client-header-mobile>div.text-black>div:first-child {
     display: none !important;
   }
 
   /* Ensure content is visible after hiding header */
-  .hide-client-header-mobile > div.text-black > div:first-child + div {
+  .hide-client-header-mobile>div.text-black>div:first-child+div {
     margin-top: 0 !important;
     display: block !important;
   }
 
   /* Make sure the content div is visible */
-  .hide-client-header-mobile > div.text-black {
+  .hide-client-header-mobile>div.text-black {
     display: block !important;
   }
 }
@@ -948,11 +971,13 @@ body:has(.manual-price-offer-modal-open) .tooltip::after {
     background-color: #fff !important;
     box-shadow: none !important;
   }
+
   .text-primary,
   .text-purple-700,
   .text-primary-content {
     color: #3b28c7 !important;
   }
+
   .bg-primary,
   .bg-purple-700,
   .bg-primary-content {
