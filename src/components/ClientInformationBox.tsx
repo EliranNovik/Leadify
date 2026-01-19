@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { UserIcon, PencilIcon } from '@heroicons/react/24/outline';
+import { UserIcon, PencilIcon, ArrowRightIcon } from '@heroicons/react/24/outline';
 import { supabase } from '../lib/supabase';
 import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
@@ -8,11 +8,15 @@ interface ClientInformationBoxProps {
   selectedClient: any;
   getEmployeeDisplayName?: (employeeId: string | null | undefined) => string;
   onClientUpdate?: () => Promise<void>;
+  isSubLead?: boolean;
+  masterLeadNumber?: string | null;
+  isMasterLeadProp?: boolean;
+  subLeadsCountProp?: number;
 }
 
-const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient, getEmployeeDisplayName, onClientUpdate }) => {
+const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedClient, getEmployeeDisplayName, onClientUpdate, isSubLead, masterLeadNumber, isMasterLeadProp, subLeadsCountProp }) => {
   const navigate = useNavigate();
-  const [legacyContactInfo, setLegacyContactInfo] = useState<{email: string | null, phone: string | null}>({
+  const [legacyContactInfo, setLegacyContactInfo] = useState<{ email: string | null, phone: string | null }>({
     email: null,
     phone: null
   });
@@ -22,7 +26,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
   const [isLoadingCategories, setIsLoadingCategories] = useState(false);
   const [showCategoryDropdown, setShowCategoryDropdown] = useState(false);
   const [categoryInputValue, setCategoryInputValue] = useState<string>('');
-  const [allSources, setAllSources] = useState<Array<{id: number | string, name: string}>>([]);
+  const [allSources, setAllSources] = useState<Array<{ id: number | string, name: string }>>([]);
   const [isMasterLead, setIsMasterLead] = useState(false);
   const [subLeadsCount, setSubLeadsCount] = useState(0);
 
@@ -132,11 +136,11 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
 
       // Find the category by the input value
       const foundCategory = allCategories.find((cat: any) => {
-        const expectedFormat = cat.misc_maincategory?.name 
+        const expectedFormat = cat.misc_maincategory?.name
           ? `${cat.name} (${cat.misc_maincategory.name})`
           : cat.name;
         return expectedFormat.toLowerCase().includes(categoryInputValue.toLowerCase()) ||
-               cat.name.toLowerCase().includes(categoryInputValue.toLowerCase());
+          cat.name.toLowerCase().includes(categoryInputValue.toLowerCase());
       });
 
       if (!foundCategory) {
@@ -162,7 +166,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
       setIsEditingCategory(false);
       setShowCategoryDropdown(false);
       setCategoryInputValue('');
-      
+
       // Refresh client data
       if (onClientUpdate) {
         await onClientUpdate();
@@ -178,24 +182,24 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
     if (!sourceId || sourceId === '---' || sourceId === '' || sourceId === null || sourceId === undefined) {
       return fallbackSource || '';
     }
-    
+
     // Convert sourceId to string/number for comparison (handle bigint)
     const sourceIdStr = String(sourceId).trim();
     if (sourceIdStr === '' || sourceIdStr === 'null' || sourceIdStr === 'undefined') {
       return fallbackSource || '';
     }
-    
+
     // Find source in loaded sources - compare as numbers or strings
     const source = allSources.find((src: any) => {
       const srcId = String(src.id).trim();
       const searchId = sourceIdStr;
       return srcId === searchId || Number(srcId) === Number(searchId);
     });
-    
+
     if (source) {
       return source.name;
     }
-    
+
     // Fallback to the source name if source_id not found
     return fallbackSource || '';
   };
@@ -205,10 +209,10 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
     if (!categoryId || categoryId === '---') {
       // If no category_id but we have a fallback category, try to find it in the loaded categories
       if (fallbackCategory && fallbackCategory.trim() !== '') {
-        const foundCategory = allCategories.find((cat: any) => 
+        const foundCategory = allCategories.find((cat: any) =>
           cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
         );
-        
+
         if (foundCategory) {
           // Return category name with main category in parentheses
           if (foundCategory.misc_maincategory?.name) {
@@ -222,10 +226,10 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
       }
       return '';
     }
-    
+
     // Find category in loaded categories
     const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
-    
+
     if (category) {
       // Return category name with main category in parentheses
       if (category.misc_maincategory?.name) {
@@ -234,14 +238,14 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         return category.name; // Fallback if no main category
       }
     }
-    
+
     // Fallback to the category name if category_id not found
     return fallbackCategory || '';
   };
 
   // Filter categories based on input
   const filteredCategories = allCategories.filter((category) => {
-    const categoryName = category.misc_maincategory?.name 
+    const categoryName = category.misc_maincategory?.name
       ? `${category.name} (${category.misc_maincategory.name})`
       : category.name;
     return categoryName.toLowerCase().includes(categoryInputValue.toLowerCase());
@@ -285,12 +289,12 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
   useEffect(() => {
     const fetchLegacyContactInfo = async () => {
       if (!selectedClient) return;
-      
+
       const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        
+
         try {
           // For legacy leads, we need to get the main contact from leads_contact table
           // via the lead_leadcontact relationship
@@ -303,25 +307,25 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             `)
             .eq('lead_id', legacyId)
             .eq('main', 'true'); // Get the main contact
-          
+
           if (leadContactsError) {
             console.error('Error fetching legacy lead contacts:', leadContactsError);
             return;
           }
-          
+
           console.log('🔍 ClientInformationBox - Lead contacts query result:', { leadContacts, leadContactsError });
-          
+
           if (leadContacts && leadContacts.length > 0) {
             const mainContactId = leadContacts[0].contact_id;
             console.log('🔍 ClientInformationBox - Main contact ID found:', mainContactId);
-            
+
             // Fetch the contact details
             const { data: contactData, error: contactError } = await supabase
               .from('leads_contact')
               .select('email, phone')
               .eq('id', mainContactId)
               .single();
-            
+
             if (!contactError && contactData) {
               console.log('🔍 ClientInformationBox - Setting legacy contact info:', contactData);
               setLegacyContactInfo({
@@ -333,7 +337,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             }
           } else {
             console.log('🔍 ClientInformationBox - No main contact found, trying to get any contact');
-            
+
             // Try to get any contact for this lead
             const { data: anyLeadContacts, error: anyLeadContactsError } = await supabase
               .from('lead_leadcontact')
@@ -343,17 +347,17 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
               `)
               .eq('lead_id', legacyId)
               .limit(1);
-            
+
             if (!anyLeadContactsError && anyLeadContacts && anyLeadContacts.length > 0) {
               const contactId = anyLeadContacts[0].contact_id;
               console.log('🔍 ClientInformationBox - Found any contact ID:', contactId);
-              
+
               const { data: contactData, error: contactError } = await supabase
                 .from('leads_contact')
                 .select('email, phone')
                 .eq('id', contactId)
                 .single();
-              
+
               if (!contactError && contactData) {
                 console.log('🔍 ClientInformationBox - Setting any contact info:', contactData);
                 setLegacyContactInfo({
@@ -370,7 +374,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                 .select('email, phone')
                 .eq('id', legacyId)
                 .single();
-              
+
               if (!error && legacyData) {
                 console.log('🔍 ClientInformationBox - Setting final fallback legacy contact info:', legacyData);
                 setLegacyContactInfo({
@@ -394,7 +398,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
   // Get the display values - use legacy contact info if available, otherwise use client data
   const displayEmail = legacyContactInfo.email || selectedClient?.email;
   const displayPhone = legacyContactInfo.phone || selectedClient?.phone;
-  
+
   // Debug logging
   console.log('🔍 ClientInformationBox - Contact display logic:', {
     selectedClientId: selectedClient?.id,
@@ -419,7 +423,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                   e.preventDefault();
                   e.stopPropagation();
                   const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const leadId = isLegacyLead 
+                  const leadId = isLegacyLead
                     ? selectedClient.id.toString().replace('legacy_', '')
                     : selectedClient.id;
                   const leadNumber = selectedClient.lead_number || selectedClient.manual_id || leadId;
@@ -437,14 +441,14 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
               {selectedClient ? (() => {
                 // Prefer the formatted lead number (e.g. "L18/2"), fall back to manual_id and finally to id
                 let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
-                
+
                 // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
                 const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
                 if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
                   // Replace "L" prefix with "C" for display only
                   displayNumber = displayNumber.toString().replace(/^L/, 'C');
                 }
-                
+
                 return displayNumber;
               })() : '---'}
             </span>
@@ -453,11 +457,54 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             <span className="text-lg font-bold text-gray-700 max-w-[200px]" style={{ fontSize: 'clamp(0.875rem, 2vw, 1.125rem)' }}>
               {selectedClient ? (selectedClient.name || '---') : '---'}
             </span>
-            {selectedClient?.language && (
-              <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full">
-                {selectedClient.language}
-              </span>
+            {(() => {
+              const hasLanguage = selectedClient?.language;
+              console.log('🔍 ClientInformationBox - Language badge check:', {
+                hasLanguage,
+                language: selectedClient?.language,
+                languageId: selectedClient?.language_id,
+                selectedClientId: selectedClient?.id
+              });
+              return hasLanguage ? (
+                <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full">
+                  {selectedClient.language}
+                </span>
+              ) : null;
+            })()}
+            {/* Master Lead button - next to language badge for sub-leads */}
+            {isSubLead && masterLeadNumber && (
+              <a
+                href={`/clients/${masterLeadNumber}/master`}
+                className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
+              >
+                <ArrowRightIcon className="w-4 h-4" />
+                Master Lead
+              </a>
             )}
+            {/* View Sub-Leads button - next to language badge for master leads */}
+            {(() => {
+              const shouldShow = isMasterLeadProp && subLeadsCountProp && subLeadsCountProp > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '');
+              console.log('🔍 ClientInformationBox - Master lead button check:', {
+                isMasterLeadProp,
+                subLeadsCountProp,
+                hasMasterId: !!(selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''),
+                shouldShow,
+                selectedClientId: selectedClient?.id
+              });
+              return shouldShow ? (
+                <a
+                  href={`/clients/${(() => {
+                    // Get the base lead number without any suffix like /2
+                    const leadNumber = selectedClient?.lead_number || selectedClient?.id || '';
+                    return leadNumber.toString().split('/')[0];
+                  })()}/master`}
+                  className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
+                >
+                  <ArrowRightIcon className="w-4 h-4" />
+                  View Sub-Leads ({subLeadsCountProp})
+                </a>
+              ) : null;
+            })()}
           </div>
         </div>
       </div>
@@ -501,7 +548,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
               )}
             </div>
           </div>
-          
+
           {/* Editing input field and buttons below category line */}
           {isEditingCategory && (
             <div className="mt-3 flex flex-col gap-2">
@@ -521,7 +568,7 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                 {showCategoryDropdown && (
                   <div className="absolute top-full left-0 right-0 bg-white border border-black rounded shadow-lg z-10 max-h-40 overflow-y-auto">
                     {filteredCategories.slice(0, 10).map((category) => {
-                      const categoryName = category.misc_maincategory?.name 
+                      const categoryName = category.misc_maincategory?.name
                         ? `${category.name} (${category.misc_maincategory.name})`
                         : category.name;
                       return (
@@ -596,8 +643,8 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
             <span className="text-sm font-semibold text-gray-900">{selectedClient?.probability || 0}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
-            <div 
-              className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300" 
+            <div
+              className="bg-[#3b28c7] h-2 rounded-full transition-all duration-300"
               style={{ width: `${selectedClient?.probability || 0}%` }}
             ></div>
           </div>
@@ -620,11 +667,11 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
         </div>
 
         {/* Closer (if assigned) */}
-        {selectedClient?.closer && 
-         selectedClient?.closer !== '---' && 
-         selectedClient?.closer !== null && 
-         selectedClient?.closer !== undefined &&
-         (getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) !== 'Not assigned' : selectedClient?.closer !== 'Not assigned') ? (
+        {selectedClient?.closer &&
+          selectedClient?.closer !== '---' &&
+          selectedClient?.closer !== null &&
+          selectedClient?.closer !== undefined &&
+          (getEmployeeDisplayName ? getEmployeeDisplayName(selectedClient?.closer) !== 'Not assigned' : selectedClient?.closer !== 'Not assigned') ? (
           <div className="flex justify-between items-center pb-2 border-b border-gray-200 last:border-b-0">
             <p className="text-sm font-medium uppercase tracking-wide bg-gradient-to-r from-purple-500 to-purple-600 text-transparent bg-clip-text">Closer</p>
             <p className="text-sm text-gray-900 text-right">

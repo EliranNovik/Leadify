@@ -157,6 +157,43 @@ const AppContentInner: React.FC = () => {
           
         if (legacyError) throw legacyError;
         
+        // Calculate sub-lead suffix if this is a sub-lead (has master_id)
+        let subLeadSuffix: number | undefined;
+        if (legacyLead.master_id) {
+          const { data: existingSubLeads } = await supabase
+            .from('leads_lead')
+            .select('id')
+            .eq('master_id', legacyLead.master_id)
+            .not('master_id', 'is', null)
+            .order('id', { ascending: true });
+          
+          if (existingSubLeads) {
+            const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === legacyLead.id);
+            // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+            subLeadSuffix = currentLeadIndex >= 0 ? currentLeadIndex + 2 : existingSubLeads.length + 2;
+          }
+        }
+        
+        // Format lead number for legacy leads (same logic as Clients.tsx)
+        const formatLegacyLeadNumber = (legacyLeadData: any, suffix?: number): string => {
+          const masterId = legacyLeadData.master_id;
+          const leadId = String(legacyLeadData.id);
+
+          // If master_id is null/empty, it's a master lead - return just the ID
+          if (!masterId || String(masterId).trim() === '') {
+            return leadId;
+          }
+
+          // If master_id exists, it's a sub-lead
+          // Use provided suffix if available
+          if (suffix !== undefined) {
+            return `${masterId}/${suffix}`;
+          }
+
+          // If suffix not provided, return a placeholder
+          return `${masterId}/?`;
+        };
+        
         // Fetch emails for legacy lead
         const { data: legacyEmails, error: emailsError } = await supabase
           .from('emails')
@@ -168,11 +205,69 @@ const AppContentInner: React.FC = () => {
           console.error('Error fetching legacy emails:', emailsError);
         }
         
+        // Fetch language name if language_id exists
+        let languageName = '';
+        if (legacyLead.language_id) {
+          try {
+            const { data: languageData, error: languageError } = await supabase
+              .from('misc_language')
+              .select('name')
+              .eq('id', legacyLead.language_id)
+              .maybeSingle();
+            
+            if (!languageError && languageData?.name) {
+              languageName = languageData.name;
+              console.log('✅ App.tsx - Fetched language name:', { language_id: legacyLead.language_id, languageName });
+            } else {
+              console.warn('⚠️ App.tsx - Could not fetch language name for language_id:', legacyLead.language_id, languageError);
+            }
+          } catch (langError) {
+            console.error('Error fetching language name:', langError);
+          }
+        } else {
+          console.log('⚠️ App.tsx - No language_id in legacy lead, language_id:', legacyLead.language_id);
+        }
+        
+        // Preserve existing selectedClient properties that might be computed/derived
+        const existingClient = selectedClient;
+        // Use fetched language name if available, otherwise preserve existing if it's valid (not empty string), otherwise empty
+        const finalLanguage = languageName || (existingClient?.language && existingClient.language.trim() !== '' && existingClient.language !== String(legacyLead.language_id || '') ? existingClient.language : '');
+        
+        const preservedProperties = {
+          // Use fetched language name, or preserve existing if it exists and is valid, otherwise use empty string
+          language: finalLanguage,
+          // Preserve category name if it exists (it's computed from category_id)
+          category: existingClient?.category || String(legacyLead.category_id || legacyLead.category || ''),
+          // Preserve other computed properties - use database values as source of truth (database is authoritative)
+          total_base: legacyLead.total_base !== null && legacyLead.total_base !== undefined ? legacyLead.total_base : existingClient?.total_base,
+          total: legacyLead.total !== null && legacyLead.total !== undefined ? legacyLead.total : existingClient?.total,
+          subcontractor_fee: legacyLead.subcontractor_fee !== null && legacyLead.subcontractor_fee !== undefined ? legacyLead.subcontractor_fee : existingClient?.subcontractor_fee,
+          master_id: legacyLead.master_id !== null && legacyLead.master_id !== undefined ? legacyLead.master_id : existingClient?.master_id,
+        };
+        
+        console.log('🔍 App.tsx - Preserving properties during refresh:', {
+          legacyLeadLanguageId: legacyLead.language_id,
+          fetchedLanguageName: languageName,
+          existingLanguage: existingClient?.language,
+          finalLanguage: preservedProperties.language,
+          existingCategory: existingClient?.category,
+          existingTotalBase: existingClient?.total_base,
+          legacyTotalBase: legacyLead.total_base,
+          existingTotal: existingClient?.total,
+          legacyTotal: legacyLead.total,
+          existingSubcontractorFee: existingClient?.subcontractor_fee,
+          legacySubcontractorFee: legacyLead.subcontractor_fee,
+          existingMasterId: existingClient?.master_id,
+          legacyMasterId: legacyLead.master_id,
+          preservedProperties
+        });
+        
         // Transform legacy lead to match new lead structure
         const clientData = {
           ...legacyLead,
+          ...preservedProperties, // Merge preserved properties
           id: `legacy_${legacyLead.id}`,
-          lead_number: String(legacyLead.id),
+          lead_number: formatLegacyLeadNumber(legacyLead, subLeadSuffix),
           stage: String(legacyLead.stage || ''),
           source: String(legacyLead.source_id || ''),
           created_at: legacyLead.cdate,
@@ -181,8 +276,10 @@ const AppContentInner: React.FC = () => {
           special_notes: legacyLead.special_notes || '',
           next_followup: legacyLead.next_followup || '',
           probability: String(legacyLead.probability || ''),
-          category: String(legacyLead.category_id || legacyLead.category || ''),
-          language: String(legacyLead.language_id || ''),
+          // Use preserved category if available, otherwise use ID
+          category: preservedProperties.category || String(legacyLead.category_id || legacyLead.category || ''),
+          // Use preserved language if available, otherwise use ID
+          language: preservedProperties.language || String(legacyLead.language_id || ''),
           balance: String(legacyLead.total || ''),
           balance_currency: legacyLead.accounting_currencies?.name || (() => {
             // Fallback currency mapping based on currency_id
@@ -205,7 +302,13 @@ const AppContentInner: React.FC = () => {
         
         console.log('✅ Legacy client data refreshed:', { 
           emailsFound: legacyEmails?.length || 0,
-          clientId: clientData.id 
+          clientId: clientData.id,
+          language: clientData.language,
+          category: clientData.category,
+          total_base: clientData.total_base,
+          total: clientData.total,
+          subcontractor_fee: clientData.subcontractor_fee,
+          master_id: clientData.master_id
         });
         
         // Check if this should be shown as unactivated view

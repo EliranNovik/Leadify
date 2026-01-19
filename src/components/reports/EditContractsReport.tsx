@@ -123,6 +123,13 @@ const EditContractsReport = () => {
   const performSearch = async (query: string) => {
     const trimmed = query.trim();
     
+    console.log('🔍 [EditContractsReport] performSearch called:', {
+      query: trimmed,
+      dateFrom,
+      dateTo,
+      hasDateFilter: !!(dateFrom || dateTo)
+    });
+    
     setIsSearching(true);
 
     try {
@@ -297,9 +304,15 @@ const EditContractsReport = () => {
         }
       }
 
+      console.log('✅ [EditContractsReport] Search completed:', {
+        resultsCount: results.length,
+        newLeads: results.filter(r => r.lead_type === 'new').length,
+        legacyLeads: results.filter(r => r.lead_type === 'legacy').length
+      });
+
       setSearchResults(results);
     } catch (error) {
-      console.error('Error performing search:', error);
+      console.error('❌ [EditContractsReport] Error performing search:', error);
       setSearchResults([]);
     } finally {
       setIsSearching(false);
@@ -323,37 +336,102 @@ const EditContractsReport = () => {
   };
 
   const handleSaveSignedDate = async (lead: any, newDate: string) => {
-    if (!lead || !newDate) return;
+    console.log('🔍 [EditContractsReport] handleSaveSignedDate called:', {
+      lead: lead ? { id: lead.id, lead_type: lead.lead_type, legacy_id: lead.legacy_id } : null,
+      newDate,
+      dateFrom,
+      dateTo
+    });
+
+    if (!lead || !newDate) {
+      console.warn('⚠️ [EditContractsReport] Missing lead or newDate:', { lead: !!lead, newDate: !!newDate });
+      return;
+    }
 
     try {
       const isLegacy = lead.lead_type === 'legacy';
       const leadId = isLegacy ? lead.legacy_id : lead.id;
 
+      console.log('🔍 [EditContractsReport] Lead details:', {
+        isLegacy,
+        leadId,
+        originalId: lead.id
+      });
+
+      // Check if the new date still matches the date filter criteria
+      const signedDate = new Date(newDate);
+      const fromDate = dateFrom ? new Date(dateFrom) : null;
+      const toDate = dateTo ? new Date(dateTo) : null;
+
+      console.log('🔍 [EditContractsReport] Date validation:', {
+        signedDate: signedDate.toISOString(),
+        fromDate: fromDate?.toISOString() || null,
+        toDate: toDate?.toISOString() || null,
+        isBeforeFrom: fromDate ? signedDate < fromDate : false,
+        isAfterTo: toDate ? signedDate > toDate : false
+      });
+
+      if (fromDate && signedDate < fromDate) {
+        console.log('⚠️ [EditContractsReport] New date is before dateFrom, removing lead from results');
+        // New date is before the "from" date - remove from results
+        setSearchResults(prevResults =>
+          prevResults.filter(l => l.id !== lead.id)
+        );
+        alert('Signed date updated successfully! However, this lead no longer matches the date filter and has been removed from the results.');
+        return;
+      }
+      if (toDate && signedDate > toDate) {
+        console.log('⚠️ [EditContractsReport] New date is after dateTo, removing lead from results');
+        // New date is after the "to" date - remove from results
+        setSearchResults(prevResults =>
+          prevResults.filter(l => l.id !== lead.id)
+        );
+        alert('Signed date updated successfully! However, this lead no longer matches the date filter and has been removed from the results.');
+        return;
+      }
+
       // Update the leads_leadstage record
-      const { error: updateError } = await supabase
+      const updateQuery = supabase
         .from('leads_leadstage')
         .update({ date: newDate })
         .eq(isLegacy ? 'lead_id' : 'newlead_id', leadId)
         .eq('stage', 60);
 
+      console.log('🔍 [EditContractsReport] Updating leads_leadstage:', {
+        table: 'leads_leadstage',
+        updateField: 'date',
+        newDate,
+        filterField: isLegacy ? 'lead_id' : 'newlead_id',
+        filterValue: leadId,
+        stage: 60
+      });
+
+      const { data: updateData, error: updateError } = await updateQuery;
+
       if (updateError) {
-        console.error('Error updating signed date:', updateError);
+        console.error('❌ [EditContractsReport] Error updating signed date:', updateError);
         alert('Failed to update signed date. Please try again.');
         return;
       }
 
-      // Update the local state
-      setSearchResults(prevResults =>
-        prevResults.map(l =>
+      console.log('✅ [EditContractsReport] Update successful:', {
+        updateData: updateData ? (Array.isArray(updateData) ? updateData.length : 1) : 0
+      });
+
+      // Update the local state only if the date still matches the filter
+      setSearchResults(prevResults => {
+        const updated = prevResults.map(l =>
           l.id === lead.id
             ? { ...l, signed_date: newDate }
             : l
-        )
-      );
+        );
+        console.log('✅ [EditContractsReport] Updated local state, results count:', updated.length);
+        return updated;
+      });
 
       alert('Signed date updated successfully!');
     } catch (error) {
-      console.error('Error saving signed date:', error);
+      console.error('❌ [EditContractsReport] Exception saving signed date:', error);
       alert('An error occurred while saving. Please try again.');
     }
   };

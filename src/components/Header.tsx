@@ -197,7 +197,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   const [assignmentNotifications, setAssignmentNotifications] = useState<AssignmentNotification[]>([]);
   const [seenAssignmentKeys, setSeenAssignmentKeys] = useState<Set<string>>(new Set());
-  
+
   // RMQ Messages state
   const [rmqMessages, setRmqMessages] = useState<RMQMessage[]>([]);
   const [rmqUnreadCount, setRmqUnreadCount] = useState(0);
@@ -248,14 +248,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Get auth user ID directly from Supabase auth
       const { data: { user: authUser } } = await supabase.auth.getUser();
       if (!authUser?.id) return;
-      
+
       try {
         // Try to load from database first
         const { data: dismissals, error } = await supabase
           .from('assignment_notification_dismissals')
           .select('dismissal_key')
           .eq('user_id', authUser.id);
-        
+
         if (!error && dismissals) {
           const dismissedKeys = new Set(dismissals.map((d: any) => d.dismissal_key));
           setSeenAssignmentKeys(dismissedKeys);
@@ -269,7 +269,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           }
           return;
         }
-        
+
         // Fallback to localStorage if database query fails (for backward compatibility)
         if (typeof window !== 'undefined') {
           const stored = localStorage.getItem(ASSIGNMENT_SEEN_STORAGE_KEY);
@@ -298,7 +298,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         }
       }
     };
-    
+
     loadDismissedAssignments();
   }, []);
 
@@ -340,7 +340,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
       return;
     }
-    
+
     // Save new keys to database
     if (keysToAdd.length > 0) {
       try {
@@ -355,12 +355,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }, {
               onConflict: 'user_id,dismissal_key'
             });
-          
+
           if (error) {
             console.error('Failed to save dismissal to database:', error);
           }
         }
-        
+
         // Also update localStorage as cache
         if (typeof window !== 'undefined') {
           try {
@@ -436,14 +436,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     //   path: '/teams',
     //   icon: UserGroupIcon,
     // },
-    
-    
+
+
   ];
 
   useEffect(() => {
     let clickTimeout: NodeJS.Timeout;
     let isScrolling = false;
-    
+
     const handleScroll = () => {
       isScrolling = true;
       // Clear any pending click outside handler during scroll
@@ -455,18 +455,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         isScrolling = false;
       }, 150);
     };
-    
+
     const handleClickOutside = (event: Event) => {
       // Don't close if we're currently scrolling
       if (isScrolling) {
         return;
       }
-      
+
       // Clear any existing timeout
       if (clickTimeout) {
         clearTimeout(clickTimeout);
       }
-      
+
       // Add a small delay to prevent accidental closures during scrolling
       clickTimeout = setTimeout(() => {
         if (
@@ -490,7 +490,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     const handleDropdownClickOutside = (event: Event) => {
       const target = event.target as HTMLElement;
-      
+
       // Close notifications when clicking outside
       if (
         notificationsRef.current &&
@@ -498,21 +498,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       ) {
         setShowNotifications(false);
       }
-      
+
       // Close quick actions dropdown when clicking outside
       const quickActionsDropdown = document.querySelector('[data-quick-actions-dropdown]');
       const dropdownMenu = document.querySelector('[data-dropdown-menu]');
-      
+
       // Check if target is a navigation link (Link component renders as <a>)
       const isNavigationLink = target.tagName === 'A' || target.closest('a');
-      
+
       // Close dropdowns if clicking outside both dropdown and menu
       if (showQuickActionsDropdown || showMobileQuickActionsDropdown) {
         // Check if click is outside the button and the dropdown menu
-        const clickedOutsideButton = !buttonRef.current?.contains(target as Node) && 
-                                   !mobileButtonRef.current?.contains(target as Node);
+        const clickedOutsideButton = !buttonRef.current?.contains(target as Node) &&
+          !mobileButtonRef.current?.contains(target as Node);
         const clickedOutsideMenu = !dropdownMenu?.contains(target as Node);
-        
+
         if ((clickedOutsideButton && clickedOutsideMenu) || isNavigationLink) {
           setShowQuickActionsDropdown(false);
           setShowMobileQuickActionsDropdown(false);
@@ -524,7 +524,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     document.addEventListener('click', handleDropdownClickOutside);
     // Add scroll listener to prevent closing during scroll
     document.addEventListener('scroll', handleScroll, true);
-    
+
     return () => {
       if (clickTimeout) {
         clearTimeout(clickTimeout);
@@ -581,7 +581,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // Lead numbers NEVER start with "0" - exclude them (0-prefixed numbers are phone numbers)
     const isLeadNumber = /^[LC]?\d{1,6}$/i.test(leadNumQuery) && !numPartOnly.startsWith('0');
     const looksLikeLeadNumber = !isEmail && digits.length >= 1 && digits.length <= 6 && !startsWithZero && /^\d+$/.test(trimmed.replace(/[^0-9]/g, ''));
-    
+
     // Skip name/email search for phone numbers and lead numbers (performance optimization)
     // Phone numbers starting with "0" or containing only digits (5+ digits) should go straight to phone search
     // Lead numbers (1-6 digits without "0" prefix) should go straight to lead number search
@@ -590,7 +590,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       (startsWithZero || (isPurelyDigits && digits.length >= 5)) || // Phone numbers
       looksLikeLeadNumber // Lead numbers (1-6 digits, no leading zero)
     ) && !isEmail;
-    
+
     const results: CombinedLead[] = [];
     const seen = new Set<string>();
 
@@ -599,74 +599,172 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // BUT: Skip for phone numbers to avoid slow unnecessary searches
       if (trimmed.length >= 2 && !shouldSkipNameEmailSearch) {
         console.log('🔍 [Header Immediate Search] Starting name and email search for:', trimmed);
-        
+
         // Generate name variants for multilingual search
         const nameVariants = generateSearchVariants(trimmed);
         const nameConditions = nameVariants.length > 1
           ? nameVariants.map(v => `name.ilike.${v.toLowerCase()}%`).join(',')
           : `name.ilike.${lower}%`;
-        
+
+        // Helper function to format lead number for new leads (subleads)
+        const formatNewLeadNumber = (newLead: any): string => {
+          // For new leads, if master_id exists, the lead_number should already be formatted (e.g., "L18/2")
+          // But if it's not formatted, we should format it
+          const originalLeadNumber = newLead.lead_number || newLead.id || '';
+          if (newLead.master_id && newLead.lead_number) {
+            // If lead_number doesn't contain '/', it might need formatting
+            // But typically new leads already have formatted lead_number
+            if (!newLead.lead_number.includes('/')) {
+              console.log(`⚠️ [Header New Lead Format] New lead ${newLead.id} has master_id ${newLead.master_id} but lead_number ${newLead.lead_number} doesn't contain '/'. Returning as-is.`);
+              // This shouldn't happen, but if it does, return as-is
+              return newLead.lead_number;
+            } else {
+              console.log(`✅ [Header New Lead Format] New lead ${newLead.id} has master_id ${newLead.master_id} and formatted lead_number: ${newLead.lead_number}`);
+            }
+          }
+          return originalLeadNumber;
+        };
+
         // Email prefix search (works even without @ symbol)
         // Once @ is detected, only search emails (skip name search for better performance)
         const hasAtSymbol = isEmail;
         const emailPrefix = lower.split('@')[0] || lower;
-        
-        // Build email conditions - escape and sanitize to avoid SQL injection and malformed queries
-        const emailConditions: string[] = [];
-        if (emailPrefix && emailPrefix.length >= 1) {
-          // Clean prefix: remove commas and other problematic characters from the SQL pattern
-          const cleanPrefix = emailPrefix.replace(/[,\\]/g, '');
-          if (cleanPrefix) {
-            emailConditions.push(`email.ilike.${cleanPrefix}%`);
-          }
-        }
-        // If has domain part (after @), also search for exact email match
+
+        // Build email conditions - separate exact match from prefix matches
+        const emailPrefixConditions: string[] = [];
+
         if (hasAtSymbol) {
-          const domainPart = lower.split('@')[1] || '';
-          if (domainPart) {
-            const cleanFullEmail = lower.replace(/[,\\]/g, '');
-            if (cleanFullEmail) {
-              emailConditions.push(`email.ilike.${cleanFullEmail}%`);
+          // Full email with domain - exact match will be handled separately in query
+          // Include prefix match for the email prefix part (for similar matches only)
+          if (emailPrefix && emailPrefix.length >= 1) {
+            const cleanPrefix = emailPrefix.replace(/[,\\]/g, '');
+            if (cleanPrefix) {
+              emailPrefixConditions.push(`email.ilike.${cleanPrefix}%`);
             }
           }
-        } else if (lower !== emailPrefix && lower.length > 0) {
-          // No @ symbol yet, but query is different from prefix (unlikely but safe)
-          const cleanLower = lower.replace(/[,\\]/g, '');
-          if (cleanLower) {
-            emailConditions.push(`email.ilike.${cleanLower}%`);
+        } else {
+          // No @ symbol yet - just prefix match
+          if (emailPrefix && emailPrefix.length >= 1) {
+            const cleanPrefix = emailPrefix.replace(/[,\\]/g, '');
+            if (cleanPrefix) {
+              emailPrefixConditions.push(`email.ilike.${cleanPrefix}%`);
+            }
+          }
+          // Also include full query as prefix if different from emailPrefix
+          if (lower !== emailPrefix && lower.length > 0) {
+            const cleanLower = lower.replace(/[,\\]/g, '');
+            if (cleanLower) {
+              emailPrefixConditions.push(`email.ilike.${cleanLower}%`);
+            }
           }
         }
-        
+
+        // Keep emailConditions for backward compatibility with existing code
+        const emailConditions = emailPrefixConditions;
+
         // Only use name search if no @ symbol (once @ is typed, focus on email only)
         const shouldSearchNames = !hasAtSymbol;
 
         // Search new leads by name and email in parallel (reduced limits for faster response)
         // Skip name search if query has @ (email-only search is faster and more relevant)
         const searchPromises: any[] = [];
-        
+
         if (shouldSearchNames) {
           searchPromises.push(
             supabase
               .from('leads')
-              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
               .or(nameConditions)
               .limit(15)
           );
         }
-        
-        if (emailConditions.length > 0) {
+
+        // For emails with domain, try exact match (even while typing, if it matches exactly)
+        // This ensures exact matches show immediately as user types
+        if (hasAtSymbol && lower.includes('@')) {
+          const domainPart = lower.split('@')[1] || '';
+          if (domainPart && domainPart.length > 0) {
+            const exactEmail = lower.trim();
+            console.log('🔍 [Header New Email Exact Search] Searching for exact email:', exactEmail);
+            // Try both eq and ilike for exact match
+            searchPromises.push(
+              supabase
+                .from('leads')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                .eq('email', exactEmail) // Exact match (case-sensitive)
+                .limit(1)
+            );
+            searchPromises.push(
+              supabase
+                .from('leads')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+                .ilike('email', exactEmail) // Case-insensitive exact match
+                .limit(1)
+            );
+          }
+        }
+
+        if (emailPrefixConditions.length > 0) {
           searchPromises.push(
             supabase
               .from('leads')
-              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
-              .or(emailConditions.join(','))
-              .limit(15)
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at, master_id')
+              .or(emailPrefixConditions.join(','))
+              .limit(5) // Limit similar matches to 5
           );
         }
-        
+
         const searchResults = await Promise.all(searchPromises);
+
+        // Extract exact match and similar matches for new leads
+        let newLeadsExactEmail: any = { data: null, error: null };
+        let newLeadsByEmail: any = { data: null, error: null };
+
+        if (hasAtSymbol && emailPrefixConditions.length > 0) {
+          // Results order: [name (if shouldSearchNames), exactEmailEq, exactEmailIlike, prefixEmail]
+          let exactMatchEqIndex = -1;
+          let exactMatchIlikeIndex = -1;
+          let prefixMatchIndex = -1;
+
+          if (shouldSearchNames) {
+            // Results order: [name, exactEmailEq, exactEmailIlike, prefixEmail]
+            exactMatchEqIndex = 1;
+            exactMatchIlikeIndex = 2;
+            prefixMatchIndex = 3;
+          } else {
+            // Results order: [exactEmailEq, exactEmailIlike, prefixEmail]
+            exactMatchEqIndex = 0;
+            exactMatchIlikeIndex = 1;
+            prefixMatchIndex = 2;
+          }
+
+          // Combine both exact match results (eq and ilike)
+          const exactMatches: any[] = [];
+          if (exactMatchEqIndex >= 0 && searchResults[exactMatchEqIndex]?.data) {
+            exactMatches.push(...(searchResults[exactMatchEqIndex].data || []));
+          }
+          if (exactMatchIlikeIndex >= 0 && searchResults[exactMatchIlikeIndex]?.data) {
+            // Add ilike results that aren't already in eq results
+            const eqIds = new Set(exactMatches.map((l: any) => l.id));
+            const ilikeResults = (searchResults[exactMatchIlikeIndex].data || []).filter((l: any) => !eqIds.has(l.id));
+            exactMatches.push(...ilikeResults);
+          }
+
+          if (exactMatches.length > 0) {
+            newLeadsExactEmail = { data: exactMatches, error: null };
+            console.log('✅ [Header New Email] Extracted exact match results:', newLeadsExactEmail);
+          }
+
+          if (prefixMatchIndex >= 0 && searchResults[prefixMatchIndex]) {
+            newLeadsByEmail = searchResults[prefixMatchIndex];
+            console.log('🔍 [Header New Email] Extracted prefix match result:', newLeadsByEmail);
+          }
+        } else if (emailPrefixConditions.length > 0) {
+          // No exact match search, just get the email results
+          newLeadsByEmail = shouldSearchNames ? (searchResults[1] || { data: null, error: null }) : (searchResults[0] || { data: null, error: null });
+        }
+
         const newLeadsByName = shouldSearchNames ? searchResults[0] : { data: null, error: null };
-        const newLeadsByEmail = shouldSearchNames ? (searchResults[1] || { data: null, error: null }) : (searchResults[0] || { data: null, error: null });
 
         // Process name matches
         if (newLeadsByName.data) {
@@ -676,10 +774,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const leadName = (lead.name || '').toLowerCase();
               const isExactMatch = leadName === lower;
               const isPrefixMatch = leadName.startsWith(lower);
+              const formattedLeadNumber = formatNewLeadNumber(lead);
               seen.add(key);
               results.push({
                 id: lead.id,
-                lead_number: lead.lead_number || '',
+                lead_number: formattedLeadNumber,
                 name: lead.name || '',
                 email: lead.email || '',
                 phone: lead.phone || '',
@@ -705,72 +804,319 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           });
         }
 
-        // Process email matches
-        if (newLeadsByEmail.data) {
+        // Process new leads email matches - prioritize exact matches first
+        const exactNewEmailMatches: any[] = [];
+        const similarNewEmailMatches: any[] = [];
+
+        // First, collect exact matches from dedicated exact match queries
+        if (newLeadsExactEmail.data && newLeadsExactEmail.data.length > 0) {
+          console.log('✅ [Header New Email Search] Found EXACT email match:', newLeadsExactEmail.data.map((l: any) => ({ id: l.id, email: l.email })));
+          exactNewEmailMatches.push(...newLeadsExactEmail.data);
+        }
+
+        // Then, process prefix matches - check if any are exact matches, rest are similar
+        if (newLeadsByEmail.data && newLeadsByEmail.data.length > 0) {
+          console.log('🔍 [Header New Email Search] Found prefix/similar new leads by email:', newLeadsByEmail.data.length, newLeadsByEmail.data.map((l: any) => ({ id: l.id, email: l.email })));
+
+          const exactEmailSet = new Set(exactNewEmailMatches.map((l: any) => l.id));
+          const searchEmailLower = lower.trim();
+          const hasFullDomain = hasAtSymbol && lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
+
           newLeadsByEmail.data.forEach((lead: any) => {
-            const key = `new:${lead.id}`;
-            if (!seen.has(key)) {
-              const leadEmail = (lead.email || '').toLowerCase().trim();
-              const searchEmail = lower.trim();
-              const hasDomain = lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
-              const isExactEmailMatch = hasDomain && leadEmail === searchEmail;
-              const isEmailPrefixMatch = leadEmail.startsWith(emailPrefix) || leadEmail.startsWith(lower);
-              seen.add(key);
-              results.push({
-                id: lead.id,
-                lead_number: lead.lead_number || '',
-                name: lead.name || '',
-                email: lead.email || '',
-                phone: lead.phone || '',
-                mobile: lead.mobile || '',
-                topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
-                source: '',
-                created_at: lead.created_at || '',
-                updated_at: lead.created_at || '',
-                notes: '',
-                special_notes: '',
-                next_followup: '',
-                probability: '',
-                category: '',
-                language: '',
-                balance: '',
-                lead_type: 'new',
-                unactivation_reason: null,
-                deactivate_note: null,
-                isFuzzyMatch: !isExactEmailMatch && !isEmailPrefixMatch,
-              });
+            if (exactEmailSet.has(lead.id)) return; // Already in exact matches
+
+            const leadEmail = (lead.email || '').toLowerCase().trim();
+            // Check if this is an exact match (even if from prefix search)
+            const isExactMatch = hasFullDomain && leadEmail === searchEmailLower;
+
+            if (isExactMatch) {
+              exactNewEmailMatches.push(lead);
+            } else {
+              similarNewEmailMatches.push(lead);
             }
           });
         }
 
+        // Limit similar matches to 5
+        const limitedSimilarNewMatches = similarNewEmailMatches.slice(0, 5);
+
+        // Process exact matches first
+        exactNewEmailMatches.forEach((lead: any) => {
+          const key = `new:${lead.id}`;
+          if (!seen.has(key)) {
+            const formattedLeadNumber = formatNewLeadNumber(lead);
+            seen.add(key);
+            results.push({
+              id: lead.id,
+              lead_number: formattedLeadNumber,
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.created_at || '',
+              updated_at: lead.created_at || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'new',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: false, // Exact matches are not fuzzy
+            });
+          }
+        });
+
+        // Process similar matches (limited to 5)
+        limitedSimilarNewMatches.forEach((lead: any) => {
+          const key = `new:${lead.id}`;
+          if (!seen.has(key)) {
+            const formattedLeadNumber = formatNewLeadNumber(lead);
+            seen.add(key);
+            results.push({
+              id: lead.id,
+              lead_number: formattedLeadNumber,
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.created_at || '',
+              updated_at: lead.created_at || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'new',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: true, // Similar matches are fuzzy
+            });
+          }
+        });
+
         // Search legacy leads by name and email in parallel (reduced limits for faster response)
         // Skip name search if query has @ (email-only search is faster and more relevant)
         const legacySearchPromises: any[] = [];
-        
+
         if (shouldSearchNames) {
           legacySearchPromises.push(
             supabase
               .from('leads_lead')
-              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
               .or(nameConditions)
               .limit(15)
           );
         }
-        
-        if (emailConditions.length > 0) {
+
+        // For emails with domain, try exact match (even while typing, if it matches exactly)
+        // This ensures exact matches show immediately as user types
+        if (hasAtSymbol && lower.includes('@')) {
+          const domainPart = lower.split('@')[1] || '';
+          if (domainPart && domainPart.length > 0) {
+            const exactEmail = lower.trim();
+            console.log('🔍 [Header Legacy Email Exact Search] Searching for exact email:', exactEmail);
+            // Try exact match - use both eq (case-sensitive) and ilike (case-insensitive) to catch all variations
+            legacySearchPromises.push(
+              supabase
+                .from('leads_lead')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                .eq('email', exactEmail) // Exact match (case-sensitive)
+                .limit(1)
+            );
+            legacySearchPromises.push(
+              supabase
+                .from('leads_lead')
+                .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+                .ilike('email', exactEmail) // Case-insensitive exact match
+                .limit(1)
+            );
+          }
+        }
+
+        // Then do prefix/pattern matches (limited to 5 for similar matches)
+        if (emailPrefixConditions.length > 0) {
+          const prefixOrCondition = emailPrefixConditions.join(',');
+          console.log('🔍 [Header Legacy Email Prefix Search] Prefix conditions:', emailPrefixConditions, 'OR condition:', prefixOrCondition);
           legacySearchPromises.push(
             supabase
               .from('leads_lead')
-              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate')
-              .or(emailConditions.join(','))
-              .limit(15)
+              .select('id, lead_number, name, email, phone, mobile, topic, stage, cdate, master_id')
+              .or(prefixOrCondition)
+              .limit(5) // Limit similar matches to 5
           );
         }
-        
+
         const legacySearchResults = await Promise.all(legacySearchPromises);
+
+        // Extract exact match and similar matches separately
+        let legacyLeadsExactEmail: any = { data: null, error: null };
+        let legacyLeadsByEmail: any = { data: null, error: null };
+
+        if (hasAtSymbol && emailPrefixConditions.length > 0) {
+          // If we searched for exact match, extract it from the results
+          // Results order: [name (if shouldSearchNames), exactEmail (eq), exactEmail (ilike), prefixEmail]
+          let exactMatchEqIndex = -1;
+          let exactMatchIlikeIndex = -1;
+          let prefixMatchIndex = -1;
+
+          if (shouldSearchNames) {
+            // Results order: [name, exactEmailEq, exactEmailIlike, prefixEmail]
+            exactMatchEqIndex = 1;
+            exactMatchIlikeIndex = 2;
+            prefixMatchIndex = 3;
+          } else {
+            // Results order: [exactEmailEq, exactEmailIlike, prefixEmail]
+            exactMatchEqIndex = 0;
+            exactMatchIlikeIndex = 1;
+            prefixMatchIndex = 2;
+          }
+
+          // Combine both exact match results (eq and ilike)
+          const exactMatches: any[] = [];
+          if (exactMatchEqIndex >= 0 && legacySearchResults[exactMatchEqIndex]?.data) {
+            exactMatches.push(...(legacySearchResults[exactMatchEqIndex].data || []));
+          }
+          if (exactMatchIlikeIndex >= 0 && legacySearchResults[exactMatchIlikeIndex]?.data) {
+            // Add ilike results that aren't already in eq results
+            const eqIds = new Set(exactMatches.map((l: any) => l.id));
+            const ilikeResults = (legacySearchResults[exactMatchIlikeIndex].data || []).filter((l: any) => !eqIds.has(l.id));
+            exactMatches.push(...ilikeResults);
+          }
+
+          if (exactMatches.length > 0) {
+            legacyLeadsExactEmail = { data: exactMatches, error: null };
+            console.log('✅ [Header Legacy Email] Extracted exact match results:', legacyLeadsExactEmail);
+          }
+
+          if (prefixMatchIndex >= 0 && legacySearchResults[prefixMatchIndex]) {
+            legacyLeadsByEmail = legacySearchResults[prefixMatchIndex];
+            console.log('🔍 [Header Legacy Email] Extracted prefix match result:', legacyLeadsByEmail);
+          }
+        } else if (emailPrefixConditions.length > 0) {
+          // No exact match search (no @ symbol), just get the email results
+          legacyLeadsByEmail = shouldSearchNames ? (legacySearchResults[1] || { data: null, error: null }) : (legacySearchResults[0] || { data: null, error: null });
+        }
+
         const legacyLeadsByName = shouldSearchNames ? legacySearchResults[0] : { data: null, error: null };
-        const legacyLeadsByEmail = shouldSearchNames ? (legacySearchResults[1] || { data: null, error: null }) : (legacySearchResults[0] || { data: null, error: null });
+
+        // Log errors if any
+        if (legacyLeadsByEmail.error) {
+          console.error('❌ [Header Legacy Email Search] Error:', legacyLeadsByEmail.error);
+        }
+        if (legacyLeadsExactEmail.error) {
+          console.error('❌ [Header Legacy Email Exact Search] Error:', legacyLeadsExactEmail.error);
+        }
+
+        // Helper function to format legacy lead numbers (handles subleads)
+        const formatLegacyLeadNumberForSearch = (legacyLead: any, subleadSuffixMap: Map<number, Map<number, number>>): string => {
+          const masterId = legacyLead.master_id;
+          const leadId = String(legacyLead.id);
+
+          // Check if master_id exists and is valid
+          if (masterId === null || masterId === undefined || masterId === '' || String(masterId).trim() === '') {
+            // It's a master lead - return just the ID
+            return leadId;
+          }
+
+          // If master_id exists, it's a sub-lead - get suffix from map
+          const masterIdNum = Number(masterId);
+          if (isNaN(masterIdNum)) {
+            console.log(`⚠️ [Header Sublead Format] Legacy lead ${leadId} has invalid master_id: ${masterId}`);
+            return leadId;
+          }
+
+          const masterSuffixMap = subleadSuffixMap.get(masterIdNum);
+          if (masterSuffixMap) {
+            const suffix = masterSuffixMap.get(legacyLead.id);
+            if (suffix !== undefined) {
+              const formatted = `${masterIdNum}/${suffix}`;
+              console.log(`✅ [Header Sublead Format] Legacy lead ${leadId} with master_id ${masterIdNum} formatted as: ${formatted}`);
+              return formatted;
+            } else {
+              console.log(`⚠️ [Header Sublead Format] Legacy lead ${leadId} has master_id ${masterIdNum} but suffix not found in map. Map has ${masterSuffixMap.size} entries.`);
+            }
+          } else {
+            console.log(`⚠️ [Header Sublead Format] Legacy lead ${leadId} has master_id ${masterIdNum} but masterSuffixMap not found. Total maps: ${subleadSuffixMap.size}`);
+          }
+
+          // Fallback: return placeholder (this should rarely happen if batch fetch worked)
+          return `${masterIdNum}/?`;
+        };
+
+        // Collect all legacy leads to format sublead numbers
+        const allLegacyLeadsForFormatting: any[] = [];
+        if (legacyLeadsByName.data) {
+          allLegacyLeadsForFormatting.push(...legacyLeadsByName.data);
+        }
+        if (legacyLeadsExactEmail.data) {
+          allLegacyLeadsForFormatting.push(...legacyLeadsExactEmail.data);
+        }
+        if (legacyLeadsByEmail.data) {
+          allLegacyLeadsForFormatting.push(...legacyLeadsByEmail.data);
+        }
+
+        // Debug: Check if any leads have master_id
+        const leadsWithMasterId = allLegacyLeadsForFormatting.filter(l => l.master_id);
+        console.log(`🔢 [Header Sublead Format] Total legacy leads: ${allLegacyLeadsForFormatting.length}, Leads with master_id: ${leadsWithMasterId.length}`,
+          leadsWithMasterId.map(l => ({ id: l.id, master_id: l.master_id })));
+
+        // Build a map of master_id -> {lead_id -> suffix} for efficient lookup
+        const subleadSuffixMap = new Map<number, Map<number, number>>();
+        const uniqueMasterIds = new Set<number>();
+        allLegacyLeadsForFormatting.forEach((lead: any) => {
+          // Check if master_id exists (could be null, undefined, or a number)
+          if (lead.master_id !== null && lead.master_id !== undefined && lead.master_id !== '') {
+            const masterIdNum = Number(lead.master_id);
+            if (!isNaN(masterIdNum)) {
+              uniqueMasterIds.add(masterIdNum);
+            }
+          }
+        });
+
+        console.log(`🔢 [Header Sublead Format] Checking ${allLegacyLeadsForFormatting.length} legacy leads for master_id. Found ${uniqueMasterIds.size} unique master_ids:`, Array.from(uniqueMasterIds));
+
+        // Batch fetch subleads for all unique master_ids
+        if (uniqueMasterIds.size > 0) {
+          console.log(`🔢 [Header Sublead Format] Found ${uniqueMasterIds.size} unique master_ids to fetch subleads for:`, Array.from(uniqueMasterIds));
+          const subleadPromises = Array.from(uniqueMasterIds).map(async (masterId) => {
+            const { data: subleads, error } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('master_id', masterId)
+              .not('master_id', 'is', null)
+              .order('id', { ascending: true });
+
+            if (error) {
+              console.error(`❌ [Header Sublead Format] Error fetching subleads for master_id ${masterId}:`, error);
+              return;
+            }
+
+            if (subleads) {
+              const suffixMap = new Map<number, number>();
+              subleads.forEach((sublead: any, index: number) => {
+                // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
+                suffixMap.set(sublead.id, index + 2);
+              });
+              subleadSuffixMap.set(masterId, suffixMap);
+              console.log(`✅ [Header Sublead Format] Fetched ${subleads.length} subleads for master_id ${masterId}, suffix map:`, Array.from(suffixMap.entries()));
+            }
+          });
+
+          await Promise.all(subleadPromises);
+          console.log(`✅ [Header Sublead Format] Completed batch fetch for all master_ids. Total suffix maps: ${subleadSuffixMap.size}`);
+        }
 
         // Process legacy name matches
         if (legacyLeadsByName.data) {
@@ -780,10 +1126,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const leadName = (lead.name || '').toLowerCase();
               const isExactMatch = leadName === lower;
               const isPrefixMatch = leadName.startsWith(lower);
+              console.log(`🔍 [Header Legacy Name] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
+              const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
               seen.add(key);
               results.push({
                 id: `legacy_${lead.id}`,
-                lead_number: String(lead.id),
+                lead_number: formattedLeadNumber,
                 manual_id: String(lead.id),
                 name: lead.name || '',
                 email: lead.email || '',
@@ -810,100 +1158,301 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           });
         }
 
-        // Process legacy email matches
-        if (legacyLeadsByEmail.data) {
+        // Process legacy email matches - prioritize exact matches first
+        const exactEmailMatches: any[] = [];
+        const similarEmailMatches: any[] = [];
+
+        // First, collect exact matches from dedicated exact match queries
+        if (legacyLeadsExactEmail.data && legacyLeadsExactEmail.data.length > 0) {
+          console.log('✅ [Header Legacy Email Search] Found EXACT email match:', legacyLeadsExactEmail.data.map((l: any) => ({ id: l.id, email: l.email, master_id: l.master_id })));
+          exactEmailMatches.push(...legacyLeadsExactEmail.data);
+        }
+
+        // Then, process prefix matches - check if any are exact matches, rest are similar
+        if (legacyLeadsByEmail.data && legacyLeadsByEmail.data.length > 0) {
+          console.log('🔍 [Header Legacy Email Search] Found prefix/similar legacy leads by email:', legacyLeadsByEmail.data.length, legacyLeadsByEmail.data.map((l: any) => ({ id: l.id, email: l.email, master_id: l.master_id })));
+
+          const exactEmailSet = new Set(exactEmailMatches.map((l: any) => l.id));
+          const searchEmailLower = lower.trim();
+          const hasFullDomain = hasAtSymbol && lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
+
           legacyLeadsByEmail.data.forEach((lead: any) => {
-            const key = `legacy:${lead.id}`;
-            if (!seen.has(key)) {
-              const leadEmail = (lead.email || '').toLowerCase().trim();
-              const searchEmail = lower.trim();
-              const hasDomain = lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
-              const isExactEmailMatch = hasDomain && leadEmail === searchEmail;
-              const isEmailPrefixMatch = leadEmail.startsWith(emailPrefix) || leadEmail.startsWith(lower);
-              seen.add(key);
-              results.push({
-                id: `legacy_${lead.id}`,
-                lead_number: String(lead.id),
-                manual_id: String(lead.id),
-                name: lead.name || '',
-                email: lead.email || '',
-                phone: lead.phone || '',
-                mobile: lead.mobile || '',
-                topic: lead.topic || '',
-                stage: String(lead.stage ?? ''),
-                source: '',
-                created_at: lead.cdate || '',
-                updated_at: lead.cdate || '',
-                notes: '',
-                special_notes: '',
-                next_followup: '',
-                probability: '',
-                category: '',
-                language: '',
-                balance: '',
-                lead_type: 'legacy',
-                unactivation_reason: null,
-                deactivate_note: null,
-                isFuzzyMatch: !isExactEmailMatch && !isEmailPrefixMatch,
-              });
+            if (exactEmailSet.has(lead.id)) return; // Already in exact matches
+
+            const leadEmail = (lead.email || '').toLowerCase().trim();
+            // Check if this is an exact match (even if from prefix search)
+            const isExactMatch = hasFullDomain && leadEmail === searchEmailLower;
+
+            if (isExactMatch) {
+              exactEmailMatches.push(lead);
+            } else {
+              similarEmailMatches.push(lead);
             }
           });
         }
 
-        // Search contacts by name and email
-        const [contactsByName, contactsByEmail] = await Promise.all([
-          supabase
-            .from('leads_contact')
-            .select(`
-              id,
-              name,
-              email,
-              phone,
-              mobile,
-              newlead_id,
-              lead_leadcontact (
-                lead_id,
-                newlead_id
-              )
-            `)
-            .or(nameConditions)
-            .limit(20),
-          supabase
-            .from('leads_contact')
-            .select(`
-              id,
-              name,
-              email,
-              phone,
-              mobile,
-              newlead_id,
-              lead_leadcontact (
-                lead_id,
-                newlead_id
-              )
-            `)
-            .or(emailConditions.join(','))
-            .limit(20)
-        ]);
+        // Limit similar matches to 5
+        const limitedSimilarMatches = similarEmailMatches.slice(0, 5);
 
-        // Process contacts and get their associated leads
-        const allContacts = [
+        // Process exact matches first
+        exactEmailMatches.forEach((lead: any) => {
+          const key = `legacy:${lead.id}`;
+          if (!seen.has(key)) {
+            console.log(`🔍 [Header Legacy Exact Email] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
+            const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
+            seen.add(key);
+            results.push({
+              id: `legacy_${lead.id}`,
+              lead_number: formattedLeadNumber,
+              manual_id: String(lead.id),
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.cdate || '',
+              updated_at: lead.cdate || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'legacy',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: false, // Exact matches are not fuzzy
+            });
+          }
+        });
+
+        // Process similar matches (limited to 5)
+        limitedSimilarMatches.forEach((lead: any) => {
+          const key = `legacy:${lead.id}`;
+          if (!seen.has(key)) {
+            console.log(`🔍 [Header Legacy Similar Email] Processing lead ${lead.id}, master_id: ${lead.master_id || 'null'}`);
+            const formattedLeadNumber = formatLegacyLeadNumberForSearch(lead, subleadSuffixMap);
+            seen.add(key);
+            results.push({
+              id: `legacy_${lead.id}`,
+              lead_number: formattedLeadNumber,
+              manual_id: String(lead.id),
+              name: lead.name || '',
+              email: lead.email || '',
+              phone: lead.phone || '',
+              mobile: lead.mobile || '',
+              topic: lead.topic || '',
+              stage: String(lead.stage ?? ''),
+              source: '',
+              created_at: lead.cdate || '',
+              updated_at: lead.cdate || '',
+              notes: '',
+              special_notes: '',
+              next_followup: '',
+              probability: '',
+              category: '',
+              language: '',
+              balance: '',
+              lead_type: 'legacy',
+              unactivation_reason: null,
+              deactivate_note: null,
+              isFuzzyMatch: true, // Similar matches are fuzzy
+            });
+          }
+        });
+
+        // Search contacts by name and email - limit to 5 similar matches
+        // For emails, also try exact match first
+        const contactSearchPromises: any[] = [];
+
+        // For emails with domain, try exact match for contacts
+        if (hasAtSymbol && lower.includes('@')) {
+          const domainPart = lower.split('@')[1] || '';
+          if (domainPart && domainPart.length > 0) {
+            const exactEmail = lower.trim();
+            console.log('🔍 [Header Contact Email Exact Search] Searching for exact email:', exactEmail);
+            contactSearchPromises.push(
+              supabase
+                .from('leads_contact')
+                .select(`
+                  id,
+                  name,
+                  email,
+                  phone,
+                  mobile,
+                  newlead_id,
+                  lead_leadcontact (
+                    lead_id,
+                    newlead_id
+                  )
+                `)
+                .eq('email', exactEmail)
+                .limit(1)
+            );
+            contactSearchPromises.push(
+              supabase
+                .from('leads_contact')
+                .select(`
+                  id,
+                  name,
+                  email,
+                  phone,
+                  mobile,
+                  newlead_id,
+                  lead_leadcontact (
+                    lead_id,
+                    newlead_id
+                  )
+                `)
+                .ilike('email', exactEmail)
+                .limit(1)
+            );
+          }
+        }
+
+        // Then do prefix/pattern matches for contacts (limited to 5)
+        if (nameConditions.length > 0) {
+          contactSearchPromises.push(
+            supabase
+              .from('leads_contact')
+              .select(`
+                id,
+                name,
+                email,
+                phone,
+                mobile,
+                newlead_id,
+                lead_leadcontact (
+                  lead_id,
+                  newlead_id
+                )
+              `)
+              .or(nameConditions)
+              .limit(5)
+          );
+        }
+
+        if (emailPrefixConditions.length > 0) {
+          contactSearchPromises.push(
+            supabase
+              .from('leads_contact')
+              .select(`
+                id,
+                name,
+                email,
+                phone,
+                mobile,
+                newlead_id,
+                lead_leadcontact (
+                  lead_id,
+                  newlead_id
+                )
+              `)
+              .or(emailPrefixConditions.join(','))
+              .limit(5)
+          );
+        }
+
+        const contactSearchResults = await Promise.all(contactSearchPromises);
+
+        // Extract exact matches and similar matches for contacts
+        let contactsExactEmail: any = { data: null, error: null };
+        let contactsByName: any = { data: null, error: null };
+        let contactsByEmail: any = { data: null, error: null };
+
+        if (hasAtSymbol && emailPrefixConditions.length > 0) {
+          // Results order: [exactEmailEq, exactEmailIlike, nameContacts, emailContacts]
+          let exactMatchEqIndex = 0;
+          let exactMatchIlikeIndex = 1;
+          let nameIndex = 2;
+          let emailIndex = 3;
+
+          if (exactMatchEqIndex >= 0 && contactSearchResults[exactMatchEqIndex]?.data) {
+            const eqData = contactSearchResults[exactMatchEqIndex].data || [];
+            const ilikeData = contactSearchResults[exactMatchIlikeIndex]?.data || [];
+            const eqIds = new Set(eqData.map((c: any) => c.id));
+            const ilikeUnique = ilikeData.filter((c: any) => !eqIds.has(c.id));
+            contactsExactEmail = { data: [...eqData, ...ilikeUnique], error: null };
+            console.log('✅ [Header Contact Email] Extracted exact match results:', contactsExactEmail);
+          }
+
+          if (nameIndex >= 0 && contactSearchResults[nameIndex]) {
+            contactsByName = contactSearchResults[nameIndex];
+          }
+          if (emailIndex >= 0 && contactSearchResults[emailIndex]) {
+            contactsByEmail = contactSearchResults[emailIndex];
+          }
+        } else {
+          // No exact match search, just get the contact results
+          if (nameConditions.length > 0 && emailPrefixConditions.length > 0) {
+            contactsByName = contactSearchResults[0] || { data: null, error: null };
+            contactsByEmail = contactSearchResults[1] || { data: null, error: null };
+          } else if (nameConditions.length > 0) {
+            contactsByName = contactSearchResults[0] || { data: null, error: null };
+          } else if (emailPrefixConditions.length > 0) {
+            contactsByEmail = contactSearchResults[0] || { data: null, error: null };
+          }
+        }
+
+        // Process contacts and get their associated leads - separate exact from similar
+        const exactContactMatches: any[] = [];
+        const similarContactMatches: any[] = [];
+
+        // First, collect exact email matches
+        if (contactsExactEmail.data && contactsExactEmail.data.length > 0) {
+          exactContactMatches.push(...contactsExactEmail.data);
+        }
+
+        // Then, process name and email matches - check if any are exact, rest are similar
+        const allContactResults = [
           ...(contactsByName.data || []),
           ...(contactsByEmail.data || [])
         ];
-        const uniqueContacts = Array.from(new Map(allContacts.map(c => [c.id, c])).values());
+        const uniqueContactMap = new Map();
+        allContactResults.forEach((c: any) => {
+          if (!uniqueContactMap.has(c.id)) {
+            uniqueContactMap.set(c.id, c);
+          }
+        });
+
+        const searchEmailLower = lower.trim();
+        const hasFullDomain = hasAtSymbol && lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
+        const exactContactIds = new Set(exactContactMatches.map((c: any) => c.id));
+
+        uniqueContactMap.forEach((contact: any) => {
+          if (exactContactIds.has(contact.id)) return; // Already in exact matches
+
+          const contactEmail = (contact.email || '').toLowerCase().trim();
+          // Check if this is an exact match (even if from prefix search)
+          const isExactMatch = hasFullDomain && contactEmail === searchEmailLower;
+
+          if (isExactMatch) {
+            exactContactMatches.push(contact);
+          } else {
+            similarContactMatches.push(contact);
+          }
+        });
+
+        // Limit similar contacts to 5
+        const limitedSimilarContacts = similarContactMatches.slice(0, 5);
+
+        // Combine exact and limited similar contacts
+        const uniqueContacts = [...exactContactMatches, ...limitedSimilarContacts];
 
         if (uniqueContacts.length > 0) {
           const uniqueLeadIds = new Set<string>();
           const uniqueLegacyIds = new Set<number>();
-          
+
           uniqueContacts.forEach((contact: any) => {
             // Get associated leads from contact relationships
             if (contact.lead_leadcontact) {
-              const relationships = Array.isArray(contact.lead_leadcontact) 
-                ? contact.lead_leadcontact 
+              const relationships = Array.isArray(contact.lead_leadcontact)
+                ? contact.lead_leadcontact
                 : [contact.lead_leadcontact];
-              
+
               relationships.forEach((rel: any) => {
                 if (rel.newlead_id) {
                   uniqueLeadIds.add(String(rel.newlead_id));
@@ -913,7 +1462,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               });
             }
-            
+
             // Also check direct newlead_id on contact
             if (contact.newlead_id) {
               uniqueLeadIds.add(String(contact.newlead_id));
@@ -934,6 +1483,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               .limit(50) : Promise.resolve({ data: [] })
           ]);
 
+          // Create a map of contact IDs to whether they are exact matches
+          const exactContactIdsSet = new Set(exactContactMatches.map((c: any) => c.id));
+
           // Add contact-associated leads to results
           if (contactLeads.data) {
             contactLeads.data.forEach((lead: any) => {
@@ -943,7 +1495,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   const rels = Array.isArray(c.lead_leadcontact) ? c.lead_leadcontact : (c.lead_leadcontact ? [c.lead_leadcontact] : []);
                   return rels.some((r: any) => r.newlead_id === lead.id) || c.newlead_id === lead.id;
                 });
-                
+
+                // Check if the matching contact was an exact match
+                const isContactExactMatch = matchingContact && exactContactIdsSet.has(matchingContact.id);
+
                 seen.add(key);
                 results.push({
                   id: lead.id,
@@ -967,7 +1522,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   lead_type: 'new',
                   unactivation_reason: null,
                   deactivate_note: null,
-                  isFuzzyMatch: false,
+                  isFuzzyMatch: !isContactExactMatch, // Fuzzy if contact was not exact match
                   isContact: true,
                   contactName: matchingContact?.name || '',
                   isMainContact: false,
@@ -984,7 +1539,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   const rels = Array.isArray(c.lead_leadcontact) ? c.lead_leadcontact : (c.lead_leadcontact ? [c.lead_leadcontact] : []);
                   return rels.some((r: any) => r.lead_id === lead.id);
                 });
-                
+
+                // Check if the matching contact was an exact match
+                const isContactExactMatch = matchingContact && exactContactIdsSet.has(matchingContact.id);
+
                 seen.add(key);
                 results.push({
                   id: `legacy_${lead.id}`,
@@ -1009,7 +1567,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   lead_type: 'legacy',
                   unactivation_reason: null,
                   deactivate_note: null,
-                  isFuzzyMatch: false,
+                  isFuzzyMatch: !isContactExactMatch, // Fuzzy if contact was not exact match
                   isContact: true,
                   contactName: matchingContact?.name || '',
                   isMainContact: false,
@@ -1022,15 +1580,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         console.log('🔍 [Header Immediate Search] Name/Email search results:', {
           totalResults: results.length,
           nameMatches: newLeadsByName.data?.length || 0,
-          emailMatches: newLeadsByEmail.data?.length || 0,
+          emailMatches: (newLeadsByEmail.data?.length || 0) + (legacyLeadsByEmail.data?.length || 0),
+          legacyEmailMatches: legacyLeadsByEmail.data?.length || 0,
+          newEmailMatches: newLeadsByEmail.data?.length || 0,
           contactMatches: uniqueContacts.length
         });
 
-        // Sort name/email results
+        // Final sorting: exact matches first, then similar matches (already limited to 5 in processing)
+        // Results are already properly ordered from processing above, but ensure final sort
         results.sort((a, b) => {
-          if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
+          // Exact matches (isFuzzyMatch: false) come first
+          if (a.isFuzzyMatch !== b.isFuzzyMatch) {
+            return a.isFuzzyMatch ? 1 : -1;
+          }
+          // Within same type, maintain order
           return 0;
         });
+
+        // Final check: ensure similar matches are limited to 5 total
+        const exactMatches = results.filter(r => !r.isFuzzyMatch);
+        const similarMatches = results.filter(r => r.isFuzzyMatch).slice(0, 5);
+
+        // Rebuild results: exact matches first, then limited similar matches
+        results.length = 0;
+        results.push(...exactMatches, ...similarMatches);
       }
 
       // Email prefix search - immediate results (e.g., "keller@" matches "keller@jfjfj.com")
@@ -1039,7 +1612,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       if (isEmail || lower.includes('@')) {
         const emailPrefix = lower.split('@')[0] || lower;
         const hasDomain = lower.includes('@') && lower.split('@').length > 1 && lower.split('@')[1].length > 0;
-        
+
         if (emailPrefix.length >= 1) {
           // Build search conditions: exact match first, then prefix matches
           const emailConditions: string[] = [];
@@ -1052,7 +1625,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           if (lower !== emailPrefix && !hasDomain) {
             emailConditions.push(`email.ilike.${lower}%`);
           }
-          
+
           // Search new leads
           const { data: newLeads } = await supabase
             .from('leads')
@@ -1156,17 +1729,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 .map(c => c.newlead_id)
                 .filter(id => id != null)
             ));
-            
+
             // Fetch all leads in parallel (single query instead of loop)
             if (uniqueLeadIds.length > 0) {
               const { data: leadsData } = await supabase
                 .from('leads')
                 .select('id, lead_number, topic, stage, created_at')
                 .in('id', uniqueLeadIds);
-              
+
               // Create a map for quick lookup
               const leadsMap = new Map((leadsData || []).map(lead => [lead.id, lead]));
-              
+
               // Process contacts with their corresponding leads
               for (const contact of contacts) {
                 if (contact.newlead_id) {
@@ -1220,7 +1793,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }
             return 0;
           });
-          
+
           // Return early if we have email results (prioritize exact/prefix matches)
           if (results.length > 0) {
             return results;
@@ -1233,9 +1806,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // IMPORTANT: Lead numbers NEVER start with "0" - exclude them to avoid confusion with phone numbers
       // Only search for lead numbers if: (1) explicitly matches lead number pattern without "0", OR
       // (2) digits are 1-6 chars, NOT phone-like, and DON'T start with "0"
-      const shouldSearchLeadNumber = isLeadNumber || 
+      const shouldSearchLeadNumber = isLeadNumber ||
         (!startsWithZero && digits.length >= 1 && digits.length <= 6 && !isPhoneLike);
-      
+
       // Debug: verify condition for queries starting with "0"
       if (startsWithZero && shouldSearchLeadNumber) {
         console.warn('[performImmediateSearch] Query starts with "0" but shouldSearchLeadNumber is true:', {
@@ -1247,11 +1820,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           shouldSearchLeadNumber
         });
       }
-      
+
       if (shouldSearchLeadNumber) {
         const leadNumQuery = trimmed.replace(/[^\dLC]/gi, '');
         const numPart = leadNumQuery.replace(/[^\d]/g, '');
-        
+
         if (numPart.length >= 1) {
           // Use searchLeads for lead number queries - it handles exact matches and contacts properly
           const leadResults = await searchLeads(trimmed);
@@ -1266,7 +1839,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               isFuzzyMatch: r.isFuzzyMatch
             }))
           });
-          
+
           // Deduplicate results from searchLeads (may return same lead multiple times via contacts)
           const leadResultsDeduped = new Map<string, CombinedLead>();
           for (const result of leadResults) {
@@ -1282,7 +1855,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }
           }
           const deduplicatedResults = Array.from(leadResultsDeduped.values());
-          
+
           // Mark exact matches based on lead_number
           // For lead number searches, only the lead itself (isContact: false) should be exact match
           // Contacts should be fuzzy matches even if they share the same lead_number
@@ -1291,23 +1864,23 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const resultLeadNum = (result.lead_number || '').toLowerCase().trim();
             // Remove any "L" or "C" prefix from result lead_number for comparison
             const resultLeadNumNoPrefix = resultLeadNum.replace(/^[lc]/i, '');
-            
+
             // Only mark as exact match if:
             // 1. The lead_number (without prefix) exactly matches the numeric part
             // 2. AND it's not a contact (isContact: false or undefined)
-            const isExactMatch = resultLeadNumNoPrefix === numPartLower && 
-                                 (!result.isContact || result.isContact === false);
+            const isExactMatch = resultLeadNumNoPrefix === numPartLower &&
+              (!result.isContact || result.isContact === false);
             const isPrefixMatch = resultLeadNumNoPrefix.startsWith(numPartLower);
-            
+
             const finalIsFuzzy = result.isContact ? true : (!isExactMatch && !isPrefixMatch);
-            
+
             return {
               ...result,
               // For lead number searches, contacts should always be fuzzy matches
               isFuzzyMatch: finalIsFuzzy
             };
           });
-          
+
           console.log('[performImmediateSearch] Lead number search - processed results:', {
             query: trimmed,
             numResults: processedResults.length,
@@ -1319,7 +1892,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               isFuzzyMatch: r.isFuzzyMatch
             }))
           });
-          
+
           // Sort results: exact matches first
           processedResults.sort((a, b) => {
             if (a.isFuzzyMatch !== b.isFuzzyMatch) return a.isFuzzyMatch ? 1 : -1;
@@ -1377,13 +1950,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Rejects matches where numbers are too different
         const isValidPhoneMatch = (searchDigits: string, phoneDigits: string, matchType: 'prefix' | 'suffix'): boolean => {
           if (!phoneDigits || phoneDigits.length === 0) return false;
-          
+
           const searchLen = searchDigits.length;
           const phoneLen = phoneDigits.length;
-          
+
           // Exact match always passes
           if (phoneDigits === searchDigits) return true;
-          
+
           // For prefix matches: require at least 6 digits match, and phone should be similar length
           if (matchType === 'prefix') {
             if (searchLen < 6) return false; // Need at least 6 digits for prefix match
@@ -1393,11 +1966,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (phoneLen < searchLen * 0.8) return false;
             return true;
           }
-          
+
           // For suffix matches: require at least 7 digits match (more strict for suffix)
           if (matchType === 'suffix') {
             if (searchLen < 7) return false; // Need at least 7 digits for suffix match
-            
+
             // Special case: if phone ends with search digits, and phone is longer,
             // allow up to 4 digits difference (for country code prefixes like +972)
             // This handles cases like: search "0507264998" (10 digits) matching "+9720507264998" (13 digits)
@@ -1411,27 +1984,68 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               }
             }
-            
+
             // For same-length or shorter phones, use strict matching (within 2 digits)
             if (Math.abs(phoneLen - searchLen) <= 2) return true;
-            
+
             return false;
           }
-          
+
           return false;
         };
 
         // Build OR conditions for all variants
-        // Use SUFFIX matching only (%variant) for performance - matches from the end of phone numbers
-        // This matches the optimized phone search logic in legacyLeadsApi.ts
+        // Phone numbers in DB may have formatting (spaces, dashes, country codes like +972)
+        // We'll search for multiple patterns to catch formatted numbers
         const phoneConditions: string[] = [];
         const mobileConditions: string[] = [];
         searchVariants.forEach(variant => {
-          // Suffix match only: phone ends with variant (minimum 5 digits, like legacyLeadsApi)
-          // This prevents middle-of-number matches and is much faster
           if (variant.length >= 5) {
-            phoneConditions.push(`phone.ilike.%${variant}`);
-            mobileConditions.push(`mobile.ilike.%${variant}`);
+            // 1. Direct match (no formatting): "0507825939"
+            phoneConditions.push(`phone.ilike.${variant}%`);
+            mobileConditions.push(`mobile.ilike.${variant}%`);
+            
+            // 2. Match with separators - create patterns for common formatting
+            // For "0507825939", try "050-782", "050 782", "050.782", etc.
+            if (variant.length >= 6) {
+              const first3 = variant.substring(0, 3);
+              const rest = variant.substring(3);
+              // Try with dash, space, or dot separator after first 3 digits
+              phoneConditions.push(`phone.ilike.${first3}-${rest}%`);
+              phoneConditions.push(`phone.ilike.${first3} ${rest}%`);
+              phoneConditions.push(`phone.ilike.${first3}.${rest}%`);
+              mobileConditions.push(`mobile.ilike.${first3}-${rest}%`);
+              mobileConditions.push(`mobile.ilike.${first3} ${rest}%`);
+              mobileConditions.push(`mobile.ilike.${first3}.${rest}%`);
+            }
+            
+            // 3. Match with country code prefix (+972, 00972, etc.)
+            if (variant.startsWith('0') && variant.length >= 6) {
+              const withoutLeadingZero = variant.substring(1);
+              // Try patterns like "+972-50-782", "972-50-782", "+972 50 782", etc.
+              if (withoutLeadingZero.length >= 5) {
+                const first2 = withoutLeadingZero.substring(0, 2);
+                const rest = withoutLeadingZero.substring(2);
+                phoneConditions.push(`phone.ilike.+972-${first2}-${rest}%`);
+                phoneConditions.push(`phone.ilike.972-${first2}-${rest}%`);
+                phoneConditions.push(`phone.ilike.+972 ${first2} ${rest}%`);
+                phoneConditions.push(`phone.ilike.972 ${first2} ${rest}%`);
+                phoneConditions.push(`phone.ilike.+972${first2}${rest}%`);
+                phoneConditions.push(`phone.ilike.972${first2}${rest}%`);
+                mobileConditions.push(`mobile.ilike.+972-${first2}-${rest}%`);
+                mobileConditions.push(`mobile.ilike.972-${first2}-${rest}%`);
+                mobileConditions.push(`mobile.ilike.+972 ${first2} ${rest}%`);
+                mobileConditions.push(`mobile.ilike.972 ${first2} ${rest}%`);
+                mobileConditions.push(`mobile.ilike.+972${first2}${rest}%`);
+                mobileConditions.push(`mobile.ilike.972${first2}${rest}%`);
+              }
+            }
+            
+            // 4. Suffix match for longer queries (7+ digits) to catch numbers with country codes
+            if (variant.length >= 7) {
+              phoneConditions.push(`phone.ilike.%${variant}`);
+              mobileConditions.push(`mobile.ilike.%${variant}`);
+            }
           }
         });
 
@@ -1454,12 +2068,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (!seen.has(key)) {
               const phoneDigits = (lead.phone || '').replace(/\D/g, '');
               const mobileDigits = (lead.mobile || '').replace(/\D/g, '');
-              
+
               // Check all variants for prefix or suffix matches (NOT middle matches)
               // Validate that matches are meaningful (similar length, significant overlap)
               let isPrefixMatch = false;
               let isSuffixMatch = false;
-              
+
               for (const variant of searchVariants) {
                 // Prefix match: phone starts with variant AND passes validation
                 if (phoneDigits.startsWith(variant) && isValidPhoneMatch(variant, phoneDigits, 'prefix')) {
@@ -1480,7 +2094,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   break;
                 }
               }
-              
+
               if (isPrefixMatch || isSuffixMatch) {
                 seen.add(key);
                 results.push({
@@ -1534,13 +2148,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (!seen.has(key)) {
               const phoneDigits = (lead.phone || '').replace(/\D/g, '');
               const mobileDigits = (lead.mobile || '').replace(/\D/g, '');
-              
+
               // Check all variants for exact matches first, then prefix/suffix matches (NOT middle matches)
               // Validate that matches are meaningful (similar length, significant overlap)
               let isExactMatch = false;
               let isPrefixMatch = false;
               let isSuffixMatch = false;
-              
+
               for (const variant of searchVariants) {
                 // Check for exact match
                 if (phoneDigits === variant || mobileDigits === variant) {
@@ -1566,7 +2180,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   break;
                 }
               }
-              
+
               if (isExactMatch || isPrefixMatch || isSuffixMatch) {
                 seen.add(key);
                 results.push({
@@ -1601,7 +2215,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
         // Search contacts - CRITICAL: This was missing!
         console.log('🔍 [Header Phone Search] Searching contacts with variants:', searchVariants);
-        
+
         // DEBUG: Check specific contact if query matches pattern
         if (digits === '9720507264998' || digits === '0507264998') {
           const { data: debugContact } = await supabase
@@ -1609,7 +2223,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             .select('id, name, phone, mobile, newlead_id')
             .eq('id', 53550)
             .single();
-          
+
           console.log('🔍 [Header Phone Search] DEBUG - Contact 53550:', {
             found: !!debugContact,
             contact: debugContact ? {
@@ -1627,32 +2241,66 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             wouldMatch: debugContact ? {
               phoneMatch: searchVariants.some(v => {
                 const phoneDigits = (debugContact.phone || '').replace(/\D/g, '');
-                return (phoneDigits.startsWith(v) && isValidPhoneMatch(v, phoneDigits, 'prefix')) || 
-                       (v.length >= 7 && phoneDigits.endsWith(v) && isValidPhoneMatch(v, phoneDigits, 'suffix'));
+                return (phoneDigits.startsWith(v) && isValidPhoneMatch(v, phoneDigits, 'prefix')) ||
+                  (v.length >= 7 && phoneDigits.endsWith(v) && isValidPhoneMatch(v, phoneDigits, 'suffix'));
               }),
               mobileMatch: searchVariants.some(v => {
                 const mobileDigits = (debugContact.mobile || '').replace(/\D/g, '');
-                return (mobileDigits.startsWith(v) && isValidPhoneMatch(v, mobileDigits, 'prefix')) || 
-                       (v.length >= 7 && mobileDigits.endsWith(v) && isValidPhoneMatch(v, mobileDigits, 'suffix'));
+                return (mobileDigits.startsWith(v) && isValidPhoneMatch(v, mobileDigits, 'prefix')) ||
+                  (v.length >= 7 && mobileDigits.endsWith(v) && isValidPhoneMatch(v, mobileDigits, 'suffix'));
               })
             } : null
           });
         }
-        
+
         // Build contact search conditions - use prefix and suffix matching (NOT contains)
-        // Only include variants that are long enough for meaningful matches
+        // Phone numbers in DB may have formatting, so we need flexible patterns
         const contactPhoneConditions: string[] = [];
         const contactMobileConditions: string[] = [];
         searchVariants.forEach(variant => {
-          // Prefix match: phone starts with variant (only if variant is at least 6 digits)
-          if (variant.length >= 6) {
+          if (variant.length >= 5) {
+            // 1. Direct match (no formatting)
             contactPhoneConditions.push(`phone.ilike.${variant}%`);
             contactMobileConditions.push(`mobile.ilike.${variant}%`);
-          }
-          // Suffix match: phone ends with variant (only if variant is at least 7 digits for stricter matching)
-          if (variant.length >= 7) {
-            contactPhoneConditions.push(`phone.ilike.%${variant}`);
-            contactMobileConditions.push(`mobile.ilike.%${variant}`);
+            
+            // 2. Match with separators (for 6+ digits)
+            if (variant.length >= 6) {
+              const first3 = variant.substring(0, 3);
+              const rest = variant.substring(3);
+              contactPhoneConditions.push(`phone.ilike.${first3}-${rest}%`);
+              contactPhoneConditions.push(`phone.ilike.${first3} ${rest}%`);
+              contactPhoneConditions.push(`phone.ilike.${first3}.${rest}%`);
+              contactMobileConditions.push(`mobile.ilike.${first3}-${rest}%`);
+              contactMobileConditions.push(`mobile.ilike.${first3} ${rest}%`);
+              contactMobileConditions.push(`mobile.ilike.${first3}.${rest}%`);
+            }
+            
+            // 3. Match with country code prefix (for numbers starting with 0)
+            if (variant.startsWith('0') && variant.length >= 6) {
+              const withoutLeadingZero = variant.substring(1);
+              if (withoutLeadingZero.length >= 5) {
+                const first2 = withoutLeadingZero.substring(0, 2);
+                const rest = withoutLeadingZero.substring(2);
+                contactPhoneConditions.push(`phone.ilike.+972-${first2}-${rest}%`);
+                contactPhoneConditions.push(`phone.ilike.972-${first2}-${rest}%`);
+                contactPhoneConditions.push(`phone.ilike.+972 ${first2} ${rest}%`);
+                contactPhoneConditions.push(`phone.ilike.972 ${first2} ${rest}%`);
+                contactPhoneConditions.push(`phone.ilike.+972${first2}${rest}%`);
+                contactPhoneConditions.push(`phone.ilike.972${first2}${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.+972-${first2}-${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.972-${first2}-${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.+972 ${first2} ${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.972 ${first2} ${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.+972${first2}${rest}%`);
+                contactMobileConditions.push(`mobile.ilike.972${first2}${rest}%`);
+              }
+            }
+            
+            // 4. Suffix match for longer queries (7+ digits)
+            if (variant.length >= 7) {
+              contactPhoneConditions.push(`phone.ilike.%${variant}`);
+              contactMobileConditions.push(`mobile.ilike.%${variant}`);
+            }
           }
         });
 
@@ -1693,12 +2341,12 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // Collect all unique lead IDs from contacts
           const uniqueLeadIds = new Set<string>();
           const uniqueLegacyIds = new Set<number>();
-          
+
           contacts.forEach((contact: any) => {
             // Check if contact phone/mobile matches any variant
             const contactPhoneDigits = (contact.phone || '').replace(/\D/g, '');
             const contactMobileDigits = (contact.mobile || '').replace(/\D/g, '');
-            
+
             console.log('🔍 [Header Phone Search] Checking contact match:', {
               contactId: contact.id,
               contactPhone: contact.phone,
@@ -1707,7 +2355,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               contactMobileDigits,
               searchVariants
             });
-            
+
             let contactMatches = false;
             let matchReason = '';
             for (const variant of searchVariants) {
@@ -1780,21 +2428,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               }
             }
-            
+
             console.log('🔍 [Header Phone Search] Contact match result:', {
               contactId: contact.id,
               contactMatches,
               matchReason: matchReason || 'no match found'
             });
-            
+
             if (!contactMatches) return;
-            
+
             // Get associated leads from contact relationships
             if (contact.lead_leadcontact) {
-              const relationships = Array.isArray(contact.lead_leadcontact) 
-                ? contact.lead_leadcontact 
+              const relationships = Array.isArray(contact.lead_leadcontact)
+                ? contact.lead_leadcontact
                 : [contact.lead_leadcontact];
-              
+
               relationships.forEach((rel: any) => {
                 if (rel.newlead_id) {
                   uniqueLeadIds.add(String(rel.newlead_id));
@@ -1804,7 +2452,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 }
               });
             }
-            
+
             // Also check direct newlead_id on contact
             if (contact.newlead_id) {
               uniqueLeadIds.add(String(contact.newlead_id));
@@ -1818,7 +2466,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             matchedContacts: contacts.filter((c: any) => {
               const phoneDigits = (c.phone || '').replace(/\D/g, '');
               const mobileDigits = (c.mobile || '').replace(/\D/g, '');
-              return searchVariants.some(v => 
+              return searchVariants.some(v =>
                 (phoneDigits === v || mobileDigits === v) || // Exact match
                 (phoneDigits.startsWith(v) && isValidPhoneMatch(v, phoneDigits, 'prefix')) ||
                 (mobileDigits.startsWith(v) && isValidPhoneMatch(v, mobileDigits, 'prefix')) ||
@@ -1832,7 +2480,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           const contactsWithoutLeads = contacts.filter((contact: any) => {
             const contactPhoneDigits = (contact.phone || '').replace(/\D/g, '');
             const contactMobileDigits = (contact.mobile || '').replace(/\D/g, '');
-            
+
             let contactMatches = false;
             for (const variant of searchVariants) {
               // Exact match: always accept
@@ -1859,17 +2507,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 break;
               }
             }
-            
+
             if (!contactMatches) return false;
-            
+
             // Check if contact has any lead associations
-            const hasLeadAssociations = 
+            const hasLeadAssociations =
               (contact.lead_leadcontact && (
                 (Array.isArray(contact.lead_leadcontact) && contact.lead_leadcontact.length > 0) ||
                 (!Array.isArray(contact.lead_leadcontact) && contact.lead_leadcontact)
               )) ||
               contact.newlead_id;
-            
+
             return !hasLeadAssociations;
           });
 
@@ -1950,7 +2598,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     const rels = Array.isArray(c.lead_leadcontact) ? c.lead_leadcontact : (c.lead_leadcontact ? [c.lead_leadcontact] : []);
                     return rels.some((r: any) => r.newlead_id === lead.id) || c.newlead_id === lead.id;
                   });
-                  
+
                   seen.add(key);
                   results.push({
                     id: lead.id,
@@ -2007,7 +2655,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     const rels = Array.isArray(c.lead_leadcontact) ? c.lead_leadcontact : (c.lead_leadcontact ? [c.lead_leadcontact] : []);
                     return rels.some((r: any) => r.lead_id === lead.id);
                   });
-                  
+
                   seen.add(key);
                   results.push({
                     id: `legacy_${lead.id}`,
@@ -2076,7 +2724,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Only search by name if query is not email, phone, or lead number
       if (!isEmail && !isPhoneLike && !isLeadNumber && trimmed.length >= 2) {
         const nameVariants = generateSearchVariants(trimmed);
-        
+
         // Build OR conditions for all variants (prefix match for speed)
         const nameConditions = nameVariants.length > 1
           ? nameVariants.map(v => `name.ilike.${v.toLowerCase()}%`).join(',')
@@ -2216,41 +2864,41 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // Use the existing searchLeads function but limit and prioritize results
     try {
       const allResults = await searchLeads(trimmed);
-      
+
       // Sort by relevance: exact matches > starts with > contains
       const lower = trimmed.toLowerCase();
       const scoredResults = allResults.map(lead => {
         const name = (lead.contactName || lead.name || '').toLowerCase();
         const email = (lead.email || '').toLowerCase();
         const leadNumber = (lead.lead_number || '').toLowerCase();
-        
+
         let score = 0;
         // Exact match gets highest score
         if (name === lower || email === lower || leadNumber === trimmed) {
           score = 100;
-        } 
+        }
         // Starts with gets high score
         else if (name.startsWith(lower) || email.startsWith(lower) || leadNumber.startsWith(trimmed)) {
           score = 50;
-        } 
+        }
         // Contains gets medium score
         else if (name.includes(lower) || email.includes(lower)) {
           // Calculate position - earlier in string = higher score
           const namePos = name.indexOf(lower);
           const emailPos = email.indexOf(lower);
-          const earliestPos = namePos >= 0 && emailPos >= 0 
+          const earliestPos = namePos >= 0 && emailPos >= 0
             ? Math.min(namePos, emailPos)
             : namePos >= 0 ? namePos : emailPos;
           score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score (max 30)
-        } 
+        }
         // No match
         else {
           score = 0;
         }
-        
+
         return { lead, score };
       });
-      
+
       // Sort by score (highest first = closest match first), then limit to 5
       scoredResults.sort((a, b) => b.score - a.score);
       const topResults = scoredResults.slice(0, 5).map(item => {
@@ -2263,7 +2911,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           isFuzzyMatch: isExactMatch ? false : true, // Preserve exact matches, mark others as fuzzy
         };
       });
-      
+
       return topResults;
     } catch (error) {
       console.error('Error performing fuzzy search:', error);
@@ -2283,7 +2931,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     if (showNoExactMatchTimeoutRef.current) {
       clearTimeout(showNoExactMatchTimeoutRef.current);
     }
-    
+
     // Reset "no exact match" state when search value changes (user is still typing)
     setShowNoExactMatch(false);
 
@@ -2307,46 +2955,50 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const previousQuery = previousSearchQueryRef.current.trim();
     const previousDigits = previousQuery.replace(/\D/g, '');
     const currentDigits = trimmedQuery.replace(/\D/g, '');
-    
+
     // Detect search types to avoid incompatible filtering (e.g., filtering lead numbers by phone)
     const previousDigitsOnly = previousDigits;
     const currentDigitsOnly = currentDigits;
-    const previousIsLeadNumber = previousDigitsOnly.length <= 6 && previousDigitsOnly.length > 0 && 
+    const previousIsLeadNumber = previousDigitsOnly.length <= 6 && previousDigitsOnly.length > 0 &&
       !previousDigitsOnly.startsWith('0') && /^\d+$/.test(previousQuery.replace(/[^\d]/g, ''));
-    const currentIsLeadNumber = currentDigitsOnly.length <= 6 && currentDigitsOnly.length > 0 && 
+    const currentIsLeadNumber = currentDigitsOnly.length <= 6 && currentDigitsOnly.length > 0 &&
       !currentDigitsOnly.startsWith('0') && /^\d+$/.test(trimmedQuery.replace(/[^\d]/g, ''));
     const currentIsPhoneSearch = currentDigitsOnly.length >= 5 && /^[\d\s\-\(\)\+]+$/.test(trimmedQuery);
     const previousWasLeadNumberSearch = previousIsLeadNumber && !previousQuery.includes('@');
     const currentIsLeadNumberSearch = currentIsLeadNumber && !trimmedQuery.includes('@');
-    
+    const previousWasPhoneSearch = previousDigitsOnly.length >= 5 && /^[\d\s\-\(\)\+]+$/.test(previousQuery);
+
     // Don't use client-side filtering when switching between incompatible search types
     // Lead number results can't be filtered by phone number - they're different result sets
+    // Phone results can't be filtered from name/email results - they're different result sets
     // But lead number extensions (e.g., "343" → "3436") are compatible
-    const isSearchTypeIncompatible = previousWasLeadNumberSearch && currentIsPhoneSearch;
-    
+    // And phone extensions (e.g., "0507" → "05078") are compatible
+    const isSearchTypeIncompatible = (previousWasLeadNumberSearch && currentIsPhoneSearch) ||
+      (currentIsPhoneSearch && !previousWasPhoneSearch && previousQuery.length > 0);
+
     // Email extension: when query has @, treat as email extension (for email searches)
     const previousHasAt = previousQuery.includes('@');
     const currentHasAt = trimmedQuery.includes('@');
-    const isEmailExtension = previousHasAt && currentHasAt && 
-      trimmedQuery.length > previousQuery.length && 
+    const isEmailExtension = previousHasAt && currentHasAt &&
+      trimmedQuery.length > previousQuery.length &&
       trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase());
-    
+
     // Lead number extension: current digits extend previous lead number (e.g., "343" → "3436")
     // Only if both are lead numbers (1-6 digits, no leading zero)
-    const isLeadNumberExtension = previousIsLeadNumber && currentIsLeadNumberSearch && 
-      currentDigitsOnly.length > previousDigitsOnly.length && 
+    const isLeadNumberExtension = previousIsLeadNumber && currentIsLeadNumberSearch &&
+      currentDigitsOnly.length > previousDigitsOnly.length &&
       currentDigitsOnly.startsWith(previousDigitsOnly);
-    
+
     // Phone extension: current digits start with previous digits (for phone number searches)
     // Allow phone extensions even when digits length changes (e.g., 6 digits -> 7+ digits)
-    const isPhoneExtension = !currentHasAt && previousDigits.length >= 3 && 
-      currentDigits.length > previousDigits.length && 
+    const isPhoneExtension = !currentHasAt && previousDigits.length >= 3 &&
+      currentDigits.length > previousDigits.length &&
       currentDigits.startsWith(previousDigits) &&
       !isSearchTypeIncompatible && // Don't use if search types are incompatible
       !isLeadNumberExtension; // Don't use if it's a lead number extension
     // Regular extension: current query starts with previous query (for text searches)
-    const isRegularExtension = !currentHasAt && previousQuery && 
-      trimmedQuery.length > previousQuery.length && 
+    const isRegularExtension = !currentHasAt && previousQuery &&
+      trimmedQuery.length > previousQuery.length &&
       trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
       !isSearchTypeIncompatible && // Don't use if search types are incompatible
       !isLeadNumberExtension && // Don't use if it's a lead number extension
@@ -2354,11 +3006,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     // Combined: either a regular extension, phone extension, lead number extension, OR email extension
     // For email/lead/phone extensions, always use client-side filtering (much faster)
     const hasCachedResults = masterSearchResultsRef.current.length > 0;
-    const isQueryExtension = (isEmailExtension || isRegularExtension || isPhoneExtension || isLeadNumberExtension) && 
+    const isQueryExtension = (isEmailExtension || isRegularExtension || isPhoneExtension || isLeadNumberExtension) &&
       hasCachedResults &&
       previousQuery.length >= 1 && // At least 1 char
       !isSearchTypeIncompatible; // Don't use if search types are incompatible
-    
+
     // Debug logging for extension detection (remove in production)
     if (previousQuery && trimmedQuery.length > previousQuery.length) {
       console.log('🔍 [Extension Check]', {
@@ -2377,7 +3029,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         cachedResultsCount: masterSearchResultsRef.current.length
       });
     }
-    
+
     // Client-side filtering for query extensions (optimization - avoids repeated searches)
     if (isQueryExtension) {
       // Pre-compute all normalized values once (performance optimization)
@@ -2389,64 +3041,73 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const isLeadNumber = /^[LC]?\d+$/i.test(leadNumQuery);
       const hasDomainCheck = isEmail && lowerTrimmed.includes('@') && lowerTrimmed.split('@').length > 1 && lowerTrimmed.split('@')[1].length > 0;
       const leadNumNumeric = isLeadNumber ? leadNumQuery.replace(/^[lc]/i, '').toLowerCase().trim() : '';
-      
+
       // Single-pass filter and exact-match evaluation (combined for performance)
       const exactMatches: CombinedLead[] = [];
       const fuzzyMatches: CombinedLead[] = [];
       const seenIds = new Set<string>(); // Deduplication: track IDs we've already processed
-      
+
       // Pre-normalize query for exact match checks
       const queryLower = lowerTrimmed;
       const queryDigits = trimmedDigits;
-      
+
       for (const result of masterSearchResultsRef.current) {
         // Deduplication: create unique identifier for this result
         const resultId = result.id?.toString() || '';
         const resultLeadNum = result.lead_number?.toString().trim() || '';
         const uniqueId = `${result.lead_type || ''}_${resultId}_${resultLeadNum}`.toLowerCase();
-        
+
         // Skip if we've already processed this result (deduplication)
         if (seenIds.has(uniqueId)) continue;
         seenIds.add(uniqueId);
-        
+
         // Pre-normalize result fields once
         const name = (result.contactName || result.name || '').toLowerCase();
         const email = (result.email || '').toLowerCase();
         const phone = (result.phone || '').replace(/\D/g, '');
         const mobile = (result.mobile || '').replace(/\D/g, '');
         const leadNumber = (result.lead_number || '').toLowerCase();
-        
+
         // Quick filter check - early return if no match
         let matches = false;
-        
+
         // Detect lead number extension in client-side filtering
         const queryIsLeadNumber = /^[LC]?\d+$/i.test(trimmedQuery.replace(/[^\dLC]/gi, ''));
         const queryDigitsOnly = trimmedQuery.replace(/[^\dLC]/gi, '').replace(/^[lc]/i, '');
-        
+
         if (isEmail) {
           matches = email.startsWith(queryLower);
         } else if (isPhoneLike) {
-          // Phone suffix matching: check if phone/mobile ends with query digits
-          // Also handle variants (with/without country code, with/without leading 0)
+          // Phone prefix matching: check if phone/mobile starts with query digits
+          // Also handle variants (with/without country code, with/without leading 0, with formatting)
           const phoneNormalized = phone.replace(/^\+?972|^00/, ''); // Remove country code variants
           const mobileNormalized = mobile.replace(/^\+?972|^00/, ''); // Remove country code variants
-          matches = phone.endsWith(queryDigits) || mobile.endsWith(queryDigits) ||
-                    phoneNormalized.endsWith(queryDigits) || mobileNormalized.endsWith(queryDigits) ||
-                    phone === queryDigits || mobile === queryDigits; // Also check exact match
+          
+          // Primary: prefix match (phone starts with query digits)
+          matches = phone.startsWith(queryDigits) || mobile.startsWith(queryDigits) ||
+            phoneNormalized.startsWith(queryDigits) || mobileNormalized.startsWith(queryDigits) ||
+            phone === queryDigits || mobile === queryDigits; // Also check exact match
+          
+          // Secondary: suffix match for longer queries (7+ digits) to catch numbers with country codes
+          // Example: user types "507825939" should match "+972507825939"
+          if (!matches && queryDigits.length >= 7) {
+            matches = phone.endsWith(queryDigits) || mobile.endsWith(queryDigits) ||
+              phoneNormalized.endsWith(queryDigits) || mobileNormalized.endsWith(queryDigits);
+          }
         } else if (queryIsLeadNumber || isLeadNumber) {
           // Lead number filtering: check if lead_number starts with or includes the query
           const resultLeadNumNoPrefix = leadNumber.replace(/^[lc]/i, '');
-          matches = resultLeadNumNoPrefix.includes(queryDigitsOnly) || 
-                    resultLeadNumNoPrefix.startsWith(queryDigitsOnly);
+          matches = resultLeadNumNoPrefix.includes(queryDigitsOnly) ||
+            resultLeadNumNoPrefix.startsWith(queryDigitsOnly);
         } else {
           matches = name.includes(queryLower) || email.startsWith(queryLower);
         }
-        
+
         if (!matches) continue; // Skip non-matching results early
-        
+
         // Check for exact match (only if it passes filter)
         let isExactMatch = false;
-        
+
         if (hasDomainCheck && email === queryLower) {
           isExactMatch = true;
         } else if (isPhoneLike && (phone === queryDigits || mobile === queryDigits)) {
@@ -2457,24 +3118,24 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             isExactMatch = true;
           }
         }
-        
+
         // Create result with correct fuzzy flag (only modify if needed)
-        const resultWithFlag = isExactMatch 
+        const resultWithFlag = isExactMatch
           ? (result.isFuzzyMatch ? { ...result, isFuzzyMatch: false } : result)
-          : (isLeadNumber && result.isContact 
+          : (isLeadNumber && result.isContact
             ? (result.isFuzzyMatch ? result : { ...result, isFuzzyMatch: true })
             : result);
-        
+
         if (isExactMatch) {
           exactMatches.push(resultWithFlag);
         } else {
           fuzzyMatches.push(resultWithFlag);
         }
       }
-      
+
       // Sort: exact matches first (no need for full sort since we already separated them)
       const sortedResults = [...exactMatches, ...fuzzyMatches];
-      
+
       // Update refs and state
       currentSearchQueryRef.current = trimmedQuery;
       // IMPORTANT: Only update masterSearchResultsRef if we have results
@@ -2490,7 +3151,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setIsSearching(false);
       isSearchingRef.current = false;
       previousSearchQueryRef.current = trimmedQuery;
-      
+
       // Handle "no exact match" state
       if (exactMatches.length === 0) {
         showNoExactMatchTimeoutRef.current = setTimeout(() => {
@@ -2501,7 +3162,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       } else {
         setShowNoExactMatch(false);
       }
-      
+
       return; // Exit early - no need to search again
     }
 
@@ -2518,7 +3179,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       setIsSearching(false);
       isSearchingRef.current = false;
     }
-    
+
     (async () => {
       try {
         // First, try immediate prefix search (for emails, phones, lead numbers)
@@ -2530,11 +3191,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         const searchQuery = trimmedQuery;
         const currentQuery = currentSearchQueryRef.current;
         const queryChanged = currentQuery !== searchQuery;
-        const isCurrentQueryExtension = currentQuery && 
-          searchQuery && 
-          currentQuery.length > searchQuery.length && 
+        const isCurrentQueryExtension = currentQuery &&
+          searchQuery &&
+          currentQuery.length > searchQuery.length &&
           currentQuery.toLowerCase().startsWith(searchQuery.toLowerCase());
-        
+
         // Only discard results if query changed significantly (not just an extension)
         if (queryChanged && !isCurrentQueryExtension) {
           // Query changed significantly, ignore these results
@@ -2545,22 +3206,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // Re-evaluate exact matches based on the trimmed query to ensure accuracy for ALL search types
           const lowerTrimmed = trimmedQuery.toLowerCase().trim();
           const trimmedDigits = trimmedQuery.replace(/\D/g, '');
-          
+
           // Check if query is email
           const hasDomainCheck = lowerTrimmed.includes('@') && lowerTrimmed.split('@').length > 1 && lowerTrimmed.split('@')[1].length > 0;
-          
+
           // Check if query is phone-like
           const isPhoneQuery = /^[\d\s\-\+\(\)]+$/.test(trimmedQuery) && trimmedDigits.length >= 3;
-          
+
           // Check if query is lead number-like
           const leadNumQuery = trimmedQuery.replace(/[^\dLC]/gi, '');
           const isLeadNumQuery = /^[LC]?\d+$/i.test(leadNumQuery);
-          
+
           // Ensure exact matches are correctly marked (re-evaluate to fix any missed matches)
           // This is CRITICAL: We must re-check ALL results to ensure exact matches are properly identified
           const resultsWithExactFlags = immediateResults.map(result => {
             let isExactMatch = false;
-            
+
             // Email exact match - check email field (for both leads and contacts)
             if (hasDomainCheck && result.email) {
               const resultEmail = (result.email || '').toLowerCase().trim();
@@ -2568,7 +3229,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 isExactMatch = true;
               }
             }
-            
+
             // Phone exact match (check if phone or mobile exactly matches)
             if (!isExactMatch && isPhoneQuery) {
               const resultPhone = (result.phone || '').replace(/\D/g, '');
@@ -2577,7 +3238,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 isExactMatch = true;
               }
             }
-            
+
             // Lead number exact match
             // For lead number searches, only the lead itself (not contacts) should be exact match
             if (!isExactMatch && isLeadNumQuery && result.lead_number) {
@@ -2586,30 +3247,30 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const resultLeadNumNoPrefix = resultLeadNum.replace(/^[lc]/i, '');
               // Extract numeric part from query (remove "L" or "C" prefix if present)
               const queryLeadNumNumeric = leadNumQuery.replace(/^[lc]/i, '').toLowerCase().trim();
-              
+
               // Only mark as exact match if:
               // 1. The lead_number (without prefix) exactly matches the numeric part of query
               // 2. AND it's not a contact (isContact: false or undefined)
-              if (resultLeadNumNoPrefix === queryLeadNumNumeric && 
-                  (!result.isContact || result.isContact === false)) {
+              if (resultLeadNumNoPrefix === queryLeadNumNumeric &&
+                (!result.isContact || result.isContact === false)) {
                 isExactMatch = true;
               }
             }
-            
+
             // If we found an exact match, ensure it's marked as not fuzzy
             if (isExactMatch) {
               return { ...result, isFuzzyMatch: false };
             }
-            
+
             // For lead number searches, ensure contacts are always marked as fuzzy
             if (isLeadNumQuery && result.isContact) {
               return { ...result, isFuzzyMatch: true };
             }
-            
+
             // Otherwise, keep the original fuzzy match flag (don't change prefix matches to fuzzy)
             return result;
           });
-          
+
           // Sort immediate results: exact matches first, then fuzzy matches
           const sortedResults = [...resultsWithExactFlags].sort((a, b) => {
             if (a.isFuzzyMatch !== b.isFuzzyMatch) {
@@ -2617,35 +3278,35 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }
             return 0;
           });
-          
+
           // We have immediate results - show them right away (sorted)
           const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
           const prefixMatches = sortedResults.filter(r => r.isFuzzyMatch);
-          
+
           // Always update results immediately when available (better UX)
           // Don't block updates due to race conditions - show partial results as they arrive
           // CRITICAL: Set refs and state together, and only mark as not searching AFTER results are set
           exactMatchesRef.current = exactMatches;
           fuzzyMatchesRef.current = prefixMatches;
           masterSearchResultsRef.current = sortedResults;
-          
+
           // Set results FIRST, then mark as not searching
           // This ensures exact matches are available when the UI renders
           // Update results immediately - don't wait for race condition checks
           setSearchResults(sortedResults);
-          
+
           // Only mark as not searching AFTER results are set
           // This prevents "No exact matches found" from showing prematurely
           setIsSearching(false);
           isSearchingRef.current = false;
           previousSearchQueryRef.current = trimmedQuery;
-          
+
           // Delay showing "No exact matches found" until user stops typing AND all queries complete
           // Clear any existing timeout
           if (showNoExactMatchTimeoutRef.current) {
             clearTimeout(showNoExactMatchTimeoutRef.current);
           }
-          
+
           // Only show "No exact matches found" if:
           // 1. There are no exact matches
           // 2. We're not currently searching (all queries completed)
@@ -2660,7 +3321,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           } else {
             setShowNoExactMatch(false);
           }
-          
+
           // If query is long enough (3+ chars) and we only have prefix matches (or no exact matches), also try fuzzy name search
           // BUT: Only do this if we're sure there are NO exact matches (check refs, not local variable)
           // AND: Only if query hasn't changed
@@ -2672,26 +3333,26 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 // Double-check that we still have no exact matches (in case they were added)
                 const currentExactMatches = exactMatchesRef.current;
                 if (currentExactMatches.length > 0) {
                   // Exact matches were found, don't overwrite with fuzzy results
                   return;
                 }
-                
+
                 // Double-check query again before performing fuzzy search
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 const fuzzyResults = await performFuzzySearch(trimmedQuery);
-                
+
                 // CRITICAL: Final check - query must still match
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 // Combine prefix matches with fuzzy matches (fuzzy already limited to 5)
                 // Limit total fuzzy results to 5 (prefix + name fuzzy)
                 const allFuzzy = [...prefixMatches, ...fuzzyResults];
@@ -2706,7 +3367,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   } else if (name.includes(lower) || email.includes(lower)) {
                     const namePos = name.indexOf(lower);
                     const emailPos = email.indexOf(lower);
-                    const earliestPos = namePos >= 0 && emailPos >= 0 
+                    const earliestPos = namePos >= 0 && emailPos >= 0
                       ? Math.min(namePos, emailPos)
                       : namePos >= 0 ? namePos : emailPos;
                     score = 30 - Math.min(earliestPos, 20);
@@ -2715,22 +3376,22 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 });
                 scoredFuzzy.sort((a, b) => b.score - a.score);
                 const limitedFuzzy = scoredFuzzy.slice(0, 5).map(item => item.lead);
-                
+
                 // CRITICAL: Final check before updating state
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 // Get current exact matches (should be empty, but check anyway)
                 const finalExactMatches = exactMatchesRef.current;
-                
+
                 // Only update if we still have no exact matches
                 if (finalExactMatches.length === 0) {
                   fuzzyMatchesRef.current = limitedFuzzy;
                   const combinedResults = [...finalExactMatches, ...limitedFuzzy];
                   masterSearchResultsRef.current = combinedResults;
                   setSearchResults(combinedResults);
-                  
+
                   // Update "No exact matches found" state after fuzzy search completes
                   if (limitedFuzzy.length > 0) {
                     if (showNoExactMatchTimeoutRef.current) {
@@ -2760,14 +3421,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 const fuzzyResults = await performFuzzySearch(trimmedQuery);
-                
+
                 // Final check before updating
                 if (currentSearchQueryRef.current !== trimmedQuery) {
                   return;
                 }
-                
+
                 fuzzyMatchesRef.current = fuzzyResults;
                 masterSearchResultsRef.current = fuzzyResults;
                 setSearchResults(fuzzyResults);
@@ -2823,18 +3484,18 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .from('lead_stages')
           .select('name')
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const stages = data?.map(stage => stage.name) || [];
         setStageOptions(stages);
       } catch (error) {
         console.error('Error fetching stage options:', error);
         // Fallback to hardcoded options if database fetch fails
         setStageOptions([
-          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", 
-          "unactivated", "communication_started", "another_meeting", "revised_offer", 
-          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined", 
+          "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid",
+          "unactivated", "communication_started", "another_meeting", "revised_offer",
+          "offer_sent", "waiting_for_mtng_sum", "client_signed", "client_declined",
           "lead_summary", "meeting_rescheduled", "meeting_ended"
         ]);
       }
@@ -2851,9 +3512,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .from('misc_category')
           .select('name')
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const categories = data?.map(category => category.name) || [];
         setCategoryOptions(categories);
       } catch (error) {
@@ -2876,9 +3537,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .from('sources')
           .select('name')
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const sources = data?.map(source => source.name) || [];
         setSourceOptions(sources);
       } catch (error) {
@@ -2901,9 +3562,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           .from('misc_language')
           .select('name')
           .order('name');
-        
+
         if (error) throw error;
-        
+
         const languages = data?.map(language => language.name) || [];
         setLanguageOptions(languages);
       } catch (error) {
@@ -2921,15 +3582,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   useEffect(() => {
     const initializeMsal = async () => {
       if (!instance) return;
-      
+
       try {
         await new Promise(resolve => setTimeout(resolve, 1000));
-        
+
         const accounts = instance.getAllAccounts();
         if (accounts.length > 0) {
           setUserAccount(accounts[0]);
         }
-        
+
         setIsMsalInitialized(true);
       } catch (error) {
         console.error('Failed to initialize MSAL:', error);
@@ -2953,7 +3614,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (!error && data) {
           // Set superuser status
           setIsSuperUser(data.is_superuser === true || data.is_superuser === 'true' || data.is_superuser === 1);
-          
+
           // Use first_name + last_name if available, otherwise fall back to full_name
           if (data.first_name && data.last_name && data.first_name.trim() && data.last_name.trim()) {
             const fullName = `${data.first_name.trim()} ${data.last_name.trim()}`;
@@ -2969,7 +3630,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           if (user.user_metadata?.first_name || user.user_metadata?.full_name) {
             const authName = user.user_metadata.first_name || user.user_metadata.full_name;
             setUserFullName(authName);
-            
+
             // Try to sync user to custom table
             try {
               const { data: syncResult, error: syncError } = await supabase.rpc('sync_or_update_auth_user', {
@@ -3020,31 +3681,31 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             if (userData.is_superuser !== undefined) {
               setIsSuperUser(userData.is_superuser === true || userData.is_superuser === 'true' || userData.is_superuser === 1);
             }
-            
+
             if (userData.tenants_employee) {
               const empData = userData.tenants_employee;
-              
+
               // Set current user for RMQ messages
               setCurrentUser(userData);
-            
-            setCurrentUserEmployee({
-              ...empData,
-              department: (empData as any).tenant_departement?.name || 'General',
-              email: userData.email,
-              is_active: true,
-              performance_metrics: {
-                total_meetings: 0,
-                completed_meetings: 0,
-                total_revenue: 0,
-                average_rating: 0,
-                last_activity: 'No activity'
-              }
-            });
 
-            // Also fetch all employees for the modal using the new pattern - only active users
-            const { data: allEmployeesData, error: allEmployeesError } = await supabase
-              .from('users')
-              .select(`
+              setCurrentUserEmployee({
+                ...empData,
+                department: (empData as any).tenant_departement?.name || 'General',
+                email: userData.email,
+                is_active: true,
+                performance_metrics: {
+                  total_meetings: 0,
+                  completed_meetings: 0,
+                  total_revenue: 0,
+                  average_rating: 0,
+                  last_activity: 'No activity'
+                }
+              });
+
+              // Also fetch all employees for the modal using the new pattern - only active users
+              const { data: allEmployeesData, error: allEmployeesError } = await supabase
+                .from('users')
+                .select(`
                 id,
                 full_name,
                 email,
@@ -3067,40 +3728,40 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                   )
                 )
               `)
-              .not('employee_id', 'is', null)
-              .eq('is_active', true);
+                .not('employee_id', 'is', null)
+                .eq('is_active', true);
 
-            if (!allEmployeesError && allEmployeesData) {
-              const processedEmployees = allEmployeesData
-                .filter(user => user.tenants_employee && user.email)
-                .map(user => {
-                  const employee = user.tenants_employee as any;
-                  return {
-                    id: employee.id,
-                    display_name: employee.display_name,
-                    bonuses_role: employee.bonuses_role,
-                    department_id: employee.department_id,
-                    user_id: employee.user_id,
-                    photo_url: employee.photo_url,
-                    photo: employee.photo,
-                    phone: employee.phone,
-                    mobile: employee.mobile,
-                    phone_ext: employee.phone_ext,
-                    department: employee.tenant_departement?.name || 'General',
-                    email: user.email
-                  };
+              if (!allEmployeesError && allEmployeesData) {
+                const processedEmployees = allEmployeesData
+                  .filter(user => user.tenants_employee && user.email)
+                  .map(user => {
+                    const employee = user.tenants_employee as any;
+                    return {
+                      id: employee.id,
+                      display_name: employee.display_name,
+                      bonuses_role: employee.bonuses_role,
+                      department_id: employee.department_id,
+                      user_id: employee.user_id,
+                      photo_url: employee.photo_url,
+                      photo: employee.photo,
+                      phone: employee.phone,
+                      mobile: employee.mobile,
+                      phone_ext: employee.phone_ext,
+                      department: employee.tenant_departement?.name || 'General',
+                      email: user.email
+                    };
+                  });
+
+                // Deduplicate by employee ID to prevent duplicates
+                const uniqueEmployeesMap = new Map();
+                processedEmployees.forEach(emp => {
+                  if (!uniqueEmployeesMap.has(emp.id)) {
+                    uniqueEmployeesMap.set(emp.id, emp);
+                  }
                 });
-
-              // Deduplicate by employee ID to prevent duplicates
-              const uniqueEmployeesMap = new Map();
-              processedEmployees.forEach(emp => {
-                if (!uniqueEmployeesMap.has(emp.id)) {
-                  uniqueEmployeesMap.set(emp.id, emp);
-                }
-              });
-              const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
-              setAllEmployees(uniqueEmployees);
-            }
+                const uniqueEmployees = Array.from(uniqueEmployeesMap.values());
+                setAllEmployees(uniqueEmployees);
+              }
             } else {
               // Set current user even if no employee data
               setCurrentUser(userData);
@@ -3146,7 +3807,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       }
 
       const conversationIds = userConversations?.map(c => c.conversation_id) || [];
-      
+
       if (conversationIds.length === 0) {
         setRmqMessages([]);
         setRmqUnreadCount(0);
@@ -3157,7 +3818,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Only query if we have conversation IDs to avoid empty array issues
       let userParticipants: any[] = [];
       let lastReadMap = new Map();
-      
+
       try {
         const { data, error: participantsError } = await supabase
           .from('conversation_participants')
@@ -3184,7 +3845,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Get messages that are actually unread (sent after last_read_at)
       const unreadMessagesPromises = conversationIds.map(async (convId) => {
         const lastReadAt = lastReadMap.get(convId);
-        
+
         let query = supabase
           .from('messages')
           .select(`
@@ -3243,7 +3904,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         })
       );
 
-      
+
       setRmqMessages(messagesWithConversations);
 
       // Calculate unread count based on actual messages fetched
@@ -3259,7 +3920,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Fetch incoming WhatsApp messages - same logic as WhatsAppLeadsPage
       // Only filter by lead_id or legacy_id (backend handles phone number matching)
       let whatsappMessages: any[] = [];
-      
+
       try {
         const { data, error } = await supabase
           .from('whatsapp_messages')
@@ -3276,7 +3937,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           setWhatsappLeadsUnreadCount(0);
           return;
         }
-        
+
         whatsappMessages = data || [];
       } catch (err) {
         console.error('Error fetching WhatsApp leads messages:', err);
@@ -3309,20 +3970,20 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       // Filter and group messages by phone number (same logic as WhatsAppLeadsPage)
       const leadMap = new Map<string, any>();
-      
+
       whatsappMessages.forEach((message) => {
         // Use phone_number field directly from database, fallback to extraction if not available
         const phoneNumber = message.phone_number || extractPhoneNumber(message.sender_name) || extractPhoneFromMessage(message.message) || 'unknown';
-        
+
         // Consider connected only if linked to a lead via FK (lead_id or legacy_id)
         // Backend should handle phone number matching, frontend only checks if lead exists
         const isConnected = !!message.lead_id || !!message.legacy_id;
-        
+
         // Only include unconnected leads
         if (isConnected || phoneNumber === 'unknown') {
           return; // Skip connected leads
         }
-        
+
         if (!leadMap.has(phoneNumber)) {
           leadMap.set(phoneNumber, {
             phone_number: phoneNumber,
@@ -3407,7 +4068,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const uniqueLeadIds = new Set<string>();
       const uniqueContactIds = new Set<number>();
       const uniqueLegacyIds = new Set<number>();
-      
+
       whatsappMessages.forEach((msg: any) => {
         if (msg.lead_id) {
           uniqueLeadIds.add(String(msg.lead_id));
@@ -3437,7 +4098,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       const employeeId = currentUserEmployee?.id || currentUser?.employee_id;
       const fullName = userFullName?.trim().toLowerCase();
-      
+
       let matchingLeadIds = new Set<string>();
       let matchingLegacyIds = new Set<number>();
       let matchingContactIds = new Set<number>();
@@ -3459,7 +4120,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 return;
               }
             }
-            
+
             // Check numeric fields (manager, helper, expert, case_handler_id are saved as employee IDs)
             if (employeeId) {
               const numericFields = [lead.manager, lead.helper, lead.expert, lead.case_handler_id];
@@ -3499,7 +4160,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (!relationshipsError && relationships && relationships.length > 0) {
           const contactToNewLeadMap = new Map<number, string>();
           const contactToLegacyLeadMap = new Map<number, number>();
-          
+
           relationships.forEach((rel: any) => {
             if (rel.contact_id) {
               if (rel.newlead_id) {
@@ -3533,7 +4194,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     return;
                   }
                 }
-                
+
                 // Check numeric fields
                 if (employeeId) {
                   const numericFields = [lead.manager, lead.helper, lead.expert, lead.case_handler_id];
@@ -3592,17 +4253,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (msg.lead_id && matchingLeadIds.has(String(msg.lead_id))) {
           return true;
         }
-        
+
         // Check if message is from a matching legacy lead
         if (msg.legacy_id && matchingLegacyIds.has(Number(msg.legacy_id))) {
           return true;
         }
-        
+
         // Check if message is from a matching contact
         if (msg.contact_id && matchingContactIds.has(Number(msg.contact_id))) {
           return true;
         }
-        
+
         return false;
       }).length;
 
@@ -3700,7 +4361,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Get unique client IDs (new leads) and legacy IDs from filtered emails
       const uniqueClientIds = new Set<string>();
       const uniqueLegacyIds = new Set<number>();
-      
+
       filteredEmailsData.forEach((email: any) => {
         if (email.client_id) {
           uniqueClientIds.add(String(email.client_id));
@@ -3713,7 +4374,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Fetch leads with role fields
       const newLeadIds = Array.from(uniqueClientIds);
       const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
-      
+
       let matchingLeadIds = new Set<string>();
       let matchingLegacyIds = new Set<number>();
 
@@ -3737,7 +4398,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 return;
               }
             }
-            
+
             // Check numeric fields (manager, expert, helper are saved as employee IDs)
             // Also check case_handler_id for handler role
             if (employeeId) {
@@ -3963,7 +4624,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // ALWAYS fetch employees to ensure we have the latest data (matching NewCasesPage logic)
       // This is critical for accurate filtering
       let employeesToCheck = allEmployees;
-      
+
       // Always fetch fresh employee data to match NewCasesPage behavior
       try {
         const { data: employeesData, error: employeesError } = await supabase
@@ -3981,7 +4642,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           `)
           .not('employee_id', 'is', null)
           .eq('is_active', true);
-        
+
         if (!employeesError && employeesData) {
           const processedEmployees = (employeesData || [])
             .filter(user => user.tenants_employee && user.email)
@@ -3992,7 +4653,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 display_name: employee.display_name
               };
             });
-          
+
           const uniqueEmployeesMap = new Map();
           processedEmployees.forEach(emp => {
             if (!uniqueEmployeesMap.has(emp.id)) {
@@ -4001,9 +4662,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           });
           employeesToCheck = Array.from(uniqueEmployeesMap.values());
         }
-        } catch (error) {
-          console.error('Error fetching employees for count:', error);
-        }
+      } catch (error) {
+        console.error('Error fetching employees for count:', error);
+      }
 
       const employeeDisplayNames = employeesToCheck.map(emp => emp.display_name).filter(Boolean);
       const employeeIds = employeesToCheck.map(emp => emp.id.toString()).filter(Boolean);
@@ -4107,13 +4768,13 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   // The hook internally tracks message IDs to prevent duplicates
   // Use a ref to debounce rapid count changes
   const lastNotificationCheckRef = useRef<{ whatsapp: number; rmq: number }>({ whatsapp: 0, rmq: 0 });
-  
+
   useEffect(() => {
     if (currentUser) {
       // Only call if counts actually changed (not just re-render)
       const whatsappChanged = whatsappLeadsUnreadCount !== lastNotificationCheckRef.current.whatsapp;
       const rmqChanged = rmqUnreadCount !== lastNotificationCheckRef.current.rmq;
-      
+
       if (whatsappChanged || rmqChanged) {
         sendNotificationForNewMessage(
           unreadCount,
@@ -4122,7 +4783,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           whatsappLeadsMessages,
           rmqMessages
         );
-        
+
         // Update refs
         lastNotificationCheckRef.current = {
           whatsapp: whatsappLeadsUnreadCount,
@@ -4249,7 +4910,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
   const handleNotificationClick = () => {
     const newShowState = !showNotifications;
     setShowNotifications(newShowState);
-    
+
     // Fetch RMQ messages and WhatsApp leads messages when opening notifications
     if (newShowState && currentUser) {
       fetchRmqMessages();
@@ -4291,7 +4952,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
       // Mark all conversations as read by updating last_read_at to current timestamp
       const currentTime = new Date().toISOString();
-      
+
       for (const convId of conversationIds) {
         await supabase.rpc('mark_conversation_as_read', {
           conv_id: convId,
@@ -4302,17 +4963,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       // Clear all RMQ messages from notifications
       setRmqMessages([]);
       setRmqUnreadCount(0);
-      
+
       // Mark all WhatsApp leads messages as read - Only for superusers
       if (isSuperUser) {
         const whatsappMessageIds = whatsappLeadsMessages.map(m => m.id);
         if (whatsappMessageIds.length > 0) {
           const { error: whatsappError } = await supabase
             .from('whatsapp_messages')
-            .update({ 
-              is_read: true, 
+            .update({
+              is_read: true,
               read_at: new Date().toISOString(),
-              read_by: currentUser.id 
+              read_by: currentUser.id
             })
             .in('id', whatsappMessageIds);
 
@@ -4324,7 +4985,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Clear WhatsApp leads messages from notifications
         setWhatsappLeadsMessages([]);
         setWhatsappLeadsUnreadCount(0);
-        
+
         // Mark email lead messages as read
         const emailIds = emailLeadMessages.flatMap(message => message.message_ids);
         if (emailIds.length > 0) {
@@ -4349,7 +5010,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         rememberAssignments(assignmentNotifications.map(notification => notification.key));
         setAssignmentNotifications([]);
       }
-      
+
     } catch (error) {
       console.error('Error marking all conversations as read:', error);
     }
@@ -4373,10 +5034,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     }
 
     setIsMsalLoading(true);
-    
+
     // Dispatch custom event to signal sign-in start
     window.dispatchEvent(new CustomEvent('msal:signInStart'));
-    
+
     try {
       const isMobile = /iPhone|iPad|iPod|Android|webOS|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
       if (isMobile) {
@@ -4385,14 +5046,14 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         const loginResponse = await instance.loginPopup(loginRequest);
         const account = instance.getAllAccounts()[0];
         setUserAccount(account);
-        
+
         // Dispatch custom event to signal sign-in success
         window.dispatchEvent(new CustomEvent('msal:signInSuccess'));
       }
     } catch (error) {
       // Dispatch custom event to signal sign-in failure
       window.dispatchEvent(new CustomEvent('msal:signInFailure'));
-      
+
       if (error instanceof Error && error.message.includes('interaction_in_progress')) {
         return;
       }
@@ -4420,7 +5081,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const handleMicrosoftSignOut = async () => {
     if (!instance) return;
-    
+
     try {
       await instance.logoutPopup();
       setUserAccount(null);
@@ -4440,7 +5101,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const date = new Date(timestamp);
     const now = new Date();
     const diffInMinutes = Math.floor((now.getTime() - date.getTime()) / (1000 * 60));
-    
+
     if (diffInMinutes < 1) return 'Just now';
     if (diffInMinutes < 60) return `${diffInMinutes}m ago`;
     if (diffInMinutes < 1440) return `${Math.floor(diffInMinutes / 60)}h ago`;
@@ -4449,11 +5110,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
   const getConversationTitle = (message: RMQMessage): string => {
     if (message.conversation.title) return message.conversation.title;
-    
+
     if (message.conversation.type === 'direct') {
       return message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
     }
-    
+
     return 'Group Chat';
   };
 
@@ -4465,11 +5126,11 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         </div>
       );
     }
-    
+
     // For direct messages, show sender's photo or initials
     const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
     const photoUrl = message.sender.tenants_employee?.photo_url;
-    
+
     if (photoUrl && photoUrl.trim() !== '') {
       return (
         <img
@@ -4479,7 +5140,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         />
       );
     }
-    
+
     return (
       <div className="w-8 h-8 rounded-full bg-purple-500 flex items-center justify-center text-white text-sm font-bold">
         {senderName.charAt(0).toUpperCase()}
@@ -4492,21 +5153,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       const senderName = message.sender.tenants_employee?.display_name || message.sender.full_name || 'Unknown User';
       return `${senderName}: ${message.content}`;
     }
-    
+
     // For direct messages, just show the content without sender name
     return message.content;
   };
-  
-const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
-  if (!row) return '';
-  const leadNumber = row.lead_number?.toString().trim();
-  if (leadNumber) return leadNumber;
-  if (table === 'legacy') {
-    const legacyId = row.id?.toString().trim();
-    if (legacyId) return legacyId;
-  }
-  return '';
-};
+
+  const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
+    if (!row) return '';
+    const leadNumber = row.lead_number?.toString().trim();
+    if (leadNumber) return leadNumber;
+    if (table === 'legacy') {
+      const legacyId = row.id?.toString().trim();
+      if (legacyId) return legacyId;
+    }
+    return '';
+  };
 
   const resolveNumericEmployeeId = useCallback(async () => {
     const candidateIds = [
@@ -4587,7 +5248,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 
     const legacyConditions: string[] = [];
     const newConditions: string[] = [];
-    
+
     ASSIGNMENT_ROLE_FIELDS.forEach(role => {
       addNumericCondition(legacyConditions, role.legacyField, numericEmployeeId);
       if (role.newNumericField) {
@@ -4619,25 +5280,25 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       const [legacyResult, newResult] = await Promise.all([
         legacyOrFilter
           ? supabase
-              .from('leads_lead')
-              .select(`id, lead_number, manual_id, udate, ${legacyRoleFields}`)
-              .or(legacyOrFilter)
-              .order('udate', { ascending: false })
-              .limit(50)
+            .from('leads_lead')
+            .select(`id, lead_number, manual_id, udate, ${legacyRoleFields}`)
+            .or(legacyOrFilter)
+            .order('udate', { ascending: false })
+            .limit(50)
           : Promise.resolve({ data: [], error: null }),
         newOrFilter
           ? supabase
-              .from('leads')
-              .select(`id, lead_number, manual_id, created_at, ${newRoleFields}`)
-              .or(newOrFilter)
-              .order('created_at', { ascending: false })
-              .limit(50)
+            .from('leads')
+            .select(`id, lead_number, manual_id, created_at, ${newRoleFields}`)
+            .or(newOrFilter)
+            .order('created_at', { ascending: false })
+            .limit(50)
           : Promise.resolve({ data: [], error: null }),
       ]);
 
       const notifications: AssignmentNotification[] = [];
 
-    const numericMatchValues = [numericEmployeeId];
+      const numericMatchValues = [numericEmployeeId];
 
       const pushNotifications = (rows: any[] | null | undefined, table: 'legacy' | 'new') => {
         if (!rows) return;
@@ -4665,7 +5326,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               // - manager, expert, helper: saved as numeric IDs only
               // - scheduler, closer, handler: saved as text (display names) only
               // - handler: may also have case_handler_id
-              
+
               // Check numeric field first (for manager, expert, helper, and potentially handler)
               if (newNumericField) {
                 const value = row[newNumericField];
@@ -4747,7 +5408,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     setSelectedConversationId(message.conversation_id);
     // Open RMQ messages modal with the specific conversation selected
     setIsRmqModalOpen(true);
-    
+
     // Mark this conversation as read in the database
     if (currentUser) {
       try {
@@ -4759,7 +5420,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
         console.error('Error marking conversation as read:', error);
       }
     }
-    
+
     // Remove all messages from this conversation from the notifications
     setRmqMessages(prev => prev.filter(m => m.conversation_id !== message.conversation_id));
     setRmqUnreadCount(prev => {
@@ -4789,10 +5450,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       // Mark the specific message as read
       const { error } = await supabase
         .from('whatsapp_messages')
-        .update({ 
-          is_read: true, 
+        .update({
+          is_read: true,
           read_at: new Date().toISOString(),
-          read_by: currentUser?.id 
+          read_by: currentUser?.id
         })
         .eq('id', message.id);
 
@@ -4816,10 +5477,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       if (message.message_ids.length > 0) {
         const { error } = await supabase
           .from('emails')
-          .update({ 
-            is_read: true, 
+          .update({
+            is_read: true,
             read_at: new Date().toISOString(),
-            read_by: currentUser?.id || null 
+            read_by: currentUser?.id || null
           })
           .in('id', message.message_ids);
 
@@ -4902,10 +5563,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
       }
       return 0;
     });
-    
+
     const exactMatches = sortedResults.filter(r => !r.isFuzzyMatch);
     let allFuzzyMatches = sortedResults.filter(r => r.isFuzzyMatch);
-    
+
     // Create a set of exact match lead identifiers to filter duplicates
     const exactMatchIdentifiers = new Set<string>();
     exactMatches.forEach(match => {
@@ -4914,21 +5575,21 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
         exactMatchIdentifiers.add(identifier.toLowerCase());
       }
     });
-    
+
     // Filter out fuzzy matches that have the same lead_number or id as exact matches
     allFuzzyMatches = allFuzzyMatches.filter(fuzzyMatch => {
       const fuzzyIdentifier = fuzzyMatch.lead_number?.toString().trim() || fuzzyMatch.id?.toString().trim() || '';
       if (!fuzzyIdentifier) return true; // Keep if no identifier
       return !exactMatchIdentifiers.has(fuzzyIdentifier.toLowerCase());
     });
-    
+
     // Sort fuzzy matches by relevance (closest match first)
     // Re-score fuzzy matches to ensure proper ordering
     const lower = searchValue.trim().toLowerCase();
     const scoredFuzzyMatches = allFuzzyMatches.map(lead => {
       const name = (lead.contactName || lead.name || '').toLowerCase();
       const email = (lead.email || '').toLowerCase();
-      
+
       let score = 0;
       if (name.startsWith(lower) || email.startsWith(lower)) {
         score = 50; // Starts with
@@ -4936,19 +5597,19 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
         // Calculate position - earlier in string = higher score
         const namePos = name.indexOf(lower);
         const emailPos = email.indexOf(lower);
-        const earliestPos = namePos >= 0 && emailPos >= 0 
+        const earliestPos = namePos >= 0 && emailPos >= 0
           ? Math.min(namePos, emailPos)
           : namePos >= 0 ? namePos : emailPos;
         score = 30 - Math.min(earliestPos, 20); // Closer to start = higher score
       }
-      
+
       return { lead, score };
     });
-    
+
     // Sort by score (highest first = closest match first), then limit to 5
     scoredFuzzyMatches.sort((a, b) => b.score - a.score);
     const fuzzyMatches = scoredFuzzyMatches.slice(0, 5).map(item => item.lead);
-    
+
     return { exactMatches, fuzzyMatches };
   }, [searchResults, searchValue]);
 
@@ -4957,24 +5618,24 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
     const stageStr = stage ? String(stage).trim() : '';
     const stageName = stageStr ? getStageName(stageStr) : 'Contact';
     const isContact = !stageStr;
-    
+
     // Use gradient for Contact badge (same as new messages box), solid color for stages
     if (isContact) {
       return (
-        <span 
+        <span
           className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gradient-to-tr from-blue-500 via-cyan-500 to-teal-400 text-white border-none"
         >
           {stageName}
         </span>
       );
     }
-    
+
     // Force all search result stage badges to use #391BC8
     const backgroundColor = '#391BC8';
     const textColor = getContrastingTextColor(backgroundColor);
-    
+
     return (
-      <span 
+      <span
         className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1"
         style={{
           backgroundColor: backgroundColor,
@@ -4999,7 +5660,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               <Bars3Icon className="w-6 h-6" />
             )}
           </button>
-          
+
           {/* Quick Actions Dropdown - Mobile only */}
           <div className="md:hidden relative ml-2" data-quick-actions-dropdown>
             <button
@@ -5015,10 +5676,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               <BoltIcon className="w-4 h-4 text-white" />
               <ChevronDownIcon className={`w-3 h-3 text-white transition-transform duration-200 ${showMobileQuickActionsDropdown ? 'rotate-180' : ''}`} />
             </button>
-            
+
             {/* Dropdown Menu */}
             {showMobileQuickActionsDropdown && createPortal(
-              <div 
+              <div
                 className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
                 data-dropdown-menu
                 style={{
@@ -5113,46 +5774,46 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   <UserIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">My Profile</span>
                 </button>
-                
+
                 {navTabs
                   .filter(tab => isSuperUser || tab.path !== '/new-cases')
                   .map(tab => {
-                  const Icon = tab.icon;
-                  const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
-                  
-                  // Skip WhatsApp and Email Thread as they're now handled above
-                  if (tab.path === '/whatsapp' || tab.label === 'Email Thread') {
-                    return null;
-                  }
-                  
-                  return (
-                    <Link
-                      key={tab.path || tab.label}
-                      to={tab.path || '/'}
-                      onClick={() => {
-                        setShowMobileQuickActionsDropdown(false);
-                        setShowQuickActionsDropdown(false);
-                      }}
-                      className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
-                    >
-                      <Icon className="w-5 h-5 text-gray-500" />
-                      <span className="text-sm font-medium">{tab.label}</span>
-                      {showCount && (
-                        <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
-                          {newLeadsCount}
-                        </span>
-                      )}
-                    </Link>
-                  );
-                })}
+                    const Icon = tab.icon;
+                    const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
+
+                    // Skip WhatsApp and Email Thread as they're now handled above
+                    if (tab.path === '/whatsapp' || tab.label === 'Email Thread') {
+                      return null;
+                    }
+
+                    return (
+                      <Link
+                        key={tab.path || tab.label}
+                        to={tab.path || '/'}
+                        onClick={() => {
+                          setShowMobileQuickActionsDropdown(false);
+                          setShowQuickActionsDropdown(false);
+                        }}
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
+                      >
+                        <Icon className="w-5 h-5 text-gray-500" />
+                        <span className="text-sm font-medium">{tab.label}</span>
+                        {showCount && (
+                          <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                            {newLeadsCount}
+                          </span>
+                        )}
+                      </Link>
+                    );
+                  })}
               </div>,
               document.body
             )}
           </div>
-          
+
           <div className="h-16 flex items-center">
             <Link to="/" className="hidden md:flex items-center gap-2">
-           
+
               <span className="md:ml-2 text-xl md:text-2xl font-extrabold tracking-tight" style={{ color: '#3b28c7', letterSpacing: '-0.03em' }}>RMQ 2.0</span>
             </Link>
           </div>
@@ -5172,10 +5833,10 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               <span className="text-sm font-semibold">Quick Actions</span>
               <ChevronDownIcon className={`w-4 h-4 text-white transition-transform duration-200 ${showQuickActionsDropdown ? 'rotate-180' : ''}`} />
             </button>
-            
+
             {/* Dropdown Menu */}
             {showQuickActionsDropdown && createPortal(
-              <div 
+              <div
                 className="fixed w-48 bg-white rounded-xl shadow-2xl border border-gray-200 z-[9999] overflow-hidden"
                 data-dropdown-menu
                 style={{
@@ -5214,91 +5875,90 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   <UserIcon className="w-5 h-5 text-gray-500" />
                   <span className="text-sm font-medium">My Profile</span>
                 </button>
-                
+
                 {navTabs
                   .filter(tab => isSuperUser || tab.path !== '/new-cases')
                   .map(tab => {
-                  const Icon = tab.icon;
-                  const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
-                  if (false) { // Removed action check
+                    const Icon = tab.icon;
+                    const showCount = tab.path === '/new-cases' && newLeadsCount > 0;
+                    if (false) { // Removed action check
+                      return (
+                        <button
+                          key={tab.label}
+                          onClick={() => {
+                            setShowQuickActionsDropdown(false);
+                            setShowMobileQuickActionsDropdown(false);
+                            if (onOpenEmailThread) {
+                              onOpenEmailThread();
+                            }
+                          }}
+                          className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                        >
+                          <Icon className="w-5 h-5 text-gray-500" />
+                          <span className="text-sm font-medium">{tab.label}</span>
+                        </button>
+                      );
+                    }
+                    if (tab.path === '/whatsapp') {
+                      return (
+                        <button
+                          key={tab.label}
+                          onClick={() => {
+                            setShowQuickActionsDropdown(false);
+                            setShowMobileQuickActionsDropdown(false);
+                            if (onOpenWhatsApp) {
+                              onOpenWhatsApp();
+                            }
+                          }}
+                          className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left relative"
+                        >
+                          <Icon className="w-5 h-5 text-gray-500" />
+                          <span className="text-sm font-medium">{tab.label}</span>
+                          {whatsappClientsUnreadCount > 0 && (
+                            <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
+                              {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    }
                     return (
-                      <button
-                        key={tab.label}
+                      <Link
+                        key={tab.path || tab.label}
+                        to={tab.path || '/'}
                         onClick={() => {
                           setShowQuickActionsDropdown(false);
                           setShowMobileQuickActionsDropdown(false);
-                          if (onOpenEmailThread) {
-                            onOpenEmailThread();
-                          }
                         }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left"
+                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
                       >
                         <Icon className="w-5 h-5 text-gray-500" />
                         <span className="text-sm font-medium">{tab.label}</span>
-                      </button>
-                    );
-                  }
-                  if (tab.path === '/whatsapp') {
-                    return (
-                      <button
-                        key={tab.label}
-                        onClick={() => {
-                          setShowQuickActionsDropdown(false);
-                          setShowMobileQuickActionsDropdown(false);
-                          if (onOpenWhatsApp) {
-                            onOpenWhatsApp();
-                          }
-                        }}
-                        className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700 w-full text-left relative"
-                      >
-                        <Icon className="w-5 h-5 text-gray-500" />
-                        <span className="text-sm font-medium">{tab.label}</span>
-                        {whatsappClientsUnreadCount > 0 && (
-                          <span className="ml-auto bg-red-500 text-white text-xs font-bold rounded-full w-5 h-5 flex items-center justify-center">
-                            {whatsappClientsUnreadCount > 9 ? '9+' : whatsappClientsUnreadCount}
+                        {showCount && (
+                          <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
+                            {newLeadsCount}
                           </span>
                         )}
-                      </button>
+                      </Link>
                     );
-                  }
-                  return (
-                    <Link
-                      key={tab.path || tab.label}
-                      to={tab.path || '/'}
-                      onClick={() => {
-                        setShowQuickActionsDropdown(false);
-                        setShowMobileQuickActionsDropdown(false);
-                      }}
-                      className="flex items-center gap-3 px-4 py-3 transition-all duration-200 text-gray-700"
-                    >
-                      <Icon className="w-5 h-5 text-gray-500" />
-                      <span className="text-sm font-medium">{tab.label}</span>
-                      {showCount && (
-                        <span className="ml-auto bg-red-500 text-white text-xs px-2 py-1 rounded-full font-semibold">
-                          {newLeadsCount}
-                        </span>
-                      )}
-                    </Link>
-                  );
-                })}
+                  })}
               </div>,
               document.body
             )}
           </div>
         </div>
-        
+
         {/* Search bar */}
         <div className={`relative transition-all duration-300 ${isSearchActive && isMobile ? 'flex-1' : 'flex-1'}`}>
           <div
             ref={searchContainerRef}
-            className={`min-w-12 min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${
-              isSearchActive 
-                ? isMobile 
-                  ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]' 
-                  : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
-                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1'
-            }`}
-            style={{ 
+            className={`min-w-12 min-h-[56px] transition-all duration-[700ms] ease-in-out cursor-pointer px-2 md:px-0 ${isSearchActive
+              ? isMobile
+                ? 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-[calc(100vw-120px)]'
+                : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-full max-w-xl md:max-w-xl'
+              : 'absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 w-1'
+              }`}
+            style={{
               background: 'transparent'
             }}
             onMouseEnter={!isMobile ? () => {
@@ -5321,7 +5981,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
           >
             <div className={`relative flex items-center ${isSearchActive ? 'w-full' : 'w-10'} transition-all duration-[700ms] ease-in-out`}>
               {/* Large search icon (always visible) */}
-              <button 
+              <button
                 className={`absolute left-3 flex items-center h-full z-10 transition-opacity duration-300 ${isSearchActive ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}
                 onClick={() => {
                   if (isMobile && !isSearchActive) {
@@ -5352,21 +6012,20 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   ${isSearchActive ? 'opacity-100 visible pl-4' : 'opacity-0 invisible pl-14'}
                   ${searchValue.trim() || searchResults.length > 0 ? 'pr-12' : 'pr-4'}
                 `}
-                style={{ 
-                  height: isMobile ? 48 : 44, 
-                  fontSize: isMobile ? 16 : 14, 
-                  fontWeight: 500, 
-                  letterSpacing: '-0.01em', 
-                  boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined 
+                style={{
+                  height: isMobile ? 48 : 44,
+                  fontSize: isMobile ? 16 : 14,
+                  fontWeight: 500,
+                  letterSpacing: '-0.01em',
+                  boxShadow: isSearchActive ? '0 4px 24px 0 rgba(0,0,0,0.10)' : undefined
                 }}
               />
               {/* Clear search button - visible on mobile when search is active */}
               {(searchValue.trim() || searchResults.length > 0) && (
                 <button
                   onClick={handleClearSearch}
-                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 ${
-                    isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
-                  }`}
+                  className={`absolute right-1 top-1/2 -translate-y-1/2 btn btn-ghost btn-sm btn-circle transition-all duration-300 ease-out text-white/80 hover:text-cyan-400 ${isMobile && isSearchActive ? 'flex' : 'hidden md:flex'
+                    }`}
                   title="Clear search"
                   style={{ background: 'rgba(255,255,255,0.10)' }}
                 >
@@ -5418,168 +6077,168 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                   isMouseOverSearchRef.current = false;
                 }}
               >
-            {isSearching || isAdvancedSearching ? (
-              <div className="p-4 text-center text-base-content/70">
-                <div className="loading loading-spinner loading-sm"></div>
-                <span className="ml-2">Searching...</span>
-              </div>
-            ) : searchResults.length > 0 ? (
-              <div className="space-y-2">
-                {/* Separate exact matches from fuzzy matches */}
-                {(() => {
-                  const { exactMatches, fuzzyMatches } = processedSearchResults;
-                  
-                  return (
-                    <>
-                      {/* Exact Matches Section - ALWAYS show first if they exist */}
-                      {exactMatches.length > 0 && (
+                {isSearching || isAdvancedSearching ? (
+                  <div className="p-4 text-center text-base-content/70">
+                    <div className="loading loading-spinner loading-sm"></div>
+                    <span className="ml-2">Searching...</span>
+                  </div>
+                ) : searchResults.length > 0 ? (
+                  <div className="space-y-2">
+                    {/* Separate exact matches from fuzzy matches */}
+                    {(() => {
+                      const { exactMatches, fuzzyMatches } = processedSearchResults;
+
+                      return (
                         <>
-                          {exactMatches.map((result, index) => {
-                            const uniqueKey = result.lead_type === 'legacy' 
-                              ? `exact_legacy_${result.id}_${result.contactName || result.name}_${index}`
-                              : `exact_${result.id}_${result.contactName || result.name}_${index}`;
-                            
-                            const displayName = result.contactName || result.name || '';
-                            
-                            return (
-                              <button
-                                key={uniqueKey}
-                                onClick={() => handleSearchResultClick(result)}
-                                className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
-                              >
-                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
-                                  {getStageBadge(result.stage)}
-                                  {isInactiveLead(result) && (
-                                    <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
-                                      Inactive
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
-                                  <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
-                                    <span className="font-semibold text-white">
-                                      {displayName.charAt(0).toUpperCase()}
-                                    </span>
-                                  </div>
-                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
-                                    <div className="mb-0.5 md:mb-1">
-                                      <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
-                                      </p>
+                          {/* Exact Matches Section - ALWAYS show first if they exist */}
+                          {exactMatches.length > 0 && (
+                            <>
+                              {exactMatches.map((result, index) => {
+                                const uniqueKey = result.lead_type === 'legacy'
+                                  ? `exact_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                                  : `exact_${result.id}_${result.contactName || result.name}_${index}`;
+
+                                const displayName = result.contactName || result.name || '';
+
+                                return (
+                                  <button
+                                    key={uniqueKey}
+                                    onClick={() => handleSearchResultClick(result)}
+                                    className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative"
+                                  >
+                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
+                                      {getStageBadge(result.stage)}
+                                      {isInactiveLead(result) && (
+                                        <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
+                                          Inactive
+                                        </span>
+                                      )}
                                     </div>
-                                    <div className="mb-0.5 md:mb-1">
-                                      <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
+                                      <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0">
+                                        <span className="font-semibold text-white">
+                                          {displayName.charAt(0).toUpperCase()}
+                                        </span>
+                                      </div>
+                                      <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                        <div className="mb-0.5 md:mb-1">
+                                          <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                            {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                          </p>
+                                        </div>
+                                        <div className="mb-0.5 md:mb-1">
+                                          <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                        </div>
+                                        {result.category && (
+                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                            <span className="font-medium">Category:</span> {result.category}
+                                          </p>
+                                        )}
+                                        {result.topic && (
+                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                            <span className="font-medium">Topic:</span> {result.topic}
+                                          </p>
+                                        )}
+                                      </div>
                                     </div>
-                                    {result.category && (
-                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                        <span className="font-medium">Category:</span> {result.category}
-                                      </p>
-                                    )}
-                                    {result.topic && (
-                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                        <span className="font-medium">Topic:</span> {result.topic}
-                                      </p>
-                                    )}
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </>
-                      )}
-                      
-                      {/* No exact match message - ONLY show when:
+                                  </button>
+                                );
+                              })}
+                            </>
+                          )}
+
+                          {/* No exact match message - ONLY show when:
                           1. showNoExactMatch state is true (debounced, user stopped typing)
                           2. There are no exact matches
                           3. There are fuzzy matches to show
                           4. We're not currently searching (all queries completed)
                           5. Not in advanced search mode */}
-                      {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
-                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
-                          <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact matches found</p>
-                        </div>
-                      )}
-                      
-                      {/* Divider between exact and fuzzy matches */}
-                      {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
-                        <div className="px-2 py-1.5 md:px-4 md:py-2 border-t border-base-300">
-                          <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar matches</p>
-                        </div>
-                      )}
-                      
-                      {/* Fuzzy Matches Section - limited to 5, sorted by closest match first */}
-                      {fuzzyMatches.length > 0 && (
-                        <>
-                          {fuzzyMatches.map((result, index) => {
-                            const uniqueKey = result.lead_type === 'legacy' 
-                              ? `fuzzy_legacy_${result.id}_${result.contactName || result.name}_${index}`
-                              : `fuzzy_${result.id}_${result.contactName || result.name}_${index}`;
-                            
-                            const displayName = result.contactName || result.name || '';
-                            
-                            return (
-                              <button
-                                key={uniqueKey}
-                                onClick={() => handleSearchResultClick(result)}
-                                className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
-                              >
-                                <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
-                                  {getStageBadge(result.stage)}
-                                  {isInactiveLead(result) && (
-                                    <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
-                                      Inactive
-                                    </span>
-                                  )}
-                                </div>
-                                <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
-                                  <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
-                                    <span className="font-semibold text-white">
-                                      {displayName.charAt(0).toUpperCase()}
-                                    </span>
-                                  </div>
-                                  <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
-                                    <div className="mb-0.5 md:mb-1">
-                                      <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
-                                        {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
-                                      </p>
+                          {showNoExactMatch && exactMatches.length === 0 && fuzzyMatches.length > 0 && !isSearching && !isAdvancedSearching && (
+                            <div className="px-2 py-1.5 md:px-4 md:py-2 border-b border-base-300">
+                              <p className="text-[10px] md:text-sm text-base-content/70 font-medium">No exact matches found</p>
+                            </div>
+                          )}
+
+                          {/* Divider between exact and fuzzy matches */}
+                          {exactMatches.length > 0 && fuzzyMatches.length > 0 && (
+                            <div className="px-2 py-1.5 md:px-4 md:py-2 border-t border-base-300">
+                              <p className="text-[10px] md:text-sm text-base-content/60 font-medium">Similar matches</p>
+                            </div>
+                          )}
+
+                          {/* Fuzzy Matches Section - limited to 5, sorted by closest match first */}
+                          {fuzzyMatches.length > 0 && (
+                            <>
+                              {fuzzyMatches.map((result, index) => {
+                                const uniqueKey = result.lead_type === 'legacy'
+                                  ? `fuzzy_legacy_${result.id}_${result.contactName || result.name}_${index}`
+                                  : `fuzzy_${result.id}_${result.contactName || result.name}_${index}`;
+
+                                const displayName = result.contactName || result.name || '';
+
+                                return (
+                                  <button
+                                    key={uniqueKey}
+                                    onClick={() => handleSearchResultClick(result)}
+                                    className="w-full px-2 py-2 md:px-4 md:py-3 text-left hover:bg-base-200 transition-colors rounded-lg border border-base-300 relative opacity-90"
+                                  >
+                                    <div className="absolute top-1 right-1 md:top-2 md:right-2 z-10 flex flex-col gap-1 items-end">
+                                      {getStageBadge(result.stage)}
+                                      {isInactiveLead(result) && (
+                                        <span className="badge badge-xs md:badge-sm text-[9px] md:text-xs px-1.5 py-0.5 md:px-2 md:py-1 bg-gray-500 text-white border-none">
+                                          Inactive
+                                        </span>
+                                      )}
                                     </div>
-                                    <div className="mb-0.5 md:mb-1">
-                                      <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                    <div className="flex items-start gap-2 md:gap-3 pr-20 md:pr-20">
+                                      <div className="hidden md:flex w-10 h-10 rounded-full bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 items-center justify-center flex-shrink-0 opacity-80">
+                                        <span className="font-semibold text-white">
+                                          {displayName.charAt(0).toUpperCase()}
+                                        </span>
+                                      </div>
+                                      <div className="flex-1 min-w-0" style={{ maxWidth: 'calc(100% - 60px)' }}>
+                                        <div className="mb-0.5 md:mb-1">
+                                          <p className="text-[9px] md:text-base font-semibold text-base-content break-words line-clamp-2 leading-tight" style={{ wordBreak: 'break-word', overflowWrap: 'break-word' }}>
+                                            {result.isContact && !result.isMainContact ? 'Contact: ' : ''}{displayName}
+                                          </p>
+                                        </div>
+                                        <div className="mb-0.5 md:mb-1">
+                                          <span className="text-[8px] md:text-xs text-base-content/70 font-mono">{result.lead_number}</span>
+                                        </div>
+                                        {result.category && (
+                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                            <span className="font-medium">Category:</span> {result.category}
+                                          </p>
+                                        )}
+                                        {result.topic && (
+                                          <p className="text-[8px] md:text-sm text-base-content/80 truncate">
+                                            <span className="font-medium">Topic:</span> {result.topic}
+                                          </p>
+                                        )}
+                                      </div>
                                     </div>
-                                    {result.category && (
-                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                        <span className="font-medium">Category:</span> {result.category}
-                                      </p>
-                                    )}
-                                    {result.topic && (
-                                      <p className="text-[8px] md:text-sm text-base-content/80 truncate">
-                                        <span className="font-medium">Topic:</span> {result.topic}
-                                      </p>
-                                    )}
-                                  </div>
-                                </div>
-                              </button>
-                            );
-                          })}
+                                  </button>
+                                );
+                              })}
+                            </>
+                          )}
                         </>
-                      )}
-                    </>
-                  );
-                })()}
-              </div>
-            ) : searchValue.trim() ? (
-              <div className="text-center py-8 text-base-content/70">
-                <p className="text-sm">No contacts found</p>
-                <p className="text-xs mt-1">Try a different search term</p>
-              </div>
-            ) : null}
+                      );
+                    })()}
+                  </div>
+                ) : searchValue.trim() ? (
+                  <div className="text-center py-8 text-base-content/70">
+                    <p className="text-sm">No contacts found</p>
+                    <p className="text-xs mt-1">Try a different search term</p>
+                  </div>
+                ) : null}
               </div>
             )}
-            
+
             {/* Advanced Filter Dropdown - positioned to the right of search results */}
             {showFilterDropdown && (
-              <div 
-                ref={filterDropdownRef} 
+              <div
+                ref={filterDropdownRef}
                 className="bg-base-100 rounded-xl shadow-xl border border-base-300 p-6 animate-fadeInUp min-w-80 filter-dropdown"
                 onMouseEnter={() => {
                   isMouseOverSearchRef.current = true;
@@ -5601,85 +6260,85 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                     <XMarkIcon className="w-4 h-4" />
                   </button>
                 </div>
-                
-                  <div className="grid grid-cols-2 gap-3">
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">From date</label>
-                      <input type="date" className="input input-bordered w-full" value={advancedFilters.fromDate} onChange={e => setAdvancedFilters(f => ({ ...f, fromDate: e.target.value }))} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">To date</label>
-                      <input type="date" className="input input-bordered w-full" value={advancedFilters.toDate} onChange={e => setAdvancedFilters(f => ({ ...f, toDate: e.target.value }))} />
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Category</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.category} onChange={e => setAdvancedFilters(f => ({ ...f, category: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {categoryOptions.map((opt, index) => <option key={`category-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Language</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.language} onChange={e => setAdvancedFilters(f => ({ ...f, language: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {languageOptions.map((opt, index) => <option key={`language-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Reason</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.reason} onChange={e => setAdvancedFilters(f => ({ ...f, reason: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {reasonOptions.map((opt, index) => <option key={`reason-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Tags</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.tags} onChange={e => setAdvancedFilters(f => ({ ...f, tags: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {tagOptions.map((opt, index) => <option key={`tag-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Status</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.status} onChange={e => setAdvancedFilters(f => ({ ...f, status: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {statusOptions.map((opt, index) => <option key={`status-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Source</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.source} onChange={e => setAdvancedFilters(f => ({ ...f, source: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {sourceOptions.map((opt, index) => <option key={`source-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Stage</label>
-                      <select className="select select-bordered w-full" value={advancedFilters.stage} onChange={e => setAdvancedFilters(f => ({ ...f, stage: e.target.value }))}>
-                        <option value="">Please choose</option>
-                      {stageOptions.map((opt, index) => <option key={`stage-${index}-${opt}`} value={opt}>{opt}</option>)}
-                      </select>
-                    </div>
-                    <div>
-                      <label className="block text-xs font-semibold mb-1">Topic</label>
-                    <input 
-                      type="text" 
-                      className="input input-bordered w-full" 
-                      placeholder="Enter topic..." 
-                      value={advancedFilters.topic} 
-                      onChange={e => setAdvancedFilters(f => ({ ...f, topic: e.target.value }))} 
-                    />
-                    </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">From date</label>
+                    <input type="date" className="input input-bordered w-full" value={advancedFilters.fromDate} onChange={e => setAdvancedFilters(f => ({ ...f, fromDate: e.target.value }))} />
                   </div>
-                
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">To date</label>
+                    <input type="date" className="input input-bordered w-full" value={advancedFilters.toDate} onChange={e => setAdvancedFilters(f => ({ ...f, toDate: e.target.value }))} />
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Category</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.category} onChange={e => setAdvancedFilters(f => ({ ...f, category: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {categoryOptions.map((opt, index) => <option key={`category-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Language</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.language} onChange={e => setAdvancedFilters(f => ({ ...f, language: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {languageOptions.map((opt, index) => <option key={`language-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Reason</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.reason} onChange={e => setAdvancedFilters(f => ({ ...f, reason: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {reasonOptions.map((opt, index) => <option key={`reason-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Tags</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.tags} onChange={e => setAdvancedFilters(f => ({ ...f, tags: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {tagOptions.map((opt, index) => <option key={`tag-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Status</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.status} onChange={e => setAdvancedFilters(f => ({ ...f, status: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {statusOptions.map((opt, index) => <option key={`status-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Source</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.source} onChange={e => setAdvancedFilters(f => ({ ...f, source: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {sourceOptions.map((opt, index) => <option key={`source-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Stage</label>
+                    <select className="select select-bordered w-full" value={advancedFilters.stage} onChange={e => setAdvancedFilters(f => ({ ...f, stage: e.target.value }))}>
+                      <option value="">Please choose</option>
+                      {stageOptions.map((opt, index) => <option key={`stage-${index}-${opt}`} value={opt}>{opt}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs font-semibold mb-1">Topic</label>
+                    <input
+                      type="text"
+                      className="input input-bordered w-full"
+                      placeholder="Enter topic..."
+                      value={advancedFilters.topic}
+                      onChange={e => setAdvancedFilters(f => ({ ...f, topic: e.target.value }))}
+                    />
+                  </div>
+                </div>
+
                 <div className="mt-6 flex justify-end gap-2">
                   <button className="btn btn-outline btn-sm" onClick={() => {
                     closeSearchBar();
                   }}>Cancel</button>
-                    <button className="btn btn-primary btn-sm" onClick={async () => {
-                      setIsAdvancedSearching(true);
-                      try {
-                        
+                  <button className="btn btn-primary btn-sm" onClick={async () => {
+                    setIsAdvancedSearching(true);
+                    try {
+
                       // Search both legacy and new leads with filters
                       const [legacyPromise, newPromise] = await Promise.allSettled([
                         // Search legacy leads with filters
@@ -5688,19 +6347,19 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                             .from('leads_lead')
                             .select('id, name, email, phone, mobile, topic, stage, cdate, lead_number, deactivate_notes, language_id')
                             .limit(50);
-                          
-                          
+
+
                           // Apply filters to legacy leads
-                        if (advancedFilters.category) {
+                          if (advancedFilters.category) {
                             legacyQuery = legacyQuery.eq('topic', advancedFilters.category);
-                        }
+                          }
                           if (advancedFilters.stage) {
                             // For now, skip stage filtering for legacy leads since we need to map stage names to IDs
                           }
                           if (advancedFilters.language) {
                             // For now, skip language filtering for legacy leads since we need to map language names to IDs
                           }
-                          
+
                           if (advancedFilters.fromDate && advancedFilters.toDate) {
                             // Try a different approach - use filter with date range
                             legacyQuery = legacyQuery.filter('cdate', 'gte', advancedFilters.fromDate).filter('cdate', 'lte', advancedFilters.toDate);
@@ -5715,19 +6374,19 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                           if (advancedFilters.topic) {
                             legacyQuery = legacyQuery.ilike('topic', `%${advancedFilters.topic}%`);
                           }
-                          
+
                           const result = await legacyQuery.order('cdate', { ascending: false });
                           return result;
                         })(),
-                        
+
                         // Search new leads with filters
                         (async () => {
                           let newQuery = supabase
                             .from('leads')
                             .select('id, lead_number, name, email, phone, mobile, topic, stage, created_at')
                             .limit(50);
-                          
-                          
+
+
                           // Apply filters to new leads
                           if (advancedFilters.category) {
                             newQuery = newQuery.eq('topic', advancedFilters.category);
@@ -5744,47 +6403,47 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                             newQuery = newQuery.gte('created_at', advancedFilters.fromDate);
                           } else if (advancedFilters.toDate) {
                             newQuery = newQuery.lte('created_at', advancedFilters.toDate);
-                        }
-                        if (advancedFilters.fileId) {
+                          }
+                          if (advancedFilters.fileId) {
                             newQuery = newQuery.ilike('lead_number', `%${advancedFilters.fileId}%`);
                           }
                           if (advancedFilters.topic) {
                             newQuery = newQuery.ilike('topic', `%${advancedFilters.topic}%`);
                           }
-                          
+
                           const result = await newQuery.order('created_at', { ascending: false });
                           return result;
                         })()
                       ]);
-                      
+
                       const results: any[] = [];
-                      
+
                       // Process legacy results
                       if (legacyPromise.status === 'fulfilled' && legacyPromise.value.data) {
                         // Fetch stage mapping
                         const { data: stageMapping } = await supabase
                           .from('lead_stages')
                           .select('id, name');
-                        
+
                         const stageMap = new Map();
                         if (stageMapping) {
                           stageMapping.forEach(stage => {
                             stageMap.set(stage.id, stage.name);
                           });
                         }
-                        
+
                         // Fetch language mapping
                         const { data: languageMapping } = await supabase
                           .from('misc_language')
                           .select('id, name');
-                        
+
                         const languageMap = new Map();
                         if (languageMapping) {
                           languageMapping.forEach(language => {
                             languageMap.set(language.id, language.name);
                           });
                         }
-                        
+
                         const transformedLegacyLeads = legacyPromise.value.data.map(lead => ({
                           id: `legacy_${lead.id}`,
                           lead_number: String(lead.id),
@@ -5811,7 +6470,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         }));
                         results.push(...transformedLegacyLeads);
                       }
-                      
+
                       // Process new leads results
                       if (newPromise.status === 'fulfilled' && newPromise.value.data) {
                         const transformedNewLeads = newPromise.value.data.map(lead => ({
@@ -5840,26 +6499,26 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                         }));
                         results.push(...transformedNewLeads);
                       }
-                      
-                      
+
+
                       setSearchResults(results);
                       setIsSearchActive(true);
                       setHasAppliedFilters(true);
                       // Keep filter dropdown open - only close when user clicks X or Cancel
-                        
-                      } catch (error) {
-                        console.error('[Filter] Error applying filters:', error);
-                        setSearchResults([]);
-                        setShowFilterDropdown(false);
-                      } finally {
-                        setIsAdvancedSearching(false);
-                      }
-                    }}>Apply Filters</button>
-                  </div>
+
+                    } catch (error) {
+                      console.error('[Filter] Error applying filters:', error);
+                      setSearchResults([]);
+                      setShowFilterDropdown(false);
+                    } finally {
+                      setIsAdvancedSearching(false);
+                    }
+                  }}>Apply Filters</button>
+                </div>
               </div>
             )}
           </div>
-        , document.body)}
+          , document.body)}
 
         {/* Right section with notifications and user */}
         <div className={`flex-1 justify-end flex items-center gap-2 md:gap-4 transition-all duration-300 ${isSearchActive && isMobile ? 'opacity-0 pointer-events-none' : 'opacity-100'}`}>
@@ -5899,7 +6558,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               </span>
             )}
           </div>
-          
+
           <div className="relative hidden md:block">
             <button
               className="btn btn-ghost btn-circle flex items-center justify-center"
@@ -5943,13 +6602,13 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
           </div>
 
           {/* Microsoft sign in/out button */}
-          <button 
-            className={`btn btn-sm gap-2 hidden md:flex ${userAccount ? 'btn-primary' : 'btn-outline'}`} 
-            onClick={handleMicrosoftSignIn} 
+          <button
+            className={`btn btn-sm gap-2 hidden md:flex ${userAccount ? 'btn-primary' : 'btn-outline'}`}
+            onClick={handleMicrosoftSignIn}
             disabled={isMsalLoading || !isMsalInitialized}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
             </svg>
             {userAccount ? (() => {
               const fullName = userAccount.name || userAccount.username || 'Signed in';
@@ -5960,20 +6619,20 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
           </button>
 
           {/* Microsoft sign in/out - mobile only */}
-          <button 
-            className={`btn btn-sm btn-square md:hidden ${userAccount ? 'btn-primary' : 'btn-outline'}`} 
-            onClick={handleMicrosoftSignIn} 
+          <button
+            className={`btn btn-sm btn-square md:hidden ${userAccount ? 'btn-primary' : 'btn-outline'}`}
+            onClick={handleMicrosoftSignIn}
             disabled={isMsalLoading || !isMsalInitialized}
             title={userAccount ? 'Sign out' : 'Sign in with Microsoft'}
           >
             <svg className="w-5 h-5" viewBox="0 0 24 24">
-              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+              <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM24 24H12.6V12.6H24V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
             </svg>
           </button>
 
           {/* Notifications */}
           <div className="relative" ref={notificationsRef}>
-            <button 
+            <button
               className="btn btn-ghost btn-circle mr-1"
               onClick={handleNotificationClick}
             >
@@ -5987,16 +6646,15 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 
             {showNotifications && (
               <div
-                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${
-                  isMobile
-                    ? 'fixed inset-x-0 top-[72px] w-[calc(100vw-16px)] mx-auto text-[11px]'
-                    : 'absolute right-0 mt-2 w-80 text-sm'
-                }`}
+                className={`notification-dropdown shadow-xl rounded-xl overflow-hidden z-50 border border-gray-200 dark:border-gray-600 ${isMobile
+                  ? 'fixed inset-x-0 top-[72px] w-[calc(100vw-16px)] mx-auto text-[11px]'
+                  : 'absolute right-0 mt-2 w-80 text-sm'
+                  }`}
               >
                 <div className="p-4 border-b border-gray-200">
                   <div className="flex justify-between items-center">
                     <h3 className="font-semibold text-gray-900">Messages</h3>
-                    <button 
+                    <button
                       className="btn btn-ghost btn-xs whitespace-nowrap text-gray-700 hover:text-gray-900"
                       onClick={markAllAsRead}
                     >
@@ -6014,7 +6672,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                           <span className="text-sm font-semibold text-green-800">WhatsApp Leads</span>
                         </div>
                       </div>
-                          {whatsappLeadsMessages.map((message) => (
+                      {whatsappLeadsMessages.map((message) => (
                         <div key={message.id} className="border-b border-green-100">
                           <div
                             role="button"
@@ -6037,14 +6695,14 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                               <div className="flex-1 min-w-0">
                                 <div className="flex items-center justify-between">
                                   <p className="text-sm font-semibold text-gray-900 truncate">
-                                    {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/) 
-                                      ? message.sender_name 
+                                    {message.sender_name && message.sender_name !== message.phone_number && !message.sender_name.match(/^\d+$/)
+                                      ? message.sender_name
                                       : message.phone_number}
                                   </p>
                                   <p className="text-xs text-gray-500">
-                                    {new Date(message.latest_message_time).toLocaleTimeString([], { 
-                                      hour: '2-digit', 
-                                      minute: '2-digit' 
+                                    {new Date(message.latest_message_time).toLocaleTimeString([], {
+                                      hour: '2-digit',
+                                      minute: '2-digit'
                                     })}
                                   </p>
                                 </div>
@@ -6146,7 +6804,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       ))}
                     </div>
                   )}
-                  
+
                   {/* RMQ Messages Section */}
                   {currentUser && (
                     <div className="border-b border-gray-200">
@@ -6210,7 +6868,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       )}
                     </div>
                   )}
-                  
+
                   {/* Lead Assignment Notifications */}
                   {assignmentNotifications.length > 0 && (
                     <div className="border-b border-gray-200">
@@ -6266,18 +6924,18 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
                       ))}
                     </div>
                   )}
-                  
+
                   {/* Empty state - only show if no messages at all */}
-                  {rmqMessages.length === 0 && 
-                   (isSuperUser ? (whatsappLeadsMessages.length === 0 && emailLeadMessages.length === 0) : true) && 
-                   assignmentNotifications.length === 0 && 
-                   !currentUser && (
-                    <div className="p-8 text-center text-gray-500">
-                      <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                      <p className="font-medium">No new messages</p>
-                      <p className="text-sm">You're all caught up!</p>
-                    </div>
-                  )}
+                  {rmqMessages.length === 0 &&
+                    (isSuperUser ? (whatsappLeadsMessages.length === 0 && emailLeadMessages.length === 0) : true) &&
+                    assignmentNotifications.length === 0 &&
+                    !currentUser && (
+                      <div className="p-8 text-center text-gray-500">
+                        <ChatBubbleLeftRightIcon className="w-12 h-12 mx-auto mb-3 opacity-50" />
+                        <p className="font-medium">No new messages</p>
+                        <p className="text-sm">You're all caught up!</p>
+                      </div>
+                    )}
                 </div>
               </div>
             )}
@@ -6291,7 +6949,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
             <div className="flex items-center gap-3 mb-4">
               <div className="w-10 h-10 bg-primary rounded-full flex items-center justify-center">
                 <svg className="w-6 h-6 text-white" viewBox="0 0 24 24">
-                  <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z"/>
+                  <path fill="currentColor" d="M11.4 24H0V12.6h11.4V24zM11.4 11.4H0V0h11.4v11.4zM24 11.4H12.6V0H24v11.4z" />
                 </svg>
               </div>
               <div>
@@ -6307,13 +6965,13 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
               </div>
             </div>
             <div className="flex gap-3 justify-end">
-              <button 
+              <button
                 className="btn btn-outline btn-sm"
                 onClick={() => setShowSignOutModal(false)}
               >
                 No, Cancel
               </button>
-              <button 
+              <button
                 className="btn btn-primary btn-sm"
                 onClick={handleMicrosoftSignOut}
               >
@@ -6326,25 +6984,25 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
 
       {/* Spacer to prevent content from being hidden behind the fixed header */}
       <div className="h-16 w-full" />
-      
+
       {/* Employee Modal for My Profile */}
-      <EmployeeModal 
-        employee={currentUserEmployee} 
+      <EmployeeModal
+        employee={currentUserEmployee}
         allEmployees={allEmployees}
-        isOpen={isEmployeeModalOpen} 
-        onClose={() => setIsEmployeeModalOpen(false)} 
+        isOpen={isEmployeeModalOpen}
+        onClose={() => setIsEmployeeModalOpen(false)}
       />
 
       {/* RMQ Messages Modal */}
-      <RMQMessagesPage 
-        isOpen={isRmqModalOpen} 
+      <RMQMessagesPage
+        isOpen={isRmqModalOpen}
         initialConversationId={selectedConversationId}
         onClose={() => {
           setIsRmqModalOpen(false);
           setSelectedConversationId(undefined);
           // Refresh messages when closing modal
           fetchRmqMessages();
-        }} 
+        }}
       />
 
       {/* Highlights Panel */}
@@ -6352,7 +7010,7 @@ const getLeadRouteIdentifier = (row: any, table: 'legacy' | 'new') => {
         isOpen={isHighlightsPanelOpen}
         onClose={() => setIsHighlightsPanelOpen(false)}
       />
-      
+
       <style>{`
         .notification-dropdown {
           background-color: #ffffff !important;

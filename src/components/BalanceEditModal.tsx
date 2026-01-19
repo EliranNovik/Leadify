@@ -130,12 +130,15 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
       return;
     }
 
-    // For new leads, check the 'vat' column (text type)
-    // NULL, FALSE, 'false', 'FALSE' → excluded
-    // TRUE, 'true', 'TRUE' → included
-    // Default to 'included' (true) since database has default TRUE
-    let vatStatus = 'included'; // Default to included
-    const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+    // Initialize form data - wrap in async function to fetch subcontractor_fee
+    const initializeFormData = async () => {
+      const isLegacyLead = selectedClient.id?.toString().startsWith('legacy_');
+      
+      // For new leads, check the 'vat' column (text type)
+      // NULL, FALSE, 'false', 'FALSE' → excluded
+      // TRUE, 'true', 'TRUE' → included
+      // Default to 'included' (true) since database has default TRUE
+      let vatStatus = 'included'; // Default to included
     
     if (!isLegacyLead) {
       // For new leads, check the vat column
@@ -217,47 +220,79 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
           currencyId = nisCurrency?.id?.toString() || '1';
         }
         
-        // For legacy leads: determine which value to use based on currency_id
-        let proposalTotalValue = 0;
-        if (isLegacyLead) {
-          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-          const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-          if (numericCurrencyId === 1) {
-            proposalTotalValue = Number((selectedClient as any).total_base || selectedClient.balance || selectedClient.total || 0);
+      // For legacy leads: determine which value to use based on currency_id
+      let proposalTotalValue = 0;
+      let subcontractorFeeValue = 0;
+      
+      // For legacy leads, explicitly fetch subcontractor_fee from database
+      if (isLegacyLead) {
+        const legacyId = parseInt(clientId.replace('legacy_', ''));
+        try {
+          const { data: feeData, error: feeError } = await supabase
+            .from('leads_lead')
+            .select('subcontractor_fee')
+            .eq('id', legacyId)
+            .single();
+          
+          if (!feeError && feeData && feeData.subcontractor_fee !== null && feeData.subcontractor_fee !== undefined) {
+            subcontractorFeeValue = Number(feeData.subcontractor_fee);
+            console.log('✅ Fetched subcontractor_fee from database:', subcontractorFeeValue);
           } else {
-            proposalTotalValue = Number(selectedClient.total || selectedClient.balance || 0);
+            // Fallback to selectedClient value
+            subcontractorFeeValue = Number((selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee ?? 0);
+            console.log('⚠️ subcontractor_fee not found in database, using selectedClient value:', subcontractorFeeValue);
           }
-        } else {
-          proposalTotalValue = Number(selectedClient.balance || selectedClient.proposal_total || 0);
+        } catch (error) {
+          console.error('Error fetching subcontractor_fee:', error);
+          // Fallback to selectedClient value
+          subcontractorFeeValue = Number((selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee ?? 0);
         }
         
-        console.log('🔍 Initializing form data:', {
-          clientId,
-          currencyId,
-          isLegacyLead,
-          currenciesCount: currencies.length,
-          selectedClientCurrencyId: selectedClient.currency_id,
-          selectedClientAccountingCurrencies: (selectedClient as any).accounting_currencies,
-          selectedClientBalanceCurrency: selectedClient.balance_currency,
-          selectedClientProposalCurrency: selectedClient.proposal_currency,
-          proposalTotalValue,
-          total_base: (selectedClient as any).total_base,
-          total: selectedClient.total
-        });
+        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+        const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+        if (numericCurrencyId === 1) {
+          proposalTotalValue = Number((selectedClient as any).total_base || selectedClient.balance || selectedClient.total || 0);
+        } else {
+          proposalTotalValue = Number(selectedClient.total || selectedClient.balance || 0);
+        }
+      } else {
+        proposalTotalValue = Number(selectedClient.balance || selectedClient.proposal_total || 0);
+        subcontractorFeeValue = Number(selectedClient.subcontractor_fee ?? 0);
+      }
         
-        setFormData({
-          currencyId: currencyId,
-          currency: '', // Will be computed from currencyId when needed
-          proposal_total: proposalTotalValue,
-          proposal_vat: vatStatus,
-          subcontractor_fee: selectedClient.subcontractor_fee ?? 0,
-          potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
-          number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || 1,
-          vat_value: selectedClient.vat_value || 0
-        });
+      console.log('🔍 Initializing form data:', {
+        clientId,
+        currencyId,
+        isLegacyLead,
+        currenciesCount: currencies.length,
+        selectedClientCurrencyId: selectedClient.currency_id,
+        selectedClientAccountingCurrencies: (selectedClient as any).accounting_currencies,
+        selectedClientBalanceCurrency: selectedClient.balance_currency,
+        selectedClientProposalCurrency: selectedClient.proposal_currency,
+        proposalTotalValue,
+        subcontractorFeeValue,
+        subcontractorFeeRaw: (selectedClient as any).subcontractor_fee ?? selectedClient.subcontractor_fee,
+        total_base: (selectedClient as any).total_base,
+        total: selectedClient.total,
+        selectedClientKeys: Object.keys(selectedClient)
+      });
+      
+      setFormData({
+        currencyId: currencyId,
+        currency: '', // Will be computed from currencyId when needed
+        proposal_total: proposalTotalValue,
+        proposal_vat: vatStatus,
+        subcontractor_fee: subcontractorFeeValue,
+        potential_value: selectedClient.potential_value || selectedClient.potential_total || 0,
+        number_of_applicants_meeting: selectedClient.number_of_applicants_meeting || 1,
+        vat_value: selectedClient.vat_value || 0
+      });
 
-    // Mark as initialized for this client
-    initializedForClientRef.current = clientId;
+      // Mark as initialized for this client
+      initializedForClientRef.current = clientId;
+    };
+    
+    initializeFormData();
   }, [isOpen, selectedClient?.id, currencies.length, loadingCurrencies]);
 
   const handleInputChange = (field: string, value: any) => {
@@ -332,9 +367,9 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         const updateData: any = {
           currency_id: currencyId,
           no_of_applicants: formData.number_of_applicants_meeting,
-          subcontractor_fee: formData.subcontractor_fee,
           potential_total: formData.potential_value.toString(),
-          vat: vatColumnValue // Save VAT status in 'vat' column for legacy leads
+          vat: vatColumnValue, // Save VAT status in 'vat' column for legacy leads
+          subcontractor_fee: Number(formData.subcontractor_fee) || 0 // Always save subcontractor_fee as a number
         };
         
         // Save logic for legacy leads:
@@ -342,21 +377,60 @@ const BalanceEditModal: React.FC<BalanceEditModalProps> = ({
         // If currency_id is other than 1: Save to total, and calculate NIS equivalent and save to total_base
         if (currencyId === 1) {
           // For NIS (currency_id = 1), save only to total_base
-          updateData.total_base = formData.proposal_total;
+          updateData.total_base = Number(formData.proposal_total) || 0;
+          // Note: We don't set total here - it will preserve the existing value if it exists from a previous currency
         } else {
           // For other currencies, save the amount to total
-          updateData.total = formData.proposal_total;
+          updateData.total = Number(formData.proposal_total) || 0;
           // Calculate NIS equivalent and save to total_base
           const nisAmount = convertToNIS(formData.proposal_total, currencyId);
           updateData.total_base = nisAmount;
         }
         
-        const { error } = await supabase
+        console.log('💾 Saving legacy lead balance update:', {
+          legacyId: selectedClient.id.toString().replace('legacy_', ''),
+          currencyId,
+          updateData,
+          formDataProposalTotal: formData.proposal_total,
+          formDataSubcontractorFee: formData.subcontractor_fee,
+          subcontractorFeeInUpdate: updateData.subcontractor_fee
+        });
+        
+        console.log('📤 Sending update to database:', {
+          table: 'leads_lead',
+          id: selectedClient.id.toString().replace('legacy_', ''),
+          updateData
+        });
+        
+        const { data: updateResult, error } = await supabase
           .from('leads_lead')
           .update(updateData)
-          .eq('id', selectedClient.id.toString().replace('legacy_', ''));
+          .eq('id', selectedClient.id.toString().replace('legacy_', ''))
+          .select('id, total, total_base, subcontractor_fee, currency_id, master_id');
 
-        if (error) throw error;
+        if (error) {
+          console.error('❌ Error updating legacy lead:', error);
+          console.error('❌ Update data that failed:', updateData);
+          throw error;
+        }
+        
+        console.log('✅ Legacy lead updated successfully:', updateResult);
+        if (updateResult && updateResult[0]) {
+          console.log('✅ Verified saved values:', {
+            total: updateResult[0].total,
+            total_base: updateResult[0].total_base,
+            subcontractor_fee: updateResult[0].subcontractor_fee,
+            currency_id: updateResult[0].currency_id,
+            master_id: updateResult[0].master_id
+          });
+          
+          // Verify subcontractor_fee was saved
+          if (updateResult[0].subcontractor_fee !== updateData.subcontractor_fee) {
+            console.error('❌ Subcontractor fee mismatch! Expected:', updateData.subcontractor_fee, 'Got:', updateResult[0].subcontractor_fee);
+          } else {
+            console.log('✅ Subcontractor fee saved correctly:', updateResult[0].subcontractor_fee);
+          }
+        }
       } else {
         // Update new lead in leads table
         // Map proposal_vat to 'vat' column (text): 'included' → 'true', 'excluded' → 'false'

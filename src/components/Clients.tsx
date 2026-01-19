@@ -58,6 +58,7 @@ import {
   ClockIcon,
   Bars3Icon,
   LinkIcon,
+  ArrowRightIcon,
 } from '@heroicons/react/24/outline';
 import InfoTab from './client-tabs/InfoTab';
 import RolesTab from './client-tabs/RolesTab';
@@ -186,7 +187,7 @@ const containsRTL = (text?: string | null): boolean => {
 
 // Format email body with line breaks and RTL support
 const formatEmailBody = async (
-  template: string, 
+  template: string,
   recipientName: string,
   context?: {
     client?: any;
@@ -197,9 +198,9 @@ const formatEmailBody = async (
   }
 ): Promise<string> => {
   if (!template) return '';
-  
+
   let htmlBody = template;
-  
+
   // If context is provided, use centralized template replacement
   if (context?.client) {
     const templateContext = {
@@ -213,17 +214,17 @@ const formatEmailBody = async (
       meetingLocation: context.meetingLocation || null,
       meetingLink: context.meetingLink || null,
     };
-    
+
     htmlBody = await replaceEmailTemplateParams(template, templateContext);
   } else {
     // Fallback: just replace {name}
     htmlBody = template.replace(/\{\{name\}\}/g, recipientName).replace(/\{name\}/gi, recipientName);
   }
-  
+
   // Preserve line breaks: convert \n to <br> if not already in HTML
   // Check if content already has HTML structure
   const hasHtmlTags = /<[a-z][\s\S]*>/i.test(htmlBody);
-  
+
   if (!hasHtmlTags) {
     // Plain text: convert line breaks to <br> and preserve spacing
     htmlBody = htmlBody
@@ -238,17 +239,17 @@ const formatEmailBody = async (
       .replace(/(<br\s*\/?>|\n)/gi, '<br>') // Normalize all line breaks
       .replace(/\n/g, '<br>'); // Convert any remaining newlines
   }
-  
+
   // Detect if content contains Hebrew/RTL text
   const isRTL = containsRTL(htmlBody);
-  
+
   // Wrap in div with proper direction and styling
   if (isRTL) {
     htmlBody = `<div dir="rtl" style="text-align: right; direction: rtl; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
   } else {
     htmlBody = `<div dir="ltr" style="text-align: left; direction: ltr; font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${htmlBody}</div>`;
   }
-  
+
   return htmlBody;
 };
 
@@ -326,18 +327,18 @@ interface ClientsProps {
 
 const getCurrencySymbol = (currencyCode?: string) => {
   if (!currencyCode) return '₪';
-  
+
   // Convert to string and trim whitespace from currency code
   const strCode = String(currencyCode).trim();
   if (!strCode) return '₪';
-  
+
   // If it's already a symbol, return it as-is (check exact match first)
   const symbols = ['₪', '$', '€', '£', 'C$', 'A$', '¥', 'CHF', 'SEK', 'NOK', 'DKK', 'PLN', 'CZK', 'HUF', 'RON', 'BGN', 'HRK', 'RUB', 'UAH', 'TRY'];
   const exactMatch = symbols.find(s => s === strCode);
   if (exactMatch) {
     return exactMatch;
   }
-  
+
   // Map currency codes to symbols
   const upperCode = strCode.toUpperCase();
   switch (upperCode) {
@@ -429,22 +430,22 @@ async function fetchCurrentUserFullName() {
   try {
     // Get current user name from Supabase auth and users table
     const { data: { user } } = await supabase.auth.getUser();
-    
+
     if (!user?.email) {
       return 'System User';
     }
-    
+
     // Get user from users table
     const { data: userData, error } = await supabase
       .from('users')
       .select('full_name, first_name, last_name, email')
       .eq('email', user.email)
       .single();
-    
+
     if (error) {
       return user.email;
     }
-    
+
     if (userData) {
       if (userData.full_name) {
         return userData.full_name;
@@ -458,7 +459,7 @@ async function fetchCurrentUserFullName() {
         return userData.email;
       }
     }
-    
+
     return user.email;
   } catch (error) {
     console.error('Error getting current user name:', error);
@@ -472,27 +473,27 @@ const Clients: React.FC<ClientsProps> = ({
   refreshClientData,
 }) => {
   const { user } = useAuthContext();
-  
+
   // Use a stable user ID reference to prevent unnecessary re-renders
   // Only update when user ID actually changes, not on every auth context update
   const stableUserIdRef = useRef<string | null>(null);
   const userId = user?.id ?? null;
-  
+
   // Only update ref when user ID actually changes (not on every auth context update)
   useEffect(() => {
     if (userId !== stableUserIdRef.current) {
       stableUserIdRef.current = userId;
     }
   }, [userId]);
-  
+
   // Use the stable ref value for actual logic to prevent re-renders
   const stableUserId = stableUserIdRef.current;
-  
+
   // Removed excessive console.log statements for performance
   // State to store all employees for name lookup
   const [allEmployees, setAllEmployees] = useState<any[]>([]);
   // State to store employee availability data (unavailable_times and unavailable_ranges)
-  const [employeeAvailabilityData, setEmployeeAvailabilityData] = useState<{[key: string]: any[]}>({});
+  const [employeeAvailabilityData, setEmployeeAvailabilityData] = useState<{ [key: string]: any[] }>({});
   // State to store all categories for name lookup
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [allLanguages, setAllLanguages] = useState<Array<{ id: number; name: string | null }>>([]);
@@ -507,7 +508,11 @@ const Clients: React.FC<ClientsProps> = ({
   const [isInHighlightsState, setIsInHighlightsState] = useState<boolean>(false);
   // State to track if inactive badge is expanded
   const [isInactiveBadgeExpanded, setIsInactiveBadgeExpanded] = useState<boolean>(false);
-  
+  // State to store master lead number for new leads (since master_id is ID, not lead_number)
+  const [masterLeadNumberForNewLead, setMasterLeadNumberForNewLead] = useState<string | null>(null);
+  // State to store master lead number for legacy leads with master_id (not lead_number pattern)
+  const [masterLeadNumberForLegacy, setMasterLeadNumberForLegacy] = useState<string | null>(null);
+
   // Reset badge expansion when selected client changes
   useEffect(() => {
     setIsInactiveBadgeExpanded(false);
@@ -519,10 +524,10 @@ const Clients: React.FC<ClientsProps> = ({
     if (!fullNumber || fullNumber === '---' || fullNumber === null || fullNumber === undefined || fullNumber.trim() === '') {
       return { countryCode: '+972', number: '' };
     }
-    
+
     // Trim the input to remove any extra spaces
     const trimmed = fullNumber.trim();
-    
+
     // Find matching country code
     const matchedCode = countryCodes.find(code => trimmed.startsWith(code.code));
     if (matchedCode) {
@@ -531,7 +536,7 @@ const Clients: React.FC<ClientsProps> = ({
         number: trimmed.substring(matchedCode.code.length)
       };
     }
-    
+
     // Default to Israel if no match found
     return { countryCode: '+972', number: trimmed };
   };
@@ -553,7 +558,7 @@ const Clients: React.FC<ClientsProps> = ({
   // Helper function to check if an employee is unavailable at a specific date and time
   const isEmployeeUnavailable = (employeeName: string, date: string, time: string): boolean => {
     if (!date || !time || !employeeName) return false;
-    
+
     const unavailableForDate = employeeAvailabilityData[date] || [];
     return unavailableForDate.some(unavailable => {
       if (unavailable.employeeName === employeeName) {
@@ -561,12 +566,12 @@ const Clients: React.FC<ClientsProps> = ({
         if (unavailable.isRange || unavailable.startTime === 'All Day') {
           return true;
         }
-        
+
         // For specific time slots, check time overlap
         const unavailableStart = unavailable.startTime;
         const unavailableEnd = unavailable.endTime;
         const isTimeConflict = time >= unavailableStart && time <= unavailableEnd;
-        
+
         return isTimeConflict;
       }
       return false;
@@ -585,7 +590,7 @@ const Clients: React.FC<ClientsProps> = ({
 
     try {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentLeadId = isLegacyLead 
+      const currentLeadId = isLegacyLead
         ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
         : selectedClient.id;
 
@@ -600,8 +605,8 @@ const Clients: React.FC<ClientsProps> = ({
         supabase
           .from('lead_leadcontact')
           .select('contact_id, main, newlead_id, lead_id')
-          .or(isLegacyLead 
-            ? `lead_id.eq.${currentLeadId}` 
+          .or(isLegacyLead
+            ? `lead_id.eq.${currentLeadId}`
             : `newlead_id.eq.${currentLeadId}`
           ),
         // Pre-fetch contact details in parallel
@@ -704,17 +709,17 @@ const Clients: React.FC<ClientsProps> = ({
       const [newLeadsResult, legacyLeadsResult] = await Promise.all([
         newLeadIds.length > 0
           ? supabase
-              .from('leads')
-              .select('id, lead_number, name, stage, category, master_id, status, topic, source_id')
-              .in('id', newLeadIds)
-              .is('master_id', null)
+            .from('leads')
+            .select('id, lead_number, name, stage, category, master_id, status, topic, source_id')
+            .in('id', newLeadIds)
+            .is('master_id', null)
           : Promise.resolve({ data: [] }),
         legacyLeadIds.length > 0
           ? supabase
-              .from('leads_lead')
-              .select('id, name, stage, category_id, master_id, status, topic, source_id')
-              .in('id', legacyLeadIds)
-              .is('master_id', null)
+            .from('leads_lead')
+            .select('id, name, stage, category_id, master_id, status, topic, source_id')
+            .in('id', legacyLeadIds)
+            .is('master_id', null)
           : Promise.resolve({ data: [] })
       ]);
 
@@ -732,7 +737,7 @@ const Clients: React.FC<ClientsProps> = ({
           .from('misc_leadsource')
           .select('id, name')
           .in('id', Array.from(allSourceIds));
-        
+
         (sources || []).forEach(source => {
           if (source.id && source.name) {
             sourceNamesMap.set(source.id, source.name);
@@ -765,7 +770,7 @@ const Clients: React.FC<ClientsProps> = ({
       // Process new leads
       for (const duplicateContact of duplicateContacts) {
         const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-        
+
         for (const rel of contactRelationships) {
           if (rel.newlead_id) {
             const lead = newLeads.find(l => l.id === rel.newlead_id);
@@ -787,15 +792,15 @@ const Clients: React.FC<ClientsProps> = ({
 
               if (matchingCurrentContact) {
                 const matchingFields: string[] = [];
-                if (matchingCurrentContact.email && duplicateContact.email && 
-                    matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                if (matchingCurrentContact.email && duplicateContact.email &&
+                  matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
                   matchingFields.push('email');
                 }
                 const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
                 const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
                 const normDupPhone = normalizePhone(duplicateContact.phone);
                 const normDupMobile = normalizePhone(duplicateContact.mobile);
-                
+
                 if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
                   matchingFields.push('phone');
                 }
@@ -839,7 +844,7 @@ const Clients: React.FC<ClientsProps> = ({
       // Process legacy leads
       for (const duplicateContact of duplicateContacts) {
         const contactRelationships = relationships.filter(r => r.contact_id === duplicateContact.id);
-        
+
         for (const rel of contactRelationships) {
           if (rel.lead_id) {
             const lead = legacyLeads.find(l => l.id === rel.lead_id);
@@ -861,15 +866,15 @@ const Clients: React.FC<ClientsProps> = ({
 
               if (matchingCurrentContact) {
                 const matchingFields: string[] = [];
-                if (matchingCurrentContact.email && duplicateContact.email && 
-                    matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
+                if (matchingCurrentContact.email && duplicateContact.email &&
+                  matchingCurrentContact.email.toLowerCase() === duplicateContact.email.toLowerCase()) {
                   matchingFields.push('email');
                 }
                 const normCurrentPhone = normalizePhone(matchingCurrentContact.phone);
                 const normCurrentMobile = normalizePhone(matchingCurrentContact.mobile);
                 const normDupPhone = normalizePhone(duplicateContact.phone);
                 const normDupMobile = normalizePhone(duplicateContact.mobile);
-                
+
                 if (normCurrentPhone && normDupPhone && normCurrentPhone === normDupPhone) {
                   matchingFields.push('phone');
                 }
@@ -929,18 +934,18 @@ const Clients: React.FC<ClientsProps> = ({
   const formatLegacyLeadNumber = (legacyLead: any, subLeadSuffix?: number): string => {
     const masterId = legacyLead.master_id;
     const leadId = String(legacyLead.id);
-    
+
     // If master_id is null/empty, it's a master lead - return just the ID
     if (!masterId || String(masterId).trim() === '') {
       return leadId;
     }
-    
+
     // If master_id exists, it's a sub-lead
     // Use provided suffix if available, otherwise calculate it
     if (subLeadSuffix !== undefined) {
       return `${masterId}/${subLeadSuffix}`;
     }
-    
+
     // If suffix not provided, return a placeholder that will be calculated when data is fetched
     // This is a fallback - ideally suffix should be calculated when fetching the data
     return `${masterId}/?`;
@@ -957,44 +962,44 @@ const Clients: React.FC<ClientsProps> = ({
       // Default to NIS - use the same format as dropdown expects
       return '₪'; // Default to NIS
     }
-    
+
     // Find currency in loaded currencies
     const currency = currencies.find((curr: any) => curr.id.toString() === currencyId.toString());
-    
+
     if (currency) {
       // Map currency to its symbol based on ISO code or name
       const isoCode = currency.iso_code ? currency.iso_code.toUpperCase() : null;
       const currencyName = currency.name ? currency.name.toUpperCase() : null;
-      
+
       // Map common currencies to their symbols
       if (isoCode === 'ILS' || isoCode === 'NIS' || currencyName === 'ILS' || currencyName === 'NIS') return '₪';
       if (isoCode === 'EUR' || currencyName === 'EUR' || currencyName === 'EURO') return '€';
       if (isoCode === 'USD' || currencyName === 'USD' || currencyName === 'DOLLAR') return '$';
       if (isoCode === 'GBP' || currencyName === 'GBP' || currencyName === 'POUND') return '£';
       if (isoCode === 'CAD' || currencyName === 'CAD') return 'C$';
-      
+
       // If no match found, return the symbol if available, otherwise default to ₪
       return currency.front_name || '₪';
     }
-    
+
     return '₪'; // Default fallback
   };
 
   // Helper function to get category name from ID with main category
   const getCategoryName = (categoryId: string | number | null | undefined, fallbackCategory?: string) => {
     console.log('🔍 getCategoryName called with categoryId:', categoryId, 'type:', typeof categoryId, 'fallbackCategory:', fallbackCategory);
-    
+
     if (!categoryId || categoryId === '---') {
       console.log('🔍 getCategoryName: categoryId is null/undefined/---, checking fallback');
       // If no category_id but we have a fallback category, try to find it in the loaded categories
       if (fallbackCategory && fallbackCategory.trim() !== '') {
         console.log('🔍 getCategoryName: Looking for fallback category in loaded categories:', fallbackCategory);
-        
+
         // Try to find the fallback category in the loaded categories
-        const foundCategory = allCategories.find((cat: any) => 
+        const foundCategory = allCategories.find((cat: any) =>
           cat.name.toLowerCase().trim() === fallbackCategory.toLowerCase().trim()
         );
-        
+
         if (foundCategory) {
           console.log('🔍 getCategoryName: Found fallback category in loaded categories:', foundCategory);
           // Return category name with main category in parentheses
@@ -1011,27 +1016,27 @@ const Clients: React.FC<ClientsProps> = ({
       console.log('🔍 getCategoryName: No fallback category, returning empty string');
       return '';
     }
-    
-    console.log('🔍 getCategoryName processing valid categoryId:', { 
-      categoryId, 
+
+    console.log('🔍 getCategoryName processing valid categoryId:', {
+      categoryId,
       allCategoriesLength: allCategories.length,
-      allCategories: allCategories.map(cat => ({ 
-        id: cat.id, 
-        name: cat.name, 
+      allCategories: allCategories.map(cat => ({
+        id: cat.id,
+        name: cat.name,
         parent_id: cat.parent_id,
-        mainCategory: cat.misc_maincategory?.name 
+        mainCategory: cat.misc_maincategory?.name
       }))
     });
-    
+
     // Find category in loaded categories
     const category = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (category) {
-      console.log('🔍 Found category:', { 
-        id: category.id, 
-        name: category.name, 
-        mainCategory: category.misc_maincategory?.name 
+      console.log('🔍 Found category:', {
+        id: category.id,
+        name: category.name,
+        mainCategory: category.misc_maincategory?.name
       });
-      
+
       // Return category name with main category in parentheses
       if (category.misc_maincategory?.name) {
         return `${category.name} (${category.misc_maincategory.name})`;
@@ -1039,7 +1044,7 @@ const Clients: React.FC<ClientsProps> = ({
         return category.name; // Fallback if no main category
       }
     }
-    
+
     console.log('🔍 Category not found, returning empty string for categoryId:', categoryId);
     return ''; // Return empty string instead of ID to show "Not specified"
   };
@@ -1079,7 +1084,7 @@ const Clients: React.FC<ClientsProps> = ({
   // Default to collapsed on mobile, expanded on desktop
   const [isClientInfoCollapsed, setIsClientInfoCollapsed] = useState(false);
   const [isProgressCollapsed, setIsProgressCollapsed] = useState(false);
-  
+
   // Set default collapsed state for mobile on mount
   useEffect(() => {
     const isMobile = window.innerWidth < 768;
@@ -1179,7 +1184,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [showPriceOfferChoiceModal, setShowPriceOfferChoiceModal] = useState(false);
   const [showManualPriceOfferModal, setShowManualPriceOfferModal] = useState(false);
   const [manualPriceOfferText, setManualPriceOfferText] = useState('');
-  
+
   // Add/remove body class when manual price offer modal opens/closes to hide tooltips
   useEffect(() => {
     if (showManualPriceOfferModal) {
@@ -1191,7 +1196,7 @@ const Clients: React.FC<ClientsProps> = ({
       document.body.classList.remove('manual-price-offer-modal-open');
     };
   }, [showManualPriceOfferModal]);
-  
+
   const [showSignedDrawer, setShowSignedDrawer] = useState(false);
   const [signedDate, setSignedDate] = useState(() => {
     const today = new Date();
@@ -1213,13 +1218,13 @@ const Clients: React.FC<ClientsProps> = ({
     potential_applicants_meeting: selectedClient?.potential_applicants_meeting || '',
     balance: selectedClient?.balance || '',
     next_followup: selectedClient?.next_followup || '',
-          balance_currency: selectedClient?.balance_currency || '₪',
+    balance_currency: selectedClient?.balance_currency || '₪',
   });
   // Main categories for Edit Lead drawer
   const [mainCategories, setMainCategories] = useState<string[]>([]);
   const [sources, setSources] = useState<string[]>([]);
   const [languagesList, setLanguagesList] = useState<string[]>([]);
-  const [currencies, setCurrencies] = useState<Array<{id: string, front_name: string, iso_code: string, name: string}>>([]);
+  const [currencies, setCurrencies] = useState<Array<{ id: string, front_name: string, iso_code: string, name: string }>>([]);
   const [allTags, setAllTags] = useState<any[]>([]);
   const [tagsList, setTagsList] = useState<string[]>([]);
   const [currentLeadTags, setCurrentLeadTags] = useState<string>('');
@@ -1262,7 +1267,7 @@ const Clients: React.FC<ClientsProps> = ({
             if (!displayName) {
               displayName = `Employee ${emp.id}`;
             }
-              return {
+            return {
               id: emp.id,
               display_name: displayName,
               unavailable_times: emp.unavailable_times || [],
@@ -1274,7 +1279,7 @@ const Clients: React.FC<ClientsProps> = ({
         setAllEmployees(mapped);
 
         // Build availability map by date for quick lookup
-        const availabilityMap: {[key: string]: any[]} = {};
+        const availabilityMap: { [key: string]: any[] } = {};
         mapped.forEach(emp => {
           const unavailableTimes = emp.unavailable_times || [];
           const unavailableRanges = emp.unavailable_ranges || [];
@@ -1297,7 +1302,7 @@ const Clients: React.FC<ClientsProps> = ({
             const startDate = new Date(range.startDate);
             const endDate = new Date(range.endDate);
             const currentDate = new Date(startDate);
-            
+
             while (currentDate <= endDate) {
               const dateString = currentDate.toISOString().split('T')[0];
               if (!availabilityMap[dateString]) {
@@ -1313,7 +1318,7 @@ const Clients: React.FC<ClientsProps> = ({
                 isRange: true,
                 rangeId: range.id
               });
-              
+
               currentDate.setDate(currentDate.getDate() + 1);
             }
           });
@@ -1341,7 +1346,7 @@ const Clients: React.FC<ClientsProps> = ({
             )
           `)
           .order('name', { ascending: true });
-        
+
         if (error) {
           console.error('Clients: Error fetching categories:', error);
         } else if (data) {
@@ -1361,14 +1366,14 @@ const Clients: React.FC<ClientsProps> = ({
         console.error('Clients: Exception while fetching categories:', err);
       }
     };
-    
+
     const fetchLanguages = async () => {
       try {
         const { data, error } = await supabase
           .from('misc_language')
           .select('id, name')
           .order('name', { ascending: true });
-        
+
         if (error) {
           console.error('Clients: Error fetching languages:', error);
         } else if (data) {
@@ -1378,14 +1383,14 @@ const Clients: React.FC<ClientsProps> = ({
         console.error('Clients: Exception while fetching languages:', err);
       }
     };
-    
+
     const fetchCountries = async () => {
       try {
         const { data, error } = await supabase
           .from('misc_country')
           .select('id, name, iso_code')
           .order('name', { ascending: true });
-        
+
         if (error) {
           console.error('Clients: Error fetching countries:', error);
         } else if (data) {
@@ -1427,7 +1432,7 @@ const Clients: React.FC<ClientsProps> = ({
           .from('lead_stages')
           .select('id, name, colour')
           .order('id', { ascending: true });
-        
+
         if (error) {
           console.error('Clients: Error fetching stages:', error);
         } else if (data) {
@@ -1464,7 +1469,7 @@ const Clients: React.FC<ClientsProps> = ({
     const fetchSuperuserStatus = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+
         if (authError || !user) {
           setIsSuperuser(false);
           return;
@@ -1476,7 +1481,7 @@ const Clients: React.FC<ClientsProps> = ({
           .select('is_superuser')
           .eq('auth_id', user.id)
           .maybeSingle();
-        
+
         // If not found by auth_id, try by email
         if (!userData && user.email) {
           const { data: userByEmail, error: emailError } = await supabase
@@ -1484,16 +1489,16 @@ const Clients: React.FC<ClientsProps> = ({
             .select('is_superuser')
             .eq('email', user.email)
             .maybeSingle();
-          
+
           userData = userByEmail;
           error = emailError;
         }
 
         if (!error && userData) {
           // Check if user is superuser (handle boolean, string, or number)
-          const superuserStatus = userData.is_superuser === true || 
-                                  userData.is_superuser === 'true' || 
-                                  userData.is_superuser === 1;
+          const superuserStatus = userData.is_superuser === true ||
+            userData.is_superuser === 'true' ||
+            userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
         } else {
           setIsSuperuser(false);
@@ -1515,14 +1520,14 @@ const Clients: React.FC<ClientsProps> = ({
         setIsTabsScrollable(false);
         return;
       }
-      
+
       const hasScroll = el.scrollWidth > el.clientWidth;
       setIsTabsScrollable(hasScroll);
     };
 
     // Initial check
     const timeoutId = setTimeout(checkDesktopTabsScroll, 200);
-    
+
     const el = desktopTabsRef.current;
     if (el) {
       // Enable mouse wheel scrolling
@@ -1532,22 +1537,22 @@ const Clients: React.FC<ClientsProps> = ({
           el.scrollLeft += e.deltaY;
         }
       }, { passive: false });
-      
+
       window.addEventListener('resize', checkDesktopTabsScroll);
-      
+
       // Observe for size changes
       const observer = new ResizeObserver(() => {
         setTimeout(checkDesktopTabsScroll, 100);
       });
       observer.observe(el);
-      
+
       return () => {
         clearTimeout(timeoutId);
         window.removeEventListener('resize', checkDesktopTabsScroll);
         observer.disconnect();
       };
     }
-    
+
     return () => {
       clearTimeout(timeoutId);
     };
@@ -1562,17 +1567,17 @@ const Clients: React.FC<ClientsProps> = ({
         setCanScrollLeft(false);
         return;
       }
-      
+
       const hasScroll = el.scrollWidth > el.clientWidth;
       const scrollLeft = el.scrollLeft;
       const maxScroll = el.scrollWidth - el.clientWidth;
-      
+
       const shouldShowRight = hasScroll && scrollLeft < maxScroll - 5;
       const shouldShowLeft = hasScroll && scrollLeft > 5;
-      
+
       setCanScrollRight(shouldShowRight);
       setCanScrollLeft(shouldShowLeft);
-      
+
       // Debug log (remove in production)
       if (hasScroll) {
         console.log('📜 Mobile tabs scroll check:', {
@@ -1588,7 +1593,7 @@ const Clients: React.FC<ClientsProps> = ({
 
     // Initial check with delay to ensure tabs are rendered
     const timeoutId = setTimeout(checkScroll, 200);
-    
+
     const el = mobileTabsRef.current;
     if (el) {
       el.addEventListener('scroll', checkScroll, { passive: true });
@@ -1627,15 +1632,15 @@ const Clients: React.FC<ClientsProps> = ({
       mutationObserver.disconnect();
     };
   }, []); // Empty deps - observers handle all updates
-  
+
   const lastCategoryRefreshIds = useRef<Set<string>>(new Set());
   const isBalanceUpdatingRef = useRef<boolean>(false);
-  
+
   // State for unactivation modal
   const [showUnactivationModal, setShowUnactivationModal] = useState(false);
   const [unactivationReason, setUnactivationReason] = useState('');
   const [deactivateNotesDescription, setDeactivateNotesDescription] = useState('');
-  
+
   // State for activation modal
   const [showActivationModal, setShowActivationModal] = useState(false);
 
@@ -1674,7 +1679,7 @@ const Clients: React.FC<ClientsProps> = ({
   const [notifyClientOnReschedule, setNotifyClientOnReschedule] = useState(false);
   const [isReschedulingMeeting, setIsReschedulingMeeting] = useState(false);
   const [rescheduleMeetingCountsByTime, setRescheduleMeetingCountsByTime] = useState<Record<string, number>>({});
-  
+
   // State for sticky header on scroll
   const [showStickyHeader, setShowStickyHeader] = useState(false);
   const scrollThreshold = 100; // Show sticky header after scrolling 100px
@@ -1722,16 +1727,16 @@ const Clients: React.FC<ClientsProps> = ({
   const [schedulerSearchTerm, setSchedulerSearchTerm] = useState('');
   const [filteredSchedulerOptions, setFilteredSchedulerOptions] = useState<string[]>([]);
   const [showSchedulerDropdown, setShowSchedulerDropdown] = useState(false);
-const [handlerSearchTerm, setHandlerSearchTerm] = useState('');
-const [filteredHandlerSearchOptions, setFilteredHandlerSearchOptions] = useState<HandlerOption[]>([]);
-const [showHandlerSearchDropdown, setShowHandlerSearchDropdown] = useState(false);
-const handlerSearchContainerRef = useRef<HTMLDivElement | null>(null);
-const [successStageHandlerSearch, setSuccessStageHandlerSearch] = useState('');
-const [filteredSuccessStageHandlerOptions, setFilteredSuccessStageHandlerOptions] = useState<HandlerOption[]>([]);
-const [showSuccessStageHandlerDropdown, setShowSuccessStageHandlerDropdown] = useState(false);
-const successStageHandlerContainerRef = useRef<HTMLDivElement | null>(null); // Mobile ref
-const successStageHandlerContainerRefDesktop = useRef<HTMLDivElement | null>(null); // Desktop ref
-const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useState(false);
+  const [handlerSearchTerm, setHandlerSearchTerm] = useState('');
+  const [filteredHandlerSearchOptions, setFilteredHandlerSearchOptions] = useState<HandlerOption[]>([]);
+  const [showHandlerSearchDropdown, setShowHandlerSearchDropdown] = useState(false);
+  const handlerSearchContainerRef = useRef<HTMLDivElement | null>(null);
+  const [successStageHandlerSearch, setSuccessStageHandlerSearch] = useState('');
+  const [filteredSuccessStageHandlerOptions, setFilteredSuccessStageHandlerOptions] = useState<HandlerOption[]>([]);
+  const [showSuccessStageHandlerDropdown, setShowSuccessStageHandlerDropdown] = useState(false);
+  const successStageHandlerContainerRef = useRef<HTMLDivElement | null>(null); // Mobile ref
+  const successStageHandlerContainerRefDesktop = useRef<HTMLDivElement | null>(null); // Desktop ref
+  const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useState(false);
 
   // Mobile edge dropdowns state
   const [showMobileMenu, setShowMobileMenu] = useState(false);
@@ -1960,7 +1965,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
   // Consolidated into a single useEffect to prevent conflicts
   const prevClientIdRef = useRef<string | undefined>();
   const isSettingUpClientRef = useRef(false); // Flag to prevent useEffect from interfering during setup
-  
+
   useEffect(() => {
     // Skip if we're in the middle of setting up a client
     if (isSettingUpClientRef.current) {
@@ -2022,7 +2027,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
       }
 
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
         : selectedClient.id;
 
@@ -2038,7 +2043,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
     const handleHighlightChange = () => {
       if (selectedClient?.id) {
         const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-        const leadId = isLegacyLead 
+        const leadId = isLegacyLead
           ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
           : selectedClient.id;
         isInHighlights(leadId, isLegacyLead).then(setIsInHighlightsState);
@@ -2059,7 +2064,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
     if (selectedClient) {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
       let currency = '₪'; // Default
-      
+
       if (isLegacyLead) {
         // For legacy leads, use balance_currency
         currency = selectedClient.balance_currency || '₪';
@@ -2067,7 +2072,7 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
         // For new leads, use proposal_currency or default
         currency = selectedClient.proposal_currency || '₪';
       }
-      
+
       setNewPayment(prev => ({ ...prev, currency }));
     }
   }, [selectedClient]);
@@ -2100,39 +2105,39 @@ const [isUpdatingSuccessStageHandler, setIsUpdatingSuccessStageHandler] = useSta
     }
   }, [schedulerSearchTerm, schedulerOptions]);
 
-useEffect(() => {
-  if (!showSchedulerDropdown) return;
-  const handleClickOutside = (event: MouseEvent) => {
-    const target = event.target as HTMLElement | null;
-    if (!target?.closest('[data-assign-dropdown="true"]')) {
-      setShowSchedulerDropdown(false);
-    }
-  };
-  document.addEventListener('mousedown', handleClickOutside);
-  return () => {
-    document.removeEventListener('mousedown', handleClickOutside);
-  };
-}, [showSchedulerDropdown]);
+  useEffect(() => {
+    if (!showSchedulerDropdown) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target?.closest('[data-assign-dropdown="true"]')) {
+        setShowSchedulerDropdown(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showSchedulerDropdown]);
 
-useEffect(() => {
-  if (!selectedClient) {
-    setSchedulerSearchTerm('');
-    setFilteredSchedulerOptions(schedulerOptions);
-    return;
-  }
-  const schedulerName =
-    selectedClient.scheduler && typeof selectedClient.scheduler === 'string'
-      ? selectedClient.scheduler
+  useEffect(() => {
+    if (!selectedClient) {
+      setSchedulerSearchTerm('');
+      setFilteredSchedulerOptions(schedulerOptions);
+      return;
+    }
+    const schedulerName =
+      selectedClient.scheduler && typeof selectedClient.scheduler === 'string'
+        ? selectedClient.scheduler
+        : '';
+
+    // If scheduler is "---" or empty, set search term to empty (will show as placeholder)
+    const displayValue = (schedulerName && schedulerName.trim() !== '' && schedulerName !== '---')
+      ? schedulerName
       : '';
 
-  // If scheduler is "---" or empty, set search term to empty (will show as placeholder)
-  const displayValue = (schedulerName && schedulerName.trim() !== '' && schedulerName !== '---') 
-    ? schedulerName 
-    : '';
-
-  setSchedulerSearchTerm(displayValue);
-  setFilteredSchedulerOptions(schedulerOptions);
-}, [selectedClient, schedulerOptions]);
+    setSchedulerSearchTerm(displayValue);
+    setFilteredSchedulerOptions(schedulerOptions);
+  }, [selectedClient, schedulerOptions]);
 
 
   // Helper to convert lead number to case number
@@ -2140,34 +2145,34 @@ useEffect(() => {
   const getDisplayLeadNumber = (lead: any): string => {
     if (!lead) return '---';
     let displayNumber = lead.lead_number || lead.manual_id || lead.id || '---';
-    
+
     // Remove any existing / suffix for processing (we'll add /1 if needed)
     const displayStr = displayNumber.toString();
     const hasExistingSuffix = displayStr.includes('/');
-    
+
     // For master leads, we want to show /1, so strip any existing suffix first
     let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
-    
+
     const isSuccessStage = lead.stage === '100' || lead.stage === 100;
     // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
     if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
       // Replace "L" prefix with "C" for display only
       baseNumber = baseNumber.toString().replace(/^L/, 'C');
     }
-    
+
     // Add /1 suffix to master leads (frontend only)
     // A lead is a master if: it has no master_id AND (isMasterLead is true OR has sub-leads)
     const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
     const hasSubLeads = subLeads && subLeads.length > 0;
     // Use isMasterLead state or check subLeads array - either indicates it's a master lead
     const shouldAddSuffix = hasNoMasterId && (isMasterLead || hasSubLeads);
-    
+
     if (shouldAddSuffix) {
       displayNumber = `${baseNumber}/1`;
     } else {
       displayNumber = baseNumber;
     }
-    
+
     return displayNumber.toString();
   };
 
@@ -2284,17 +2289,17 @@ useEffect(() => {
           }
         };
 
-      const updateData: any = {
-        file_id: fileId,
-        case_handler_id: handlerIdNumeric,
-        stage: successStageId,
-        stage_changed_by: actor.fullName,
-        stage_changed_at: stageTimestamp,
-        no_of_applicants: numApplicants,
-        total: proposal,
-        potential_total: potentialValue,
-        currency_id: mapCurrencyToLegacyId(successForm.currency),
-      };
+        const updateData: any = {
+          file_id: fileId,
+          case_handler_id: handlerIdNumeric,
+          stage: successStageId,
+          stage_changed_by: actor.fullName,
+          stage_changed_at: stageTimestamp,
+          no_of_applicants: numApplicants,
+          total: proposal,
+          potential_total: potentialValue,
+          currency_id: mapCurrencyToLegacyId(successForm.currency),
+        };
 
         const { error } = await supabase
           .from('leads_lead')
@@ -2333,11 +2338,11 @@ useEffect(() => {
           // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
           file_id: fileId,
           proposal_currency: successForm.currency,
-        balance_currency: successForm.currency,
-        number_of_applicants_meeting: numApplicants,
-        proposal_total: proposal,
-        potential_value: potentialValue,
-        balance: proposal,
+          balance_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants,
+          proposal_total: proposal,
+          potential_value: potentialValue,
+          balance: proposal,
           stage_changed_by: actor.fullName,
           stage_changed_at: stageTimestamp,
         };
@@ -2350,28 +2355,28 @@ useEffect(() => {
           updateData.case_handler_id = handlerIdNumeric;
         }
 
-      const { error } = await supabase
-        .from('leads')
-        .update(updateData)
-        .eq('id', selectedClient.id);
-      
-      if (error) throw error;
+        const { error } = await supabase
+          .from('leads')
+          .update(updateData)
+          .eq('id', selectedClient.id);
 
-      await recordLeadStageChange({
-        lead: selectedClient,
-        stage: successStageId,
-        actor,
-        timestamp: stageTimestamp,
-      });
-      
-      setSelectedClient((prev: any) => ({
-        ...prev,
-        stage: successStageId,
+        if (error) throw error;
+
+        await recordLeadStageChange({
+          lead: selectedClient,
+          stage: successStageId,
+          actor,
+          timestamp: stageTimestamp,
+        });
+
+        setSelectedClient((prev: any) => ({
+          ...prev,
+          stage: successStageId,
           // Don't update lead_number - keep original "L" prefix in database, only show "C" in UI
-        proposal_currency: successForm.currency,
-        number_of_applicants_meeting: numApplicants,
-        proposal_total: proposal,
-        potential_value: potentialValue,
+          proposal_currency: successForm.currency,
+          number_of_applicants_meeting: numApplicants,
+          proposal_total: proposal,
+          potential_value: potentialValue,
           file_id: fileId ?? prev?.file_id,
           handler: handlerName || prev?.handler,
           case_handler_id:
@@ -2381,9 +2386,9 @@ useEffect(() => {
           balance_currency: successForm.currency || prev?.balance_currency,
         }));
 
-      await refreshClientData(selectedClient.id);
+        await refreshClientData(selectedClient.id);
       }
-      
+
       setShowSuccessDrawer(false);
       toast.success('Lead updated to Success!');
     } catch (error) {
@@ -2399,26 +2404,26 @@ useEffect(() => {
         setNextMeetingDate(null);
         return;
       }
-      
+
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
       const today = new Date().toISOString().split('T')[0];
-      
+
       let query = supabase
         .from('meetings')
         .select('id, meeting_date, status')
         .gte('meeting_date', today)
         .or('status.is.null,status.neq.canceled')
         .order('meeting_date', { ascending: true });
-      
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         query = query.eq('legacy_lead_id', legacyId);
       } else {
         query = query.eq('client_id', selectedClient.id);
       }
-      
+
       const { data, error } = await query.limit(1);
-      
+
       if (!error && data && data.length > 0) {
         setHasScheduledMeetings(true);
         setNextMeetingDate(data[0].meeting_date);
@@ -2427,7 +2432,7 @@ useEffect(() => {
         setNextMeetingDate(null);
       }
     };
-    
+
     checkScheduledMeetings();
   }, [selectedClient?.id]);
 
@@ -2435,19 +2440,19 @@ useEffect(() => {
   useEffect(() => {
     const fetchMeetings = async () => {
       if (!selectedClient?.id || !showRescheduleDrawer) return;
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-      
+
       // Get today's date in YYYY-MM-DD format for filtering
       const today = new Date().toISOString().split('T')[0];
-      
+
       let query = supabase
         .from('meetings')
         .select('*')
         .neq('status', 'canceled') // Only fetch non-canceled meetings
         .gte('meeting_date', today); // Only fetch upcoming meetings (today and future)
-      
+
       if (isLegacyLead) {
         const legacyIdStr = selectedClient.id.toString().replace('legacy_', '');
         // Convert to number for legacy_lead_id (it's a bigint in the database)
@@ -2456,9 +2461,9 @@ useEffect(() => {
       } else {
         query = query.eq('client_id', selectedClient.id);
       }
-      
+
       const { data, error } = await query.order('meeting_date', { ascending: true });
-      
+
       if (!error && data) setRescheduleMeetings(data);
       else setRescheduleMeetings([]);
     };
@@ -2493,8 +2498,8 @@ useEffect(() => {
           meetings.forEach((meeting: any) => {
             if (meeting.meeting_time) {
               // Extract time in HH:MM format (handle both TIME and TIMESTAMP formats)
-              const timeStr = typeof meeting.meeting_time === 'string' 
-                ? meeting.meeting_time.substring(0, 5) 
+              const timeStr = typeof meeting.meeting_time === 'string'
+                ? meeting.meeting_time.substring(0, 5)
                 : new Date(meeting.meeting_time).toTimeString().substring(0, 5);
               counts[timeStr] = (counts[timeStr] || 0) + 1;
             }
@@ -2522,14 +2527,14 @@ useEffect(() => {
     const handleScroll = () => {
       // Check both window scroll and main element scroll
       const windowScrollY = window.scrollY || window.pageYOffset || 0;
-      
+
       // Also check the main element scroll (since App.tsx has overflow-y-auto on main)
       const mainElement = document.querySelector('main');
       const mainScrollTop = mainElement ? mainElement.scrollTop : 0;
-      
+
       // Use whichever is greater (handles both cases)
       const scrollY = Math.max(windowScrollY, mainScrollTop);
-      
+
       const shouldShow = scrollY > scrollThreshold;
       setShowStickyHeader(shouldShow);
     };
@@ -2539,12 +2544,12 @@ useEffect(() => {
 
     // Listen to both window and main element scroll
     window.addEventListener('scroll', handleScroll, { passive: true });
-    
+
     const mainElement = document.querySelector('main');
     if (mainElement) {
       mainElement.addEventListener('scroll', handleScroll, { passive: true });
     }
-    
+
     return () => {
       clearTimeout(timeoutId);
       window.removeEventListener('scroll', handleScroll);
@@ -2557,28 +2562,28 @@ useEffect(() => {
 
   const onClientUpdate = useCallback(async () => {
     if (!selectedClient?.id) return;
-    
+
     // Refresh scheduled meetings check
     const checkScheduledMeetings = async () => {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
       const today = new Date().toISOString().split('T')[0];
-      
+
       let query = supabase
         .from('meetings')
         .select('id, meeting_date, status')
         .gte('meeting_date', today)
         .or('status.is.null,status.neq.canceled')
         .order('meeting_date', { ascending: true });
-      
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         query = query.eq('legacy_lead_id', legacyId);
       } else {
         query = query.eq('client_id', selectedClient.id);
       }
-      
+
       const { data, error } = await query.limit(1);
-      
+
       if (!error && data && data.length > 0) {
         setHasScheduledMeetings(true);
         setNextMeetingDate(data[0].meeting_date);
@@ -2587,9 +2592,9 @@ useEffect(() => {
         setNextMeetingDate(null);
       }
     };
-    
+
     await checkScheduledMeetings();
-    
+
     // Skip if balance is being updated - refreshClientData will handle it
     if (isBalanceUpdatingRef.current) {
       console.log('⏸️ Skipping onClientUpdate - balance update in progress (from callback)');
@@ -2632,6 +2637,7 @@ useEffect(() => {
             language_id,
             total,
             total_base,
+            subcontractor_fee,
             currency_id,
             closer_id,
             case_handler_id,
@@ -2682,7 +2688,7 @@ useEffect(() => {
               .maybeSingle();
             sourceName = sourceData?.name || '';
           }
-          
+
           const legacyLanguageRecord = Array.isArray(data.misc_language)
             ? data.misc_language[0]
             : data.misc_language;
@@ -2699,7 +2705,7 @@ useEffect(() => {
               .eq('master_id', data.master_id)
               .not('master_id', 'is', null)
               .order('id', { ascending: true });
-            
+
             if (existingSubLeads) {
               const currentLeadIndex = existingSubLeads.findIndex(sub => sub.id === data.id);
               // Suffix starts at 2 (first sub-lead is /2, second is /3, etc.)
@@ -2729,7 +2735,7 @@ useEffect(() => {
               console.error('Error fetching language name:', langError);
             }
           }
-          
+
           // Create transformed data by explicitly selecting only the fields we want
           // This ensures unwanted fields (description, tracking fields, language_id) are never included
           const transformedData = {
@@ -2749,8 +2755,8 @@ useEffect(() => {
             next_followup: data.next_followup || '',
             probability: data.probability !== null && data.probability !== undefined ? Number(data.probability) : 0,
             category: (() => {
-              console.log('🔍 Processing new lead category - raw data:', { 
-                category_id: data.category_id, 
+              console.log('🔍 Processing new lead category - raw data:', {
+                category_id: data.category_id,
                 category: data.category,
                 allCategoriesLoaded: allCategories.length > 0,
                 allCategories: allCategories.map(cat => ({ id: cat.id, name: cat.name }))
@@ -2763,6 +2769,7 @@ useEffect(() => {
             balance: String(data.total || ''), // Map total to balance
             total: data.total || null, // Include total for balance badge logic
             total_base: data.total_base || null, // Include total_base for balance badge logic (when currency_id is 1)
+            subcontractor_fee: data.subcontractor_fee || null, // Include subcontractor_fee for balance badge logic
             balance_currency: (() => {
               // Use accounting_currencies name if available, otherwise fallback
               if (legacyCurrencyRecord?.name) {
@@ -2847,20 +2854,20 @@ useEffect(() => {
 
         if (data) {
           // Transform new lead to include category name with main category
-          console.log('🔍 Processing onClientUpdate category - raw data:', { 
-            category_id: data.category_id, 
+          console.log('🔍 Processing onClientUpdate category - raw data:', {
+            category_id: data.category_id,
             category: data.category,
             allCategoriesLoaded: allCategories.length > 0
           });
           const categoryName = getCategoryName(data.category_id, data.category);
           console.log('🔍 Processing onClientUpdate category result:', { category_id: data.category_id, category_name: categoryName });
           const newLeadStageId = resolveStageId(data.stage);
-          
+
           // Extract currency data from joined table (like legacy leads)
-          const currencyRecord = data.accounting_currencies 
+          const currencyRecord = data.accounting_currencies
             ? (Array.isArray(data.accounting_currencies) ? data.accounting_currencies[0] : data.accounting_currencies)
             : null;
-          
+
           // Use accounting_currencies.name directly (like SchedulerToolPage.tsx)
           // The accounting_currencies.name column contains the symbol (₪, $, €, £)
           const currencySymbol = (() => {
@@ -2881,13 +2888,13 @@ useEffect(() => {
             }
             return '₪'; // Default fallback
           })();
-          
+
           // CRITICAL: If balance is updating, don't overwrite fresh data
           if (isBalanceUpdatingRef.current) {
             console.log('⏸️ onClientUpdate: Skipping - balance update in progress, not overwriting fresh data');
             return;
           }
-          
+
           const transformedData = {
             ...data,
             category: categoryName,
@@ -2897,8 +2904,8 @@ useEffect(() => {
               (data.handler && data.handler.trim() !== '' && data.handler !== 'Not assigned')
                 ? data.handler
                 : (data.case_handler_id !== null && data.case_handler_id !== undefined
-                    ? getEmployeeDisplayName(String(data.case_handler_id))
-                    : 'Not assigned'),
+                  ? getEmployeeDisplayName(String(data.case_handler_id))
+                  : 'Not assigned'),
             // CRITICAL: Preserve currency_id from database - preserve from selectedClient if missing in fetched data
             currency_id: data.currency_id ?? selectedClient?.currency_id ?? null,
             // Ensure all financial columns are preserved from the database
@@ -2913,7 +2920,7 @@ useEffect(() => {
             balance_currency: currencySymbol,
             proposal_currency: currencySymbol,
           };
-          
+
           console.log('onClientUpdate: Setting new lead data:', {
             ...transformedData,
             balance_currency: transformedData.balance_currency,
@@ -2968,7 +2975,7 @@ useEffect(() => {
   useEffect(() => {
     // Clear immediately when client changes to prevent showing old badge
     setDuplicateContacts([]);
-    
+
     if (selectedClient?.id) {
       // Run immediately - no delay needed
       findDuplicateContacts();
@@ -2981,20 +2988,20 @@ useEffect(() => {
     if (isSettingUpClientRef.current) {
       return;
     }
-    
+
     // Check if route has changed
     const currentRoute = location.pathname;
     const routeChanged = lastRouteRef.current !== currentRoute;
-    
+
     // If this is a back/forward navigation (POP) and we already have the client loaded, skip the fetch
     // Note: routeChanged can be true on POP navigation, so we check navType first
     if (navType === 'POP' && selectedClient && lead_number) {
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentClientId = isLegacy 
+      const currentClientId = isLegacy
         ? selectedClient.id?.toString().replace('legacy_', '')
         : selectedClient.id?.toString();
       const currentLeadNumber = selectedClient.lead_number;
-      
+
       // Check if we have the correct client already loaded
       if (isLegacy) {
         if (currentClientId === lead_number) {
@@ -3012,7 +3019,7 @@ useEffect(() => {
         }
       }
     }
-    
+
     // Always refetch if route changed (including coming back from /master)
     // But skip if it's a POP navigation and we already handled it above
     if (routeChanged && navType !== 'POP') {
@@ -3026,11 +3033,11 @@ useEffect(() => {
     } else if (selectedClient && lead_number && !location.pathname.includes('/master')) {
       // Only skip fetch if we have the same client AND we're not on the master route
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentClientId = isLegacy 
+      const currentClientId = isLegacy
         ? selectedClient.id?.toString().replace('legacy_', '')
         : selectedClient.id?.toString();
       const currentLeadNumber = selectedClient.lead_number;
-      
+
       // For legacy leads, compare by ID; for new leads, compare by lead_number
       if (isLegacy) {
         // Legacy lead: compare numeric ID
@@ -3046,7 +3053,7 @@ useEffect(() => {
         }
       }
     }
-    
+
     let isMounted = true;
     const fetchEssentialData = async () => {
       // Always set loading when fetching new data
@@ -3056,13 +3063,13 @@ useEffect(() => {
       if (effectiveLeadNumber) {
         // Try to find the lead in both tables - run queries in parallel for faster loading
         let clientData = null;
-        
+
         const isManualIdCandidate = /^\d+$/.test(effectiveLeadNumber);
         const isLegacyLeadId = /^\d+$/.test(effectiveLeadNumber);
-        
+
         // Run all possible queries in parallel to find the lead faster
         const queries = [];
-        
+
         if (isManualIdCandidate) {
           queries.push(
             supabase
@@ -3072,7 +3079,7 @@ useEffect(() => {
               .then(({ data, error }) => ({ type: 'manual', data, error }))
           );
         }
-        
+
         if (isLegacyLeadId) {
           queries.push(
             supabase
@@ -3092,7 +3099,7 @@ useEffect(() => {
               .then(({ data, error }) => ({ type: 'legacy', data, error }))
           );
         }
-        
+
         // Also try by lead_number for new leads
         queries.push(
           supabase
@@ -3102,15 +3109,15 @@ useEffect(() => {
             .single()
             .then(({ data, error }) => ({ type: 'lead_number', data, error }))
         );
-        
+
         // Wait for all queries to complete
         const results = await Promise.allSettled(queries);
-        
+
         // Process results in priority order: manual_id > legacy > lead_number
         for (const result of results) {
           if (result.status === 'fulfilled') {
             const { type, data, error } = result.value;
-            
+
             if (type === 'manual' && data && data.length > 0) {
               let chosenLead = null;
               if (requestedLeadNumber) {
@@ -3124,7 +3131,7 @@ useEffect(() => {
                   return aNum.localeCompare(bNum);
                 })[0];
               }
-              
+
               if (chosenLead) {
                 const categoryName = getCategoryName(chosenLead.category_id, chosenLead.category);
                 const chosenStageId = resolveStageId(chosenLead.stage);
@@ -3137,8 +3144,8 @@ useEffect(() => {
                     (chosenLead.handler && chosenLead.handler.trim() !== '' && chosenLead.handler !== 'Not assigned')
                       ? chosenLead.handler
                       : (chosenLead.case_handler_id !== null && chosenLead.case_handler_id !== undefined
-                          ? getEmployeeDisplayName(String(chosenLead.case_handler_id))
-                          : 'Not assigned'),
+                        ? getEmployeeDisplayName(String(chosenLead.case_handler_id))
+                        : 'Not assigned'),
                 };
                 break; // Found it, stop searching
               }
@@ -3151,13 +3158,13 @@ useEffect(() => {
               const legacyLanguageRecord = Array.isArray(legacyLead.misc_language)
                 ? legacyLead.misc_language[0]
                 : legacyLead.misc_language;
-              
+
               // Get scheduler name if available (defer to avoid blocking)
               let schedulerName = '---';
               if (legacyLead.meeting_scheduler_id) {
                 schedulerName = getEmployeeDisplayName(String(legacyLead.meeting_scheduler_id));
               }
-              
+
               // Calculate sub-lead suffix if this is a sub-lead (has master_id)
               // Optimized: Use a simpler query without ordering for faster results
               let subLeadSuffix: number | undefined;
@@ -3169,7 +3176,7 @@ useEffect(() => {
                   .eq('master_id', legacyLead.master_id)
                   .not('master_id', 'is', null)
                   .limit(100); // Limit to prevent huge queries
-                
+
                 if (existingSubLeads) {
                   // Sort in memory (faster than DB sort for small datasets)
                   existingSubLeads.sort((a, b) => a.id - b.id);
@@ -3180,7 +3187,7 @@ useEffect(() => {
               }
 
               const legacyStageId = resolveStageId(legacyLead.stage);
-              
+
               // Extract language name from joined table
               let languageName = '';
               if (legacyLanguageRecord?.name) {
@@ -3200,7 +3207,7 @@ useEffect(() => {
                   console.error('Error fetching language name:', langError);
                 }
               }
-              
+
               // Create transformed data by explicitly selecting only the fields we want
               // This ensures unwanted fields (description, tracking fields, language_id) are never included
               clientData = {
@@ -3281,14 +3288,14 @@ useEffect(() => {
                   (newLead.handler && newLead.handler.trim() !== '' && newLead.handler !== 'Not assigned')
                     ? newLead.handler
                     : (newLead.case_handler_id !== null && newLead.case_handler_id !== undefined
-                        ? getEmployeeDisplayName(String(newLead.case_handler_id))
-                        : 'Not assigned'),
+                      ? getEmployeeDisplayName(String(newLead.case_handler_id))
+                      : 'Not assigned'),
               };
               break; // Found it, stop searching
             }
           }
         }
-        
+
         // If no client found from parallel queries, try fallback lookup
         if (!clientData) {
           const numericLeadCandidate = effectiveLeadNumber.replace(/^[LC]/i, '');
@@ -3313,8 +3320,8 @@ useEffect(() => {
                   (leadByManualId.handler && leadByManualId.handler.trim() !== '' && leadByManualId.handler !== 'Not assigned')
                     ? leadByManualId.handler
                     : (leadByManualId.case_handler_id !== null && leadByManualId.case_handler_id !== undefined
-                        ? getEmployeeDisplayName(String(leadByManualId.case_handler_id))
-                        : 'Not assigned'),
+                      ? getEmployeeDisplayName(String(leadByManualId.case_handler_id))
+                      : 'Not assigned'),
               };
             }
           }
@@ -3332,14 +3339,14 @@ useEffect(() => {
             console.error('Error checking unactivation status:', error);
             setIsUnactivatedView(false);
           }
-          
+
           // Set flag to prevent useEffect from interfering
           isSettingUpClientRef.current = true;
-          
+
           // Set the client immediately for faster rendering
           setSelectedClient(normalizeClientStage(clientData));
           setLocalLoading(false); // Stop loading immediately - don't wait for anything else
-          
+
           // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
@@ -3360,17 +3367,17 @@ useEffect(() => {
               }
               // Set flag to prevent useEffect from interfering
               isSettingUpClientRef.current = true;
-              
+
               // Set unactivated view BEFORE setting selectedClient
               const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
               const statusValue = (latestLead as any).status;
               const isUnactivated = !isLegacy && (statusValue === 'inactive');
               setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
-              
+
               // Set the client
               setSelectedClient(normalizeClientStage(latestLead));
               setLocalLoading(false); // Stop loading immediately
-              
+
               // Clear flag after a brief delay
               setTimeout(() => {
                 isSettingUpClientRef.current = false;
@@ -3397,7 +3404,7 @@ useEffect(() => {
           }
           // Set flag to prevent useEffect from interfering
           isSettingUpClientRef.current = true;
-          
+
           // Set unactivated view BEFORE setting selectedClient
           const isLegacy = latestLead.lead_type === 'legacy' || latestLead.id?.toString().startsWith('legacy_');
           // Check unactivation status based on status column
@@ -3411,11 +3418,11 @@ useEffect(() => {
             userManuallyExpanded
           });
           setIsUnactivatedView(!!(latestLead && isUnactivated && !userManuallyExpanded));
-          
+
           // Now set the client
           setSelectedClient(normalizeClientStage(latestLead));
           setLocalLoading(false); // Stop loading immediately
-          
+
           // Clear flag after a brief delay
           setTimeout(() => {
             isSettingUpClientRef.current = false;
@@ -3427,8 +3434,8 @@ useEffect(() => {
     };
 
     fetchEssentialData();
-    
-    return () => { 
+
+    return () => {
       isMounted = false;
       // Don't set loading to false here - it should only be set in the async function
     };
@@ -3467,7 +3474,7 @@ useEffect(() => {
           // Fetch tags
           supabase.from('misc_leadtag').select('id, name, order').eq('active', true).order('order', { ascending: true })
         ]);
-        
+
         // Process dropdown data results
         if (!categoriesResult.error && categoriesResult.data) {
           // Create formatted category names with parent main category
@@ -3480,17 +3487,17 @@ useEffect(() => {
           }).filter(Boolean);
           setMainCategories(formattedNames);
         }
-        
+
         if (!sourcesResult.error && sourcesResult.data) {
           const names = sourcesResult.data.map((row: any) => row.name).filter(Boolean);
           setSources(names);
         }
-        
+
         if (!languagesResult.error && languagesResult.data) {
           const names = languagesResult.data.map((row: any) => row.name).filter(Boolean);
           setLanguagesList(names);
         }
-        
+
         // Process currencies
         const { newCurrencies, legacyCurrencies } = currenciesResult;
         if (!newCurrencies.error && newCurrencies.data && newCurrencies.data.length > 0) {
@@ -3513,7 +3520,7 @@ useEffect(() => {
           ];
           setCurrencies(fallbackCurrencies);
         }
-        
+
         // Process meeting locations from tenants_meetinglocation
         if (!meetingLocationsResult.error && meetingLocationsResult.data) {
           const processedLocations = meetingLocationsResult.data
@@ -3525,14 +3532,14 @@ useEffect(() => {
             }));
           setMeetingLocations(processedLocations);
         }
-        
+
         // Process tags
         if (!tagsResult.error && tagsResult.data) {
           setAllTags(tagsResult.data);
           const tagNames = tagsResult.data.map((tag: any) => tag.name);
           setTagsList(tagNames);
         }
-        
+
         console.log('✅ Background data loading completed');
       } catch (error) {
         console.error('Error fetching background data:', error);
@@ -3540,7 +3547,7 @@ useEffect(() => {
         setBackgroundLoading(false);
       }
     };
-    
+
     // Start background loading
     loadBackgroundData();
   }, []); // Run once when component mounts
@@ -3548,13 +3555,13 @@ useEffect(() => {
   // Additional data loading for specific client
   useEffect(() => {
     if (!selectedClient?.id) return;
-    
+
     const loadAdditionalData = async () => {
       try {
         // Check if this is a legacy lead
-        const isLegacyLead = selectedClient.lead_type === 'legacy' || 
-                             (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
-        
+        const isLegacyLead = selectedClient.lead_type === 'legacy' ||
+          (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
+
         // Fetch latest meeting date for case summary
         let query = supabase
           .from('meetings')
@@ -3562,14 +3569,14 @@ useEffect(() => {
           .not('meeting_date', 'is', null)
           .order('meeting_date', { ascending: false })
           .limit(1);
-        
+
         if (isLegacyLead) {
           const legacyId = selectedClient.id.toString().replace('legacy_', '');
           query = query.eq('legacy_lead_id', parseInt(legacyId, 10));
         } else {
           query = query.eq('client_id', selectedClient.id);
         }
-        
+
         const { data, error } = await query;
         if (!error && data && data.length > 0) setLatestMeetingDate(data[0].meeting_date);
         else setLatestMeetingDate(null);
@@ -3578,7 +3585,7 @@ useEffect(() => {
         setLatestMeetingDate(null);
       }
     };
-    
+
     loadAdditionalData();
   }, [selectedClient?.id]);
 
@@ -3624,8 +3631,8 @@ useEffect(() => {
           meetings.forEach((meeting: any) => {
             if (meeting.meeting_time) {
               // Extract time in HH:MM format (handle both TIME and TIMESTAMP formats)
-              const timeStr = typeof meeting.meeting_time === 'string' 
-                ? meeting.meeting_time.substring(0, 5) 
+              const timeStr = typeof meeting.meeting_time === 'string'
+                ? meeting.meeting_time.substring(0, 5)
                 : new Date(meeting.meeting_time).toTimeString().substring(0, 5);
               counts[timeStr] = (counts[timeStr] || 0) + 1;
             }
@@ -3670,11 +3677,11 @@ useEffect(() => {
     }
   }, [location.search]);
 
-  
+
 
   const handleStageUpdate = async (newStage: string) => {
     if (!selectedClient) return;
-    
+
     if (newStage === 'Schedule Meeting') {
       setShowScheduleMeetingPanel(true);
       setSelectedStage(null); // Close the dropdown immediately
@@ -3712,17 +3719,17 @@ useEffect(() => {
       toast.error('Please select a reason for unactivation');
       return;
     }
-    
+
     if (!deactivateNotesDescription.trim()) {
       toast.error('Please enter a description for the deactivation');
       return;
     }
-    
+
     try {
       // Get current Supabase auth user
       const { data: { user } } = await supabase.auth.getUser();
       let currentUserFullName = 'Unknown User';
-      
+
       if (user) {
         // Get user's full name from users table
         const { data: userData, error: userError } = await supabase
@@ -3730,7 +3737,7 @@ useEffect(() => {
           .select('full_name')
           .eq('auth_id', user.id)
           .single();
-        
+
         if (!userError && userData?.full_name) {
           currentUserFullName = userData.full_name;
         } else {
@@ -3765,9 +3772,9 @@ useEffect(() => {
         .from(tableName)
         .update(updateData)
         .eq(idField, clientId);
-      
+
       if (error) throw error;
-      
+
       // Refresh client data
       await onClientUpdate();
       setShowUnactivationModal(false);
@@ -3784,7 +3791,7 @@ useEffect(() => {
       // Get current Supabase auth user
       const { data: { user } } = await supabase.auth.getUser();
       let currentUserFullName = 'Unknown User';
-      
+
       if (user) {
         // Get user's full name from users table
         const { data: userData, error: userError } = await supabase
@@ -3792,7 +3799,7 @@ useEffect(() => {
           .select('full_name')
           .eq('auth_id', user.id)
           .single();
-        
+
         if (!userError && userData?.full_name) {
           currentUserFullName = userData.full_name;
         } else {
@@ -3803,7 +3810,7 @@ useEffect(() => {
 
       // Determine which table to update based on lead type
       const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      
+
       const updateData: any = {
         unactivated_by: null,
         unactivated_at: null,
@@ -3829,9 +3836,9 @@ useEffect(() => {
         .from(tableName)
         .update(updateData)
         .eq(idField, clientId);
-      
+
       if (error) throw error;
-      
+
       console.log('🔍 Lead activation successful');
 
       // Record activation event in lead_changes table (only for new leads)
@@ -3852,7 +3859,7 @@ useEffect(() => {
           // Don't throw error here as the main activation was successful
         }
       }
-      
+
       // Refresh client data
       await onClientUpdate();
       setShowActivationModal(false);
@@ -3864,7 +3871,7 @@ useEffect(() => {
   };
   const updateLeadStage = async (stage: string | number) => {
     if (!selectedClient) return;
-    
+
     try {
       const actor = await fetchStageActorInfo();
       const timestamp = new Date().toISOString();
@@ -3875,7 +3882,7 @@ useEffect(() => {
         return;
       }
       const normalizedStageName = normalizeStageName(getStageName(String(resolvedStageValue)));
-      
+
       const additionalFields: Record<string, any> = {};
       if (!isLegacyLead && normalizedStageName === 'communicationstarted') {
         additionalFields.communication_started_by = actor.fullName;
@@ -3894,12 +3901,12 @@ useEffect(() => {
         if (!prev) return prev;
         return { ...prev, stage: resolvedStageValue };
       });
-      
+
       await onClientUpdate();
       setSelectedStage(null);
     } catch (error: any) {
       console.error('Error updating lead stage:', error);
-      
+
       if (error?.message && error.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
           duration: 4000,
@@ -3926,12 +3933,12 @@ useEffect(() => {
   }, [updateLeadStage]);
   const updateScheduler = async (scheduler: string) => {
     if (!selectedClient) return;
-    
+
     try {
       const actor = await fetchStageActorInfo();
       const timestamp = new Date().toISOString();
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
-      
+
       const schedulerStageId = getStageIdOrWarn('scheduler_assigned');
       if (schedulerStageId === null) {
         toast.error('Unable to resolve the "Scheduler assigned" stage. Please contact an administrator.');
@@ -3961,14 +3968,14 @@ useEffect(() => {
 
         const { error } = await supabase
           .from('leads_lead')
-          .update({ 
+          .update({
             meeting_scheduler_id: schedulerEmployeeId,
             stage: 10,
             stage_changed_by: actor.fullName,
             stage_changed_at: timestamp,
           })
           .eq('id', legacyId);
-        
+
         if (error) throw error;
 
         await recordLeadStageChange({
@@ -3980,14 +3987,14 @@ useEffect(() => {
       } else {
         const { error } = await supabase
           .from('leads')
-          .update({ 
+          .update({
             scheduler,
             stage: schedulerStageId,
             stage_changed_by: actor.fullName,
             stage_changed_at: timestamp,
           })
           .eq('id', selectedClient.id);
-        
+
         if (error) throw error;
 
         await recordLeadStageChange({
@@ -3997,11 +4004,11 @@ useEffect(() => {
           timestamp,
         });
       }
-      
+
       await onClientUpdate();
     } catch (error: any) {
       console.error('Error updating scheduler:', error);
-      
+
       if (error?.message && error.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
           duration: 4000,
@@ -4046,7 +4053,7 @@ useEffect(() => {
       // If handler is being assigned (not cleared), change stage to 105 (Handler Set)
       const shouldUpdateStage = handlerLabel && handlerLabel.trim() !== '';
       console.log('📊 Should update stage?', shouldUpdateStage, 'Handler label:', handlerLabel);
-      
+
       let handlerSetStageId: number | null = null;
       let actor: any = null;
       let stageTimestamp: string | null = null;
@@ -4153,7 +4160,7 @@ useEffect(() => {
 
       console.log('🔄 Refreshing client data from database...');
       await refreshClientData(rawClientId ?? clientIdString);
-      
+
       console.log('✅ Handler assignment complete!');
       toast.success(handlerLabel ? 'Case handler assigned and stage updated to Handler Set.' : 'Case handler cleared.');
     } catch (error) {
@@ -4225,7 +4232,7 @@ useEffect(() => {
           style={{ color: fallbackStageColour }}
         >
           Current
-              </span>
+        </span>
         <button
           type="button"
           disabled
@@ -4237,25 +4244,24 @@ useEffect(() => {
             boxShadow: '0 10px 24px rgba(17,24,39,0.12)'
           }}
         >
-              <div className="flex flex-col">
+          <div className="flex flex-col">
             <span className="text-sm font-semibold leading-tight">{stageName}</span>
             <span className="text-xs font-medium uppercase tracking-[0.22em]" style={{ color: badgeTextColour, opacity: 0.9 }}>
               Active stage
-                </span>
-              </div>
+            </span>
+          </div>
         </button>
-            </div>
+      </div>
     );
 
     const renderTimelineOverlay = (overlayAnchor: StageDropdownAnchor) => (
       <div
-        className={`absolute ${
-          overlayAnchor === 'mobile' 
-            ? 'left-1/2 transform -translate-x-1/2' 
-            : overlayAnchor === 'badge' 
-            ? 'right-0' 
+        className={`absolute ${overlayAnchor === 'mobile'
+          ? 'left-1/2 transform -translate-x-1/2'
+          : overlayAnchor === 'badge'
+            ? 'right-0'
             : 'right-0'
-        } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[60] overflow-hidden`}
+          } mt-2 w-72 rounded-2xl border border-base-300 bg-white dark:bg-base-100 shadow-2xl z-[60] overflow-hidden`}
       >
         <div
           ref={getListRef(overlayAnchor)}
@@ -4286,11 +4292,10 @@ useEffect(() => {
       <div className="relative" ref={dropdownRef}>
         <button
           type="button"
-          className={`badge badge-sm ${anchor === 'mobile' ? 'ml-0 px-3 py-1.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${
-            isSuperuser 
-              ? 'cursor-pointer hover:scale-[1.02]' 
-              : 'cursor-default'
-          }`}
+          className={`badge badge-sm ${anchor === 'mobile' ? 'ml-0 px-3 py-1.5' : 'ml-2 px-4 py-2'} min-w-max whitespace-nowrap transition-transform duration-200 flex items-center ${isSuperuser
+            ? 'cursor-pointer hover:scale-[1.02]'
+            : 'cursor-default'
+            }`}
           style={{
             background: fallbackStageColour,
             color: badgeTextColour,
@@ -4356,12 +4361,12 @@ useEffect(() => {
           'Content-Type': 'application/json'
         }
       });
-      
+
       console.log(`🔍 Calendar access test for ${calendarEmail}:`, {
         status: response.status,
         statusText: response.statusText
       });
-      
+
       if (response.ok) {
         const data = await response.json();
         console.log(`✅ Calendar access confirmed for ${calendarEmail}:`, data.name);
@@ -4394,13 +4399,13 @@ useEffect(() => {
     currency?: string;
   }) => {
     // Determine which calendar to use based on selection
-    const calendarEmail = meetingDetails.calendar === 'active_client' 
-      ? 'shared-newclients@lawoffice.org.il' 
+    const calendarEmail = meetingDetails.calendar === 'active_client'
+      ? 'shared-newclients@lawoffice.org.il'
       : 'shared-potentialclients@lawoffice.org.il';
-    
+
     console.log('Using calendar:', calendarEmail, 'for selection:', meetingDetails.calendar);
     const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(calendarEmail)}/calendar/events`;
-    
+
     console.log('🔍 Calendar creation details:', {
       calendarEmail,
       url,
@@ -4409,7 +4414,7 @@ useEffect(() => {
       endDateTime: meetingDetails.endDateTime,
       location: meetingDetails.location
     });
-    
+
     // Create detailed description with meeting information
     const description = [
       'Meeting Details:',
@@ -4474,7 +4479,7 @@ useEffect(() => {
         calendarEmail,
         error: error
       });
-      
+
       // Provide more specific error messages
       let errorMessage = 'Failed to create calendar event';
       if (response.status === 403) {
@@ -4486,7 +4491,7 @@ useEffect(() => {
       } else {
         errorMessage = error.error?.message || `HTTP ${response.status}: ${response.statusText}`;
       }
-      
+
       throw new Error(errorMessage);
     }
 
@@ -4495,10 +4500,10 @@ useEffect(() => {
     console.log('Online meeting data:', data.onlineMeeting);
     console.log('Join URL:', data.onlineMeeting?.joinUrl);
     console.log('Web link:', data.webLink);
-    
+
     const joinUrl = data.onlineMeeting?.joinUrl || data.webLink;
     console.log('Final join URL:', joinUrl);
-    
+
     return {
       joinUrl: joinUrl,
       id: data.id,
@@ -4580,13 +4585,13 @@ useEffect(() => {
 
         // Test calendar access first (skip for legacy leads with potential_client calendar type)
         const isLegacyLeadForCalendar = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-        const calendarEmail = meetingFormData.calendar === 'active_client' 
-          ? 'shared-newclients@lawoffice.org.il' 
+        const calendarEmail = meetingFormData.calendar === 'active_client'
+          ? 'shared-newclients@lawoffice.org.il'
           : 'shared-potentialclients@lawoffice.org.il';
-        
+
         // Skip calendar access check for legacy leads when using potential_client calendar
         const shouldSkipCalendarCheck = isLegacyLeadForCalendar && meetingFormData.calendar !== 'active_client';
-        
+
         if (!shouldSkipCalendarCheck) {
           console.log('🔍 Testing calendar access for:', calendarEmail);
           try {
@@ -4635,7 +4640,7 @@ useEffect(() => {
         const categoryName = selectedClient.category || 'No Category';
         const meetingSubject = `[#${selectedClient.lead_number}] ${selectedClient.name} - ${categoryName} - Meeting`;
         console.log('Creating meeting in calendar:', meetingFormData.calendar);
-        
+
         try {
           const calendarEventData = await createCalendarEvent(accessToken, {
             subject: meetingSubject,
@@ -4679,38 +4684,38 @@ useEffect(() => {
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-      
+
       // For both new and legacy leads, create meeting record in meetings table
       const legacyId = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
-      
+
       // Helper function to convert display name to employee ID
       const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
         if (!displayName || displayName === '---' || displayName.trim() === '') return null;
-        
+
         // Try exact match first
-        let employee = allEmployees.find((emp: any) => 
+        let employee = allEmployees.find((emp: any) =>
           emp.display_name && emp.display_name.trim() === displayName.trim()
         );
-        
+
         // If not found, try case-insensitive match
         if (!employee) {
-          employee = allEmployees.find((emp: any) => 
+          employee = allEmployees.find((emp: any) =>
             emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
           );
         }
-        
+
         if (!employee) {
           console.warn(`Employee not found for display name: "${displayName}"`);
           return null;
         }
-        
+
         // Ensure ID is a number (bigint)
         const employeeId = typeof employee.id === 'string' ? parseInt(employee.id, 10) : Number(employee.id);
         if (isNaN(employeeId)) {
           console.error(`Invalid employee ID for "${displayName}":`, employee.id);
           return null;
         }
-        
+
         return employeeId;
       };
 
@@ -4728,10 +4733,10 @@ useEffect(() => {
       // Resolve manager and helper employee IDs
       const managerEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(meetingFormData.helper);
-      
+
       // Resolve scheduler employee ID (for legacy leads, need numeric ID)
       const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-      
+
       // Resolve expert employee ID (for legacy leads, need numeric ID)
       const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
 
@@ -4761,7 +4766,7 @@ useEffect(() => {
       // For regular meetings, use the date/time from the form
       let mainMeetingDate = meetingFormData.date;
       let mainMeetingTime = meetingFormData.time;
-      
+
       if (meetingType === 'paid') {
         const now = new Date();
         mainMeetingDate = now.toISOString().split('T')[0]; // YYYY-MM-DD
@@ -4838,7 +4843,7 @@ useEffect(() => {
 
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        const updatePayload: any = { 
+        const updatePayload: any = {
           stage: mainLeadStageId,
           stage_changed_by: stageActor.fullName,
           stage_changed_at: stageTimestamp,
@@ -4856,7 +4861,7 @@ useEffect(() => {
         if (helperEmployeeId !== null) {
           updatePayload.meeting_lawyer_id = helperEmployeeId;
         }
-        
+
         // Update expert for legacy leads (must be numeric employee ID, not display name)
         if (expertEmployeeId !== null) {
           updatePayload.expert_id = expertEmployeeId;
@@ -4893,7 +4898,7 @@ useEffect(() => {
           timestamp: stageTimestamp,
         });
       } else {
-        const updatePayload: any = { 
+        const updatePayload: any = {
           stage: mainLeadStageId,
           scheduler: currentUserFullName,
           stage_changed_by: stageActor.fullName,
@@ -4970,7 +4975,7 @@ useEffect(() => {
             let nextSuffix: number;
             try {
               const suffixPromise = computeNextSubLeadSuffix(masterBaseNumber);
-              const suffixTimeout = new Promise((_, reject) => 
+              const suffixTimeout = new Promise((_, reject) =>
                 setTimeout(() => reject(new Error('Suffix computation timeout')), 15000)
               );
               nextSuffix = await Promise.race([suffixPromise, suffixTimeout]) as number;
@@ -4980,10 +4985,10 @@ useEffect(() => {
               toast.error('Failed to compute sublead suffix. Sublead creation skipped, but main lead was updated successfully.');
               return; // Exit early, don't create sublead
             }
-            
+
             const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
             const masterIdValue = extractDigits(masterBaseNumber) ?? masterBaseNumber;
-            
+
             // Simplified manual ID generation - use timestamp-based approach for speed
             // This avoids slow queries to legacy tables
             let manualIdString: string;
@@ -4996,7 +5001,7 @@ useEffect(() => {
                 .order('manual_id', { ascending: false })
                 .limit(1)
                 .single();
-              
+
               if (maxLeadData?.manual_id) {
                 const maxId = BigInt(String(maxLeadData.manual_id));
                 manualIdString = (maxId + BigInt(1)).toString();
@@ -5084,10 +5089,10 @@ useEffect(() => {
                 .order('id', { ascending: false })
                 .limit(1)
                 .single();
-              
+
               const newContactId = maxContactId ? maxContactId.id + 1 : 1;
               const currentDate = new Date().toISOString().split('T')[0];
-              
+
               // Insert the first contact
               const { error: contactError } = await supabase
                 .from('leads_contact')
@@ -5101,7 +5106,7 @@ useEffect(() => {
                   cdate: currentDate,
                   udate: currentDate
                 }]);
-              
+
               if (contactError) {
                 console.error('Error creating contact for sublead:', contactError);
                 // Continue even if contact creation fails
@@ -5113,9 +5118,9 @@ useEffect(() => {
                   .order('id', { ascending: false })
                   .limit(1)
                   .single();
-                
+
                 const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
-                
+
                 // Create the relationship, marking it as main
                 const { error: relationshipError } = await supabase
                   .from('lead_leadcontact')
@@ -5125,7 +5130,7 @@ useEffect(() => {
                     newlead_id: insertedSubLead.id,
                     main: true
                   }]);
-                
+
                 if (relationshipError) {
                   console.error('Error creating contact relationship for sublead:', relationshipError);
                   // Continue even if relationship creation fails
@@ -5221,7 +5226,7 @@ useEffect(() => {
         // Determine the appropriate invitation type based on meeting location
         const location = (meetingFormData.location || '').toLowerCase();
         let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
-        
+
         if (location.includes('jrslm') || location.includes('jerusalem')) {
           invitationType = 'invitation_jlm';
         } else if (location.includes('tlv') && location.includes('parking')) {
@@ -5236,7 +5241,7 @@ useEffect(() => {
           clientEmail: selectedClient.email,
           meetingDate: newMeeting.date
         });
-        
+
         // Actually send the meeting invitation email
         (async () => {
           console.log('🚀 STARTING email sending process...');
@@ -5253,22 +5258,22 @@ useEffect(() => {
             console.log('🔑 Acquiring access token...');
             const tokenResponse = await instance.acquireTokenSilent({ ...loginRequest, account });
             console.log('✅ Access token acquired');
-            
+
             // Fetch email template based on invitation type and language_id
-            const templateMapping: Record<string, {en: number, he: number}> = {
+            const templateMapping: Record<string, { en: number, he: number }> = {
               invitation: { en: 151, he: 152 }, // Regular meeting: EN=151, HE=152
               invitation_jlm: { en: 157, he: 158 },
               invitation_tlv: { en: 161, he: 162 },
               invitation_tlv_parking: { en: 159, he: 160 },
             };
-            
+
             const templateIds = templateMapping[invitationType];
-            
+
             // Use language_id from database (1=English, 2=Hebrew)
             // For legacy leads, fetch language_id from database if not available
             const isLegacyLeadForSchedule = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
             let clientLanguageIdForSchedule: number | null = selectedClient.language_id || null;
-            
+
             if (isLegacyLeadForSchedule && !clientLanguageIdForSchedule) {
               const legacyIdForSchedule = selectedClient.id.toString().replace('legacy_', '');
               const { data: legacyData } = await supabase
@@ -5285,7 +5290,7 @@ useEffect(() => {
                 .maybeSingle();
               clientLanguageIdForSchedule = leadData?.language_id || null;
             }
-            
+
             // Get language name from language_id to determine if Hebrew or English
             let isHebrew = false;
             if (clientLanguageIdForSchedule) {
@@ -5294,17 +5299,17 @@ useEffect(() => {
                 .select('name')
                 .eq('id', clientLanguageIdForSchedule)
                 .maybeSingle();
-              
+
               const languageName = languageData?.name?.toLowerCase() || '';
               isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
             } else {
               // Fallback to text language field if language_id is not available
-              isHebrew = selectedClient.language?.toLowerCase() === 'he' || 
-                        selectedClient.language?.toLowerCase() === 'hebrew';
+              isHebrew = selectedClient.language?.toLowerCase() === 'he' ||
+                selectedClient.language?.toLowerCase() === 'hebrew';
             }
-            
+
             const templateId = isHebrew ? templateIds.he : templateIds.en;
-            
+
             console.log('🌍 Language selection:', {
               language_id: clientLanguageIdForSchedule,
               language_text: selectedClient.language,
@@ -5314,11 +5319,11 @@ useEffect(() => {
               isLegacyLead: isLegacyLeadForSchedule,
               fullClient: selectedClient
             });
-            
+
             // Fetch the template (with RLS bypass if needed)
             let templateData = null;
             let templateError = null;
-            
+
             try {
               console.log('🔍 Fetching template with ID:', templateId);
               const result = await supabase
@@ -5326,13 +5331,13 @@ useEffect(() => {
                 .select('name, content')
                 .eq('id', templateId)
                 .maybeSingle(); // Use maybeSingle to avoid throwing on no results
-              
+
               templateData = result.data;
               templateError = result.error;
-              
-              console.log('📧 Template fetch result:', { 
-                templateId, 
-                hasData: !!templateData, 
+
+              console.log('📧 Template fetch result:', {
+                templateId,
+                hasData: !!templateData,
                 hasError: !!templateError,
                 errorMessage: templateError?.message,
                 errorCode: templateError?.code,
@@ -5351,11 +5356,11 @@ useEffect(() => {
             const [year, month, day] = newMeeting.date.split('-');
             const formattedDate = `${day}/${month}/${year}`;
             const formattedTime = newMeeting.time ? newMeeting.time.substring(0, 5) : '';
-            
+
             // Prepare email subject
             let subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
             let body = '';
-            
+
             if (!templateData || templateError) {
               console.warn('⚠️ Using FALLBACK email (template not usable):', {
                 templateId,
@@ -5386,11 +5391,11 @@ useEffect(() => {
             } else {
               console.log('✅ Using email template:', templateId, 'Name:', templateData.name);
               console.log('📄 Raw template content (first 200 chars):', templateData.content?.substring(0, 200));
-              
+
               // Step 1: Parse template content (handles JSON/delta format)
               const parsedContent = parseTemplateContent(templateData.content);
               console.log('🔄 Parsed template content (first 200 chars):', parsedContent.substring(0, 200));
-              
+
               // Step 2: Format body with parameter replacement and line break conversion
               body = await formatEmailBody(
                 parsedContent,
@@ -5403,38 +5408,38 @@ useEffect(() => {
                   meetingLink: newMeeting.link || ''
                 }
               );
-              
+
               // Use template name as subject if available
               if (templateData.name) {
                 subject = templateData.name;
               }
-              
+
               console.log('📝 Final email body prepared, length:', body.length);
             }
-            
+
             // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
             const isMicrosoftEmail = (email: string): boolean => {
               const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
               return microsoftDomains.some(domain => email.toLowerCase().includes(`@${domain}`));
             };
-            
+
             const useOutlookCalendarInvite = isMicrosoftEmail(selectedClient.email);
             const recipientName = selectedClient.name || 'Valued Client';
             const locationName = meetingFormData.location || 'Office';
-            
+
             // Build description HTML (category and topic removed)
             let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
             if (newMeeting.link) {
               descriptionHtml += `<p><strong>Join Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>`;
             }
-            
+
             // Calendar subject (category and topic removed)
             const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
-            
+
             // Prepare date/time for calendar
             const startDateTime = new Date(`${newMeeting.date}T${formattedTime}:00`);
             const endDateTime = new Date(startDateTime.getTime() + 60 * 60 * 1000); // 1 hour duration
-            
+
             if (useOutlookCalendarInvite) {
               // For Microsoft email clients: Use Microsoft Graph API to create calendar event
               // This automatically sends a proper Outlook meeting invitation
@@ -5452,7 +5457,7 @@ useEffect(() => {
                   teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
                   timeZone: 'Asia/Jerusalem'
                 });
-                
+
                 console.log('✅ Outlook calendar invitation sent successfully');
               } catch (calendarError) {
                 console.error('❌ Failed to create Outlook calendar event:', calendarError);
@@ -5478,20 +5483,20 @@ useEffect(() => {
                   teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
                   timeZone: 'Asia/Jerusalem'
                 });
-                
+
                 const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-                
+
                 attachments = [{
                   name: 'meeting-invite.ics',
                   contentBytes: icsBase64,
                   contentType: 'text/calendar; charset=utf-8; method=REQUEST'
                 }];
-                
+
                 console.log('📅 ICS calendar file generated');
               } catch (icsError) {
                 console.error('❌ Failed to generate ICS file:', icsError);
               }
-              
+
               // Send email with ICS attachment
               await sendEmail(tokenResponse.accessToken, {
                 to: selectedClient.email,
@@ -5500,16 +5505,16 @@ useEffect(() => {
                 skipSignature: true, // Don't include user signature for template emails
                 attachments
               });
-              
+
               console.log('✅ Email with calendar invite sent successfully');
             }
-            
+
             // Save email to database for tracking
             const now = new Date();
             try {
-              const isLegacyLead = selectedClient.lead_type === 'legacy' || 
-                                   (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
-              
+              const isLegacyLead = selectedClient.lead_type === 'legacy' ||
+                (selectedClient.id && selectedClient.id.toString().startsWith('legacy_'));
+
               const emailRecord: any = {
                 message_id: `meeting_invitation_${now.getTime()}_${Date.now()}`,
                 thread_id: null,
@@ -5523,7 +5528,7 @@ useEffect(() => {
                 direction: 'outgoing', // Must be 'outgoing' not 'outbound'
                 attachments: null,
               };
-              
+
               // Set either client_id OR legacy_id, not both
               if (isLegacyLead) {
                 const numericId = parseInt(selectedClient.id.toString().replace(/[^0-9]/g, ''), 10);
@@ -5533,7 +5538,7 @@ useEffect(() => {
                 emailRecord.client_id = selectedClient.id || null;
                 emailRecord.legacy_id = null; // FIXED: was legacy_lead_id
               }
-              
+
               const { data, error } = await supabase.from('emails').insert(emailRecord).select();
               if (error) {
                 console.error('❌ Database error saving email:', error);
@@ -5550,7 +5555,7 @@ useEffect(() => {
               console.error('❌ Failed to save email to database:', dbError);
               // Don't fail the whole operation if DB save fails
             }
-            
+
             toast.success('Meeting invitation sent!', { duration: 3000 });
           } catch (emailError) {
             console.error('❌ Error sending meeting invitation:', emailError);
@@ -5571,7 +5576,7 @@ useEffect(() => {
       setIsSchedulingMeeting(false);
       setIsCreatingMeeting(false);
       setSelectedStage(null); // Close the dropdown
-      
+
       // Reset form and tab
       setMeetingFormData({
         date: '',
@@ -5590,7 +5595,7 @@ useEffect(() => {
         meeting_total: '',
       });
       setMeetingType('regular');
-      
+
       // Show success message
       toast.success('Meeting scheduled successfully!', {
         duration: 4000,
@@ -5632,7 +5637,7 @@ useEffect(() => {
   useEffect(() => {
     if (showMeetingEndedDrawer && selectedClient && currencies.length > 0) {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      
+
       // Get proposal total
       let proposalTotal = '0.0';
       if (isLegacyLead) {
@@ -5676,9 +5681,9 @@ useEffect(() => {
       // Normalize currency to match dropdown format (ISO code or name)
       if (proposalCurrency && currencies.length > 0) {
         // Try to find matching currency in the list
-        const matchingCurrency = currencies.find(c => 
-          c.iso_code === proposalCurrency || 
-          c.front_name === proposalCurrency || 
+        const matchingCurrency = currencies.find(c =>
+          c.iso_code === proposalCurrency ||
+          c.front_name === proposalCurrency ||
           c.name === proposalCurrency ||
           (proposalCurrency === '₪' && (c.iso_code === 'ILS' || c.iso_code === 'NIS')) ||
           (proposalCurrency === '$' && c.iso_code === 'USD') ||
@@ -5793,7 +5798,7 @@ useEffect(() => {
       // First, find the most recent meeting to update it
       let meetings: any[] = [];
       let meetingsError: any = null;
-      
+
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         const { data, error } = await supabase
@@ -5835,7 +5840,7 @@ useEffect(() => {
       // Update the lead based on type
       if (isLegacyLead) {
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
-        
+
         // Helper function to convert currency name to currency_id for legacy leads
         const currencyNameToId = (currencyName: string): number | null => {
           switch (currencyName) {
@@ -5846,7 +5851,7 @@ useEffect(() => {
             default: return 1; // Default to NIS
           }
         };
-        
+
         const updateData: Record<string, any> = {
           probability: meetingEndedData.probability ? Number(meetingEndedData.probability) : null,
           meeting_brief: meetingEndedData.meetingBrief,
@@ -5863,7 +5868,7 @@ useEffect(() => {
           .from('leads_lead')
           .update(updateData)
           .eq('id', legacyId);
-        
+
         if (error) throw error;
       } else {
         const updateData: Record<string, any> = {
@@ -5884,7 +5889,7 @@ useEffect(() => {
           .from('leads')
           .update(updateData)
           .eq('id', selectedClient.id);
-        
+
         if (error) throw error;
       }
 
@@ -5894,12 +5899,12 @@ useEffect(() => {
         actor,
         timestamp: stageTimestamp,
       });
-      
+
       setShowMeetingEndedDrawer(false);
       await onClientUpdate();
     } catch (error: any) {
       console.error('Error saving meeting ended data:', error);
-      
+
       // Check if this is a category validation error from RLS policy
       if (error?.message && error.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
@@ -5935,13 +5940,13 @@ useEffect(() => {
     try {
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-      
+
       console.log('handleSaveUpdateDrawer - Is legacy lead:', isLegacyLead);
-      
+
       // Check if already in "Communication started" stage
       const currentStageName = getStageName(selectedClient.stage);
       const isAlreadyCommunicationStarted = areStagesEquivalent(currentStageName, 'Communication started');
-      
+
       const actor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
       let updateData: Record<string, any>;
@@ -5951,7 +5956,7 @@ useEffect(() => {
         setIsSavingUpdate(false);
         return;
       }
-      
+
       // Save follow-up to new follow_ups table
       if (nextFollowup) {
         console.log('💾 Saving follow-up to follow_ups table:', {
@@ -5974,7 +5979,7 @@ useEffect(() => {
       } else {
         console.log('ℹ️ No follow-up date to save (nextFollowup is empty)');
       }
-      
+
       if (isLegacyLead) {
         // For legacy leads, map fields to leads_lead table columns
         const legacyCommunicationStageId = communicationStageId ?? 15;
@@ -5983,33 +5988,33 @@ useEffect(() => {
           followup_log: followup, // Map to followup_log column
           potential_applicants: potentialApplicants,
         };
-        
+
         // Only update stage if not already in "Communication started" stage
         if (!isAlreadyCommunicationStarted) {
           updateData.stage = legacyCommunicationStageId;
           updateData.stage_changed_by = actor.fullName;
           updateData.stage_changed_at = stageTimestamp;
         }
-        
+
         // For legacy leads, update the leads_lead table
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         console.log('Updating legacy lead with ID:', legacyId);
-        
+
         const { error } = await supabase
           .from('leads_lead')
           .update(updateData)
           .eq('id', legacyId);
-        
+
         if (error) throw error;
 
         // Only record stage change if stage was actually changed
         if (!isAlreadyCommunicationStarted) {
-        await recordLeadStageChange({
-          lead: selectedClient,
-          stage: legacyCommunicationStageId,
-          actor,
-          timestamp: stageTimestamp,
-        });
+          await recordLeadStageChange({
+            lead: selectedClient,
+            stage: legacyCommunicationStageId,
+            actor,
+            timestamp: stageTimestamp,
+          });
         }
 
         // Insert history record for legacy leads
@@ -6034,31 +6039,31 @@ useEffect(() => {
           followup: followup,
           potential_applicants: potentialApplicants,
         };
-        
+
         // Only update stage if not already in "Communication started" stage
         if (!isAlreadyCommunicationStarted && communicationStageId !== null) {
           updateData.stage = communicationStageId;
           updateData.stage_changed_by = actor.fullName;
           updateData.stage_changed_at = stageTimestamp;
         }
-        
+
         console.log('Updating new lead with ID:', selectedClient.id);
-        
+
         const { error } = await supabase
           .from('leads')
           .update(updateData)
           .eq('id', selectedClient.id);
-        
+
         if (error) throw error;
 
         // Only record stage change if stage was actually changed
         if (!isAlreadyCommunicationStarted && communicationStageId !== null) {
-        await recordLeadStageChange({
-          lead: selectedClient,
+          await recordLeadStageChange({
+            lead: selectedClient,
             stage: communicationStageId,
-          actor,
-          timestamp: stageTimestamp,
-        });
+            actor,
+            timestamp: stageTimestamp,
+          });
         }
 
         // Insert history record for new leads
@@ -6077,7 +6082,7 @@ useEffect(() => {
           // Don't throw - history is not critical
         }
       }
-      
+
       setShowUpdateDrawer(false);
       setMeetingNotes('');
       setNextFollowup('');
@@ -6086,7 +6091,7 @@ useEffect(() => {
       if (onClientUpdate) await onClientUpdate();
     } catch (err: any) {
       console.error('Error in handleSaveUpdateDrawer:', err);
-      
+
       // Check if this is a category validation error from RLS policy
       if (err?.message && err.message.includes('category')) {
         toast.error('Please set a category for this client before performing this action.', {
@@ -6109,7 +6114,7 @@ useEffect(() => {
     if (!selectedClient) return;
     setShowPriceOfferChoiceModal(true);
   };
-  
+
   const handlePriceOfferChoice = (choice: 'automated' | 'manual') => {
     setShowPriceOfferChoiceModal(false);
     if (choice === 'automated') {
@@ -6119,13 +6124,13 @@ useEffect(() => {
       setShowManualPriceOfferModal(true);
     }
   };
-  
+
   const handleSaveManualPriceOffer = async () => {
     if (!selectedClient || !manualPriceOfferText.trim()) {
       toast.error('Please enter a price offer text.');
       return;
     }
-    
+
     try {
       const isLegacyLead = selectedClient.id.startsWith('legacy_');
       const stageId = getStageIdOrWarn('Mtng sum+Agreement sent');
@@ -6133,9 +6138,9 @@ useEffect(() => {
         toast.error('Unable to resolve the "Mtng sum+Agreement sent" stage. Please contact an administrator.');
         return;
       }
-      
+
       let additionalFields: Record<string, any> = {};
-      
+
       if (isLegacyLead) {
         // For legacy leads, save to 'proposal' column
         additionalFields = {
@@ -6149,18 +6154,18 @@ useEffect(() => {
           closer: actor.fullName,
         };
       }
-      
+
       await updateLeadStageWithHistory({
         lead: selectedClient,
         stage: stageId,
         additionalFields,
       });
-      
+
       setSelectedClient((prev: any) => {
         if (!prev) return prev;
         return { ...prev, stage: stageId };
       });
-      
+
       await onClientUpdate();
       setShowManualPriceOfferModal(false);
       setManualPriceOfferText('');
@@ -6190,7 +6195,7 @@ useEffect(() => {
 
   const handleSaveSignedDrawer = async () => {
     if (!selectedClient) return;
-    
+
     try {
       const actor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
@@ -6211,7 +6216,7 @@ useEffect(() => {
         timestamp: stageTimestamp,
         stageDate: signedDate, // Pass the signed date to be used in leads_leadstage.date field
       });
-      
+
       setShowSignedDrawer(false);
       await onClientUpdate();
     } catch (error) {
@@ -6248,18 +6253,18 @@ useEffect(() => {
     setIsDeletingLead(true);
     try {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      
+
       console.log('🔍 Deleting lead:', {
         id: selectedClient.id,
         lead_type: selectedClient.lead_type,
         isLegacyLead,
         lead_number: selectedClient.lead_number
       });
-      
+
       if (isLegacyLead) {
         // Delete from leads_lead table
         let legacyId: number;
-        
+
         if (typeof selectedClient.id === 'string') {
           // Remove 'legacy_' prefix if present
           const idString = selectedClient.id.replace('legacy_', '');
@@ -6267,39 +6272,39 @@ useEffect(() => {
         } else {
           legacyId = Number(selectedClient.id);
         }
-        
+
         if (isNaN(legacyId)) {
           console.error('❌ Invalid legacy ID:', selectedClient.id);
           toast.error('Invalid lead ID. Cannot delete.');
           setIsDeletingLead(false);
           return;
         }
-        
+
         console.log('🔍 Attempting to delete legacy lead with ID:', legacyId);
-        
+
         // First verify the lead exists
         const { data: existingLead } = await supabase
           .from('leads_lead')
           .select('id, name, manual_id')
           .eq('id', legacyId)
           .single();
-        
+
         if (!existingLead) {
           console.warn('⚠️ Legacy lead not found, may have already been deleted');
           toast.error('Lead not found. It may have already been deleted.');
           setIsDeletingLead(false);
           return;
         }
-        
+
         console.log('🔍 Legacy lead found, proceeding with deletion:', existingLead);
-        
+
         // Use .select() to get the count of deleted rows
         const { data: deletedData, error } = await supabase
           .from('leads_lead')
           .delete()
           .eq('id', legacyId)
           .select();
-        
+
         if (error) {
           console.error('❌ Error deleting legacy lead:', error);
           console.error('❌ Error details:', JSON.stringify(error, null, 2));
@@ -6307,18 +6312,18 @@ useEffect(() => {
           setIsDeletingLead(false);
           return;
         }
-        
+
         // Check if any rows were actually deleted
         if (!deletedData || deletedData.length === 0) {
           console.error('❌ No rows were deleted. This might be due to RLS policies or the lead not existing.');
-          
+
           // Verify deletion by checking if lead still exists
           const { data: verifyDeleted } = await supabase
             .from('leads_lead')
             .select('id')
             .eq('id', legacyId)
             .maybeSingle();
-          
+
           if (verifyDeleted) {
             console.error('❌ Legacy lead still exists after deletion attempt - likely RLS policy issue');
             toast.error('Failed to delete lead. You may not have permission to delete this lead, or it may be protected by database policies.');
@@ -6328,37 +6333,37 @@ useEffect(() => {
           setIsDeletingLead(false);
           return;
         }
-        
+
         console.log('✅ Legacy lead deleted successfully. Deleted rows:', deletedData.length);
       } else {
         // Delete from leads table (new leads)
         const leadId = selectedClient.id;
-        
+
         console.log('🔍 Attempting to delete new lead with ID:', leadId);
-        
+
         // First verify the lead exists
         const { data: existingLead } = await supabase
           .from('leads')
           .select('id, name, lead_number')
           .eq('id', leadId)
           .single();
-        
+
         if (!existingLead) {
           console.warn('⚠️ Lead not found, may have already been deleted');
           toast.error('Lead not found. It may have already been deleted.');
           setIsDeletingLead(false);
           return;
         }
-        
+
         console.log('🔍 Lead found, proceeding with deletion:', existingLead);
-        
+
         // Use .select() to get the count of deleted rows
         const { data: deletedData, error } = await supabase
           .from('leads')
           .delete()
           .eq('id', leadId)
           .select();
-        
+
         if (error) {
           console.error('❌ Error deleting new lead:', error);
           console.error('❌ Error details:', JSON.stringify(error, null, 2));
@@ -6366,18 +6371,18 @@ useEffect(() => {
           setIsDeletingLead(false);
           return;
         }
-        
+
         // Check if any rows were actually deleted
         if (!deletedData || deletedData.length === 0) {
           console.error('❌ No rows were deleted. This might be due to RLS policies or the lead not existing.');
-          
+
           // Verify deletion by checking if lead still exists
           const { data: verifyDeleted } = await supabase
             .from('leads')
             .select('id')
             .eq('id', leadId)
             .maybeSingle();
-          
+
           if (verifyDeleted) {
             console.error('❌ Lead still exists after deletion attempt - likely RLS policy issue');
             toast.error('Failed to delete lead. You may not have permission to delete this lead, or it may be protected by database policies.');
@@ -6387,18 +6392,18 @@ useEffect(() => {
           setIsDeletingLead(false);
           return;
         }
-        
+
         console.log('✅ New lead deleted successfully. Deleted rows:', deletedData.length);
       }
 
       console.log('✅ Lead deletion completed successfully');
       toast.success('Lead deleted successfully');
       setShowDeleteModal(false);
-      
+
       // Fetch the last lead to navigate to it
       try {
         console.log('🔍 Fetching last lead to navigate to...');
-        
+
         // Try to get the last new lead first
         const { data: lastNewLead } = await supabase
           .from('leads')
@@ -6406,13 +6411,13 @@ useEffect(() => {
           .order('created_at', { ascending: false })
           .limit(1)
           .maybeSingle();
-        
+
         if (lastNewLead) {
           console.log('🔍 Found last new lead:', lastNewLead);
           navigate(`/clients/${lastNewLead.lead_number || lastNewLead.id}`);
           return;
         }
-        
+
         // If no new leads, try to get the last legacy lead
         const { data: lastLegacyLead } = await supabase
           .from('leads_lead')
@@ -6420,14 +6425,14 @@ useEffect(() => {
           .order('cdate', { ascending: false })
           .limit(1)
           .maybeSingle();
-        
+
         if (lastLegacyLead) {
           console.log('🔍 Found last legacy lead:', lastLegacyLead);
           const legacyId = lastLegacyLead.manual_id || lastLegacyLead.id;
           navigate(`/clients/${legacyId}`);
           return;
         }
-        
+
         // If no leads at all, navigate to empty clients page
         console.log('🔍 No leads found, navigating to empty clients page');
         navigate('/clients');
@@ -6451,7 +6456,7 @@ useEffect(() => {
         selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
         selectedClient?.balance_currency
       );
-      
+
       setEditLeadData({
         tags: selectedClient.tags || '',
         source: selectedClient.source || '',
@@ -6480,7 +6485,7 @@ useEffect(() => {
     try {
       // Check if it's a legacy lead
       const isLegacyLead = leadId.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         const legacyId = parseInt(leadId.replace('legacy_', ''));
         const { data, error } = await supabase
@@ -6494,12 +6499,12 @@ useEffect(() => {
             )
           `)
           .eq('lead_id', legacyId);
-        
+
         if (!error && data) {
           const tags = data
             .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
             .map(item => (item.misc_leadtag as any).name);
-          
+
           // Join tags with comma and space
           const tagsString = tags.join(', ');
           setCurrentLeadTags(tagsString);
@@ -6522,12 +6527,12 @@ useEffect(() => {
             )
           `)
           .eq('newlead_id', leadId);
-        
+
         if (!error && data) {
           const tags = data
             .filter(item => item.misc_leadtag && typeof item.misc_leadtag === 'object')
             .map(item => (item.misc_leadtag as any).name);
-          
+
           // Join tags with comma and space
           const tagsString = tags.join(', ');
           setCurrentLeadTags(tagsString);
@@ -6548,48 +6553,48 @@ useEffect(() => {
   const saveLeadTags = async (leadId: string, tagsString: string) => {
     try {
       const isLegacyLead = leadId.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         const legacyId = parseInt(leadId.replace('legacy_', ''));
-        
+
         // First, remove all existing tags for this legacy lead
         const { error: deleteError } = await supabase
           .from('leads_lead_tags')
           .delete()
           .eq('lead_id', legacyId);
-        
+
         if (deleteError) {
           console.error('Error deleting existing tags (legacy):', deleteError);
           return;
         }
-        
+
         // Parse the tags string and find matching tag IDs
         if (tagsString.trim()) {
           const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          
+
           // Find tag IDs for the provided tag names
           const tagIds = tagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
-          
+
           // Insert new tags for legacy lead
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               lead_id: legacyId,
               leadtag_id: tagId
             }));
-            
+
             const { error: insertError } = await supabase
               .from('leads_lead_tags')
               .insert(tagInserts);
-            
+
             if (insertError) {
               console.error('Error inserting new tags (legacy):', insertError);
               return;
             }
           }
         }
-        
+
       } else {
         // For new leads, use the newlead_id column
         // First, remove all existing tags for this new lead
@@ -6597,39 +6602,39 @@ useEffect(() => {
           .from('leads_lead_tags')
           .delete()
           .eq('newlead_id', leadId);
-        
+
         if (deleteError) {
           console.error('Error deleting existing tags (new):', deleteError);
           return;
         }
-        
+
         // Parse the tags string and find matching tag IDs
         if (tagsString.trim()) {
           const tagNames = tagsString.split(',').map(tag => tag.trim()).filter(tag => tag);
-          
+
           // Find tag IDs for the provided tag names
           const tagIds = tagNames
             .map(tagName => allTags.find(tag => tag.name === tagName)?.id)
             .filter(id => id !== undefined);
-          
+
           // Insert new tags for new lead
           if (tagIds.length > 0) {
             const tagInserts = tagIds.map(tagId => ({
               newlead_id: leadId,
               leadtag_id: tagId
             }));
-            
+
             const { error: insertError } = await supabase
               .from('leads_lead_tags')
               .insert(tagInserts);
-            
+
             if (insertError) {
               console.error('Error inserting new tags (new):', insertError);
               return;
             }
           }
         }
-        
+
       }
     } catch (error) {
       console.error('Error saving tags:', error);
@@ -6642,15 +6647,15 @@ useEffect(() => {
       selectedClient?.currency_id || selectedClient?.meeting_total_currency_id,
       selectedClient?.balance_currency
     );
-    
+
     // Fetch current tags for this lead
     const tagsString = await fetchCurrentLeadTags(selectedClient?.id || '');
-    
+
     // Fetch follow-up from follow_ups table for current user
     let followUpDate = '';
     let sourceName = selectedClient?.source || '';
     let languageName = selectedClient?.language || '';
-    
+
     const { data: { user } } = await supabase.auth.getUser();
     if (user) {
       const { data: userData } = await supabase
@@ -6658,13 +6663,13 @@ useEffect(() => {
         .select('id')
         .eq('auth_id', user.id)
         .single();
-      
+
       if (userData && selectedClient) {
         const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-        
+
         if (isLegacyLead) {
           const legacyId = selectedClient.id.toString().replace('legacy_', '');
-          
+
           // Fetch follow-up
           const { data: followUpData } = await supabase
             .from('follow_ups')
@@ -6673,11 +6678,11 @@ useEffect(() => {
             .eq('lead_id', legacyId)
             .is('new_lead_id', null)
             .maybeSingle();
-          
+
           if (followUpData?.date) {
             followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
           }
-          
+
           // Fetch source name from source_id for legacy leads
           if (selectedClient.source && !isNaN(Number(selectedClient.source))) {
             const sourceId = Number(selectedClient.source);
@@ -6686,12 +6691,12 @@ useEffect(() => {
               .select('name')
               .eq('id', sourceId)
               .maybeSingle();
-            
+
             if (sourceData?.name) {
               sourceName = sourceData.name;
             }
           }
-          
+
           // Language is already fetched as name from the joined table, so use it directly
           // But if it's an ID string, try to fetch the name
           if (selectedClient.language && !isNaN(Number(selectedClient.language))) {
@@ -6701,7 +6706,7 @@ useEffect(() => {
               .select('name')
               .eq('id', languageId)
               .maybeSingle();
-            
+
             if (languageData?.name) {
               languageName = languageData.name;
             }
@@ -6714,14 +6719,14 @@ useEffect(() => {
             .eq('new_lead_id', selectedClient.id)
             .is('lead_id', null)
             .maybeSingle();
-          
+
           if (followUpData?.date) {
             followUpDate = new Date(followUpData.date).toISOString().split('T')[0];
           }
         }
       }
     }
-    
+
     // Reset the edit form data with current client data
     // Ensure probability is a number
     const probabilityValue = (() => {
@@ -6731,7 +6736,7 @@ useEffect(() => {
       }
       return prob !== null && prob !== undefined ? Number(prob) : 0;
     })();
-    
+
     setEditLeadData({
       tags: tagsString || selectedClient?.tags || '',
       source: sourceName,
@@ -6790,9 +6795,9 @@ useEffect(() => {
 
       const candidateName = emp.display_name || '';
       // Filter out emails and "Not assigned"
-      if (!candidateName || 
-          candidateName.includes('@') || 
-          candidateName.toLowerCase() === 'not assigned') return;
+      if (!candidateName ||
+        candidateName.includes('@') ||
+        candidateName.toLowerCase() === 'not assigned') return;
 
       if (!map.has(id)) {
         map.set(id, candidateName);
@@ -6835,134 +6840,134 @@ useEffect(() => {
     console.log('👁️ Success handler dropdown visibility changed:', showSuccessStageHandlerDropdown);
   }, [showSuccessStageHandlerDropdown]);
 
-useEffect(() => {
-  if (!showSuccessDrawer) return;
-  const currentLabel =
-    successForm.handler ||
-    (successForm.handlerId ? handlerOptionsMap.get(successForm.handlerId) || '' : '');
-  setHandlerSearchTerm(currentLabel);
-  setFilteredHandlerSearchOptions(handlerOptions);
-}, [
-  showSuccessDrawer,
-  successForm.handler,
-  successForm.handlerId,
-  handlerOptions,
-  handlerOptionsMap,
-]);
-
-useEffect(() => {
-  const searchValue = handlerSearchTerm.trim().toLowerCase();
-  if (!searchValue) {
+  useEffect(() => {
+    if (!showSuccessDrawer) return;
+    const currentLabel =
+      successForm.handler ||
+      (successForm.handlerId ? handlerOptionsMap.get(successForm.handlerId) || '' : '');
+    setHandlerSearchTerm(currentLabel);
     setFilteredHandlerSearchOptions(handlerOptions);
-  } else {
-    setFilteredHandlerSearchOptions(
-      handlerOptions.filter(option => option.label.toLowerCase().includes(searchValue))
-    );
-  }
-}, [handlerSearchTerm, handlerOptions]);
+  }, [
+    showSuccessDrawer,
+    successForm.handler,
+    successForm.handlerId,
+    handlerOptions,
+    handlerOptionsMap,
+  ]);
 
-useEffect(() => {
-  if (!showHandlerSearchDropdown) return;
-
-  const handleClickOutside = (event: MouseEvent) => {
-    if (
-      handlerSearchContainerRef.current &&
-      !handlerSearchContainerRef.current.contains(event.target as Node)
-    ) {
-      setShowHandlerSearchDropdown(false);
+  useEffect(() => {
+    const searchValue = handlerSearchTerm.trim().toLowerCase();
+    if (!searchValue) {
+      setFilteredHandlerSearchOptions(handlerOptions);
+    } else {
+      setFilteredHandlerSearchOptions(
+        handlerOptions.filter(option => option.label.toLowerCase().includes(searchValue))
+      );
     }
-  };
+  }, [handlerSearchTerm, handlerOptions]);
 
-  document.addEventListener('mousedown', handleClickOutside);
-  return () => {
-    document.removeEventListener('mousedown', handleClickOutside);
-  };
-}, [showHandlerSearchDropdown]);
+  useEffect(() => {
+    if (!showHandlerSearchDropdown) return;
 
-useEffect(() => {
-  setFilteredSuccessStageHandlerOptions(handlerOptions);
-}, [handlerOptions]);
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        handlerSearchContainerRef.current &&
+        !handlerSearchContainerRef.current.contains(event.target as Node)
+      ) {
+        setShowHandlerSearchDropdown(false);
+      }
+    };
 
-useEffect(() => {
-  if (!selectedClient) {
-    setSuccessStageHandlerSearch('');
-    return;
-  }
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showHandlerSearchDropdown]);
 
-  const handlerId =
-    selectedClient.case_handler_id != null
-      ? String(selectedClient.case_handler_id)
+  useEffect(() => {
+    setFilteredSuccessStageHandlerOptions(handlerOptions);
+  }, [handlerOptions]);
+
+  useEffect(() => {
+    if (!selectedClient) {
+      setSuccessStageHandlerSearch('');
+      return;
+    }
+
+    const handlerId =
+      selectedClient.case_handler_id != null
+        ? String(selectedClient.case_handler_id)
+        : '';
+
+    const derivedLabel =
+      (handlerId && handlerOptionsMap.get(handlerId)) ||
+      selectedClient.handler ||
+      '';
+
+    // If handler is "Not assigned" or empty, set search to empty (will show as placeholder)
+    const handlerValue = (derivedLabel && derivedLabel.toLowerCase() !== 'not assigned' && derivedLabel.trim() !== '')
+      ? derivedLabel
       : '';
 
-  const derivedLabel =
-    (handlerId && handlerOptionsMap.get(handlerId)) ||
-    selectedClient.handler ||
-    '';
+    setSuccessStageHandlerSearch(handlerValue);
+  }, [
+    selectedClient?.case_handler_id,
+    selectedClient?.handler,
+    selectedClient?.id,
+    handlerOptionsMap,
+  ]);
 
-  // If handler is "Not assigned" or empty, set search to empty (will show as placeholder)
-  const handlerValue = (derivedLabel && derivedLabel.toLowerCase() !== 'not assigned' && derivedLabel.trim() !== '')
-    ? derivedLabel
-    : '';
-  
-  setSuccessStageHandlerSearch(handlerValue);
-}, [
-  selectedClient?.case_handler_id,
-  selectedClient?.handler,
-  selectedClient?.id,
-  handlerOptionsMap,
-]);
-
-useEffect(() => {
-  const searchValue = successStageHandlerSearch.trim().toLowerCase();
-  // Filter out "Not assigned" from options
-  const filteredOptions = handlerOptions.filter(option => 
-    option.label.toLowerCase() !== 'not assigned'
-  );
-  
-  if (!searchValue) {
-    setFilteredSuccessStageHandlerOptions(filteredOptions);
-  } else {
-    setFilteredSuccessStageHandlerOptions(
-      filteredOptions.filter(option => option.label.toLowerCase().includes(searchValue))
+  useEffect(() => {
+    const searchValue = successStageHandlerSearch.trim().toLowerCase();
+    // Filter out "Not assigned" from options
+    const filteredOptions = handlerOptions.filter(option =>
+      option.label.toLowerCase() !== 'not assigned'
     );
-  }
-}, [successStageHandlerSearch, handlerOptions]);
 
-useEffect(() => {
-  if (!showSuccessStageHandlerDropdown) {
-    console.log('🔴 Success handler dropdown is closed, not adding click-outside listener');
-    return;
-  }
-
-  console.log('🟢 Success handler dropdown is open, adding click-outside listener');
-
-  const handleClickOutside = (event: MouseEvent) => {
-    const mobileContains = successStageHandlerContainerRef.current?.contains(event.target as Node);
-    const desktopContains = successStageHandlerContainerRefDesktop.current?.contains(event.target as Node);
-    
-    console.log('🖱️ Click-outside handler fired', {
-      target: event.target,
-      hasMobileContainer: !!successStageHandlerContainerRef.current,
-      hasDesktopContainer: !!successStageHandlerContainerRefDesktop.current,
-      mobileContains,
-      desktopContains
-    });
-    
-    // Close dropdown only if click is outside BOTH containers
-    if (!mobileContains && !desktopContains) {
-      console.log('❌ Click was OUTSIDE both containers - closing dropdown');
-      setShowSuccessStageHandlerDropdown(false);
+    if (!searchValue) {
+      setFilteredSuccessStageHandlerOptions(filteredOptions);
     } else {
-      console.log('✅ Click was INSIDE a container - keeping dropdown open');
+      setFilteredSuccessStageHandlerOptions(
+        filteredOptions.filter(option => option.label.toLowerCase().includes(searchValue))
+      );
     }
-  };
+  }, [successStageHandlerSearch, handlerOptions]);
 
-  document.addEventListener('mousedown', handleClickOutside);
-  return () => {
-    console.log('🧹 Removing click-outside listener');
-    document.removeEventListener('mousedown', handleClickOutside);
-  };
-}, [showSuccessStageHandlerDropdown]);
+  useEffect(() => {
+    if (!showSuccessStageHandlerDropdown) {
+      console.log('🔴 Success handler dropdown is closed, not adding click-outside listener');
+      return;
+    }
+
+    console.log('🟢 Success handler dropdown is open, adding click-outside listener');
+
+    const handleClickOutside = (event: MouseEvent) => {
+      const mobileContains = successStageHandlerContainerRef.current?.contains(event.target as Node);
+      const desktopContains = successStageHandlerContainerRefDesktop.current?.contains(event.target as Node);
+
+      console.log('🖱️ Click-outside handler fired', {
+        target: event.target,
+        hasMobileContainer: !!successStageHandlerContainerRef.current,
+        hasDesktopContainer: !!successStageHandlerContainerRefDesktop.current,
+        mobileContains,
+        desktopContains
+      });
+
+      // Close dropdown only if click is outside BOTH containers
+      if (!mobileContains && !desktopContains) {
+        console.log('❌ Click was OUTSIDE both containers - closing dropdown');
+        setShowSuccessStageHandlerDropdown(false);
+      } else {
+        console.log('✅ Click was INSIDE a container - keeping dropdown open');
+      }
+    };
+
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => {
+      console.log('🧹 Removing click-outside listener');
+      document.removeEventListener('mousedown', handleClickOutside);
+    };
+  }, [showSuccessStageHandlerDropdown]);
 
   const currencyOptions = useMemo(() => {
     if (currencies && currencies.length > 0) {
@@ -7001,21 +7006,21 @@ useEffect(() => {
 
   const handleSaveEditLead = async () => {
     if (!selectedClient) return;
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-    
+
     try {
       // Get current user name from Supabase users table
       const currentUserName = await fetchCurrentUserFullName();
-      
+
       console.log('Current user for lead edit:', currentUserName);
       console.log('Is legacy lead:', isLegacyLead);
-      
+
       // Create update data based on whether it's a legacy lead or not
       // Only include fields that have actually changed
       let updateData: any = {};
-      
+
       if (isLegacyLead) {
         // For legacy leads, only include fields that exist in leads_lead table
         // Map balance to total and balance_currency to currency_id
@@ -7028,7 +7033,7 @@ useEffect(() => {
             default: return 1; // Default to NIS
           }
         };
-        
+
         // Check each field and only include if it has changed
         if (editLeadData.name !== selectedClient.name) {
           updateData.name = editLeadData.name;
@@ -7041,13 +7046,13 @@ useEffect(() => {
           updateData.notes = editLeadData.special_notes; // Map special_notes to notes for legacy
         }
         // Compare probability values (handle both string and number formats)
-        const currentProbability = typeof selectedClient.probability === 'string' 
+        const currentProbability = typeof selectedClient.probability === 'string'
           ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
           : (selectedClient.probability || 0);
         const newProbability = typeof editLeadData.probability === 'string'
           ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
           : (editLeadData.probability || 0);
-        
+
         if (newProbability !== currentProbability) {
           updateData.probability = newProbability;
         }
@@ -7060,7 +7065,7 @@ useEffect(() => {
               .select('id')
               .eq('name', editLeadData.source)
               .maybeSingle();
-            
+
             if (sourceData?.id) {
               updateData.source_id = sourceData.id;
             } else {
@@ -7083,7 +7088,7 @@ useEffect(() => {
               .select('id')
               .eq('name', editLeadData.language)
               .maybeSingle();
-            
+
             if (languageData?.id) {
               updateData.language_id = languageData.id;
             } else {
@@ -7121,22 +7126,22 @@ useEffect(() => {
           // We need to match both the subcategory name AND the main category name
           const fullCategoryString = editLeadData.category;
           const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name 
+            const expectedFormat = cat.misc_maincategory?.name
               ? `${cat.name} (${cat.misc_maincategory.name})`
               : cat.name;
             return expectedFormat === fullCategoryString;
           });
-          
+
           if (foundCategory) {
             updateData.category_id = foundCategory.id;
             updateData.category = foundCategory.name; // Save just the subcategory name
           } else {
             // Fallback: try to find by subcategory name only (less precise)
             const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) => 
+            const fallbackCategory = allCategories.find((cat: any) =>
               cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
             );
-            
+
             if (fallbackCategory) {
               updateData.category_id = fallbackCategory.id;
               updateData.category = categoryName;
@@ -7145,7 +7150,7 @@ useEffect(() => {
             }
           }
         }
-        
+
         // Handle tags separately for legacy leads (using saveLeadTags function)
         const currentTagsString = await fetchCurrentLeadTags(selectedClient.id);
         if (editLeadData.tags !== currentTagsString) {
@@ -7171,22 +7176,22 @@ useEffect(() => {
           // We need to match both the subcategory name AND the main category name
           const fullCategoryString = editLeadData.category;
           const foundCategory = allCategories.find((cat: any) => {
-            const expectedFormat = cat.misc_maincategory?.name 
+            const expectedFormat = cat.misc_maincategory?.name
               ? `${cat.name} (${cat.misc_maincategory.name})`
               : cat.name;
             return expectedFormat === fullCategoryString;
           });
-          
+
           if (foundCategory) {
             updateData.category_id = foundCategory.id;
             updateData.category = foundCategory.name; // Save just the subcategory name
           } else {
             // Fallback: try to find by subcategory name only (less precise)
             const categoryName = editLeadData.category.includes(' (') ? editLeadData.category.split(' (')[0] : editLeadData.category;
-            const fallbackCategory = allCategories.find((cat: any) => 
+            const fallbackCategory = allCategories.find((cat: any) =>
               cat.name.toLowerCase().trim() === categoryName.toLowerCase().trim()
             );
-            
+
             if (fallbackCategory) {
               updateData.category_id = fallbackCategory.id;
               updateData.category = categoryName;
@@ -7202,13 +7207,13 @@ useEffect(() => {
           updateData.special_notes = editLeadData.special_notes;
         }
         // Compare probability values (handle both string and number formats)
-        const currentProbabilityNew = typeof selectedClient.probability === 'string' 
+        const currentProbabilityNew = typeof selectedClient.probability === 'string'
           ? (selectedClient.probability === '' ? 0 : Number(selectedClient.probability) || 0)
           : (selectedClient.probability || 0);
         const newProbabilityNew = typeof editLeadData.probability === 'string'
           ? (editLeadData.probability === '' ? 0 : Number(editLeadData.probability) || 0)
           : (editLeadData.probability || 0);
-        
+
         if (newProbabilityNew !== currentProbabilityNew) {
           updateData.probability = newProbabilityNew;
         }
@@ -7244,10 +7249,10 @@ useEffect(() => {
           updateData.balance_currency = editLeadData.balance_currency;
         }
       }
-      
+
       // Track changes by comparing old and new values
       const changesToInsert = [];
-      
+
       // Since we only include changed fields in updateData, we can directly track them
       const fieldsToTrack = Object.keys(updateData);
       const fieldMapping: { [key: string]: string } = isLegacyLead ? {
@@ -7258,17 +7263,17 @@ useEffect(() => {
       } : {
         'category_id': 'category'
       };
-      
+
       for (const field of fieldsToTrack) {
         // For legacy leads, map the field names to match the client data structure
         const clientField = fieldMapping[field] || field;
         const oldValue = selectedClient[clientField as keyof typeof selectedClient] || '';
         const newValue = updateData[field as keyof typeof updateData] || '';
-        
+
         // Convert to strings for comparison
         let oldValueStr = String(oldValue);
         let newValueStr = String(newValue);
-        
+
         // Special handling for currency_id comparison
         if (field === 'currency_id' && isLegacyLead) {
           // Convert the current currency name to ID for comparison
@@ -7283,7 +7288,7 @@ useEffect(() => {
           };
           oldValueStr = currencyNameToId(String(oldValue));
         }
-        
+
         console.log(`${field} changed: ${oldValueStr} -> ${newValueStr}`);
         changesToInsert.push({
           lead_id: selectedClient.id,
@@ -7294,48 +7299,48 @@ useEffect(() => {
           changed_at: new Date().toISOString()
         });
       }
-      
+
       console.log('Total changes detected:', changesToInsert.length);
       console.log('Changes to insert:', changesToInsert);
-      
+
       // If no changes were detected, don't proceed with the update
       if (Object.keys(updateData).length === 0) {
         console.log('No changes detected, skipping update');
         setShowEditLeadDrawer(false);
         return;
       }
-      
+
       let updateError;
-      
+
       if (isLegacyLead) {
         // For legacy leads, update the leads_lead table
         const legacyId = selectedClient.id.toString().replace('legacy_', '');
         console.log('Updating legacy lead with ID:', legacyId);
-        
+
         const { error } = await supabase
           .from('leads_lead')
           .update(updateData)
           .eq('id', legacyId);
-        
+
         updateError = error;
       } else {
         // For regular leads, update the leads table
         console.log('Updating regular lead with ID:', selectedClient.id);
-        
+
         const { error } = await supabase
           .from('leads')
           .update(updateData)
           .eq('id', selectedClient.id);
-        
+
         updateError = error;
       }
-        
+
       if (updateError) {
         console.error('Error updating lead:', updateError);
         toast.error('Failed to update lead.');
         return;
       }
-      
+
       // Handle follow-up save/update in follow_ups table
       const { data: { user } } = await supabase.auth.getUser();
       if (user) {
@@ -7344,7 +7349,7 @@ useEffect(() => {
           .select('id')
           .eq('auth_id', user.id)
           .single();
-        
+
         if (userData) {
           // Fetch current follow-up to compare
           let currentFollowUp;
@@ -7368,10 +7373,10 @@ useEffect(() => {
               .maybeSingle();
             currentFollowUp = data;
           }
-          
+
           const currentFollowUpDate = currentFollowUp?.date ? new Date(currentFollowUp.date).toISOString().split('T')[0] : '';
           const newFollowUpDate = editLeadData.next_followup || '';
-          
+
           if (currentFollowUpDate !== newFollowUpDate) {
             if (newFollowUpDate && newFollowUpDate.trim() !== '') {
               // Update or create follow-up
@@ -7382,7 +7387,7 @@ useEffect(() => {
                   .update({ date: newFollowUpDate + 'T00:00:00Z' })
                   .eq('id', currentFollowUp.id)
                   .eq('user_id', userData.id);
-                
+
                 if (followupError) {
                   console.error('Error updating follow-up:', followupError);
                   toast.error('Failed to update follow-up date');
@@ -7394,7 +7399,7 @@ useEffect(() => {
                   date: newFollowUpDate + 'T00:00:00Z',
                   created_at: new Date().toISOString()
                 };
-                
+
                 if (isLegacyLead) {
                   const legacyId = selectedClient.id.toString().replace('legacy_', '');
                   insertData.lead_id = legacyId;
@@ -7403,11 +7408,11 @@ useEffect(() => {
                   insertData.new_lead_id = selectedClient.id;
                   insertData.lead_id = null;
                 }
-                
+
                 const { error: followupError } = await supabase
                   .from('follow_ups')
                   .insert(insertData);
-                
+
                 if (followupError) {
                   console.error('Error creating follow-up:', followupError);
                   toast.error('Failed to save follow-up date');
@@ -7421,7 +7426,7 @@ useEffect(() => {
                   .delete()
                   .eq('id', currentFollowUp.id)
                   .eq('user_id', userData.id);
-                
+
                 if (followupError) {
                   console.error('Error deleting follow-up:', followupError);
                   toast.error('Failed to delete follow-up');
@@ -7431,24 +7436,24 @@ useEffect(() => {
           }
         }
       }
-      
+
       // Log the changes to lead_changes table (only for regular leads, as legacy leads don't have this table)
       if (!isLegacyLead && changesToInsert.length > 0) {
         const { error: historyError } = await supabase
           .from('lead_changes')
           .insert(changesToInsert);
-        
+
         if (historyError) {
           console.error('Error logging lead changes:', historyError);
         } else {
           console.log('Logged', changesToInsert.length, 'field changes');
         }
       }
-      
+
       setShowEditLeadDrawer(false);
       if (onClientUpdate) await onClientUpdate();
       toast.success('Lead updated!');
-      
+
     } catch (error) {
       console.error('Error in handleSaveEditLead:', error);
       toast.error('Failed to update lead.');
@@ -7459,19 +7464,19 @@ useEffect(() => {
     if (!selectedClient || !meetingToDelete) return;
     try {
       const account = instance.getAllAccounts()[0];
-      
+
       // 1. Cancel the meeting (set status to 'canceled')
       const { data: { user } } = await supabase.auth.getUser();
       const editor = user?.email || account?.name || 'system';
       const { error: cancelError } = await supabase
         .from('meetings')
-        .update({ 
-          status: 'canceled', 
-          last_edited_timestamp: new Date().toISOString(), 
-          last_edited_by: editor 
+        .update({
+          status: 'canceled',
+          last_edited_timestamp: new Date().toISOString(),
+          last_edited_by: editor
         })
         .eq('id', meetingToDelete);
-      
+
       if (cancelError) throw cancelError;
 
       // 2. Get meeting details for email
@@ -7480,7 +7485,7 @@ useEffect(() => {
         .select('*')
         .eq('id', meetingToDelete)
         .single();
-      
+
       if (fetchError) throw fetchError;
 
       // 3. Send cancellation email to client (only if notify toggle is on)
@@ -7497,13 +7502,13 @@ useEffect(() => {
             throw error;
           }
         }
-        
+
         // Determine language for template selection (same logic as schedule meeting)
         // Template ID 153 = English cancellation, 154 = Hebrew cancellation
         // For legacy leads, fetch language_id from database if not available
         const isLegacyLeadForCancel = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
         let clientLanguageId: number | null = selectedClient.language_id || null;
-        
+
         if (isLegacyLeadForCancel && !clientLanguageId) {
           const legacyIdForCancel = selectedClient.id.toString().replace('legacy_', '');
           const { data: legacyData } = await supabase
@@ -7520,7 +7525,7 @@ useEffect(() => {
             .maybeSingle();
           clientLanguageId = leadData?.language_id || null;
         }
-        
+
         // Get language name from language_id to determine if Hebrew or English
         let templateId: number = 153; // Default to English
         if (clientLanguageId) {
@@ -7529,19 +7534,19 @@ useEffect(() => {
             .select('name')
             .eq('id', clientLanguageId)
             .maybeSingle();
-          
+
           const languageName = languageData?.name?.toLowerCase() || '';
           const isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
           templateId = isHebrew ? 154 : 153; // HE: 154, EN: 153
         } else {
           // Fallback to text language field if language_id is not available
-          const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' || 
-                                 selectedClient.language?.toLowerCase() === 'hebrew';
+          const isHebrewByText = selectedClient.language?.toLowerCase() === 'he' ||
+            selectedClient.language?.toLowerCase() === 'hebrew';
           templateId = isHebrewByText ? 154 : 153;
         }
-        
+
         const isHebrew = templateId === 154;
-        
+
         console.log('🌍 Cancellation email language selection:', {
           language_id: clientLanguageId,
           language_text: selectedClient.language,
@@ -7550,20 +7555,20 @@ useEffect(() => {
           isLegacyLead: isLegacyLeadForCancel,
           fullClient: selectedClient
         });
-        
+
         // Fetch email template by ID (including name for subject)
         let templateContent: string | null = null;
         let templateName: string | null = null;
-        
+
         try {
           console.log('📧 Fetching cancellation email template:', { templateId, isHebrew });
-          
+
           const { data: template, error: templateError } = await supabase
             .from('misc_emailtemplate')
             .select('name, content')
             .eq('id', templateId)
             .single();
-          
+
           if (templateError) {
             console.error('❌ Error fetching cancellation email template:', {
               error: templateError,
@@ -7604,11 +7609,11 @@ useEffect(() => {
         } catch (error) {
           console.error('❌ Exception fetching cancellation email template:', error);
         }
-        
+
         const formattedDate = canceledMeeting.meeting_date ? new Date(canceledMeeting.meeting_date).toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
         const formattedTime = canceledMeeting.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
         const locationName = canceledMeeting.meeting_location || 'Teams';
-        
+
         // Build email body using template or fallback
         let emailBody: string;
         let emailSubject: string;
@@ -7639,12 +7644,12 @@ useEffect(() => {
           `;
           emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - Meeting Canceled`;
         }
-        
+
         // Use sendEmailViaBackend to save email to database with proper context
         if (userId) {
           const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
           const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
-          
+
           await sendEmailViaBackend({
             userId,
             subject: emailSubject,
@@ -7660,22 +7665,22 @@ useEffect(() => {
               senderName: account?.name || 'Staff',
             },
           });
-          } else {
-            // Fallback to old method if userId not available
-            await sendEmail(accessToken, {
-              to: selectedClient.email,
-              subject: emailSubject,
-              body: emailBody,
-              skipSignature: true, // Don't include user signature for template emails
-            });
-          }
+        } else {
+          // Fallback to old method if userId not available
+          await sendEmail(accessToken, {
+            to: selectedClient.email,
+            subject: emailSubject,
+            body: emailBody,
+            skipSignature: true, // Don't include user signature for template emails
+          });
+        }
       }
 
       // 4. Update stage to "Meeting rescheduling" (ID 21) - ONLY if not in "Another meeting" stage
       // For "Another meeting" stage, keep the stage unchanged
       const currentStageNameForCheck = selectedClient ? getStageName(selectedClient.stage) : '';
       if (!areStagesEquivalent(currentStageNameForCheck, 'another_meeting')) {
-      await updateLeadStage(21);
+        await updateLeadStage(21);
       }
 
       // 5. Show toast and close drawer
@@ -7695,16 +7700,16 @@ useEffect(() => {
   // Handler for canceling and creating new meeting (or just creating new meeting in stage 21)
   const handleRescheduleMeeting = async () => {
     if (!selectedClient || !rescheduleFormData.date || !rescheduleFormData.time) return;
-    
+
     setIsReschedulingMeeting(true);
-    
+
     // IMPORTANT: Always automatically cancel the oldest upcoming meeting when rescheduling
     // Find and cancel the oldest upcoming meeting automatically (user doesn't need to select)
     const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
     const legacyIdStr = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
     // Convert to number for legacy_lead_id (it's a bigint in the database)
     const legacyId = legacyIdStr && /^\d+$/.test(legacyIdStr) ? parseInt(legacyIdStr, 10) : legacyIdStr;
-    
+
     // Query for the oldest upcoming meeting to cancel
     let query = supabase
       .from('meetings')
@@ -7714,37 +7719,37 @@ useEffect(() => {
       .order('meeting_date', { ascending: true })
       .order('meeting_time', { ascending: true })
       .limit(1);
-    
+
     if (isLegacyLead && legacyId !== null) {
       query = query.eq('legacy_lead_id', legacyId);
     } else if (!isLegacyLead) {
       query = query.eq('client_id', selectedClient.id);
     }
-    
+
     const { data: upcomingMeetingsToCancel, error: queryError } = await query;
-    
+
     let canceledMeeting = null;
     let meetingIdToCancel: number | null = null;
-    
+
     if (queryError) {
       console.error('❌ Error querying for meetings to cancel:', queryError);
     } else if (upcomingMeetingsToCancel && upcomingMeetingsToCancel.length > 0) {
       meetingIdToCancel = upcomingMeetingsToCancel[0].id;
       console.log('🔄 Automatically canceling oldest upcoming meeting before rescheduling:', meetingIdToCancel);
-      
+
       try {
         const account = instance.getAllAccounts()[0];
         const { data: { user } } = await supabase.auth.getUser();
         const editor = user?.email || account?.name || 'system';
         const { error: cancelError } = await supabase
           .from('meetings')
-          .update({ 
-            status: 'canceled', 
-            last_edited_timestamp: new Date().toISOString(), 
-            last_edited_by: editor 
+          .update({
+            status: 'canceled',
+            last_edited_timestamp: new Date().toISOString(),
+            last_edited_by: editor
           })
           .eq('id', meetingIdToCancel);
-        
+
         if (cancelError) {
           console.error('❌ Failed to cancel old meeting:', cancelError);
           throw new Error(`Failed to cancel old meeting: ${cancelError.message}`);
@@ -7755,7 +7760,7 @@ useEffect(() => {
           .select('*')
           .eq('id', meetingIdToCancel)
           .single();
-        
+
         canceledMeeting = canceledMeetingData;
         console.log('✅ Old meeting canceled successfully:', meetingIdToCancel);
       } catch (error) {
@@ -7765,7 +7770,7 @@ useEffect(() => {
     } else {
       console.log('ℹ️ No upcoming meetings found to cancel (this is a new meeting, not a reschedule)');
     }
-    
+
     try {
       const account = instance.getAllAccounts()[0];
 
@@ -7780,7 +7785,7 @@ useEffect(() => {
             .select('full_name, employee_id')
             .eq('auth_id', authUser.id)
             .maybeSingle();
-          
+
           if (userData?.full_name) {
             currentUserFullName = userData.full_name;
           } else if (userData?.employee_id) {
@@ -7791,7 +7796,7 @@ useEffect(() => {
             }
           }
         }
-        
+
         // If still empty, try by email as fallback
         if (!currentUserFullName && account.username) {
           const { data: userDataByEmail } = await supabase
@@ -7799,7 +7804,7 @@ useEffect(() => {
             .select('full_name, employee_id')
             .eq('email', account.username)
             .maybeSingle();
-          
+
           if (userDataByEmail?.full_name) {
             currentUserFullName = userDataByEmail.full_name;
           } else if (userDataByEmail?.employee_id) {
@@ -7810,7 +7815,7 @@ useEffect(() => {
             }
           }
         }
-        
+
         // Final fallback: use account name if available
         if (!currentUserFullName && account.name) {
           currentUserFullName = account.name;
@@ -7822,7 +7827,7 @@ useEffect(() => {
           currentUserFullName = account.name;
         }
       }
-      
+
       // Ensure we have a scheduler name - if still empty, use account username
       if (!currentUserFullName) {
         console.error('⚠️ Could not determine current user full name for scheduler field');
@@ -7833,41 +7838,41 @@ useEffect(() => {
       // Helper function to convert display name to employee ID
       const getEmployeeIdFromDisplayName = (displayName: string | null | undefined): number | null => {
         if (!displayName || displayName === '---' || displayName.trim() === '') return null;
-        
+
         // Try exact match first
-        let employee = allEmployees.find((emp: any) => 
+        let employee = allEmployees.find((emp: any) =>
           emp.display_name && emp.display_name.trim() === displayName.trim()
         );
-        
+
         // If not found, try case-insensitive match
         if (!employee) {
-          employee = allEmployees.find((emp: any) => 
+          employee = allEmployees.find((emp: any) =>
             emp.display_name && emp.display_name.trim().toLowerCase() === displayName.trim().toLowerCase()
           );
         }
-        
+
         if (!employee) {
           console.warn(`Employee not found for display name: "${displayName}"`);
           return null;
         }
-        
+
         // Ensure ID is a number (bigint)
         const employeeId = typeof employee.id === 'string' ? parseInt(employee.id, 10) : Number(employee.id);
         if (isNaN(employeeId)) {
           console.error(`Invalid employee ID for "${displayName}":`, employee.id);
           return null;
         }
-        
+
         return employeeId;
       };
 
       // Resolve manager and helper employee IDs
       const managerEmployeeId = getEmployeeIdFromDisplayName(rescheduleFormData.manager);
       const helperEmployeeId = getEmployeeIdFromDisplayName(rescheduleFormData.helper);
-      
+
       // Resolve scheduler employee ID (for legacy leads, need numeric ID)
       const schedulerEmployeeId = getEmployeeIdFromDisplayName(currentUserFullName);
-      
+
       // Resolve expert employee ID (for legacy leads, need numeric ID)
       const expertEmployeeId = getEmployeeIdFromDisplayName(selectedClient.expert);
 
@@ -7887,7 +7892,7 @@ useEffect(() => {
 
       // Check if this is a legacy lead
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
-      
+
       // For both new and legacy leads, create meeting record in meetings table
       const legacyIdStr = isLegacyLead ? selectedClient.id.toString().replace('legacy_', '') : null;
       // Convert to number for legacy_lead_id (it's a bigint in the database)
@@ -7928,13 +7933,13 @@ useEffect(() => {
       // Update lead stage and roles
       const stageActor = await fetchStageActorInfo();
       const stageTimestamp = new Date().toISOString();
-      const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage : 
-                          (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
-      
+      const currentStage = typeof selectedClient.stage === 'number' ? selectedClient.stage :
+        (selectedClient.stage ? parseInt(String(selectedClient.stage), 10) : null);
+
       // Check if current stage is "Another meeting"
       const currentStageName = getStageName(selectedClient.stage);
       const isAnotherMeeting = areStagesEquivalent(currentStageName, 'Another meeting');
-      
+
       // When rescheduling (new meeting is scheduled), change stage to "Meeting scheduled" (id 20)
       // EXCEPT when in "Another meeting" stage - then keep the stage unchanged
       const meetingScheduledStageId = getStageIdOrWarn('meeting_scheduled');
@@ -7973,7 +7978,7 @@ useEffect(() => {
         if (helperEmployeeId !== null) {
           updatePayload.meeting_lawyer_id = helperEmployeeId;
         }
-        
+
         // Always update expert for legacy leads (must be numeric employee ID, not display name)
         if (expertEmployeeId !== null) {
           updatePayload.expert_id = expertEmployeeId;
@@ -8056,40 +8061,40 @@ useEffect(() => {
             throw error;
           }
         }
-        
+
         // Compose the email template (no signature for template emails)
         const userName = account?.name || 'Staff';
-        
+
         // Use the newly created meeting's Teams URL (from insertedData) instead of fetching latest
         // This ensures we get the correct Teams link for the current meeting, not an old one
         // Note: For Teams meetings, the URL will be updated after calendar event creation
         let newMeetingTeamsUrl = insertedData && insertedData[0] ? insertedData[0].teams_meeting_url : null;
         let meetingLink = getValidTeamsLink(newMeetingTeamsUrl);
-        
+
         console.log('🔗 Initial Teams meeting URL for email:', {
           insertedDataId: insertedData?.[0]?.id,
           teamsUrl: newMeetingTeamsUrl,
           meetingLink,
           location: rescheduleFormData.location
         });
-        
+
         // joinButton will be built later after we have the final meetingLink
         const joinButton = meetingLink
           ? `<div style='margin:24px 0;'>
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
             </div>`
           : '';
-        
+
         // Determine client language and fetch appropriate template
         // For rescheduled meetings: use template 155/156
         // For new meetings (no canceled meeting): use invitation templates based on location (same as schedule meeting)
         let templateContent: string | null = null;
         let templateNameForReschedule: string | null = null;
-        
+
         try {
           // Get language_id from client to determine language
           let clientLanguageId: number | null = null;
-          
+
           if (isLegacyLead) {
             if ((selectedClient as any).language_id) {
               clientLanguageId = (selectedClient as any).language_id;
@@ -8120,7 +8125,7 @@ useEffect(() => {
               }
             }
           }
-          
+
           // Get language name from language_id to determine if Hebrew or English
           let isHebrew = false;
           if (clientLanguageId) {
@@ -8129,27 +8134,27 @@ useEffect(() => {
               .select('name')
               .eq('id', clientLanguageId)
               .single();
-            
+
             const languageName = languageData?.name?.toLowerCase() || '';
             isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
           }
-          
+
           // Determine template ID based on whether there's a canceled meeting or not
           let templateId: number;
           if (canceledMeeting) {
             // Rescheduled meeting: use rescheduled templates (155/156)
             templateId = isHebrew ? 156 : 155; // HE: 156, EN: 155
-            console.log('📧 Fetching rescheduled email template:', { 
-              clientLanguageId, 
-              isHebrew, 
-              templateId 
+            console.log('📧 Fetching rescheduled email template:', {
+              clientLanguageId,
+              isHebrew,
+              templateId
             });
           } else {
             // New meeting (no canceled meeting): use invitation templates based on location (same as schedule meeting)
             // Use the exact same logic as schedule meeting to determine invitation type
             const location = (rescheduleFormData.location || '').toLowerCase();
             let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
-            
+
             if (location.includes('jrslm') || location.includes('jerusalem')) {
               invitationType = 'invitation_jlm';
             } else if (location.includes('tlv') && location.includes('parking')) {
@@ -8157,39 +8162,39 @@ useEffect(() => {
             } else if (location.includes('tlv') || location.includes('tel aviv')) {
               invitationType = 'invitation_tlv';
             }
-            
+
             console.log('🎯 Reschedule meeting - determining invitation type:', {
               location: rescheduleFormData.location,
               locationLower: location,
               invitationType
             });
-            
-            const templateMapping: Record<string, {en: number, he: number}> = {
+
+            const templateMapping: Record<string, { en: number, he: number }> = {
               invitation: { en: 151, he: 152 },
               invitation_jlm: { en: 157, he: 158 },
               invitation_tlv: { en: 161, he: 162 },
               invitation_tlv_parking: { en: 159, he: 160 },
             };
-            
+
             const templateIds = templateMapping[invitationType];
             templateId = isHebrew ? templateIds.he : templateIds.en;
-            
-            console.log('📧 Fetching invitation email template for new meeting:', { 
+
+            console.log('📧 Fetching invitation email template for new meeting:', {
               location,
               invitationType,
-              clientLanguageId, 
-              isHebrew, 
-              templateId 
+              clientLanguageId,
+              isHebrew,
+              templateId
             });
           }
-          
+
           // Fetch email template by ID (including name for subject)
           const { data: template, error: templateError } = await supabase
             .from('misc_emailtemplate')
             .select('name, content')
             .eq('id', templateId)
             .single();
-          
+
           if (templateError) {
             console.error('❌ Error fetching email template:', templateError);
           } else if (template && template.content) {
@@ -8208,7 +8213,7 @@ useEffect(() => {
         } catch (error) {
           console.error('❌ Exception fetching email template:', error);
         }
-        
+
         // Format dates and times
         const formatDate = (dateStr: string): string => {
           const [year, month, day] = dateStr.split('-');
@@ -8220,14 +8225,14 @@ useEffect(() => {
         const formattedOldTime = canceledMeeting?.meeting_time ? canceledMeeting.meeting_time.substring(0, 5) : '';
         const newLocationName = rescheduleFormData.location;
         const oldLocationName = canceledMeeting?.meeting_location || 'Teams';
-        
+
         // Convert date and time to ISO format for calendar invitation
         // Always send calendar invite for all meeting types (regular, paid, etc.)
         const [yearVal, monthVal, dayVal] = rescheduleFormData.date.split('-').map(Number);
         const [hours, minutes] = rescheduleFormData.time.split(':').map(Number);
         const startDateTime = new Date(yearVal, monthVal - 1, dayVal, hours, minutes);
         const endDateTime = new Date(startDateTime.getTime() + 30 * 60000); // 30 min meeting
-        
+
         // Check if recipient email is a Microsoft domain (for Outlook/Exchange)
         const isMicrosoftEmail = (email: string): boolean => {
           if (!email) return false;
@@ -8246,7 +8251,7 @@ useEffect(() => {
           });
           return isMicrosoft;
         };
-        
+
         const useOutlookCalendarInvite = isMicrosoftEmail(selectedClient.email);
         console.log('📧 Calendar invite method:', {
           email: selectedClient.email,
@@ -8254,17 +8259,17 @@ useEffect(() => {
           willUseMicrosoftGraph: useOutlookCalendarInvite
         });
         // Category removed from meeting subject
-        const meetingSubject = canceledMeeting 
+        const meetingSubject = canceledMeeting
           ? `[#${selectedClient.lead_number}] ${selectedClient.name} - Meeting Rescheduled`
           : `[#${selectedClient.lead_number}] ${selectedClient.name} - Meeting`;
-        
+
         // For Teams meetings, create calendar event FIRST to get the Teams URL
         // Then build email body with the correct Teams link
         if (rescheduleFormData.location === 'Teams' && useOutlookCalendarInvite) {
           try {
             // Create a temporary email body for the calendar event description
             const tempEmailBody = `Meeting with ${selectedClient.name}`;
-            
+
             const calendarEventResult = await createCalendarEventWithAttendee(accessToken, {
               subject: meetingSubject,
               startDateTime: startDateTime.toISOString(),
@@ -8278,14 +8283,14 @@ useEffect(() => {
               teamsJoinUrl: undefined, // Will be generated by Microsoft Graph
               timeZone: 'Asia/Jerusalem'
             });
-            
+
             // Update the meeting record with the Teams URL
             if (calendarEventResult?.joinUrl && insertedData && insertedData[0]?.id) {
               await supabase
                 .from('meetings')
                 .update({ teams_meeting_url: calendarEventResult.joinUrl })
                 .eq('id', insertedData[0].id);
-              
+
               // Update the meetingLink variable with the new Teams URL
               meetingLink = getValidTeamsLink(calendarEventResult.joinUrl);
               newMeetingTeamsUrl = calendarEventResult.joinUrl;
@@ -8300,19 +8305,19 @@ useEffect(() => {
             // Continue with email sending even if Teams calendar creation fails
           }
         }
-        
+
         // Build email body based on whether we canceled a meeting or not
         // Now we have the correct Teams URL if it's a Teams meeting
         let emailBody = '';
         let emailSubject = '';
-        
+
         // Build joinButton with updated meetingLink
         const finalJoinButton = meetingLink
           ? `<div style='margin:24px 0;'>
               <a href='${meetingLink}' target='_blank' style='background:#3b28c7;color:#fff;padding:12px 28px;border-radius:8px;text-decoration:none;font-weight:bold;font-size:16px;display:inline-block;'>Join Meeting</a>
             </div>`
           : '';
-        
+
         if (canceledMeeting) {
           // Meeting was canceled and rescheduled - use template if available
           if (templateContent && templateContent.trim()) {
@@ -8332,7 +8337,7 @@ useEffect(() => {
               meetingLocation: newLocationName,
               meetingLink: meetingLink || undefined,
             });
-            
+
             // Manually replace old meeting details if the template has those placeholders
             // Common placeholders might be: {old_date}, {old_time}, {old_location}
             templatedBody = templatedBody
@@ -8342,7 +8347,7 @@ useEffect(() => {
               .replace(/\{previous_date\}/gi, formattedOldDate)
               .replace(/\{previous_time\}/gi, formattedOldTime)
               .replace(/\{previous_location\}/gi, oldLocationName);
-            
+
             // Then format with RTL support
             emailBody = await formatEmailBody(templatedBody, selectedClient.name, {
               client: selectedClient,
@@ -8417,7 +8422,7 @@ useEffect(() => {
             emailSubject = `[${selectedClient.lead_number}] - ${selectedClient.name} - New Meeting Scheduled`;
           }
         }
-        
+
         // STEP 1: Send reschedule notification email (if there was a canceled meeting)
         // This email does NOT include calendar invite - just notification
         if (canceledMeeting && emailBody && emailSubject) {
@@ -8426,7 +8431,7 @@ useEffect(() => {
             if (userId) {
               const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
               const legacyId = isLegacyLead ? parseInt(selectedClient.id.toString().replace('legacy_', ''), 10) : null;
-              
+
               await sendEmailViaBackend({
                 userId,
                 subject: emailSubject,
@@ -8456,12 +8461,12 @@ useEffect(() => {
             // Continue to send invitation email even if reschedule email fails
           }
         }
-        
+
         // STEP 2: Send meeting invitation email with calendar invite (same as schedule meeting)
         // This uses location-based templates and includes calendar invite
         if (insertedData && insertedData.length > 0 && selectedClient.email) {
           console.log('📧 Sending meeting invitation email with calendar invite');
-          
+
           // Import the invitation email sending logic from handleScheduleMeeting
           // This will be done in a separate async block to avoid blocking
           (async () => {
@@ -8489,7 +8494,7 @@ useEffect(() => {
               // Determine the appropriate invitation type based on meeting location
               const location = (rescheduleFormData.location || '').toLowerCase();
               let invitationType: 'invitation' | 'invitation_jlm' | 'invitation_tlv' | 'invitation_tlv_parking' = 'invitation';
-              
+
               if (location.includes('jrslm') || location.includes('jerusalem')) {
                 invitationType = 'invitation_jlm';
               } else if (location.includes('tlv') && location.includes('parking')) {
@@ -8504,20 +8509,20 @@ useEffect(() => {
                 clientEmail: selectedClient.email,
                 meetingDate: newMeeting.date
               });
-              
+
               // Fetch email template based on invitation type and language_id
-              const templateMapping: Record<string, {en: number, he: number}> = {
+              const templateMapping: Record<string, { en: number, he: number }> = {
                 invitation: { en: 151, he: 152 },
                 invitation_jlm: { en: 157, he: 158 },
                 invitation_tlv: { en: 161, he: 162 },
                 invitation_tlv_parking: { en: 159, he: 160 },
               };
-              
+
               const templateIds = templateMapping[invitationType];
-              
+
               // Get language_id from client
               let clientLanguageIdForInvite: number | null = selectedClient.language_id || null;
-              
+
               if (isLegacyLead && !clientLanguageIdForInvite) {
                 const legacyIdForInvite = selectedClient.id.toString().replace('legacy_', '');
                 const { data: legacyData } = await supabase
@@ -8534,7 +8539,7 @@ useEffect(() => {
                   .maybeSingle();
                 clientLanguageIdForInvite = leadData?.language_id || null;
               }
-              
+
               // Determine if Hebrew
               let isHebrew = false;
               if (clientLanguageIdForInvite) {
@@ -8543,16 +8548,16 @@ useEffect(() => {
                   .select('name')
                   .eq('id', clientLanguageIdForInvite)
                   .maybeSingle();
-                
+
                 const languageName = languageData?.name?.toLowerCase() || '';
                 isHebrew = languageName.includes('hebrew') || languageName.includes('עברית') || languageName === 'he';
               } else {
-                isHebrew = selectedClient.language?.toLowerCase() === 'he' || 
-                          selectedClient.language?.toLowerCase() === 'hebrew';
+                isHebrew = selectedClient.language?.toLowerCase() === 'he' ||
+                  selectedClient.language?.toLowerCase() === 'hebrew';
               }
-              
+
               const templateId = isHebrew ? templateIds.he : templateIds.en;
-              
+
               // Fetch the template
               const { data: templateData, error: templateError } = await supabase
                 .from('misc_emailtemplate')
@@ -8564,11 +8569,11 @@ useEffect(() => {
               const [year, month, day] = newMeeting.date.split('-');
               const formattedDate = `${day}/${month}/${year}`;
               const formattedTime = newMeeting.time ? newMeeting.time.substring(0, 5) : '';
-              
+
               // Prepare email subject and body
               let subject = `Meeting with Decker, Pex, Levi Lawoffice - ${formattedDate}`;
               let body = '';
-              
+
               if (!templateData || templateError) {
                 // Fallback email
                 body = `
@@ -8602,34 +8607,34 @@ useEffect(() => {
                     meetingLink: newMeeting.link || ''
                   }
                 );
-                
+
                 if (templateData.name) {
                   subject = templateData.name;
                 }
               }
-              
+
               // Check if recipient email is a Microsoft domain
               const isMicrosoftEmailForInvite = (email: string): boolean => {
                 const microsoftDomains = ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'onmicrosoft.com'];
                 return microsoftDomains.some(domain => email.toLowerCase().includes(`@${domain}`));
               };
-              
+
               const useOutlookCalendarInviteForInvite = isMicrosoftEmailForInvite(selectedClient.email);
               const recipientName = selectedClient.name || 'Valued Client';
               const locationName = rescheduleFormData.location || 'Office';
-              
+
               // Build description HTML for calendar
               let descriptionHtml = `<p>Meeting with <strong>${recipientName}</strong></p>`;
               if (newMeeting.link) {
                 descriptionHtml += `<p><strong>Join Link:</strong> <a href="${newMeeting.link}">${newMeeting.link}</a></p>`;
               }
-              
+
               const calendarSubject = `Meeting with Decker, Pex, Levi Lawoffice`;
-              
+
               // Prepare date/time for calendar
               const startDateTimeForInvite = new Date(`${newMeeting.date}T${formattedTime}:00`);
               const endDateTimeForInvite = new Date(startDateTimeForInvite.getTime() + 60 * 60 * 1000); // 1 hour duration
-              
+
               if (useOutlookCalendarInviteForInvite) {
                 // For Microsoft email clients: Use Microsoft Graph API to create calendar event
                 try {
@@ -8646,7 +8651,7 @@ useEffect(() => {
                     teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
                     timeZone: 'Asia/Jerusalem'
                   });
-                  
+
                   console.log('✅ Outlook calendar invitation sent successfully');
                 } catch (calendarError) {
                   console.error('❌ Failed to create Outlook calendar event:', calendarError);
@@ -8671,20 +8676,20 @@ useEffect(() => {
                     teamsJoinUrl: locationName === 'Teams' ? newMeeting.link : undefined,
                     timeZone: 'Asia/Jerusalem'
                   });
-                  
+
                   const icsBase64 = btoa(unescape(encodeURIComponent(icsContent)));
-                  
+
                   attachments = [{
                     name: 'meeting-invite.ics',
                     contentBytes: icsBase64,
                     contentType: 'text/calendar; charset=utf-8; method=REQUEST'
                   }];
-                  
+
                   console.log('📅 ICS calendar file generated');
                 } catch (icsError) {
                   console.error('❌ Failed to generate ICS file:', icsError);
                 }
-                
+
                 // Send email with ICS attachment
                 await sendEmail(accessToken, {
                   to: selectedClient.email,
@@ -8693,10 +8698,10 @@ useEffect(() => {
                   skipSignature: true,
                   attachments
                 });
-                
+
                 console.log('✅ Email with calendar invite sent successfully');
               }
-              
+
               // Save email to database for tracking
               try {
                 const emailRecord: any = {
@@ -8712,7 +8717,7 @@ useEffect(() => {
                   direction: 'outgoing',
                   attachments: null,
                 };
-                
+
                 if (isLegacyLead) {
                   const numericId = parseInt(selectedClient.id.toString().replace(/[^0-9]/g, ''), 10);
                   emailRecord.legacy_id = isNaN(numericId) ? null : numericId;
@@ -8721,14 +8726,14 @@ useEffect(() => {
                   emailRecord.client_id = selectedClient.id || null;
                   emailRecord.legacy_id = null;
                 }
-                
+
                 await supabase.from('emails').insert(emailRecord);
                 console.log('📧 Invitation email record saved to database');
                 // Stage evaluation is handled automatically by database triggers
               } catch (dbError) {
                 console.error('❌ Failed to save invitation email to database:', dbError);
               }
-              
+
               console.log('✅ Meeting invitation email sent successfully');
             } catch (inviteEmailError) {
               console.error('❌ Error sending meeting invitation email:', inviteEmailError);
@@ -8736,7 +8741,7 @@ useEffect(() => {
             }
           })();
         }
-        
+
       }
 
       // 5. Show toast and close drawer
@@ -8762,33 +8767,33 @@ useEffect(() => {
   // Calculate interaction count (synchronous part)
   const calculateInteractionCountSync = () => {
     if (!selectedClient) return 0;
-    
+
     let count = 0;
-    
+
     // Count manual interactions
     if (selectedClient.manual_interactions && Array.isArray(selectedClient.manual_interactions)) {
       count += selectedClient.manual_interactions.length;
     }
-    
+
     // Count emails
     if (selectedClient.emails && Array.isArray(selectedClient.emails)) {
       count += selectedClient.emails.length;
     }
-    
+
     // Count WhatsApp messages (if available)
     if (selectedClient.whatsapp_messages && Array.isArray(selectedClient.whatsapp_messages)) {
       count += selectedClient.whatsapp_messages.length;
     }
-    
+
     return count;
   };
 
   // Calculate full interaction count including legacy interactions
   const calculateFullInteractionCount = async () => {
     if (!selectedClient) return 0;
-    
+
     let count = calculateInteractionCountSync();
-    
+
     // For legacy leads, fetch and count legacy interactions
     const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id.toString().startsWith('legacy_');
     if (isLegacyLead && selectedClient?.id) {
@@ -8801,7 +8806,7 @@ useEffect(() => {
         console.error('Error counting legacy interactions:', error);
       }
     }
-    
+
     return count;
   };
   // Handle save payments plan
@@ -8819,7 +8824,7 @@ useEffect(() => {
     try {
       // Get current user name from Supabase users table
       const currentUserName = await fetchCurrentUserFullName();
-      
+
       console.log('Current user for payment plan creation:', currentUserName);
 
       // Check if this is a legacy lead
@@ -8829,7 +8834,7 @@ useEffect(() => {
       if (isLegacyLead) {
         // For legacy leads, use finances_paymentplanrow table
         console.log('Saving payment plan for legacy lead:', legacyId);
-        
+
         // Delete existing payment plans for this legacy lead
         const { error: deleteError } = await supabase
           .from('finances_paymentplanrow')
@@ -8864,7 +8869,7 @@ useEffect(() => {
               default: currencyId = 1; break;
             }
           }
-          
+
           // Build the payment plan object, explicitly omitting date and due_date
           // to prevent database defaults from setting them
           const paymentPlan: any = {
@@ -8895,13 +8900,13 @@ useEffect(() => {
             })(), // Ensure currency_id is valid
             client_id: null, // Will be null for legacy leads
           };
-          
+
           // CRITICAL: Set date from payment input, but due_date must be null for legacy leads
           // date should keep its value from payment.dueDate or payment.date
           // due_date will only be set when marking as ready to pay
           paymentPlan.date = payment.dueDate || payment.date || null;
           paymentPlan.due_date = null;
-          
+
           // Double-check before returning - only check due_date
           if (paymentPlan.due_date !== null) {
             console.error('ERROR: due_date is not null!', {
@@ -8912,7 +8917,7 @@ useEffect(() => {
             // Force to null
             paymentPlan.due_date = null;
           }
-          
+
           return paymentPlan;
         });
 
@@ -8928,7 +8933,7 @@ useEffect(() => {
             plan.due_date = null;
           }
         });
-        
+
         // Final verification - log each plan to ensure due_date is null (date should have a value)
         console.log('Payment plans to insert (verified null due_date):', paymentPlansToInsert.map(p => ({
           lead_id: p.lead_id,
@@ -8936,12 +8941,12 @@ useEffect(() => {
           due_date: p.due_date,
           value: p.value
         })));
-        
+
         const { data: insertedPayments, error: paymentInsertError } = await supabase
           .from('finances_paymentplanrow')
           .insert(paymentPlansToInsert)
           .select('id, date, due_date');
-        
+
         // Verify what was actually saved - only check due_date
         if (insertedPayments) {
           insertedPayments.forEach((payment, idx) => {
@@ -8967,7 +8972,7 @@ useEffect(() => {
       } else {
         // For new leads, use payment_plans table
         console.log('Saving payment plan for new lead:', selectedClient.id);
-        
+
         // Delete existing payment plans
         const { error: deleteError } = await supabase
           .from('payment_plans')
@@ -8986,7 +8991,7 @@ useEffect(() => {
           notes: payment.notes,
           created_by: currentUserName,
         }));
-        
+
         // Log the payment plan creation in payment_plan_changes table
         const changesToInsert = paymentPlansToInsert.map(payment => ({
           lead_id: selectedClient.id,
@@ -9021,11 +9026,11 @@ useEffect(() => {
           const { error: historyError } = await supabase
             .from('payment_plan_changes')
             .insert(updatedChanges);
-          
+
           if (historyError) console.error('Error logging payment plan creation:', historyError);
         }
       }
-      
+
       // Optionally, refresh just the payment plans here if needed
       // await refreshPaymentPlans(selectedClient.id);
     } catch (error) {
@@ -9043,17 +9048,17 @@ useEffect(() => {
   const [generatedProformaName, setGeneratedProformaName] = useState<string>('');
   const [interactionCount, setInteractionCount] = useState<number>(0);
   const [interactionsCache, setInteractionsCache] = useState<ClientInteractionsCache | null>(null);
-  
+
   // Note: Interaction count is now calculated upfront when entering the client page
 
   // Tabs array with dynamic interaction count - memoized to ensure updates
   const tabs = useMemo(() => {
     const finalCount = interactionCount || calculateInteractionCountSync();
-    
+
     // Get current stage name
     const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
     const isCreatedStage = areStagesEquivalent(currentStageName, 'Created');
-    
+
     const allTabs = [
       { id: 'info', label: 'Info', icon: InformationCircleIcon, component: InfoTab },
       { id: 'roles', label: 'Roles', icon: UserGroupIcon, component: RolesTab },
@@ -9065,29 +9070,29 @@ useEffect(() => {
       { id: 'interactions', label: 'Interactions', icon: ChatBubbleLeftRightIcon, badge: finalCount, component: InteractionsTab },
       { id: 'finances', label: 'Finances', icon: BanknotesIcon, component: FinancesTab },
     ];
-    
+
     // Filter out Meeting, Price Offer, and Finances tabs when stage is "Created"
     if (isCreatedStage) {
-      return allTabs.filter(tab => 
-        tab.id !== 'meeting' && 
-        tab.id !== 'price' && 
+      return allTabs.filter(tab =>
+        tab.id !== 'meeting' &&
+        tab.id !== 'price' &&
         tab.id !== 'finances'
       );
     }
-    
+
     return allTabs;
   }, [interactionCount, selectedClient]);
-  
+
   // Force re-render when interaction count changes
   const tabsKey = `tabs-${interactionCount}-${selectedClient?.id}`;
-  
+
   // Switch away from hidden tabs (Meeting, Price Offer, Finances) when stage is "Created"
   useEffect(() => {
     if (!selectedClient) return;
-    
+
     const currentStageName = getStageName(selectedClient.stage);
     const isCreatedStage = areStagesEquivalent(currentStageName, 'Created');
-    
+
     if (isCreatedStage && (activeTab === 'meeting' || activeTab === 'price' || activeTab === 'finances')) {
       setActiveTab('info');
     }
@@ -9191,10 +9196,10 @@ useEffect(() => {
   const generateProformaContent = async (data: any, createdBy: string) => {
     const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
     const totalWithVat = data.addVat ? Math.round(total * 1.18 * 100) / 100 : total;
-    
+
     // Generate proforma name
     const proformaName = await generateProformaName();
-    
+
     return JSON.stringify({
       client: data.client,
       clientId: data.clientId,
@@ -9234,7 +9239,7 @@ useEffect(() => {
             createdBy = user.email;
           }
         }
-      } catch {}
+      } catch { }
       // Generate proforma content with name and createdBy
       const proformaContent = await generateProformaContent(proformaData, createdBy);
       // Save proforma to the database for the specific payment row
@@ -9259,9 +9264,9 @@ useEffect(() => {
         .from('payment_plans')
         .update({ proforma: proformaContent })
         .eq('id', rowId);
-      
+
       if (error) throw error;
-      
+
       toast.success('Proforma saved successfully!');
       return true;
     } catch (error) {
@@ -9274,7 +9279,7 @@ useEffect(() => {
   // Function to view existing proforma
   const handleViewProforma = (payment: any) => {
     if (!payment.proforma || payment.proforma.trim() === '') return;
-    
+
     try {
       const proformaData = JSON.parse(payment.proforma);
       setGeneratedProformaName(proformaData.proformaName || 'Proforma');
@@ -9295,7 +9300,7 @@ useEffect(() => {
     if (!proformaData || proformaData.trim() === '') {
       return 'Proforma';
     }
-    
+
     try {
       const parsed = JSON.parse(proformaData);
       return parsed.proformaName || 'Proforma';
@@ -9307,16 +9312,109 @@ useEffect(() => {
   // Add state for sub-leads
   const [subLeads, setSubLeads] = useState<any[]>([]);
   const [isMasterLead, setIsMasterLead] = useState(false);
-  
+
   // After extracting fullLeadNumber
   // Check if this is a sub-lead by looking at the lead_number in the database
-  // Logic: If database lead_number contains '/', then it's a sub-lead
-  // Example: lead_number = "192974/1" means this is a sub-lead of master lead "192974"
+  // Logic for determining sub-leads:
+  // - Legacy leads: If lead_number contains '/' OR if master_id is not null, then it's a sub-lead
+  // - New leads: If master_id is not null, then it's a sub-lead
+  const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
   const clientLeadNumber = selectedClient?.lead_number ?? '';
-  const isSubLead = !!clientLeadNumber && clientLeadNumber.includes('/');
+
+  // Check if it's a sub-lead based on lead type
+  // For legacy leads: check both lead_number pattern AND master_id
+  // For new leads: check master_id
+  const isSubLead = isLegacyLead
+    ? (!!clientLeadNumber && clientLeadNumber.includes('/')) || (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '')
+    : (!!selectedClient?.master_id && String(selectedClient.master_id).trim() !== '');
+
+  console.log('🔍 Clients.tsx - Sub-lead detection:', {
+    isLegacyLead,
+    clientLeadNumber,
+    hasSlash: !!(clientLeadNumber && clientLeadNumber.includes('/')),
+    masterId: selectedClient?.master_id,
+    hasMasterId: !!(selectedClient?.master_id && String(selectedClient.master_id).trim() !== ''),
+    isSubLead
+  });
+
+  // Fetch master lead number for new leads
+  useEffect(() => {
+    if (!isSubLead || isLegacyLead || !selectedClient?.master_id) {
+      setMasterLeadNumberForNewLead(null);
+      return;
+    }
+
+    // For new leads, fetch the master lead's lead_number
+    const fetchMasterLeadNumber = async () => {
+      try {
+        const { data, error } = await supabase
+          .from('leads')
+          .select('lead_number')
+          .eq('id', selectedClient.master_id)
+          .single();
+
+        if (error) throw error;
+        setMasterLeadNumberForNewLead(data?.lead_number || null);
+      } catch (error) {
+        console.error('Error fetching master lead number:', error);
+        setMasterLeadNumberForNewLead(null);
+      }
+    };
+
+    fetchMasterLeadNumber();
+  }, [isSubLead, isLegacyLead, selectedClient?.master_id]);
+
+  // Fetch master lead number for legacy leads with master_id (not lead_number pattern)
+  useEffect(() => {
+    if (!isSubLead || !isLegacyLead || !selectedClient?.master_id) {
+      setMasterLeadNumberForLegacy(null);
+      return;
+    }
+
+    // If lead_number doesn't contain '/', we need to fetch the master lead's lead_number
+    if (!clientLeadNumber.includes('/')) {
+      const fetchMasterLeadNumber = async () => {
+        try {
+          const { data, error } = await supabase
+            .from('leads_lead')
+            .select('id')
+            .eq('id', selectedClient.master_id)
+            .single();
+
+          if (error) throw error;
+          // For legacy leads, master lead number is just the master_id as a string
+          setMasterLeadNumberForLegacy(String(selectedClient.master_id));
+        } catch (error) {
+          console.error('Error fetching legacy master lead number:', error);
+          setMasterLeadNumberForLegacy(null);
+        }
+      };
+
+      fetchMasterLeadNumber();
+    } else {
+      // If lead_number contains '/', extract it from the pattern
+      setMasterLeadNumberForLegacy(clientLeadNumber.split('/')[0]);
+    }
+  }, [isSubLead, isLegacyLead, selectedClient?.master_id, clientLeadNumber]);
+
+  // Get master lead number
   const masterLeadNumber = isSubLead
-    ? clientLeadNumber.split('/')[0]
-    : selectedClient?.master_id || null;
+    ? (isLegacyLead
+      ? (clientLeadNumber.includes('/')
+        ? clientLeadNumber.split('/')[0]
+        : masterLeadNumberForLegacy)
+      : masterLeadNumberForNewLead)
+    : null;
+
+  console.log('🔍 Master lead number calculation:', {
+    isSubLead,
+    isLegacyLead,
+    clientLeadNumber,
+    hasSlash: clientLeadNumber.includes('/'),
+    masterLeadNumberForLegacy,
+    masterLeadNumberForNewLead,
+    masterLeadNumber
+  });
 
   // Function to fetch sub-leads for master leads
   const fetchSubLeads = useCallback(async (baseLeadNumber: string) => {
@@ -9337,15 +9435,15 @@ useEffect(() => {
     // If both are NULL, it means there are no subleads connected to it - don't fetch
     const normalizedBase = baseLeadNumber.trim();
     const normalizedId = normalizedBase.replace(/^C/, ''); // Remove 'C' prefix if present
-    
+
     let baseLeadMasterId: string | null | undefined = undefined;
     let baseLeadManualId: string | null | undefined = undefined;
     let foundBaseLead = false;
-    
+
     // Determine if this is a legacy lead based on selectedClient
     // If selectedClient is a legacy lead, the base lead is also a legacy lead
     const isLegacyLead = selectedClient?.id && selectedClient.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, ONLY query leads_lead table
       try {
@@ -9356,7 +9454,7 @@ useEffect(() => {
             .select('master_id, manual_id')
             .eq('id', numericId)
             .maybeSingle();
-          
+
           if (!legacyError && legacyBaseLead) {
             baseLeadMasterId = legacyBaseLead.master_id;
             baseLeadManualId = legacyBaseLead.manual_id;
@@ -9374,7 +9472,7 @@ useEffect(() => {
           .select('master_id, manual_id')
           .eq('lead_number', normalizedBase)
           .maybeSingle();
-        
+
         if (!newLeadError && newBaseLead) {
           baseLeadMasterId = newBaseLead.master_id;
           baseLeadManualId = newBaseLead.manual_id;
@@ -9384,12 +9482,12 @@ useEffect(() => {
         console.error('Error checking new lead master_id/manual_id:', error);
       }
     }
-    
+
     // If we found the base lead and it has a master_id (meaning it IS a sublead), don't fetch subleads
     if (foundBaseLead) {
       // Check if master_id is NOT NULL/empty (meaning this base lead IS a sublead itself)
       const hasMasterId = baseLeadMasterId !== null && baseLeadMasterId !== undefined && String(baseLeadMasterId).trim() !== '';
-      
+
       // If the base lead has a master_id, it IS a sublead - don't fetch its subleads
       if (hasMasterId) {
         setSubLeads([]);
@@ -9417,11 +9515,11 @@ useEffect(() => {
         const validNewSubLeads = newLeads.filter(lead => {
           const leadNumberValue = lead.lead_number || '';
           const hasValidLeadNumber = !!leadNumberValue && leadNumberValue.includes('/');
-          
+
           if (!hasValidLeadNumber) {
             return false;
           }
-          
+
           // If master_id exists, it should match the base lead (or base without prefix)
           // But don't exclude if master_id is not set - pattern matching is sufficient
           if (lead.master_id && String(lead.master_id).trim() !== '') {
@@ -9433,7 +9531,7 @@ useEffect(() => {
               return false; // master_id doesn't point to this base lead
             }
           }
-          
+
           return true;
         });
         allSubLeads.push(...validNewSubLeads);
@@ -9441,7 +9539,7 @@ useEffect(() => {
 
       // Also check for legacy leads with master_id pointing to this base lead
       const normalizedId = normalizedBase.replace(/^C/, ''); // Remove 'C' prefix if present
-      
+
       const { data: legacyLeads, error: legacyLeadsError } = await supabase
         .from('leads_lead')
         .select('id, name, stage, manual_id, master_id')
@@ -9463,10 +9561,15 @@ useEffect(() => {
 
       // Only set as master lead if we found valid subleads with master_id or manual_id
       if (allSubLeads.length > 0) {
+        console.log('✅ Clients.tsx - Setting master lead state:', {
+          subLeadsCount: allSubLeads.length,
+          isMasterLead: true
+        });
         setSubLeads(allSubLeads);
         setIsMasterLead(true);
         return allSubLeads;
       } else {
+        console.log('🔍 Clients.tsx - No sub-leads found, not a master lead');
         setSubLeads([]);
         setIsMasterLead(false);
         return [];
@@ -9482,14 +9585,14 @@ useEffect(() => {
   // Function to fetch next due payment
   const fetchNextDuePayment = useCallback(async (clientId: string) => {
     if (!clientId) return;
-    
+
     try {
       const isLegacyLead = clientId.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, fetch from finances_paymentplanrow table
         const legacyId = clientId.toString().replace('legacy_', '');
-        
+
         const { data, error } = await supabase
           .from('finances_paymentplanrow')
           .select(`
@@ -9503,14 +9606,14 @@ useEffect(() => {
           .is('cancel_date', null) // Only active payments
           .order('due_date', { ascending: true })
           .limit(1);
-        
+
         if (error) throw error;
-        
+
         if (data && data.length > 0) {
           const payment = data[0];
           const today = new Date();
           const dueDate = new Date(payment.due_date);
-          
+
           // Only show if payment is due today or in the future
           if (dueDate >= today) {
             setNextDuePayment({
@@ -9532,14 +9635,14 @@ useEffect(() => {
           .eq('paid', false) // Only unpaid payments
           .order('due_date', { ascending: true })
           .limit(1);
-        
+
         if (error) throw error;
-        
+
         if (data && data.length > 0) {
           const payment = data[0];
           const today = new Date();
           const dueDate = new Date(payment.due_date);
-          
+
           // Only show if payment is due today or in the future
           if (dueDate >= today) {
             setNextDuePayment({
@@ -9561,8 +9664,15 @@ useEffect(() => {
 
   // Fetch sub-leads when client changes
   useEffect(() => {
+    console.log('🔍 Clients.tsx - Checking for sub-leads:', {
+      selectedClientId: selectedClient?.id,
+      masterId: selectedClient?.master_id,
+      leadNumber: selectedClient?.lead_number
+    });
+
     // Don't fetch subleads if current client is a sublead (has master_id)
     if (selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') {
+      console.log('🔍 Clients.tsx - Client is a sub-lead, not fetching sub-leads');
       setSubLeads([]);
       setIsMasterLead(false);
       return;
@@ -9572,16 +9682,16 @@ useEffect(() => {
     // IMPORTANT: Use the route parameter (fullLeadNumber) as the source of truth for legacy leads
     // The route parameter is always correct, while selectedClient.lead_number might be wrong
     let subLeadBase = '';
-    
+
     const isLegacyLead = selectedClient?.id && selectedClient.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, use the route parameter directly (source of truth)
       // If route has a numeric ID like "123284", use it directly
       // Otherwise, fall back to the ID from selectedClient
       const routeLeadNumber = fullLeadNumber.trim();
       const isNumericRoute = /^\d+$/.test(routeLeadNumber);
-      
+
       if (isNumericRoute) {
         // Route parameter is a numeric ID - use it directly
         subLeadBase = routeLeadNumber;
@@ -9685,8 +9795,8 @@ useEffect(() => {
     dropdownItems = (
       <>
         <li>
-          <a 
-            className="flex items-center gap-3 py-3 saira-regular" 
+          <a
+            className="flex items-center gap-3 py-3 saira-regular"
             onClick={() => {
               setShowUpdateDrawer(true);
               (document.activeElement as HTMLElement)?.blur();
@@ -9831,19 +9941,19 @@ useEffect(() => {
             </li>
           </>
         ) : (areStagesEquivalent(currentStageName, 'meeting_scheduled') ||
-        areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
-        (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) ? (
+          areStagesEquivalent(currentStageName, 'Meeting rescheduling') ||
+          (isStageNumeric && (stageNumeric === 55 || stageNumeric === 21))) ? (
           <>
             {/* Only show Schedule Meeting button for stage 55, not for "Meeting scheduled" or "Meeting rescheduled" */}
-            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') && 
-             !areStagesEquivalent(currentStageName, 'Meeting rescheduling') && (
-              <li>
-                <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
-                  <CalendarDaysIcon className="w-5 h-5 text-black" />
-                  {scheduleMenuLabel}
-                </a>
-              </li>
-            )}
+            {!areStagesEquivalent(currentStageName, 'meeting_scheduled') &&
+              !areStagesEquivalent(currentStageName, 'Meeting rescheduling') && (
+                <li>
+                  <a className="flex items-center gap-3 py-3 saira-regular" onClick={handleScheduleMenuClick}>
+                    <CalendarDaysIcon className="w-5 h-5 text-black" />
+                    {scheduleMenuLabel}
+                  </a>
+                </li>
+              )}
             <li>
               <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => { setShowRescheduleDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}>
                 <ArrowPathIcon className="w-5 h-5 text-black" />
@@ -9892,13 +10002,13 @@ useEffect(() => {
           const isStage21 = (isStageNumeric && stageNumeric === 21) || areStagesEquivalent(currentStageName, 'Meeting rescheduling');
           return !isCommunicationExcluded && !isStage21;
         })() && (
-          <li>
-            <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
-              <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
-              Communication Started
-            </a>
-          </li>
-        )}
+            <li>
+              <a className="flex items-center gap-3 py-3 saira-regular" onClick={() => handleStageUpdate('Communication Started')}>
+                <ChatBubbleLeftRightIcon className="w-5 h-5 text-black" />
+                Communication Started
+              </a>
+            </li>
+          )}
       </>
     );
   } else if (selectedClient && areStagesEquivalent(currentStageName, 'Mtng sum+Agreement sent')) {
@@ -9970,12 +10080,12 @@ useEffect(() => {
   // Fetch contracts and contacts when drawer opens
   useEffect(() => {
     if (!showSubLeadDrawer || !selectedClient) return;
-    
+
     const fetchContractsAndContacts = async () => {
       try {
         const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
         const contactsMap: { [contactId: number]: { contactName: string; contractId: string; contractName: string } } = {};
-        
+
         if (!isLegacyLead && selectedClient?.id) {
           // For new leads, fetch contracts from contracts table
           const { data: contracts, error: contractsError } = await supabase
@@ -9983,36 +10093,36 @@ useEffect(() => {
             .select('id, template_id, contact_id, contact_name, status')
             .eq('client_id', selectedClient.id)
             .order('created_at', { ascending: false });
-          
+
           if (contractsError) {
             console.error('Error fetching contracts:', contractsError);
             return;
           }
-          
+
           if (contracts && contracts.length > 0) {
             // Fetch contract templates to get contract names
             const { data: templates } = await supabase
               .from('contract_templates')
               .select('id, name');
-            
+
             const templateMap = new Map((templates || []).map(t => [t.id, t.name]));
-            
+
             // Fetch contacts to get contact names
             const { data: leadContacts } = await supabase
               .from('lead_leadcontact')
               .select('contact_id, newlead_id')
               .eq('newlead_id', selectedClient.id);
-            
+
             if (leadContacts && leadContacts.length > 0) {
               const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
-              
-            const { data: contacts } = await supabase
-              .from('leads_contact')
-              .select('id, name, email, phone, mobile, country_id')
+
+              const { data: contacts } = await supabase
+                .from('leads_contact')
+                .select('id, name, email, phone, mobile, country_id')
                 .in('id', contactIds);
-              
+
               const contactMap = new Map((contacts || []).map(c => [c.id, c]));
-              
+
               // Process contracts and map them to contacts
               contracts.forEach(contract => {
                 const contactId = contract.contact_id;
@@ -10024,7 +10134,7 @@ useEffect(() => {
                   const contactMobile = contactRecord?.mobile || null;
                   const contactCountryId = contactRecord?.country_id ?? null;
                   const contractName = templateMap.get(contract.template_id) || 'Contract';
-                  
+
                   if (!contactsMap[contactId] || contracts.indexOf(contract) === 0) {
                     // Only store the most recent contract per contact
                     contactsMap[contactId] = {
@@ -10043,7 +10153,7 @@ useEffect(() => {
             }
           }
         }
-        
+
         const contactsList = Object.values(contactsMap);
         setContactsWithContracts(contactsList);
         setContactContracts(contactsMap);
@@ -10051,7 +10161,7 @@ useEffect(() => {
         console.error('Error fetching contracts and contacts:', error);
       }
     };
-    
+
     fetchContractsAndContacts();
   }, [showSubLeadDrawer, selectedClient]);
   const [subLeadForm, setSubLeadForm] = useState({
@@ -10125,66 +10235,66 @@ useEffect(() => {
     }
   };
 
-const extractDigits = (value: any): string | null => {
-  if (value === null || value === undefined) return null;
-  const digits = String(value).match(/\d+/g)?.join('');
-  if (!digits || digits.trim() === '') return null;
-  return digits.replace(/^0+(?=\d)/, '') || '0';
-};
+  const extractDigits = (value: any): string | null => {
+    if (value === null || value === undefined) return null;
+    const digits = String(value).match(/\d+/g)?.join('');
+    if (!digits || digits.trim() === '') return null;
+    return digits.replace(/^0+(?=\d)/, '') || '0';
+  };
 
-const getMaxNumericValue = (rows: any[] | null | undefined, key: string): bigint => {
-  let max = BigInt(0);
-  rows?.forEach(row => {
-    const digits = extractDigits((row as any)[key]);
-    if (digits) {
-      try {
-        const value = BigInt(digits);
-        if (value > max) {
-          max = value;
+  const getMaxNumericValue = (rows: any[] | null | undefined, key: string): bigint => {
+    let max = BigInt(0);
+    rows?.forEach(row => {
+      const digits = extractDigits((row as any)[key]);
+      if (digits) {
+        try {
+          const value = BigInt(digits);
+          if (value > max) {
+            max = value;
+          }
+        } catch {
+          // Ignore values that cannot be parsed to BigInt
         }
-      } catch {
-        // Ignore values that cannot be parsed to BigInt
       }
-    }
-  });
-  return max;
-};
+    });
+    return max;
+  };
 
-const getMaxManualIdFromLeads = async (): Promise<bigint> => {
-  const { data, error } = await supabase
-    .from('leads')
-    .select('manual_id');
+  const getMaxManualIdFromLeads = async (): Promise<bigint> => {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('manual_id');
 
-  if (error) throw error;
-  return getMaxNumericValue(data, 'manual_id');
-};
+    if (error) throw error;
+    return getMaxNumericValue(data, 'manual_id');
+  };
 
-const getMaxManualIdFromLegacy = async (): Promise<bigint> => {
-  const { data, error } = await supabase
-    .from('leads_lead')
-    .select('manual_id');
+  const getMaxManualIdFromLegacy = async (): Promise<bigint> => {
+    const { data, error } = await supabase
+      .from('leads_lead')
+      .select('manual_id');
 
-  if (error) throw error;
-  return getMaxNumericValue(data, 'manual_id');
-};
+    if (error) throw error;
+    return getMaxNumericValue(data, 'manual_id');
+  };
 
-const getMaxLeadNumberFromLeads = async (): Promise<bigint> => {
-  const { data, error } = await supabase
-    .from('leads')
-    .select('lead_number');
+  const getMaxLeadNumberFromLeads = async (): Promise<bigint> => {
+    const { data, error } = await supabase
+      .from('leads')
+      .select('lead_number');
 
-  if (error) throw error;
-  return getMaxNumericValue(data, 'lead_number');
-};
+    if (error) throw error;
+    return getMaxNumericValue(data, 'lead_number');
+  };
 
-const getMaxLeadNumberFromLegacy = async (): Promise<bigint> => {
-  const { data, error } = await supabase
-    .from('leads_lead')
-    .select('lead_number');
+  const getMaxLeadNumberFromLegacy = async (): Promise<bigint> => {
+    const { data, error } = await supabase
+      .from('leads_lead')
+      .select('lead_number');
 
-  if (error) throw error;
-  return getMaxNumericValue(data, 'lead_number');
-};
+    if (error) throw error;
+    return getMaxNumericValue(data, 'lead_number');
+  };
 
   const getMaxLegacyLeadId = async (): Promise<bigint> => {
     const { data, error } = await supabase
@@ -10199,169 +10309,169 @@ const getMaxLeadNumberFromLegacy = async (): Promise<bigint> => {
     return parsed ?? BigInt(0);
   };
 
-const manualIdExists = async (manualId: bigint): Promise<boolean> => {
-  const manualString = manualId.toString();
-
-  try {
-    // Check leads table first
-    const leadsCheck = await supabase
-      .from('leads')
-      .select('id', { count: 'exact', head: true })
-      .or(
-        [
-          `manual_id.eq.${manualString}`,
-          `lead_number.eq.${manualString}`,
-          `lead_number.eq.L${manualString}`,
-          `lead_number.like.${manualString}/%`,
-          `lead_number.like.L${manualString}/%`,
-        ].join(',')
-      );
-
-    if (leadsCheck.error) {
-      console.warn('Error checking manual_id in leads table:', leadsCheck.error);
-    } else if ((leadsCheck.count ?? 0) > 0) {
-      return true;
-    }
-
-    // Check legacy table separately to avoid query issues
-    try {
-      const legacyCheckManualId = await supabase
-        .from('leads_lead')
-        .select('id', { count: 'exact', head: true })
-        .eq('manual_id', manualString);
-      
-      if (!legacyCheckManualId.error && (legacyCheckManualId.count ?? 0) > 0) {
-        return true;
-      }
-    } catch (err) {
-      console.warn('Error checking manual_id in leads_lead table:', err);
-    }
+  const manualIdExists = async (manualId: bigint): Promise<boolean> => {
+    const manualString = manualId.toString();
 
     try {
-      const legacyCheckLeadNumber = await supabase
-        .from('leads_lead')
-        .select('id', { count: 'exact', head: true })
-        .eq('lead_number', manualString);
-      
-      if (!legacyCheckLeadNumber.error && (legacyCheckLeadNumber.count ?? 0) > 0) {
-        return true;
-      }
-    } catch (err) {
-      console.warn('Error checking lead_number in leads_lead table:', err);
-    }
-
-    // Don't check id.eq as it might cause type issues - manual_id and lead_number are sufficient
-    return false;
-  } catch (error) {
-    console.error('Error in manualIdExists:', error);
-    // On error, assume ID doesn't exist to allow creation to proceed
-    return false;
-  }
-};
-
-const ensureUniqueManualId = async (initialManualId: bigint): Promise<bigint> => {
-  let candidate = initialManualId;
-  let attempts = 0;
-
-  while (attempts < 1000) {
-    const exists = await manualIdExists(candidate);
-    if (!exists) return candidate;
-    candidate += BigInt(1);
-    attempts += 1;
-  }
-
-  throw new Error('Unable to determine a unique manual_id');
-};
-
-const getNextAvailableManualId = async (): Promise<bigint> => {
-  try {
-    const [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax] = await Promise.all([
-      getMaxManualIdFromLeads().catch(err => {
-        console.warn('Error getting max manual_id from leads table:', err);
-        return BigInt(0);
-      }),
-      getMaxManualIdFromLegacy().catch(err => {
-        console.warn('Error getting max manual_id from legacy table:', err);
-        return BigInt(0);
-      }),
-      getMaxLeadNumberFromLeads().catch(err => {
-        console.warn('Error getting max lead_number from leads table:', err);
-        return BigInt(0);
-      }),
-      getMaxLeadNumberFromLegacy().catch(err => {
-        console.warn('Error getting max lead_number from legacy table:', err);
-        return BigInt(0);
-      }),
-      getMaxLegacyLeadId().catch(err => {
-        console.warn('Error getting max legacy lead id:', err);
-        return BigInt(0);
-      }),
-    ]);
-    const currentMax = [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax].reduce(
-      (acc, value) => (value > acc ? value : acc),
-      BigInt(0)
-    );
-    return await ensureUniqueManualId(currentMax + BigInt(1));
-  } catch (error) {
-    console.error('Error in getNextAvailableManualId, using timestamp-based fallback:', error);
-    // Fallback: use timestamp-based ID if all else fails
-    const timestampId = BigInt(Date.now());
-    return timestampId;
-  }
-};
-
-const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number> => {
-  if (!baseLeadNumber || baseLeadNumber.trim() === '') {
-    throw new Error('Invalid base lead number for sub-lead suffix calculation');
-  }
-
-  const normalizedBase = baseLeadNumber.trim();
-  const suffixes: number[] = [];
-
-  // Query both new leads and legacy leads tables for suffixes
-  try {
-    const [newLeadRowsResult, legacyLeadRowsResult] = await Promise.all([
-      supabase
+      // Check leads table first
+      const leadsCheck = await supabase
         .from('leads')
-        .select('lead_number')
-        .like('lead_number', `${normalizedBase}/%`)
-        .limit(100),
-      supabase
-        .from('leads_lead')
-        .select('lead_number')
-        .like('lead_number', `${normalizedBase}/%`)
-        .limit(100)
-    ]);
+        .select('id', { count: 'exact', head: true })
+        .or(
+          [
+            `manual_id.eq.${manualString}`,
+            `lead_number.eq.${manualString}`,
+            `lead_number.eq.L${manualString}`,
+            `lead_number.like.${manualString}/%`,
+            `lead_number.like.L${manualString}/%`,
+          ].join(',')
+        );
 
-    if (newLeadRowsResult.error) {
-      console.warn('Error querying new leads for suffix:', newLeadRowsResult.error);
-    } else {
-      newLeadRowsResult.data?.forEach(row => {
-        const leadNumber = row.lead_number ? String(row.lead_number) : '';
-        const match = leadNumber.match(/\/(\d+)$/);
-        if (match) {
-          const parsed = parseInt(match[1], 10);
-          if (!Number.isNaN(parsed)) {
-            suffixes.push(parsed);
-          }
+      if (leadsCheck.error) {
+        console.warn('Error checking manual_id in leads table:', leadsCheck.error);
+      } else if ((leadsCheck.count ?? 0) > 0) {
+        return true;
+      }
+
+      // Check legacy table separately to avoid query issues
+      try {
+        const legacyCheckManualId = await supabase
+          .from('leads_lead')
+          .select('id', { count: 'exact', head: true })
+          .eq('manual_id', manualString);
+
+        if (!legacyCheckManualId.error && (legacyCheckManualId.count ?? 0) > 0) {
+          return true;
         }
-      });
+      } catch (err) {
+        console.warn('Error checking manual_id in leads_lead table:', err);
+      }
+
+      try {
+        const legacyCheckLeadNumber = await supabase
+          .from('leads_lead')
+          .select('id', { count: 'exact', head: true })
+          .eq('lead_number', manualString);
+
+        if (!legacyCheckLeadNumber.error && (legacyCheckLeadNumber.count ?? 0) > 0) {
+          return true;
+        }
+      } catch (err) {
+        console.warn('Error checking lead_number in leads_lead table:', err);
+      }
+
+      // Don't check id.eq as it might cause type issues - manual_id and lead_number are sufficient
+      return false;
+    } catch (error) {
+      console.error('Error in manualIdExists:', error);
+      // On error, assume ID doesn't exist to allow creation to proceed
+      return false;
+    }
+  };
+
+  const ensureUniqueManualId = async (initialManualId: bigint): Promise<bigint> => {
+    let candidate = initialManualId;
+    let attempts = 0;
+
+    while (attempts < 1000) {
+      const exists = await manualIdExists(candidate);
+      if (!exists) return candidate;
+      candidate += BigInt(1);
+      attempts += 1;
     }
 
-    // Note: leads_lead table doesn't have 'lead_number' column
-    // Legacy leads use 'id' as the lead number, and sub-leads are identified by 'master_id'
-    // So we skip querying leads_lead for suffixes here - it will be handled separately
-    // when creating legacy sub-leads by counting existing sub-leads with same master_id
-  } catch (error) {
-    console.warn('Error processing leads for suffix:', error);
-    // Return default suffix 2 if processing fails
-    return 2;
-  }
+    throw new Error('Unable to determine a unique manual_id');
+  };
 
-  // Calculate suffix from found values, default to 2
-  const calculatedSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 2;
-  return Math.max(calculatedSuffix, 2);
-};
+  const getNextAvailableManualId = async (): Promise<bigint> => {
+    try {
+      const [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax] = await Promise.all([
+        getMaxManualIdFromLeads().catch(err => {
+          console.warn('Error getting max manual_id from leads table:', err);
+          return BigInt(0);
+        }),
+        getMaxManualIdFromLegacy().catch(err => {
+          console.warn('Error getting max manual_id from legacy table:', err);
+          return BigInt(0);
+        }),
+        getMaxLeadNumberFromLeads().catch(err => {
+          console.warn('Error getting max lead_number from leads table:', err);
+          return BigInt(0);
+        }),
+        getMaxLeadNumberFromLegacy().catch(err => {
+          console.warn('Error getting max lead_number from legacy table:', err);
+          return BigInt(0);
+        }),
+        getMaxLegacyLeadId().catch(err => {
+          console.warn('Error getting max legacy lead id:', err);
+          return BigInt(0);
+        }),
+      ]);
+      const currentMax = [newManualMax, legacyManualMax, newLeadNumberMax, legacyLeadNumberMax, legacyIdMax].reduce(
+        (acc, value) => (value > acc ? value : acc),
+        BigInt(0)
+      );
+      return await ensureUniqueManualId(currentMax + BigInt(1));
+    } catch (error) {
+      console.error('Error in getNextAvailableManualId, using timestamp-based fallback:', error);
+      // Fallback: use timestamp-based ID if all else fails
+      const timestampId = BigInt(Date.now());
+      return timestampId;
+    }
+  };
+
+  const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number> => {
+    if (!baseLeadNumber || baseLeadNumber.trim() === '') {
+      throw new Error('Invalid base lead number for sub-lead suffix calculation');
+    }
+
+    const normalizedBase = baseLeadNumber.trim();
+    const suffixes: number[] = [];
+
+    // Query both new leads and legacy leads tables for suffixes
+    try {
+      const [newLeadRowsResult, legacyLeadRowsResult] = await Promise.all([
+        supabase
+          .from('leads')
+          .select('lead_number')
+          .like('lead_number', `${normalizedBase}/%`)
+          .limit(100),
+        supabase
+          .from('leads_lead')
+          .select('lead_number')
+          .like('lead_number', `${normalizedBase}/%`)
+          .limit(100)
+      ]);
+
+      if (newLeadRowsResult.error) {
+        console.warn('Error querying new leads for suffix:', newLeadRowsResult.error);
+      } else {
+        newLeadRowsResult.data?.forEach(row => {
+          const leadNumber = row.lead_number ? String(row.lead_number) : '';
+          const match = leadNumber.match(/\/(\d+)$/);
+          if (match) {
+            const parsed = parseInt(match[1], 10);
+            if (!Number.isNaN(parsed)) {
+              suffixes.push(parsed);
+            }
+          }
+        });
+      }
+
+      // Note: leads_lead table doesn't have 'lead_number' column
+      // Legacy leads use 'id' as the lead number, and sub-leads are identified by 'master_id'
+      // So we skip querying leads_lead for suffixes here - it will be handled separately
+      // when creating legacy sub-leads by counting existing sub-leads with same master_id
+    } catch (error) {
+      console.warn('Error processing leads for suffix:', error);
+      // Return default suffix 2 if processing fails
+      return 2;
+    }
+
+    // Calculate suffix from found values, default to 2
+    const calculatedSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 2;
+    return Math.max(calculatedSuffix, 2);
+  };
   const prefillSubLeadFormFromClient = useCallback(() => {
     if (!selectedClient) return;
 
@@ -10372,10 +10482,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       selectedClient.case_handler_id != null
         ? String(selectedClient.case_handler_id)
         : (() => {
-            if (!selectedClient.handler) return '';
-            const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
-            return found?.id || '';
-          })();
+          if (!selectedClient.handler) return '';
+          const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
+          return found?.id || '';
+        })();
 
     const handlerLabel = rawHandlerId
       ? handlerOptionsMap.get(rawHandlerId) || selectedClient.handler || ''
@@ -10473,7 +10583,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
     try {
       // Check if the parent is a legacy lead
       const isLegacyParent = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-      
+
       // Get parent legacy lead's actual ID if it's a legacy lead
       let parentLegacyId: number | null = null;
       if (isLegacyParent) {
@@ -10485,13 +10595,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           return;
         }
       }
-      
+
       const manualId = await getNextAvailableManualId();
       // For legacy leads, manual_id should be numeric (bigint) - ensure it's a number
       // For new leads, manual_id is stored as text
       const manualIdString = manualId.toString(); // Used for new leads and navigation
       const manualIdForLegacy = isLegacyParent ? Number(manualId) : manualId.toString();
-      
+
       // Ensure parentLegacyId is properly set and numeric
       if (isLegacyParent && (!parentLegacyId || isNaN(parentLegacyId))) {
         toast.error('Invalid parent legacy lead ID.');
@@ -10509,7 +10619,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           .select('id')
           .eq('master_id', parentLegacyId)
           .not('master_id', 'is', null);
-        
+
         if (countError) {
           console.warn('Error counting existing legacy sub-leads:', countError);
           nextSuffix = 2; // Default to 2 if count fails
@@ -10521,16 +10631,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         // For new leads, use standard suffix calculation
         nextSuffix = await computeNextSubLeadSuffix(masterBaseNumber);
       }
-      
+
       const subLeadNumber = `${masterBaseNumber}/${nextSuffix}`;
-      
+
       // For legacy leads, master_id should be the parent's actual ID (numeric), not extracted digits
       // For new leads, use extracted digits or base number
       const masterIdValue = isLegacyParent ? parentLegacyId : (extractDigits(masterBaseNumber) ?? masterBaseNumber);
 
       // For sub-leads, use form's category_id first (user may have changed it), then fall back to master lead
       let categoryIdValue: number | null = null;
-      
+
       // Primary source: Form's categoryId (user selection)
       if (subLeadForm.categoryId && subLeadForm.categoryId.trim() !== '') {
         const categoryIdStr = subLeadForm.categoryId.trim();
@@ -10539,11 +10649,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           categoryIdValue = parsedId;
         }
       }
-      
+
       // If not in form, try to find it from the form category name/text
       if (categoryIdValue === null && subLeadForm.category && subLeadForm.category.trim() !== '') {
-        const matchingOption = categoryOptions.find(opt => 
-          opt.label === subLeadForm.category || 
+        const matchingOption = categoryOptions.find(opt =>
+          opt.label === subLeadForm.category ||
           opt.label.toLowerCase() === subLeadForm.category.toLowerCase()
         );
         if (matchingOption) {
@@ -10553,34 +10663,34 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           }
         }
       }
-      
+
       // Fallback: Inherit from master lead's category_id
       if (categoryIdValue === null && selectedClient?.category_id != null) {
-        const clientCategoryId = typeof selectedClient.category_id === 'number' 
-          ? selectedClient.category_id 
+        const clientCategoryId = typeof selectedClient.category_id === 'number'
+          ? selectedClient.category_id
           : Number(selectedClient.category_id);
         if (!Number.isNaN(clientCategoryId) && clientCategoryId > 0) {
           categoryIdValue = clientCategoryId;
         }
       }
-      
+
       // If category_id is still null but we have category text from master lead, search for it in allCategories
       if (categoryIdValue === null && selectedClient?.category && selectedClient.category.trim() !== '') {
         console.log('🔍 Master lead has category text but no category_id, searching in allCategories:', {
           categoryText: selectedClient.category,
           allCategoriesCount: allCategories.length
         });
-        
+
         // Try to find category by matching the text
         // The category text might be in format like "Lived bef 1933,le af (Germany)" or just the name
         const categoryText = selectedClient.category.trim();
-        
+
         // First try exact match with category name
         let foundCategory = allCategories.find((cat: any) => {
           const catName = cat.name?.trim() || '';
           return catName.toLowerCase() === categoryText.toLowerCase();
         });
-        
+
         // If not found, try matching just the category name part (before comma or parentheses)
         if (!foundCategory) {
           const categoryNamePart = categoryText.split(',')[0].split('(')[0].trim();
@@ -10589,24 +10699,24 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             return catName.toLowerCase() === categoryNamePart.toLowerCase();
           });
         }
-        
+
         // If still not found, try partial match
         if (!foundCategory) {
           const categoryNamePart = categoryText.split(',')[0].split('(')[0].trim();
           foundCategory = allCategories.find((cat: any) => {
             const catName = cat.name?.trim() || '';
             return catName.toLowerCase().includes(categoryNamePart.toLowerCase()) ||
-                   categoryNamePart.toLowerCase().includes(catName.toLowerCase());
+              categoryNamePart.toLowerCase().includes(catName.toLowerCase());
           });
         }
-        
+
         // Also try matching with the formatted label (Main Category > Category)
         if (!foundCategory) {
           foundCategory = categoryOptions.find(opt => {
             const optLabel = opt.label?.trim() || '';
             return optLabel.toLowerCase() === categoryText.toLowerCase() ||
-                   optLabel.toLowerCase().includes(categoryText.toLowerCase()) ||
-                   categoryText.toLowerCase().includes(optLabel.toLowerCase());
+              optLabel.toLowerCase().includes(categoryText.toLowerCase()) ||
+              categoryText.toLowerCase().includes(optLabel.toLowerCase());
           });
           if (foundCategory) {
             const parsedId = Number(foundCategory.id);
@@ -10616,19 +10726,19 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             }
           }
         }
-        
+
         if (foundCategory && !categoryIdValue) {
           const parsedId = Number(foundCategory.id || foundCategory.raw?.id);
           if (!Number.isNaN(parsedId) && parsedId > 0) {
             categoryIdValue = parsedId;
-            console.log('✅ Found category ID from category search:', { 
-              categoryId: categoryIdValue, 
-              categoryName: foundCategory.name || foundCategory.raw?.name 
+            console.log('✅ Found category ID from category search:', {
+              categoryId: categoryIdValue,
+              categoryName: foundCategory.name || foundCategory.raw?.name
             });
           }
         }
       }
-      
+
       // Final validation - if still null, show error
       if (categoryIdValue === null || categoryIdValue <= 0) {
         console.error('❌ Category ID could not be determined:', {
@@ -10642,9 +10752,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         setIsSavingSubLead(false);
         return;
       }
-      
-      console.log('✅ Category ID inherited from master lead:', { 
-        categoryIdValue, 
+
+      console.log('✅ Category ID inherited from master lead:', {
+        categoryIdValue,
         masterLeadCategoryId: selectedClient?.category_id,
         masterLeadName: selectedClient?.name
       });
@@ -10675,7 +10785,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         setIsSavingSubLead(false);
         return;
       }
-      
+
       // For subleads created with same contract, always set stage to 60 (client signed agreement)
       let targetStageId: number | null = null;
       if (subLeadStep === 'sameContract') {
@@ -10707,13 +10817,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       // Prepare lead data - structure differs for legacy vs new leads
       let newLeadData: Record<string, any>;
       let tableName: string;
-      
+
       if (isLegacyParent) {
         // For legacy sub-leads, create in leads_lead table
         // Note: leads_lead table doesn't have 'lead_number' column - the 'id' column IS the lead number
         // The 'id' must be manually set - get the next available ID
         tableName = 'leads_lead';
-        
+
         // Get the next available ID from leads_lead table
         // Also check leads table's lead_number (with L prefix) to ensure ID is higher
         const [maxIdResult, maxLeadNumberResult] = await Promise.all([
@@ -10730,15 +10840,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             .order('lead_number', { ascending: false })
             .limit(100) // Get multiple to find the max numeric value
         ]);
-        
+
         if (maxIdResult.error) {
           console.error('Error getting max ID from leads_lead:', maxIdResult.error);
           throw new Error('Failed to get next available ID for legacy sub-lead');
         }
-        
+
         // Get max ID from leads_lead
         const maxLegacyId = maxIdResult.data?.id ? Number(maxIdResult.data.id) : 0;
-        
+
         // Get max numeric value from leads table's lead_number (strip L prefix)
         let maxLeadsNumber = 0;
         if (maxLeadNumberResult.data && !maxLeadNumberResult.error) {
@@ -10754,10 +10864,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             }
           });
         }
-        
+
         // Use the maximum of both, then add 1
         const nextId = Math.max(maxLegacyId, maxLeadsNumber) + 1;
-        
+
         newLeadData = {
           id: nextId, // Manually set the ID (this IS the lead number for legacy leads)
           manual_id: Number(manualIdForLegacy), // Must be numeric (bigint) for leads_lead
@@ -10816,7 +10926,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           created_at: new Date().toISOString(),
         };
       }
-      
+
       console.log('🔍 Creating sublead with data:', {
         isLegacyParent,
         tableName,
@@ -10826,9 +10936,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         subLeadNumber,
         masterIdValue
       });
-      
+
       const { data: insertedLead, error } = await supabase.from(tableName).insert([newLeadData]).select('id').single();
-      
+
       if (error) {
         console.error('❌ Error inserting lead:', {
           error,
@@ -10839,9 +10949,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         });
         throw error;
       }
-      
+
       console.log('✅ Lead inserted successfully:', insertedLead);
-      
+
       // Create the first contact in leads_contact and lead_leadcontact tables
       if (insertedLead?.id) {
         const insertedLeadId = insertedLead.id;
@@ -10852,17 +10962,17 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           .order('id', { ascending: false })
           .limit(1)
           .single();
-        
+
         const newContactId = maxContactId ? maxContactId.id + 1 : 1;
         const currentDate = new Date().toISOString().split('T')[0];
-        
+
         // Determine contact details based on which step we came from
         let contactName: string;
         let contactMobile: string | null;
         let contactPhone: string | null;
         let contactEmail: string | null;
         let contactCountryId: number | null = null;
-        
+
         if (subLeadStep === 'newContactDetails') {
           // Use new contact details from form
           contactName = trimmedName;
@@ -10872,7 +10982,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           contactCountryId = subLeadForm.countryId ? Number(subLeadForm.countryId) : null;
         } else if (subLeadStep === 'sameContract' && selectedContractContactId) {
           const storedContact = contactContracts[selectedContractContactId];
-          
+
           contactName = trimmedName || storedContact?.contactName || selectedClient?.name || '';
           contactMobile = storedContact?.contactMobile || selectedClient?.mobile || null;
           contactPhone = storedContact?.contactPhone || selectedClient?.phone || null;
@@ -10881,7 +10991,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         } else {
           // For 'newProcedure', fetch the existing client's main contact information
           const isLegacyClient = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-          
+
           // Try to get main contact from client (both legacy and new leads)
           let mainContact = null;
           if (selectedClient?.id) {
@@ -10895,14 +11005,14 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 .eq('main', 'true')
                 .limit(1)
                 .maybeSingle();
-              
+
               if (leadContacts?.contact_id) {
                 const { data: contactData } = await supabase
                   .from('leads_contact')
                   .select('name, email, phone, mobile, country_id')
                   .eq('id', leadContacts.contact_id)
                   .maybeSingle();
-                
+
                 if (contactData) {
                   mainContact = contactData;
                 }
@@ -10916,33 +11026,33 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 .eq('main', true)
                 .limit(1)
                 .maybeSingle();
-              
+
               if (leadContacts?.contact_id) {
                 const { data: contactData } = await supabase
                   .from('leads_contact')
                   .select('name, email, phone, mobile, country_id')
                   .eq('id', leadContacts.contact_id)
                   .maybeSingle();
-                
+
                 if (contactData) {
                   mainContact = contactData;
                 }
               }
             }
           }
-          
+
           // Use main contact data if available, otherwise fall back to client data
           contactName = trimmedName || mainContact?.name || selectedClient?.name || '';
           contactMobile = mainContact?.mobile || selectedClient?.mobile || null;
           contactPhone = mainContact?.phone || selectedClient?.phone || null;
           contactEmail = mainContact?.email || selectedClient?.email || null;
           contactCountryId = mainContact?.country_id || selectedClient?.country_id || null;
-          
+
           if (contactCountryId && typeof contactCountryId !== 'number') {
             contactCountryId = Number(contactCountryId) || null;
           }
         }
-        
+
         // Insert the first contact
         const contactInsertData: Record<string, any> = {
           id: newContactId,
@@ -10954,16 +11064,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           cdate: currentDate,
           udate: currentDate
         };
-        
+
         // For new leads, add newlead_id; for legacy leads, don't add it
         if (!isLegacyParent) {
           contactInsertData.newlead_id = insertedLeadId;
         }
-        
+
         const { error: contactError } = await supabase
           .from('leads_contact')
           .insert([contactInsertData]);
-        
+
         if (contactError) {
           console.error('Error creating contact:', contactError);
           // Continue even if contact creation fails
@@ -10975,32 +11085,32 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             .order('id', { ascending: false })
             .limit(1)
             .single();
-          
+
           const newRelationshipId = maxRelationshipId ? maxRelationshipId.id + 1 : 1;
-          
+
           // Create the relationship, marking it as main
           const relationshipData: Record<string, any> = {
             id: newRelationshipId,
             contact_id: newContactId,
             main: true
           };
-          
+
           // For new leads, use newlead_id; for legacy leads, use lead_id
           if (isLegacyParent) {
             relationshipData.lead_id = insertedLeadId;
           } else {
             relationshipData.newlead_id = insertedLeadId;
           }
-          
+
           const { error: relationshipError } = await supabase
             .from('lead_leadcontact')
             .insert([relationshipData]);
-          
+
           if (relationshipError) {
             console.error('Error creating contact relationship:', relationshipError);
             // Continue even if relationship creation fails
           }
-          
+
           // For 'sameContract' step, we don't copy or modify the contract
           // The contract remains linked to the original lead/client
           // The UI should display contracts from the master lead when viewing sub-leads
@@ -11009,7 +11119,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           }
         }
       }
-      
+
       await fetchSubLeads(masterBaseNumber);
       toast.success(`Sub-lead created: ${subLeadNumber}`);
       setShowSubLeadDrawer(false);
@@ -11038,11 +11148,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         proposal: '',
         potentialValue: '',
       });
-      
+
       // Navigate to the newly created sub-lead's page
       // For legacy leads, use the inserted ID (which is the lead number), for new leads use manual_id
-      const routeManualId = isLegacyParent && insertedLead?.id 
-        ? String(insertedLead.id) 
+      const routeManualId = isLegacyParent && insertedLead?.id
+        ? String(insertedLead.id)
         : manualIdString;
       navigate(buildClientRoute(routeManualId, subLeadNumber));
     } catch (error: any) {
@@ -11054,7 +11164,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
         code: error?.code,
         error: error
       });
-      
+
       // Get a more detailed error message
       let errorMessage = 'Failed to create sub-lead.';
       if (error?.message) {
@@ -11066,7 +11176,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       } else if (typeof error === 'string') {
         errorMessage = error;
       }
-      
+
       toast.error(errorMessage);
     } finally {
       setIsSavingSubLead(false);
@@ -11081,10 +11191,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
     }
 
     setCopyingContactId(duplicateContact.contactId);
-    
+
     try {
       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-      const currentLeadId = isLegacyLead 
+      const currentLeadId = isLegacyLead
         ? (typeof selectedClient.id === 'string' ? selectedClient.id.replace('legacy_', '') : String(selectedClient.id))
         : selectedClient.id;
 
@@ -11159,7 +11269,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       }
 
       toast.success(`Contact "${duplicateContact.contactName}" copied successfully`);
-      
+
       // Refresh client data to show the new contact
       if (refreshClientData) {
         await refreshClientData(selectedClient.id);
@@ -11180,7 +11290,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
   const isUnactivated = selectedClient && statusValue !== null && statusValue !== undefined && !isLegacyForView
     ? (statusValue === 'inactive')
     : false;
-  
+
   // Debug logging - only log when values actually change
   useEffect(() => {
     console.log('🔍 RENDER TOP PRIORITY: Checking unactivation status', {
@@ -11192,7 +11302,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       hasSelectedClient: !!selectedClient
     });
   }, [selectedClient?.id, isLegacyForView, statusValue, isUnactivated, userManuallyExpanded, selectedClient]);
-  
+
   // Show unactivated view if lead is unactivated and user hasn't clicked to expand
   // This takes priority over loading state to prevent flickering
   if (selectedClient && isUnactivated && !userManuallyExpanded) {
@@ -11201,7 +11311,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       <div className="min-h-screen p-4">
         <div className="max-w-2xl mx-auto">
           {/* Unactivated Lead Compact Card */}
-          <div 
+          <div
             className="bg-base-100 rounded-2xl shadow-xl hover:shadow-2xl transition-all duration-300 cursor-pointer transform hover:scale-105 border border-base-300 overflow-hidden"
             onClick={(e) => {
               // Don't navigate if clicking on a button inside
@@ -11242,9 +11352,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     const stageColor = getStageColour(stageStr);
                     const textColor = getContrastingTextColor(stageColor);
                     const backgroundColor = stageColor || '#3b28c7';
-                    
+
                     return (
-                      <span 
+                      <span
                         className="badge text-xs px-2 py-1 shadow-lg"
                         style={{
                           backgroundColor: backgroundColor,
@@ -11387,11 +11497,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 } else {
                   balanceValue = selectedClient.balance || (selectedClient as any).proposal_total;
                 }
-                
+
                 // Get currency symbol - SIMPLE: use balance_currency directly (it's already the symbol from accounting_currencies.name)
                 // balance_currency is set from accounting_currencies.name which contains the symbol (₪, $, €, £)
                 let balanceCurrency = selectedClient.balance_currency || '₪';
-                
+
                 // If balance_currency is not set or empty, fall back to currency_id mapping
                 if (!balanceCurrency || balanceCurrency.trim() === '') {
                   const currencyId = (selectedClient as any).currency_id;
@@ -11411,12 +11521,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     balanceCurrency = '₪';
                   }
                 }
-                
+
                 if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
-                  const formattedValue = typeof balanceValue === 'number' 
+                  const formattedValue = typeof balanceValue === 'number'
                     ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                     : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
-                  
+
                   return (
                     <div className="flex items-center justify-center pt-2">
                       <span className="badge badge-lg px-4 py-2 bg-green-100 text-green-800 border border-green-300 font-semibold">
@@ -11435,79 +11545,79 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 const isUnactivated = !isLegacy && (selectedClient.status === 'inactive');
                 return isUnactivated;
               })() && (
-                <div className="pt-3 border-t border-base-300 space-y-2">
-                  <div className="flex items-center gap-2">
-                    <NoSymbolIcon className="w-4 h-4 text-error" />
-                    <span className="text-sm text-error font-medium">
-                      {(() => {
-                        const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                        // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
-                        let unactivationReason = selectedClient.unactivation_reason;
-                        
-                        // For legacy leads, if no unactivation_reason, try to get it from reason_id
-                        if (isLegacy && !unactivationReason) {
-                          const reasonId = (selectedClient as any).reason_id;
-                          if (reasonId) {
-                            const reasonFromId = getUnactivationReasonFromId(reasonId);
-                            if (reasonFromId) {
-                              unactivationReason = reasonFromId;
+                  <div className="pt-3 border-t border-base-300 space-y-2">
+                    <div className="flex items-center gap-2">
+                      <NoSymbolIcon className="w-4 h-4 text-error" />
+                      <span className="text-sm text-error font-medium">
+                        {(() => {
+                          const isLegacy = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                          // For legacy leads, use unactivation_reason (not deactivate_note which doesn't exist in leads_lead table)
+                          let unactivationReason = selectedClient.unactivation_reason;
+
+                          // For legacy leads, if no unactivation_reason, try to get it from reason_id
+                          if (isLegacy && !unactivationReason) {
+                            const reasonId = (selectedClient as any).reason_id;
+                            if (reasonId) {
+                              const reasonFromId = getUnactivationReasonFromId(reasonId);
+                              if (reasonFromId) {
+                                unactivationReason = reasonFromId;
+                              }
                             }
                           }
-                        }
-                        
-                        // Return the reason exactly as stored in the database or from reason_id mapping
-                        return unactivationReason ? (
-                          `Reason: ${unactivationReason}`
-                        ) : (
-                          'No reason added'
-                        );
-                      })()}
-                    </span>
-                  </div>
-                  {/* Show deactivate_notes for new leads */}
-                  {(selectedClient as any).deactivate_notes && (
-                    <div className="flex items-start gap-2">
-                      <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
-                      <span 
-                        className="text-sm text-base-content/80 flex-1"
-                        dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
-                        style={{ 
-                          textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
-                          whiteSpace: 'pre-wrap'
-                        }}
-                      >
-                        {(selectedClient as any).deactivate_notes}
+
+                          // Return the reason exactly as stored in the database or from reason_id mapping
+                          return unactivationReason ? (
+                            `Reason: ${unactivationReason}`
+                          ) : (
+                            'No reason added'
+                          );
+                        })()}
                       </span>
                     </div>
-                  )}
-                  {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
-                    <div className="flex items-center gap-4 flex-wrap">
-                      {selectedClient.unactivated_by && (
-                        <div className="flex items-center gap-2">
-                          <UserIcon className="w-4 h-4 text-base-content/60" />
-                          <span className="text-sm text-base-content/80">
-                            Unactivated by: {selectedClient.unactivated_by}
-                          </span>
-                        </div>
-                      )}
-                      {selectedClient.unactivated_at && (
-                        <div className="flex items-center gap-2">
-                          <CalendarIcon className="w-4 h-4 text-base-content/60" />
-                          <span className="text-sm text-base-content/80">
-                            Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
-                              year: 'numeric',
-                              month: 'short',
-                              day: 'numeric',
-                              hour: '2-digit',
-                              minute: '2-digit'
-                            })}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-                </div>
-              )}
+                    {/* Show deactivate_notes for new leads */}
+                    {(selectedClient as any).deactivate_notes && (
+                      <div className="flex items-start gap-2">
+                        <DocumentTextIcon className="w-4 h-4 text-base-content/60 mt-0.5 flex-shrink-0" />
+                        <span
+                          className="text-sm text-base-content/80 flex-1"
+                          dir={/[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'rtl' : 'ltr'}
+                          style={{
+                            textAlign: /[\u0590-\u05FF]/.test((selectedClient as any).deactivate_notes) ? 'right' : 'left',
+                            whiteSpace: 'pre-wrap'
+                          }}
+                        >
+                          {(selectedClient as any).deactivate_notes}
+                        </span>
+                      </div>
+                    )}
+                    {(selectedClient.unactivated_by || selectedClient.unactivated_at) && (
+                      <div className="flex items-center gap-4 flex-wrap">
+                        {selectedClient.unactivated_by && (
+                          <div className="flex items-center gap-2">
+                            <UserIcon className="w-4 h-4 text-base-content/60" />
+                            <span className="text-sm text-base-content/80">
+                              Unactivated by: {selectedClient.unactivated_by}
+                            </span>
+                          </div>
+                        )}
+                        {selectedClient.unactivated_at && (
+                          <div className="flex items-center gap-2">
+                            <CalendarIcon className="w-4 h-4 text-base-content/60" />
+                            <span className="text-sm text-base-content/80">
+                              Unactivated: {new Date(selectedClient.unactivated_at).toLocaleDateString('en-US', {
+                                year: 'numeric',
+                                month: 'short',
+                                day: 'numeric',
+                                hour: '2-digit',
+                                minute: '2-digit'
+                              })}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
 
               {/* Click to Expand Hint */}
               <div className="p-3">
@@ -11522,7 +11632,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       </div>
     );
   }
-  
+
   // Show loading state while determining view (only if not unactivated)
   if (localLoading) {
     return (
@@ -11531,7 +11641,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       </div>
     );
   }
-  
+
   return (
     <div className="min-h-screen bg-base-100">
       {/* Sticky Header - appears when scrolled down, positioned below main header */}
@@ -11551,106 +11661,178 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
 
             {/* Desktop View - Full layout with tab navigation */}
-            <div className="hidden md:flex items-center justify-between gap-4 flex-wrap">
-              {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
-              <div className="flex items-center gap-3 flex-1 min-w-0">
-                {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
-                <div className="hidden md:flex items-center gap-2">
-                  <button
-                    onClick={() => {
-                      const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                      if (currentIndex > 0) {
-                        setActiveTab(tabs[currentIndex - 1].id);
-                      } else {
-                        setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
-                      }
-                    }}
-                    className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                    title="Previous tab"
-                    aria-label="Previous tab"
-                  >
-                    <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                  </button>
-                  {/* Current Tab Name Badge */}
-                  {(() => {
-                    const currentTab = tabs.find(tab => tab.id === activeTab);
-                    return currentTab ? (
-                      <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
-                        {currentTab.label}
-                      </span>
-                    ) : null;
-                  })()}
-                  <button
-                    onClick={() => {
-                      const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
-                      if (currentIndex < tabs.length - 1) {
-                        setActiveTab(tabs[currentIndex + 1].id);
-                      } else {
-                        setActiveTab(tabs[0].id); // Wrap to first tab
-                      }
-                    }}
-                    className="p-2 rounded-lg hover:bg-base-200 transition-colors"
-                    title="Next tab"
-                    aria-label="Next tab"
-                  >
-                    <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
-                  </button>
+            <div className="hidden md:flex flex-col gap-2">
+              {/* Duplicate Contacts Badge - Desktop - At the top */}
+              {duplicateContacts.length > 0 && (
+                <div className="w-full flex justify-start items-center px-4">
+                  <div className="relative">
+                    {duplicateContacts.length === 1 ? (
+                      <button
+                        onClick={() => setIsDuplicateModalOpen(true)}
+                        className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                      >
+                        <DocumentDuplicateIcon className="w-4 h-4" />
+                        Duplicate Contact: {duplicateContacts[0].contactName} in Lead {duplicateContacts[0].leadNumber}
+                      </button>
+                    ) : (
+                      <div className="relative">
+                        <button
+                          onClick={() => setIsDuplicateDropdownOpen(!isDuplicateDropdownOpen)}
+                          className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
+                        >
+                          <DocumentDuplicateIcon className="w-4 h-4" />
+                          {duplicateContacts.length} Duplicate Contacts
+                          <ChevronDownIcon className={`w-4 h-4 transition-transform ${isDuplicateDropdownOpen ? 'rotate-180' : ''}`} />
+                        </button>
+                        {isDuplicateDropdownOpen && (
+                          <div className="absolute top-full left-0 mt-2 bg-base-100 rounded-lg shadow-xl border border-base-300 z-50 min-w-[300px] max-h-96 overflow-y-auto">
+                            {duplicateContacts.map((dup, idx) => (
+                              <div
+                                key={`${dup.contactId}-${dup.leadId}-${idx}`}
+                                className="p-3 border-b border-base-300 hover:bg-base-200 cursor-pointer"
+                                onClick={() => {
+                                  navigate(`/clients/${dup.leadNumber}`);
+                                  setIsDuplicateDropdownOpen(false);
+                                }}
+                              >
+                                <div className="font-semibold text-base-content">{dup.contactName}</div>
+                                <div className="text-sm text-base-content/80">Lead {dup.leadNumber}: {dup.leadName}</div>
+                                <div className="flex items-center gap-2 mt-1 flex-wrap">
+                                  {dup.stage && (
+                                    <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded">
+                                      Stage: {dup.stage}
+                                    </span>
+                                  )}
+                                  {dup.category && (
+                                    <span className="text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
+                                      {dup.category}
+                                    </span>
+                                  )}
+                                </div>
+                                <div className="text-xs text-base-content/70 mt-1">
+                                  Matches: {dup.matchingFields.join(', ')}
+                                </div>
+                              </div>
+                            ))}
+                            <div className="p-3 border-t border-gray-200 bg-gray-50">
+                              <button
+                                onClick={() => {
+                                  setIsDuplicateModalOpen(true);
+                                  setIsDuplicateDropdownOpen(false);
+                                }}
+                                className="w-full text-sm font-semibold text-orange-600 hover:text-orange-700"
+                              >
+                                View All Details
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-3 min-w-0 flex-wrap">
-                  <span className="text-lg font-bold text-base-content whitespace-nowrap">
-                    #{selectedClient.lead_number || selectedClient.id}
-                  </span>
-                  <span className="text-lg font-semibold text-base-content/90 truncate">
-                    {selectedClient.name || 'Unnamed Lead'}
-                  </span>
-                  {selectedClient.next_followup && (
-                    <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
-                      <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
-                      <span className="font-medium">
-                        {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          year: 'numeric'
-                        })}
+              )}
+              <div className="flex items-center justify-between gap-4 flex-wrap">
+                {/* Left side: Tab navigation arrows, tab name badge, lead number, name, and next follow-up */}
+                <div className="flex items-center gap-3 flex-1 min-w-0">
+                  {/* Tab Navigation Buttons and Tab Name - Desktop Only - On the left */}
+                  <div className="hidden md:flex items-center gap-2">
+                    <button
+                      onClick={() => {
+                        const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                        if (currentIndex > 0) {
+                          setActiveTab(tabs[currentIndex - 1].id);
+                        } else {
+                          setActiveTab(tabs[tabs.length - 1].id); // Wrap to last tab
+                        }
+                      }}
+                      className="p-2 rounded-lg hover:bg-base-200 transition-colors"
+                      title="Previous tab"
+                      aria-label="Previous tab"
+                    >
+                      <ChevronLeftIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                    </button>
+                    {/* Current Tab Name Badge */}
+                    {(() => {
+                      const currentTab = tabs.find(tab => tab.id === activeTab);
+                      return currentTab ? (
+                        <span className="badge text-sm px-3 py-1.5 font-semibold shadow-sm whitespace-nowrap" style={{ backgroundColor: '#4218CC', color: '#ffffff', borderColor: '#4218CC' }}>
+                          {currentTab.label}
+                        </span>
+                      ) : null;
+                    })()}
+                    <button
+                      onClick={() => {
+                        const currentIndex = tabs.findIndex(tab => tab.id === activeTab);
+                        if (currentIndex < tabs.length - 1) {
+                          setActiveTab(tabs[currentIndex + 1].id);
+                        } else {
+                          setActiveTab(tabs[0].id); // Wrap to first tab
+                        }
+                      }}
+                      className="p-2 rounded-lg hover:bg-base-200 transition-colors"
+                      title="Next tab"
+                      aria-label="Next tab"
+                    >
+                      <ChevronRightIcon className="w-6 h-6" style={{ color: '#4218CC' }} />
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-3 min-w-0 flex-wrap">
+                    <span className="text-lg font-bold text-base-content whitespace-nowrap">
+                      #{selectedClient.lead_number || selectedClient.id}
+                    </span>
+                    <span className="text-lg font-semibold text-base-content/90 truncate">
+                      {selectedClient.name || 'Unnamed Lead'}
+                    </span>
+                    {selectedClient.next_followup && (
+                      <div className="flex items-center gap-1.5 text-sm text-base-content/80 whitespace-nowrap">
+                        <CalendarDaysIcon className="w-4 h-4 flex-shrink-0" />
+                        <span className="font-medium">
+                          {new Date(selectedClient.next_followup).toLocaleDateString('en-US', {
+                            month: 'short',
+                            day: 'numeric',
+                            year: 'numeric'
+                          })}
+                        </span>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Right side: Stage badge and topic */}
+                <div className="flex items-center gap-3 flex-shrink-0">
+                  {/* Stage Badge */}
+                  {(() => {
+                    const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
+                    const stageName = getStageName(stageStr);
+                    const stageColor = getStageColour(stageStr);
+                    const textColor = getContrastingTextColor(stageColor);
+                    const backgroundColor = stageColor || '#3b28c7';
+
+                    return (
+                      <span
+                        className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
+                        style={{
+                          backgroundColor: backgroundColor,
+                          color: textColor,
+                          borderColor: backgroundColor,
+                        }}
+                      >
+                        {stageName}
                       </span>
-                    </div>
+                    );
+                  })()}
+
+                  {/* Topic/Category - same size as stage badge */}
+                  {selectedClient.category && (
+                    <span
+                      className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
+                    >
+                      <TagIcon className="w-4 h-4 flex-shrink-0" />
+                      <span className="hidden sm:inline">{selectedClient.category}</span>
+                    </span>
                   )}
                 </div>
-              </div>
-
-              {/* Right side: Stage badge and topic */}
-              <div className="flex items-center gap-3 flex-shrink-0">
-                {/* Stage Badge */}
-                {(() => {
-                  const stageStr = (selectedClient.stage !== null && selectedClient.stage !== undefined) ? String(selectedClient.stage) : '';
-                  const stageName = getStageName(stageStr);
-                  const stageColor = getStageColour(stageStr);
-                  const textColor = getContrastingTextColor(stageColor);
-                  const backgroundColor = stageColor || '#3b28c7';
-                  
-                  return (
-                    <span 
-                      className="badge text-sm px-4 py-2 font-bold shadow-sm whitespace-nowrap"
-                      style={{
-                        backgroundColor: backgroundColor,
-                        color: textColor,
-                        borderColor: backgroundColor,
-                      }}
-                    >
-                      {stageName}
-                    </span>
-                  );
-                })()}
-                
-                {/* Topic/Category - same size as stage badge */}
-                {selectedClient.category && (
-                  <span 
-                    className="badge text-sm px-4 py-2 font-bold shadow-sm bg-base-200 text-base-content/90 border-base-300 whitespace-nowrap flex items-center gap-2"
-                  >
-                    <TagIcon className="w-4 h-4 flex-shrink-0" />
-                    <span className="hidden sm:inline">{selectedClient.category}</span>
-                  </span>
-                )}
               </div>
             </div>
           </div>
@@ -11667,30 +11849,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
       {/* Mobile view - aligned with desktop layout */}
       <div className="md:hidden px-4 pt-4 pb-3">
         <div className="flex flex-col gap-4">
-          {/* Sub-lead notice for mobile */}
-          {isSubLead && masterLeadNumber && (
-            <div className="text-sm text-gray-500 mb-2">
-              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
-            </div>
-          )}
-          
-          {/* Master lead notice for mobile */}
-          {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
-            <div className="text-sm text-gray-500 mb-2">
-              This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
-              <a 
-                href={`/clients/${(() => {
-                  // Get the base lead number without any suffix like /2
-                  const leadNumber = selectedClient.lead_number || selectedClient.id || '';
-                  return leadNumber.toString().split('/')[0];
-                })()}/master`} 
-                className="underline text-blue-700 hover:text-blue-900 ml-1"
-              >
-                View all sub-leads
-              </a>
-            </div>
-          )}
-          
+
+
           {/* Amount badge + stage badge + applicants - Moved to top for mobile */}
           <div className="w-full flex flex-col items-center mb-4">
             {/* Mobile Badges - Meeting, Lead is Cold, Duplicate Contact - Above balance badge */}
@@ -11710,7 +11870,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   })()}
                 </button>
               )}
-              
+
               {/* Duplicate Contact Badge */}
               {duplicateContacts.length > 0 && (
                 <button
@@ -11718,14 +11878,14 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   className="w-full rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center justify-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
                 >
                   <DocumentDuplicateIcon className="w-4 h-4" />
-                  {duplicateContacts.length === 1 
+                  {duplicateContacts.length === 1
                     ? `Duplicate Contact: ${duplicateContacts[0].contactName} in Lead ${duplicateContacts[0].leadNumber}`
                     : `${duplicateContacts.length} Duplicate Contacts`
                   }
                 </button>
               )}
             </div>
-            
+
             {/* Next Payment Due Indicator */}
             {nextDuePayment && (
               <div className="bg-gradient-to-r from-orange-500 to-red-500 rounded-xl shadow-lg px-4 py-2 mb-2 w-full max-w-xs">
@@ -11737,7 +11897,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       const today = new Date();
                       const diffTime = dueDate.getTime() - today.getTime();
                       const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                      
+
                       let dateText = dueDate.toLocaleDateString('en-GB');
                       if (diffDays === 0) {
                         dateText = 'Today';
@@ -11746,237 +11906,259 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       } else if (diffDays < 0) {
                         dateText = `${Math.abs(diffDays)} days overdue`;
                       }
-                      
-                      const currency = nextDuePayment.isLegacy 
+
+                      const currency = nextDuePayment.isLegacy
                         ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
                         : (nextDuePayment.currency || '₪');
-                      
-                      const amount = nextDuePayment.isLegacy 
+
+                      const amount = nextDuePayment.isLegacy
                         ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
                         : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
-                      
+
                       return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
                     })()}
                   </div>
                 </div>
               </div>
             )}
-            
+
             {/* Balance and Stage badges in one line on mobile */}
             <div className="flex items-center gap-2 mb-3 w-full">
-            <div 
+              <div
                 className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-xl shadow-lg px-3 py-2 flex-1 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
-              onClick={() => setIsBalanceModalOpen(true)}
-              title="Click to edit balance"
-            >
-              <div className="text-center">
-                <div className="text-white text-base font-bold whitespace-nowrap truncate">
-                  {(() => {
-                    // For new leads, use balance column. For legacy: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                    let baseAmount: number;
-                    if (isLegacyLead) {
-                      // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-                      const currencyId = (selectedClient as any)?.currency_id;
-                      // Convert to number for comparison (handle both string and number types)
-                      // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
-                      let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-                      if (!numericCurrencyId || isNaN(numericCurrencyId)) {
-                        numericCurrencyId = 1; // Default to NIS
-                      }
-                      if (numericCurrencyId === 1) {
-                        // For currency_id 1, show total_base (only, no fallback)
-                        baseAmount = Number((selectedClient as any)?.total_base ?? 0);
-                      } else {
-                        // For other currencies, show total column (only, no fallback)
-                        baseAmount = Number((selectedClient as any)?.total ?? 0);
-                      }
-                    } else {
-                      baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                    }
-                    const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
-                    const mainAmount = baseAmount - subcontractorFee;
-                    
-                    // Get currency symbol - prioritize computed values from refreshClientData
-                    // These are set by App.tsx refreshClientData and are fresh
-                    let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                    
-                    // If no computed currency, try to get from currency_id directly
-                    if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
-                      // For new leads without computed currency, use currency_id mapping
-                      // This is a fallback - normally App.tsx should set proposal_currency/balance_currency
-                      const currencyId = Number(selectedClient.currency_id);
-                      switch (currencyId) {
-                        case 1: currency = '₪'; break; // ILS
-                        case 2: currency = '€'; break; // EUR  
-                        case 3: currency = '$'; break; // USD
-                        case 4: currency = '£'; break; // GBP
-                        default: currency = '₪';
-                      }
-                    }
-                    
-                    console.log('💰 Balance badge rendering - currency_id:', selectedClient?.currency_id, 'proposal_currency:', selectedClient?.proposal_currency, 'balance_currency:', selectedClient?.balance_currency, 'final currency:', currency);
-                    
-                    // Calculate VAT - only show if vat column is 'true' for new leads
-                    let vatAmount = 0;
-                    let shouldShowVAT = false;
-                    
-                    if (isLegacyLead) {
-                      // Legacy leads: check 'vat' column (text type, same as new leads)
-                      // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                      // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                      const vatValue = (selectedClient as any)?.vat;
-                      shouldShowVAT = true; // Default to showing VAT (included)
-                      
-                      if (vatValue !== null && vatValue !== undefined) {
-                        const vatStr = String(vatValue).toLowerCase().trim();
-                        // If VAT is excluded, don't show VAT in badge
-                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                          shouldShowVAT = false;
-                        }
-                      }
-                      
-                      // Only calculate VAT if we should show it
-                      if (shouldShowVAT) {
+                onClick={() => setIsBalanceModalOpen(true)}
+                title="Click to edit balance"
+              >
+                <div className="text-center">
+                  <div className="text-white text-base font-bold whitespace-nowrap truncate">
+                    {(() => {
+                      // For new leads, use balance column. For legacy: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                      let baseAmount: number;
+                      if (isLegacyLead) {
                         // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                         const currencyId = (selectedClient as any)?.currency_id;
-                        let totalAmount: number;
+                        // Convert to number for comparison (handle both string and number types)
                         // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
                         let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
                         if (!numericCurrencyId || isNaN(numericCurrencyId)) {
                           numericCurrencyId = 1; // Default to NIS
                         }
                         if (numericCurrencyId === 1) {
-                          // For currency_id 1, use total_base (only, no fallback)
-                          totalAmount = Number((selectedClient as any)?.total_base ?? 0);
+                          // For currency_id 1, show total_base (only, no fallback)
+                          baseAmount = Number((selectedClient as any)?.total_base ?? 0);
                         } else {
-                          // For other currencies, use total column (only, no fallback)
-                          totalAmount = Number((selectedClient as any)?.total ?? 0);
+                          // For other currencies, show total column (only, no fallback)
+                          baseAmount = Number((selectedClient as any)?.total ?? 0);
                         }
-                        vatAmount = totalAmount * 0.18;
+                      } else {
+                        baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                       }
-                    } else {
-                      // New leads: check 'vat' column (text type)
-                      // 'false', '0', 'no' → VAT excluded (don't show VAT)
-                      // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
-                      const vatValue = selectedClient?.vat;
-                      shouldShowVAT = true; // Default to showing VAT (included)
-                      
-                      if (vatValue !== null && vatValue !== undefined) {
-                        const vatStr = String(vatValue).toLowerCase().trim();
-                        // If VAT is excluded, don't show VAT in badge
-                        if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
-                          shouldShowVAT = false;
-                        }
-                      }
-                      
-                      // Only calculate VAT if we should show it
-                      if (shouldShowVAT) {
-                        // Use vat_value from database if available, otherwise calculate for all currencies
-                        if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
-                          vatAmount = Number(selectedClient.vat_value);
-                        } else {
-                          const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                          vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
+                      // For legacy leads: balance badge should show WITHOUT subtracting subcontractor fee
+                      // For new leads: subtract subcontractor fee
+                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                      const mainAmount = isLegacyLead ? baseAmount : (baseAmount - subcontractorFee);
+
+                      // Get currency symbol - prioritize computed values from refreshClientData
+                      // These are set by App.tsx refreshClientData and are fresh
+                      let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+
+                      // If no computed currency, try to get from currency_id directly
+                      if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
+                        // For new leads without computed currency, use currency_id mapping
+                        // This is a fallback - normally App.tsx should set proposal_currency/balance_currency
+                        const currencyId = Number(selectedClient.currency_id);
+                        switch (currencyId) {
+                          case 1: currency = '₪'; break; // ILS
+                          case 2: currency = '€'; break; // EUR  
+                          case 3: currency = '$'; break; // USD
+                          case 4: currency = '£'; break; // GBP
+                          default: currency = '₪';
                         }
                       }
-                    }
-                    
-                    return (
-                      <span>
-                        {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
-                        {shouldShowVAT && vatAmount > 0 && (
-                          <span className="text-white text-base opacity-90 font-normal ml-2">
-                            +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
-                          </span>
-                        )}
-                      </span>
-                    );
-                  })()}
-                </div>
-                {/* Always show Total */}
-                <div className="text-white text-xs opacity-90 mt-1">
-                  Total: {(() => {
-                    const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                    // Get currency symbol - prioritize computed values from refreshClientData
-                    let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                    
-                    // If no computed currency, try to get from currency_id directly
-                    if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
-                      const currencyId = Number(selectedClient.currency_id);
-                      switch (currencyId) {
-                        case 1: currency = '₪'; break; // ILS
-                        case 2: currency = '€'; break; // EUR  
-                        case 3: currency = '$'; break; // USD
-                        case 4: currency = '£'; break; // GBP
-                        default: currency = '₪';
-                      }
-                    }
-                    
-                    const baseAmount = isLegacyLead
-                      ? Number(selectedClient?.total || selectedClient?.balance || 0)
-                      : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                    return `${currency}${Number(baseAmount.toFixed(2)).toLocaleString()}`;
-                  })()}
-                </div>
-                {/* Always show Potential Value */}
-                <div className="text-white text-xs opacity-90 mt-1.5 pt-1.5 border-t border-white/20">
-                  <div className="font-medium">Potential Value:</div>
-                  <div className="text-white">
-                    {(() => {
-                      // Check both potential_total and potential_value for both types
-                      const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
-                      
-                      if (potentialValue !== null && potentialValue !== undefined) {
-                        const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
-                        if (!isNaN(numValue) && numValue > 0) {
-                            // Get currency symbol - prioritize computed values from refreshClientData
-                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                          
-                          // If no computed currency, try to get from currency_id directly
-                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                            const currencyId = Number(selectedClient.currency_id);
-                            switch (currencyId) {
-                              case 1: currency = '₪'; break; // ILS
-                              case 2: currency = '€'; break; // EUR  
-                              case 3: currency = '$'; break; // USD
-                              case 4: currency = '£'; break; // GBP
-                              default: currency = '₪';
-                            }
+
+                      console.log('💰 Balance badge rendering - currency_id:', selectedClient?.currency_id, 'proposal_currency:', selectedClient?.proposal_currency, 'balance_currency:', selectedClient?.balance_currency, 'final currency:', currency);
+
+                      // Calculate VAT - only show if vat column is 'true' for new leads
+                      let vatAmount = 0;
+                      let shouldShowVAT = false;
+
+                      if (isLegacyLead) {
+                        // Legacy leads: check 'vat' column (text type, same as new leads)
+                        // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                        // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                        const vatValue = (selectedClient as any)?.vat;
+                        shouldShowVAT = true; // Default to showing VAT (included)
+
+                        if (vatValue !== null && vatValue !== undefined) {
+                          const vatStr = String(vatValue).toLowerCase().trim();
+                          // If VAT is excluded, don't show VAT in badge
+                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                            shouldShowVAT = false;
                           }
-                          const formattedValue = typeof potentialValue === 'string' 
-                            ? potentialValue 
-                            : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
-                          return (
-                            <span className="text-white">
-                              {currency}{formattedValue}
-                            </span>
-                          );
+                        }
+
+                        // Only calculate VAT if we should show it
+                        if (shouldShowVAT) {
+                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                          const currencyId = (selectedClient as any)?.currency_id;
+                          let totalAmount: number;
+                          // Default to 1 (NIS) if currency_id is null/undefined/NaN (same as BalanceEditModal)
+                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                            numericCurrencyId = 1; // Default to NIS
+                          }
+                          if (numericCurrencyId === 1) {
+                            // For currency_id 1, use total_base (only, no fallback)
+                            totalAmount = Number((selectedClient as any)?.total_base ?? 0);
+                          } else {
+                            // For other currencies, use total column (only, no fallback)
+                            totalAmount = Number((selectedClient as any)?.total ?? 0);
+                          }
+                          vatAmount = totalAmount * 0.18;
+                        }
+                      } else {
+                        // New leads: check 'vat' column (text type)
+                        // 'false', '0', 'no' → VAT excluded (don't show VAT)
+                        // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
+                        const vatValue = selectedClient?.vat;
+                        shouldShowVAT = true; // Default to showing VAT (included)
+
+                        if (vatValue !== null && vatValue !== undefined) {
+                          const vatStr = String(vatValue).toLowerCase().trim();
+                          // If VAT is excluded, don't show VAT in badge
+                          if (vatStr === 'false' || vatStr === '0' || vatStr === 'no' || vatStr === 'excluded') {
+                            shouldShowVAT = false;
+                          }
+                        }
+
+                        // Only calculate VAT if we should show it
+                        if (shouldShowVAT) {
+                          // Use vat_value from database if available, otherwise calculate for all currencies
+                          if (selectedClient?.vat_value && Number(selectedClient.vat_value) > 0) {
+                            vatAmount = Number(selectedClient.vat_value);
+                          } else {
+                            const totalAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                            vatAmount = totalAmount * 0.18; // Calculate VAT for all currencies
+                          }
                         }
                       }
-                      return <span className="text-white opacity-60">Not set</span>;
+
+                      return (
+                        <span>
+                          {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
+                          {shouldShowVAT && vatAmount > 0 && (
+                            <span className="text-white text-base opacity-90 font-normal ml-2">
+                              +{Number(vatAmount.toFixed(2)).toLocaleString()} VAT
+                            </span>
+                          )}
+                        </span>
+                      );
                     })()}
+                  </div>
+                  {/* Show Total with full amount (no subtraction) */}
+                  <div className="text-white text-xs opacity-90 mt-1">
+                    Total: {(() => {
+                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
+
+                      // Get currency symbol - prioritize computed values from refreshClientData
+                      let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+
+                      // If no computed currency, try to get from currency_id directly
+                      if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                        const currencyId = Number(selectedClient.currency_id);
+                        switch (currencyId) {
+                          case 1: currency = '₪'; break; // ILS
+                          case 2: currency = '€'; break; // EUR  
+                          case 3: currency = '$'; break; // USD
+                          case 4: currency = '£'; break; // GBP
+                          default: currency = '₪';
+                        }
+                      }
+
+                      // Calculate base amount using same logic as main display
+                      let baseAmount: number;
+                      if (isLegacyLead) {
+                        // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                        const currencyId = (selectedClient as any)?.currency_id;
+                        let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                        if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                          numericCurrencyId = 1; // Default to NIS
+                        }
+                        if (numericCurrencyId === 1) {
+                          baseAmount = Number((selectedClient as any)?.total_base ?? 0);
+                        } else {
+                          baseAmount = Number((selectedClient as any)?.total ?? 0);
+                        }
+                      } else {
+                        baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                      }
+
+                      // Total should show FULL amount (no subtraction)
+                      const totalAmount = baseAmount;
+
+                      return `${currency}${Number(totalAmount.toFixed(2)).toLocaleString()}`;
+                    })()}
+                  </div>
+                  {/* Always show Potential Value */}
+                  <div className="text-white text-xs opacity-90 mt-1.5 pt-1.5 border-t border-white/20">
+                    <div className="font-medium">Potential Value:</div>
+                    <div className="text-white">
+                      {(() => {
+                        // Check both potential_total and potential_value for both types
+                        const potentialValue = (selectedClient as any)?.potential_total || (selectedClient as any)?.potential_value || null;
+
+                        if (potentialValue !== null && potentialValue !== undefined) {
+                          const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
+                          if (!isNaN(numValue) && numValue > 0) {
+                            // Get currency symbol - prioritize computed values from refreshClientData
+                            let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+
+                            // If no computed currency, try to get from currency_id directly
+                            if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                              const currencyId = Number(selectedClient.currency_id);
+                              switch (currencyId) {
+                                case 1: currency = '₪'; break; // ILS
+                                case 2: currency = '€'; break; // EUR  
+                                case 3: currency = '$'; break; // USD
+                                case 4: currency = '£'; break; // GBP
+                                default: currency = '₪';
+                              }
+                            }
+                            const formattedValue = typeof potentialValue === 'string'
+                              ? potentialValue
+                              : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+                            return (
+                              <span className="text-white">
+                                {currency}{formattedValue}
+                              </span>
+                            );
+                          }
+                        }
+                        return <span className="text-white opacity-60">Not set</span>;
+                      })()}
+                    </div>
                   </div>
                 </div>
               </div>
-            </div>
 
               {/* Stage Badge - Same line - Hidden on mobile, shown on desktop */}
               <div className="hidden md:flex flex-col gap-1.5 flex-shrink-0">
-            {selectedClient?.stage !== null &&
-              selectedClient?.stage !== undefined &&
-              selectedClient?.stage !== '' && (
+                {selectedClient?.stage !== null &&
+                  selectedClient?.stage !== undefined &&
+                  selectedClient?.stage !== '' && (
                     <>
-                  {getStageBadge(selectedClient.stage, 'badge')}
+                      {getStageBadge(selectedClient.stage, 'badge')}
                       {/* Meeting Scheduled badge directly under stage */}
-                  {hasScheduledMeetings && nextMeetingDate && (
-                    <button
-                      onClick={() => setActiveTab('meeting')}
+                      {hasScheduledMeetings && nextMeetingDate && (
+                        <button
+                          onClick={() => setActiveTab('meeting')}
                           className="badge badge-sm px-3 py-1.5 shadow-md cursor-pointer animate-pulse font-semibold whitespace-nowrap"
-                      style={{
-                        background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
-                        color: 'white',
-                        borderColor: '#10b981',
+                          style={{
+                            background: 'linear-gradient(to bottom right, #10b981, #14b8a6)',
+                            color: 'white',
+                            borderColor: '#10b981',
                             fontSize: '0.7rem',
                             minHeight: '1.5rem',
                           }}
@@ -11985,8 +12167,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             const date = new Date(nextMeetingDate);
                             return date.toLocaleDateString('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
                           })()}
-                    </button>
-                  )}
+                        </button>
+                      )}
                     </>
                   )}
               </div>
@@ -12056,8 +12238,30 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <span className="text-xl font-bold text-base-content/90 truncate">
                   {selectedClient ? (selectedClient.name || '---') : '---'}
                 </span>
+                {/* Master Lead button - next to client name on mobile only (for sub-leads) */}
+                {isSubLead && masterLeadNumber && (
+                  <a
+                    href={`/clients/${masterLeadNumber}/master`}
+                    className="md:hidden px-2 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center flex-shrink-0 hover:from-purple-700 hover:to-blue-700 transition-all"
+                  >
+                    <ArrowRightIcon className="w-4 h-4" />
+                  </a>
+                )}
+                {/* View Sub-Leads button - next to client name on mobile only (for master leads) */}
+                {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
+                  <a
+                    href={`/clients/${(() => {
+                      // Get the base lead number without any suffix like /2
+                      const leadNumber = selectedClient.lead_number || selectedClient.id || '';
+                      return leadNumber.toString().split('/')[0];
+                    })()}/master`}
+                    className="md:hidden px-2 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center flex-shrink-0 hover:from-purple-700 hover:to-blue-700 transition-all"
+                  >
+                    <ArrowRightIcon className="w-4 h-4" />
+                  </a>
+                )}
               </div>
-              
+
               {/* Category and Topic - plain text */}
               <div className="flex items-center gap-2 flex-wrap text-sm text-base-content/70">
                 {selectedClient?.category && (
@@ -12074,22 +12278,22 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </span>
                 )}
               </div>
-              
+
               {/* Language and Applicant badges */}
               <div className="flex items-center gap-2 flex-wrap">
-              {selectedClient?.language && (
-                <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
-                  {selectedClient.language}
-                </span>
-              )}
-              {/* Stage Badge - Mobile only, next to language badge */}
-              {selectedClient?.stage !== null &&
-                selectedClient?.stage !== undefined &&
-                selectedClient?.stage !== '' && (
-                  <div className="md:hidden">
-                    {getStageBadge(selectedClient.stage, 'mobile')}
-                  </div>
+                {selectedClient?.language && (
+                  <span className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 rounded-full flex-shrink-0 w-fit">
+                    {selectedClient.language}
+                  </span>
                 )}
+                {/* Stage Badge - Mobile only, next to language badge */}
+                {selectedClient?.stage !== null &&
+                  selectedClient?.stage !== undefined &&
+                  selectedClient?.stage !== '' && (
+                    <div className="md:hidden">
+                      {getStageBadge(selectedClient.stage, 'mobile')}
+                    </div>
+                  )}
                 {(() => {
                   const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                   const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
@@ -12133,8 +12337,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <div className={`overflow-hidden transition-all duration-300 ease-in-out ${isClientInfoCollapsed ? 'max-h-0 opacity-0' : 'max-h-[2000px] opacity-100'} md:max-h-none md:opacity-100`}>
                   <div className="p-3.5 pt-0 md:pt-3.5">
                     <div className="hide-client-header-mobile">
-                      <ClientInformationBox 
-                        selectedClient={selectedClient} 
+                      <ClientInformationBox
+                        selectedClient={selectedClient}
                         getEmployeeDisplayName={getEmployeeDisplayName}
                         onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
                       />
@@ -12143,7 +12347,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
               </div>
             </div>
-            
+
             {/* Progress & Follow-up Box */}
             <div className="min-w-[calc(100%-1rem)] md:flex-1 md:min-w-0 snap-start bg-base-100 rounded-2xl shadow-md border border-base-300 overflow-visible hover:shadow-lg transition-shadow duration-200">
               <div className="h-full flex flex-col">
@@ -12171,8 +12375,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 {/* Collapsible content */}
                 <div className={`overflow-visible transition-all duration-300 ease-in-out ${isProgressCollapsed ? 'max-h-0' : 'max-h-[2000px]'} md:max-h-none`}>
                   <div className="p-3.5 pt-0 md:pt-3.5" style={{ overflow: 'visible' }}>
-                    <ProgressFollowupBox 
-                      selectedClient={selectedClient} 
+                    <ProgressFollowupBox
+                      selectedClient={selectedClient}
                       getEmployeeDisplayName={getEmployeeDisplayName}
                       dropdownsContent={
                         <>
@@ -12190,7 +12394,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                   </ul>
                                 )}
                               </div>
-                              
+
                               {/* Input fields under Stages button */}
                               {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
                                 <div className="flex flex-col items-start gap-1">
@@ -12221,51 +12425,51 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                     {showSuccessStageHandlerDropdown && (() => {
                                       console.log('🎨 Rendering success handler dropdown with', filteredSuccessStageHandlerOptions.length, 'options');
                                       return (
-                                      <div className="absolute z-[9999] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                                        <button
-                                          type="button"
-                                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                                          onClick={() => {
-                                            console.log('🖱️ Clear handler clicked');
-                                            setSuccessStageHandlerSearch('');
-                                            setShowSuccessStageHandlerDropdown(false);
-                                            setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                            void assignSuccessStageHandler(null);
-                                          }}
-                                          disabled={isUpdatingSuccessStageHandler}
-                                        >
-                                          ---------
-                                        </button>
-                                        {filteredSuccessStageHandlerOptions.length > 0 ? (
-                                          filteredSuccessStageHandlerOptions.map(option => (
-                                            <button
-                                              type="button"
-                                              key={option.id}
-                                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                                              onClick={() => {
-                                                console.log('🖱️ Dropdown option clicked:', option);
-                                                setSuccessStageHandlerSearch(option.label);
-                                                setShowSuccessStageHandlerDropdown(false);
-                                                setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                                void assignSuccessStageHandler(option);
-                                              }}
-                                              disabled={isUpdatingSuccessStageHandler}
-                                            >
-                                              {option.label}
-                                            </button>
-                                          ))
-                                        ) : (
-                                          <div className="px-4 py-3 text-sm text-base-content/60">
-                                            No handlers found
-                                          </div>
-                                        )}
-                                      </div>
+                                        <div className="absolute z-[9999] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                                          <button
+                                            type="button"
+                                            className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
+                                            onClick={() => {
+                                              console.log('🖱️ Clear handler clicked');
+                                              setSuccessStageHandlerSearch('');
+                                              setShowSuccessStageHandlerDropdown(false);
+                                              setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                              void assignSuccessStageHandler(null);
+                                            }}
+                                            disabled={isUpdatingSuccessStageHandler}
+                                          >
+                                            ---------
+                                          </button>
+                                          {filteredSuccessStageHandlerOptions.length > 0 ? (
+                                            filteredSuccessStageHandlerOptions.map(option => (
+                                              <button
+                                                type="button"
+                                                key={option.id}
+                                                className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                                                onClick={() => {
+                                                  console.log('🖱️ Dropdown option clicked:', option);
+                                                  setSuccessStageHandlerSearch(option.label);
+                                                  setShowSuccessStageHandlerDropdown(false);
+                                                  setFilteredSuccessStageHandlerOptions(handlerOptions);
+                                                  void assignSuccessStageHandler(option);
+                                                }}
+                                                disabled={isUpdatingSuccessStageHandler}
+                                              >
+                                                {option.label}
+                                              </button>
+                                            ))
+                                          ) : (
+                                            <div className="px-4 py-3 text-sm text-base-content/60">
+                                              No handlers found
+                                            </div>
+                                          )}
+                                        </div>
                                       );
                                     })()}
                                   </div>
                                 </div>
                               )}
-                              
+
                               {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
                                 <div className="relative" data-assign-dropdown="true">
                                   <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
@@ -12318,7 +12522,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                 </div>
                               )}
                             </div>
-                            
+
                             <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
                               <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                                 <span>Actions</span>
@@ -12341,9 +12545,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                     className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
                                     onClick={async () => {
                                       if (!selectedClient?.id) return;
-                                      
+
                                       const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                      const leadId = isLegacyLead 
+                                      const leadId = isLegacyLead
                                         ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
                                         : selectedClient.id;
                                       const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
@@ -12353,7 +12557,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                       } else {
                                         await addToHighlights(leadId, leadNumber, isLegacyLead);
                                       }
-                                      
+
                                       (document.activeElement as HTMLElement | null)?.blur();
                                     }}
                                   >
@@ -12410,13 +12614,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       </div>
-      {/* Badges section - Duplicate Contacts */}
-      <div className="hidden md:flex w-full justify-between items-center mt-2 mb-2 px-4">
-        {/* Duplicate Contacts Badge - Left side */}
-        {duplicateContacts.length > 0 ? (
-          <div className="flex justify-start">
-            <div className="relative">
-              {duplicateContacts.length === 1 ? (
+      {/* Badges section - Duplicate Contacts - Desktop */}
+      {duplicateContacts.length > 0 && (
+        <div className="hidden md:flex w-full justify-start items-center mt-2 mb-2 px-4">
+          <div className="relative">
+            {duplicateContacts.length === 1 ? (
               <button
                 onClick={() => setIsDuplicateModalOpen(true)}
                 className="rounded-xl bg-gradient-to-tr from-orange-500 via-red-500 to-pink-600 text-white shadow-lg px-4 py-2 text-sm font-bold flex items-center gap-2 border-2 border-white/20 hover:from-orange-600 hover:via-red-600 hover:to-pink-700 transition-all cursor-pointer"
@@ -12479,45 +12681,39 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 )}
               </div>
             )}
-            </div>
           </div>
-        ) : (
-          <div></div>
-        )}
-
         </div>
+      )}
       {/* Client Details Section (desktop) */}
       <div className="hidden md:block bg-white dark:bg-gray-900 w-full">
         {/* Modern CRM Header */}
         <div className="px-8 py-6">
-          {/* Sub-lead notice at the top */}
-          {isSubLead && masterLeadNumber && (
-            <div className="text-sm text-gray-500 mb-2">
-              This is a Sub-Lead of Master Lead: <a href={`/clients/${masterLeadNumber}/master`} className="underline text-blue-700 hover:text-blue-900">{masterLeadNumber}</a>
-            </div>
-          )}
-          {/* Master lead notice */}
-          {isMasterLead && subLeads.length > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '') && (
-            <div className="text-sm text-gray-500 mb-2">
-              This is a master lead with {subLeads.length} sub-lead{subLeads.length !== 1 ? 's' : ''}. 
-              <a 
-                href={`/clients/${(() => {
-                  // Get the base lead number without any suffix like /2
-                  const leadNumber = selectedClient.lead_number || selectedClient.id || '';
-                  return leadNumber.toString().split('/')[0];
-                })()}/master`} 
-                className="underline text-blue-700 hover:text-blue-900 ml-1"
-              >
-                View all sub-leads
-              </a>
-            </div>
-          )}
 
           {/* Client Details - Modern Box Design */}
           <div className="pt-0">
             <div className="flex flex-col lg:flex-row justify-between gap-8">
               <div className="w-full lg:w-80">
-                <ClientInformationBox selectedClient={selectedClient} onClientUpdate={async () => await refreshClientData(selectedClient?.id)} />
+                {(() => {
+                  console.log('🔍 Clients.tsx - Rendering ClientInformationBox with props:', {
+                    isSubLead,
+                    masterLeadNumber,
+                    isMasterLeadProp: isMasterLead,
+                    subLeadsCountProp: subLeads.length,
+                    selectedClientLanguage: selectedClient?.language,
+                    selectedClientCategory: selectedClient?.category,
+                    selectedClientId: selectedClient?.id
+                  });
+                  return (
+                    <ClientInformationBox
+                      selectedClient={selectedClient}
+                      onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+                      isSubLead={isSubLead}
+                      masterLeadNumber={masterLeadNumber}
+                      isMasterLeadProp={isMasterLead}
+                      subLeadsCountProp={subLeads.length}
+                    />
+                  );
+                })()}
               </div>
               <div className="w-full lg:w-48 flex flex-col items-center">
                 {/* Next Payment Due Indicator */}
@@ -12531,7 +12727,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           const today = new Date();
                           const diffTime = dueDate.getTime() - today.getTime();
                           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-                          
+
                           let dateText = dueDate.toLocaleDateString('en-GB');
                           if (diffDays === 0) {
                             dateText = 'Today';
@@ -12540,23 +12736,23 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           } else if (diffDays < 0) {
                             dateText = `${Math.abs(diffDays)} days overdue`;
                           }
-                          
-                          const currency = nextDuePayment.isLegacy 
+
+                          const currency = nextDuePayment.isLegacy
                             ? (nextDuePayment.accounting_currencies?.iso_code === 'ILS' ? '₪' : nextDuePayment.accounting_currencies?.iso_code || '₪')
                             : (nextDuePayment.currency || '₪');
-                          
-                          const amount = nextDuePayment.isLegacy 
+
+                          const amount = nextDuePayment.isLegacy
                             ? (Number(nextDuePayment.value) + Number(nextDuePayment.vat_value || 0))
                             : (Number(nextDuePayment.value) + Number(nextDuePayment.value_vat || 0));
-                          
+
                           return `${currency}${Number(amount.toFixed(2)).toLocaleString()} - ${dateText}`;
                         })()}
                       </div>
                     </div>
                   </div>
                 )}
-                
-                <div 
+
+                <div
                   className="bg-gradient-to-r from-purple-600 to-blue-600 rounded-2xl shadow-lg p-4 mb-3 cursor-pointer hover:from-purple-700 hover:to-blue-700 transition-all duration-200"
                   onClick={() => setIsBalanceModalOpen(true)}
                   title="Click to edit balance"
@@ -12578,20 +12774,36 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           }
                           if (numericCurrencyId === 1) {
                             // For currency_id 1, show total_base (only, no fallback)
-                            baseAmount = Number((selectedClient as any)?.total_base ?? 0);
+                            // Check if total_base is actually loaded (not null/undefined) before using it
+                            const totalBase = (selectedClient as any)?.total_base;
+                            if (totalBase === null || totalBase === undefined) {
+                              // Data not loaded yet - don't render to prevent showing 0
+                              // The badge will render once data is loaded via refreshClientData
+                              return null;
+                            }
+                            baseAmount = Number(totalBase);
                           } else {
                             // For other currencies, show total column (only, no fallback)
-                            baseAmount = Number((selectedClient as any)?.total ?? 0);
+                            // Check if total is actually loaded (not null/undefined) before using it
+                            const total = (selectedClient as any)?.total;
+                            if (total === null || total === undefined) {
+                              // Data not loaded yet - don't render to prevent showing 0
+                              // The badge will render once data is loaded via refreshClientData
+                              return null;
+                            }
+                            baseAmount = Number(total);
                           }
                         } else {
                           baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
                         }
-                        const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? 0);
+                        // For legacy leads: main display should show WITH subtracting subcontractor fee
+                        // For new leads: also subtract subcontractor fee
+                        const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
                         const mainAmount = baseAmount - subcontractorFee;
-                        
+
                         // Get currency symbol - prioritize computed values from refreshClientData
                         let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                        
+
                         // If no computed currency, try to get from currency_id directly
                         if ((!currency || currency === '₪') && selectedClient?.currency_id && !isLegacyLead) {
                           const currencyId = Number(selectedClient.currency_id);
@@ -12603,18 +12815,18 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             default: currency = '₪';
                           }
                         }
-                        
+
                         // Calculate VAT - only show if vat column is 'true' for new leads
                         let vatAmount = 0;
                         let shouldShowVAT = false;
-                        
+
                         if (isLegacyLead) {
                           // Legacy leads: check 'vat' column (text type, same as new leads)
                           // 'false', '0', 'no' → VAT excluded (don't show VAT)
                           // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
                           const vatValue = (selectedClient as any)?.vat;
                           shouldShowVAT = true; // Default to showing VAT (included)
-                          
+
                           if (vatValue !== null && vatValue !== undefined) {
                             const vatStr = String(vatValue).toLowerCase().trim();
                             // If VAT is excluded, don't show VAT in badge
@@ -12622,7 +12834,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               shouldShowVAT = false;
                             }
                           }
-                          
+
                           // Only calculate VAT if we should show it
                           if (shouldShowVAT) {
                             // Use same logic as baseAmount: total_base for currency_id === 1, total for others
@@ -12642,7 +12854,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           // 'true', '1', 'yes', NULL, undefined → VAT included (show VAT)
                           const vatValue = selectedClient?.vat;
                           shouldShowVAT = true; // Default to showing VAT (included)
-                          
+
                           if (vatValue !== null && vatValue !== undefined) {
                             const vatStr = String(vatValue).toLowerCase().trim();
                             // If VAT is excluded, don't show VAT in badge
@@ -12650,7 +12862,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               shouldShowVAT = false;
                             }
                           }
-                          
+
                           // Only calculate VAT if we should show it
                           if (shouldShowVAT) {
                             // Use vat_value from database if available, otherwise calculate for all currencies
@@ -12662,7 +12874,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             }
                           }
                         }
-                        
+
                         return (
                           <span>
                             {currency}{Number(mainAmount.toFixed(2)).toLocaleString()}
@@ -12681,9 +12893,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       if (potentialValue !== null && potentialValue !== undefined) {
                         const numValue = typeof potentialValue === 'string' ? parseFloat(potentialValue) : Number(potentialValue);
                         if (!isNaN(numValue) && numValue > 0) {
-                            // Get currency symbol - prioritize computed values from refreshClientData
+                          // Get currency symbol - prioritize computed values from refreshClientData
                           let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                          
+
                           // If no computed currency, try to get from currency_id directly
                           if ((!currency || currency === '₪') && selectedClient?.currency_id) {
                             const currencyId = Number(selectedClient.currency_id);
@@ -12695,8 +12907,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               default: currency = '₪';
                             }
                           }
-                          const formattedValue = typeof potentialValue === 'string' 
-                            ? potentialValue 
+                          const formattedValue = typeof potentialValue === 'string'
+                            ? potentialValue
                             : numValue.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
                           return (
                             <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
@@ -12712,35 +12924,61 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       }
                       return null;
                     })()}
-                    {/* Conditionally show Total - only if subcontractor fee exists */}
-                    {Number(selectedClient?.subcontractor_fee ?? 0) > 0 && (
-                      <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
-                        Total: {(() => {
-                          const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
-                            // Get currency symbol - prioritize computed values from refreshClientData
-                          let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
-                          
-                          // If no computed currency, try to get from currency_id directly
-                          if ((!currency || currency === '₪') && selectedClient?.currency_id) {
-                            const currencyId = Number(selectedClient.currency_id);
-                            switch (currencyId) {
-                              case 1: currency = '₪'; break; // ILS
-                              case 2: currency = '€'; break; // EUR  
-                              case 3: currency = '$'; break; // USD
-                              case 4: currency = '£'; break; // GBP
-                              default: currency = '₪';
-                            }
+                    {/* Show Total with full amount (no subtraction) for legacy leads */}
+                    {(() => {
+                      const isLegacyLead = selectedClient?.id?.toString().startsWith('legacy_');
+                      const subcontractorFee = Number(selectedClient?.subcontractor_fee ?? (selectedClient as any)?.subcontractor_fee ?? 0);
+
+                      // For legacy leads, always show Total if there's a subcontractor fee
+                      // For new leads, show Total if there's a subcontractor fee
+                      if (subcontractorFee > 0) {
+                        // Get currency symbol - prioritize computed values from refreshClientData
+                        let currency = selectedClient?.proposal_currency ?? selectedClient?.balance_currency ?? '₪';
+
+                        // If no computed currency, try to get from currency_id directly
+                        if ((!currency || currency === '₪') && selectedClient?.currency_id) {
+                          const currencyId = Number(selectedClient.currency_id);
+                          switch (currencyId) {
+                            case 1: currency = '₪'; break; // ILS
+                            case 2: currency = '€'; break; // EUR  
+                            case 3: currency = '$'; break; // USD
+                            case 4: currency = '£'; break; // GBP
+                            default: currency = '₪';
                           }
-                          const baseAmount = isLegacyLead
-                            ? Number(selectedClient?.total || selectedClient?.balance || 0)
-                            : Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
-                          return `${currency}${Number(baseAmount.toFixed(2)).toLocaleString()}`;
-                        })()}
-                      </div>
-                    )}
+                        }
+
+                        // Calculate base amount using same logic as main display
+                        let baseAmount: number;
+                        if (isLegacyLead) {
+                          // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+                          const currencyId = (selectedClient as any)?.currency_id;
+                          let numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+                          if (!numericCurrencyId || isNaN(numericCurrencyId)) {
+                            numericCurrencyId = 1; // Default to NIS
+                          }
+                          if (numericCurrencyId === 1) {
+                            baseAmount = Number((selectedClient as any)?.total_base ?? 0);
+                          } else {
+                            baseAmount = Number((selectedClient as any)?.total ?? 0);
+                          }
+                        } else {
+                          baseAmount = Number(selectedClient?.balance || selectedClient?.proposal_total || 0);
+                        }
+
+                        // Total should show FULL amount (no subtraction)
+                        const totalAmount = baseAmount;
+
+                        return (
+                          <div className="text-white text-sm opacity-90 mt-2 pt-2 border-t border-white/20">
+                            Total: {currency}{Number(totalAmount.toFixed(2)).toLocaleString()}
+                          </div>
+                        );
+                      }
+                      return null;
+                    })()}
                   </div>
                 </div>
-                
+
                 {/* Stage Badge - Under balance badge */}
                 {selectedClient?.stage !== null &&
                   selectedClient?.stage !== undefined &&
@@ -12816,9 +13054,9 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           Case closed
                         </button>
                       )}
-                  </div>
-                )}
-                
+                    </div>
+                  )}
+
                 {/* Category Prompt Message - Under stage badge */}
                 {(!selectedClient?.category_id && !selectedClient?.category) && (
                   <div className="text-center mb-3">
@@ -12830,12 +13068,12 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </div>
                   </div>
                 )}
-                
+
                 {/* Applicants Display - Under stage badge */}
                 {(() => {
                   const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
                   const applicantsCount = isLegacyLead ? selectedClient?.no_of_applicants : selectedClient?.number_of_applicants_meeting;
-                  
+
                   return applicantsCount && applicantsCount > 0 ? (
                     <div className="text-center mb-3">
                       <div className="text-black text-lg font-semibold">
@@ -12844,7 +13082,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </div>
                   ) : null;
                 })()}
-                
+
                 {/* Show "Case is not active" message for unactivated leads */}
                 {(() => {
                   const isLegacyForBadge = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
@@ -12852,20 +13090,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   const isUnactivatedForBadge = isLegacyForBadge
                     ? (statusValueForBadge === 10 || statusValueForBadge === '10' || Number(statusValueForBadge) === 10)
                     : (statusValueForBadge === 'inactive');
-                  
+
                   // Get deactivate_notes for both legacy and new leads
                   const deactivateNotes = (selectedClient as any).deactivate_notes || null;
-                  
+
                   // Detect if text contains Hebrew characters for RTL/LTR alignment
                   const hasHebrew = deactivateNotes ? /[\u0590-\u05FF]/.test(deactivateNotes) : false;
-                  
+
                   // Text truncation settings
                   const MAX_TEXT_LENGTH = 150;
                   const shouldTruncate = deactivateNotes && deactivateNotes.length > MAX_TEXT_LENGTH;
                   const displayText = shouldTruncate && !isInactiveBadgeExpanded
                     ? deactivateNotes.substring(0, MAX_TEXT_LENGTH) + '...'
                     : deactivateNotes;
-                  
+
                   return isUnactivatedForBadge ? (
                     <div className="mt-3 w-full">
                       <div className="bg-white border border-red-200 rounded-xl shadow-sm overflow-hidden w-full">
@@ -12877,10 +13115,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                         {/* Content area */}
                         {deactivateNotes && (
                           <div className="px-4 py-3 bg-red-50">
-                            <span 
-                              className="text-red-800 text-sm leading-relaxed block" 
-                              dir={hasHebrew ? 'rtl' : 'ltr'} 
-                              style={{ 
+                            <span
+                              className="text-red-800 text-sm leading-relaxed block"
+                              dir={hasHebrew ? 'rtl' : 'ltr'}
+                              style={{
                                 textAlign: hasHebrew ? 'right' : 'left',
                                 whiteSpace: 'pre-wrap'
                               }}
@@ -12914,8 +13152,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 })()}
               </div>
               <div className="w-full lg:w-80">
-                <ProgressFollowupBox 
-                  selectedClient={selectedClient} 
+                <ProgressFollowupBox
+                  selectedClient={selectedClient}
                   getEmployeeDisplayName={getEmployeeDisplayName}
                   dropdownsContent={
                     <>
@@ -12933,7 +13171,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               </ul>
                             )}
                           </div>
-                          
+
                           {/* Input fields under Stages button */}
                           {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
                             <div className="flex flex-col items-start gap-1">
@@ -12997,7 +13235,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                               </div>
                             </div>
                           )}
-                          
+
                           {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
                             <div className="relative" data-assign-dropdown="true">
                               <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
@@ -13050,87 +13288,87 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                             </div>
                           )}
                         </div>
-                        
+
                         <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
                           <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
                             <span>Actions</span>
                             <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
                           </label>
                           <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
-                          {(() => {
-                            const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                            const isUnactivated = isLegacy
-                              ? (selectedClient?.status === 10)
-                              : (selectedClient?.status === 'inactive');
-                            return isUnactivated;
-                          })() ? (
-                            <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                          ) : (
-                            <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                          )}
-                          <li>
-                            <a
-                              className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                              onClick={async () => {
-                                if (!selectedClient?.id) return;
-                                
-                                const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                                const leadId = isLegacyLead 
-                                  ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                                  : selectedClient.id;
-                                const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                                if (isInHighlightsState) {
-                                  await removeFromHighlights(leadId, isLegacyLead);
-                                } else {
-                                  await addToHighlights(leadId, leadNumber, isLegacyLead);
-                                }
-                                
-                                (document.activeElement as HTMLElement | null)?.blur();
-                              }}
-                            >
-                              {isInHighlightsState ? (
-                                <>
-                                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                  <span className="font-medium">Remove from Highlights</span>
-                                </>
-                              ) : (
-                                <>
-                                  <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                                  <span className="font-medium">Add to Highlights</span>
-                                </>
-                              )}
-                            </a>
-                          </li>
-                          <li>
-                            <a
-                              className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                              onClick={() => {
-                                openEditLeadDrawer();
-                                (document.activeElement as HTMLElement | null)?.blur();
-                              }}
-                            >
-                              <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                              <span className="font-medium">Edit lead</span>
-                            </a>
-                          </li>
-                          <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                          {isSuperuser && (
+                            {(() => {
+                              const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                              const isUnactivated = isLegacy
+                                ? (selectedClient?.status === 10)
+                                : (selectedClient?.status === 'inactive');
+                              return isUnactivated;
+                            })() ? (
+                              <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                            ) : (
+                              <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                            )}
                             <li>
                               <a
-                                className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                                onClick={() => {
-                                  setShowDeleteModal(true);
+                                className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                onClick={async () => {
+                                  if (!selectedClient?.id) return;
+
+                                  const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                                  const leadId = isLegacyLead
+                                    ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                                    : selectedClient.id;
+                                  const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                                  if (isInHighlightsState) {
+                                    await removeFromHighlights(leadId, isLegacyLead);
+                                  } else {
+                                    await addToHighlights(leadId, leadNumber, isLegacyLead);
+                                  }
+
                                   (document.activeElement as HTMLElement | null)?.blur();
                                 }}
                               >
-                                <TrashIcon className="w-5 h-5 text-red-500" />
-                                <span className="text-red-600 font-medium">Delete Lead</span>
+                                {isInHighlightsState ? (
+                                  <>
+                                    <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                    <span className="font-medium">Remove from Highlights</span>
+                                  </>
+                                ) : (
+                                  <>
+                                    <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                                    <span className="font-medium">Add to Highlights</span>
+                                  </>
+                                )}
                               </a>
                             </li>
-                          )}
-                        </ul>
-                      </div>
+                            <li>
+                              <a
+                                className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                                onClick={() => {
+                                  openEditLeadDrawer();
+                                  (document.activeElement as HTMLElement | null)?.blur();
+                                }}
+                              >
+                                <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                                <span className="font-medium">Edit lead</span>
+                              </a>
+                            </li>
+                            <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                            {isSuperuser && (
+                              <li>
+                                <a
+                                  className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                                  onClick={() => {
+                                    setShowDeleteModal(true);
+                                    (document.activeElement as HTMLElement | null)?.blur();
+                                  }}
+                                >
+                                  <TrashIcon className="w-5 h-5 text-red-500" />
+                                  <span className="text-red-600 font-medium">Delete Lead</span>
+                                </a>
+                              </li>
+                            )}
+                          </ul>
+                        </div>
                       </div>
                     </>
                   }
@@ -13139,35 +13377,33 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             </div>
           </div>
         </div>
-        </div>
-        
-        {/* Tabs Navigation */}
-        
-        {/* Tabs Navigation - Desktop */}
-        <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
-          <div className="w-full">
-            {/* Desktop version */}
-            <div className="flex flex-col px-4 py-4 gap-4">
-              <div className="flex items-center gap-4 flex-wrap">
-                <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
-                                  {tabs.map((tab) => (
-                    <button
-                      key={tab.id}
-                      className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${
-                        activeTab === tab.id
-                          ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
-                          : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+      </div>
+
+      {/* Tabs Navigation */}
+
+      {/* Tabs Navigation - Desktop */}
+      <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
+        <div className="w-full">
+          {/* Desktop version */}
+          <div className="flex flex-col px-4 py-4 gap-4">
+            <div className="flex items-center gap-4 flex-wrap">
+              <div ref={desktopTabsRef} className="flex bg-white dark:bg-gray-800 p-1 gap-1 overflow-x-auto flex-1 rounded-lg scrollbar-hide min-w-0" style={{ scrollBehavior: 'smooth' }}>
+                {tabs.map((tab) => (
+                  <button
+                    key={tab.id}
+                    className={`relative flex items-center justify-center gap-3 px-4 py-3 rounded-lg font-semibold text-sm transition-all duration-300 hover:scale-[1.02] whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                      ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg transform scale-[1.02]'
+                      : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
                       }`}
-                      onClick={() => setActiveTab(tab.id)}
-                    >
+                    onClick={() => setActiveTab(tab.id)}
+                  >
                     <tab.icon className={`w-5 h-5 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
                     <span className={`whitespace-nowrap saira-light font-bold ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
                     {tab.id === 'interactions' && tab.badge && (
-                      <div className={`badge badge-sm font-bold ${
-                        activeTab === tab.id 
-                          ? 'bg-white/20 text-white border-white/30' 
-                          : 'bg-purple-100 text-purple-700 border-purple-200'
-                      }`}>
+                      <div className={`badge badge-sm font-bold ${activeTab === tab.id
+                        ? 'bg-white/20 text-white border-white/30'
+                        : 'bg-purple-100 text-purple-700 border-purple-200'
+                        }`}>
                         {tab.badge}
                       </div>
                     )}
@@ -13176,527 +13412,524 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     )}
                   </button>
                 ))}
-                </div>
               </div>
             </div>
           </div>
         </div>
-        {/* Mobile: Edge-positioned arrow buttons */}
-        <div className="lg:hidden">
-          {/* Right Edge - Menu Button */}
-          <button
-            onClick={() => {
-              setShowMobileMenu(!showMobileMenu);
-              setShowMobileStagesDropdown(false);
-              setShowMobileActionsDropdown(false);
-            }}
-            className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
-            style={{ backgroundColor: '#4218CC' }}
-          >
-            <Bars3Icon className="w-6 h-6 text-white" />
-          </button>
+      </div>
+      {/* Mobile: Edge-positioned arrow buttons */}
+      <div className="lg:hidden">
+        {/* Right Edge - Menu Button */}
+        <button
+          onClick={() => {
+            setShowMobileMenu(!showMobileMenu);
+            setShowMobileStagesDropdown(false);
+            setShowMobileActionsDropdown(false);
+          }}
+          className="fixed right-2 top-1/2 -translate-y-1/2 z-[45] bg-white rounded-full shadow-lg p-3 transition-all hover:scale-110"
+          style={{ backgroundColor: '#4218CC' }}
+        >
+          <Bars3Icon className="w-6 h-6 text-white" />
+        </button>
 
-          {/* Mobile Menu - Choose Client Info, Stages or Actions */}
-          {showMobileMenu && (
-            <>
-              <div 
-                className="fixed inset-0 z-40 bg-black/20"
-                onClick={() => setShowMobileMenu(false)}
-              />
-              <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
-                <button
-                  onClick={() => {
-                    setShowMobileMenu(false);
-                    setShowMobileClientInfo(true);
-                    setShowMobileStagesDropdown(false);
-                    setShowMobileActionsDropdown(false);
-                  }}
-                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-                >
-                  <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowMobileMenu(false);
-                    setShowMobileStagesDropdown(true);
-                    setShowMobileActionsDropdown(false);
-                    setShowMobileClientInfo(false);
-                  }}
-                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
-                >
-                  <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
-                </button>
-                <button
-                  onClick={() => {
-                    setShowMobileMenu(false);
-                    setShowMobileStagesDropdown(false);
-                    setShowMobileActionsDropdown(true);
-                    setShowMobileClientInfo(false);
-                  }}
-                  className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
-                >
-                  <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
-                </button>
-              </div>
-            </>
-          )}
+        {/* Mobile Menu - Choose Client Info, Stages or Actions */}
+        {showMobileMenu && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/20"
+              onClick={() => setShowMobileMenu(false)}
+            />
+            <div className="fixed right-2 top-1/2 -translate-y-1/2 mr-16 z-50 bg-white rounded-xl shadow-2xl border border-gray-200 overflow-hidden">
+              <button
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowMobileClientInfo(true);
+                  setShowMobileStagesDropdown(false);
+                  setShowMobileActionsDropdown(false);
+                }}
+                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+              >
+                <span className="font-semibold" style={{ color: '#4218CC' }}>Client Info</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowMobileStagesDropdown(true);
+                  setShowMobileActionsDropdown(false);
+                  setShowMobileClientInfo(false);
+                }}
+                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors border-b border-gray-100"
+              >
+                <span className="font-semibold" style={{ color: '#4218CC' }}>Stages</span>
+              </button>
+              <button
+                onClick={() => {
+                  setShowMobileMenu(false);
+                  setShowMobileStagesDropdown(false);
+                  setShowMobileActionsDropdown(true);
+                  setShowMobileClientInfo(false);
+                }}
+                className="w-full px-6 py-4 text-left hover:bg-purple-50 transition-colors"
+              >
+                <span className="font-semibold" style={{ color: '#4218CC' }}>Actions</span>
+              </button>
+            </div>
+          </>
+        )}
 
-          {/* Mobile Stages Dropdown */}
-          {showMobileStagesDropdown && (
-            <>
-              <div 
-                className="fixed inset-0 z-40 bg-black/20"
-                onClick={() => setShowMobileStagesDropdown(false)}
-              />
-              <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-                <div className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
-                    <button
-                      onClick={() => setShowMobileStagesDropdown(false)}
-                      className="btn btn-ghost btn-sm btn-circle"
-                    >
-                      <XMarkIcon className="w-5 h-5" />
-                    </button>
-                  </div>
-                  {dropdownItems && (
-                    <ul className="menu p-0">
-                      {dropdownItems}
-                    </ul>
-                  )}
+        {/* Mobile Stages Dropdown */}
+        {showMobileStagesDropdown && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/20"
+              onClick={() => setShowMobileStagesDropdown(false)}
+            />
+            <div className="fixed left-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-r-2xl shadow-2xl border border-l-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Stages</h3>
+                  <button
+                    onClick={() => setShowMobileStagesDropdown(false)}
+                    className="btn btn-ghost btn-sm btn-circle"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
                 </div>
-              </div>
-            </>
-          )}
-
-          {/* Mobile Actions Dropdown */}
-          {showMobileActionsDropdown && (
-            <>
-              <div 
-                className="fixed inset-0 z-40 bg-black/20"
-                onClick={() => setShowMobileActionsDropdown(false)}
-              />
-              <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
-                <div className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
-                    <button
-                      onClick={() => setShowMobileActionsDropdown(false)}
-                      className="btn btn-ghost btn-sm btn-circle"
-                    >
-                      <XMarkIcon className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <ul className="menu p-0">
-                    {(() => {
-                      const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                      const isUnactivated = isLegacy
-                        ? (selectedClient?.status === 10)
-                        : (selectedClient?.status === 'inactive');
-                      return isUnactivated;
-                    })() ? (
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                    ) : (
-                      <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                    )}
-                    <li>
-                      <a
-                        className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
-                        onClick={async () => {
-                          if (!selectedClient?.id) return;
-                          
-                          const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                          const leadId = isLegacyLead 
-                            ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                            : selectedClient.id;
-                          const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
-
-                          if (isInHighlightsState) {
-                            await removeFromHighlights(leadId, isLegacyLead);
-                          } else {
-                            await addToHighlights(leadId, leadNumber, isLegacyLead);
-                          }
-                          
-                          setShowMobileActionsDropdown(false);
-                        }}
-                      >
-                        {isInHighlightsState ? (
-                          <>
-                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                            <span className="font-medium">Remove from Highlights</span>
-                          </>
-                        ) : (
-                          <>
-                            <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                            <span className="font-medium">Add to Highlights</span>
-                          </>
-                        )}
-                      </a>
-                    </li>
-                    <li>
-                      <a
-                        className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                        onClick={() => {
-                          openEditLeadDrawer();
-                          setShowMobileActionsDropdown(false);
-                        }}
-                      >
-                        <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                        <span className="font-medium">Edit lead</span>
-                      </a>
-                    </li>
-                    <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                    {isSuperuser && (
-                      <li>
-                        <a
-                          className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
-                          onClick={() => {
-                            setShowDeleteModal(true);
-                            setShowMobileActionsDropdown(false);
-                          }}
-                        >
-                          <TrashIcon className="w-5 h-5 text-red-500" />
-                          <span className="text-red-600 font-medium">Delete Lead</span>
-                        </a>
-                      </li>
-                    )}
-                  </ul>
-                </div>
-              </div>
-            </>
-          )}
-
-          {/* Mobile Client Information Panel */}
-          {showMobileClientInfo && (
-            <>
-              <div 
-                className="fixed inset-0 z-40 bg-black/20"
-                onClick={() => setShowMobileClientInfo(false)}
-              />
-              <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
-                <div className="p-4">
-                  <div className="flex items-center justify-between mb-4">
-                    <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
-                    <button
-                      onClick={() => setShowMobileClientInfo(false)}
-                      className="btn btn-ghost btn-sm btn-circle"
-                    >
-                      <XMarkIcon className="w-5 h-5" />
-                    </button>
-                  </div>
-                  <ClientInformationBox 
-                    selectedClient={selectedClient} 
-                    getEmployeeDisplayName={getEmployeeDisplayName}
-                    onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
-                  />
-                </div>
-              </div>
-            </>
-          )}
-        </div>
-
-        {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
-        <div className="hidden px-4 py-3 space-y-3">
-          {/* First row: Stages and Actions buttons */}
-          <div className="flex flex-row gap-3 w-full">
-            <div className="flex flex-col flex-1 gap-3">
-              <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-                <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                  <span>Stages</span>
-                  <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-                </label>
                 {dropdownItems && (
-                  <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                  <ul className="menu p-0">
                     {dropdownItems}
                   </ul>
                 )}
               </div>
-              
-              {/* Input fields under Stages button */}
-              {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
-                <div className="flex flex-col items-start gap-1">
-                  <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
-                  <div ref={successStageHandlerContainerRef} className="relative w-full">
-                    <input
-                      type="text"
-                      className="input input-bordered w-full"
-                      placeholder="Not assigned"
-                      value={successStageHandlerSearch}
-                      onChange={e => {
-                        setSuccessStageHandlerSearch(e.target.value);
-                        setShowSuccessStageHandlerDropdown(true);
-                      }}
-                      onFocus={() => {
-                        setShowSuccessStageHandlerDropdown(true);
-                        setFilteredSuccessStageHandlerOptions(handlerOptions);
-                      }}
-                      autoComplete="off"
-                      disabled={isUpdatingSuccessStageHandler}
-                    />
-                    {showSuccessStageHandlerDropdown && (
-                      <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
-                        <button
-                          type="button"
-                          className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
-                          onClick={() => {
-                            setSuccessStageHandlerSearch('');
-                            setShowSuccessStageHandlerDropdown(false);
-                            setFilteredSuccessStageHandlerOptions(handlerOptions);
-                            void assignSuccessStageHandler(null);
-                          }}
-                          disabled={isUpdatingSuccessStageHandler}
-                        >
-                          ---------
-                        </button>
-                        {filteredSuccessStageHandlerOptions.length > 0 ? (
-                          filteredSuccessStageHandlerOptions.map(option => (
-                            <button
-                              type="button"
-                              key={option.id}
-                              className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
-                              onClick={() => {
-                                setSuccessStageHandlerSearch(option.label);
-                                setShowSuccessStageHandlerDropdown(false);
-                                setFilteredSuccessStageHandlerOptions(handlerOptions);
-                                void assignSuccessStageHandler(option);
-                              }}
-                              disabled={isUpdatingSuccessStageHandler}
-                            >
-                              {option.label}
-                            </button>
-                          ))
-                        ) : (
-                          <div className="px-4 py-3 text-sm text-base-content/60">
-                            No handlers found
-                          </div>
-                        )}
-                      </div>
-                    )}
-                  </div>
+            </div>
+          </>
+        )}
+
+        {/* Mobile Actions Dropdown */}
+        {showMobileActionsDropdown && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/20"
+              onClick={() => setShowMobileActionsDropdown(false)}
+            />
+            <div className="fixed right-0 top-1/2 -translate-y-1/2 z-50 bg-base-100 rounded-l-2xl shadow-2xl border border-r-0 border-base-300 w-64 max-h-[80vh] overflow-y-auto">
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-3">
+                  <h3 className="font-semibold text-base" style={{ color: '#4218CC' }}>Actions</h3>
+                  <button
+                    onClick={() => setShowMobileActionsDropdown(false)}
+                    className="btn btn-ghost btn-sm btn-circle"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
                 </div>
+                <ul className="menu p-0">
+                  {(() => {
+                    const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                    const isUnactivated = isLegacy
+                      ? (selectedClient?.status === 10)
+                      : (selectedClient?.status === 'inactive');
+                    return isUnactivated;
+                  })() ? (
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+                  ) : (
+                    <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+                  )}
+                  <li>
+                    <a
+                      className="flex items-center gap-3 py-3 hover:bg-base-200 transition-colors rounded-lg"
+                      onClick={async () => {
+                        if (!selectedClient?.id) return;
+
+                        const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                        const leadId = isLegacyLead
+                          ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                          : selectedClient.id;
+                        const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                        if (isInHighlightsState) {
+                          await removeFromHighlights(leadId, isLegacyLead);
+                        } else {
+                          await addToHighlights(leadId, leadNumber, isLegacyLead);
+                        }
+
+                        setShowMobileActionsDropdown(false);
+                      }}
+                    >
+                      {isInHighlightsState ? (
+                        <>
+                          <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                          <span className="font-medium">Remove from Highlights</span>
+                        </>
+                      ) : (
+                        <>
+                          <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                          <span className="font-medium">Add to Highlights</span>
+                        </>
+                      )}
+                    </a>
+                  </li>
+                  <li>
+                    <a
+                      className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                      onClick={() => {
+                        openEditLeadDrawer();
+                        setShowMobileActionsDropdown(false);
+                      }}
+                    >
+                      <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                      <span className="font-medium">Edit lead</span>
+                    </a>
+                  </li>
+                  <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); setShowMobileActionsDropdown(false); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+                  {isSuperuser && (
+                    <li>
+                      <a
+                        className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                        onClick={() => {
+                          setShowDeleteModal(true);
+                          setShowMobileActionsDropdown(false);
+                        }}
+                      >
+                        <TrashIcon className="w-5 h-5 text-red-500" />
+                        <span className="text-red-600 font-medium">Delete Lead</span>
+                      </a>
+                    </li>
+                  )}
+                </ul>
+              </div>
+            </div>
+          </>
+        )}
+
+        {/* Mobile Client Information Panel */}
+        {showMobileClientInfo && (
+          <>
+            <div
+              className="fixed inset-0 z-40 bg-black/20"
+              onClick={() => setShowMobileClientInfo(false)}
+            />
+            <div className="fixed right-0 top-0 bottom-0 z-50 bg-base-100 shadow-2xl border-l border-base-300 w-80 max-w-[85vw] overflow-y-auto">
+              <div className="p-4">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-semibold text-lg" style={{ color: '#4218CC' }}>Client Information</h3>
+                  <button
+                    onClick={() => setShowMobileClientInfo(false)}
+                    className="btn btn-ghost btn-sm btn-circle"
+                  >
+                    <XMarkIcon className="w-5 h-5" />
+                  </button>
+                </div>
+                <ClientInformationBox
+                  selectedClient={selectedClient}
+                  getEmployeeDisplayName={getEmployeeDisplayName}
+                  onClientUpdate={async () => await refreshClientData(selectedClient?.id)}
+                />
+              </div>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* Stages, Actions, and Assign to - Mobile Only - Above Tabs - HIDDEN: Using edge arrows instead */}
+      <div className="hidden px-4 py-3 space-y-3">
+        {/* First row: Stages and Actions buttons */}
+        <div className="flex flex-row gap-3 w-full">
+          <div className="flex flex-col flex-1 gap-3">
+            <div className="dropdown relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+              <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base saira-regular w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+                <span>Stages</span>
+                <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+              </label>
+              {dropdownItems && (
+                <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl" style={{ zIndex: 9999 }}>
+                  {dropdownItems}
+                </ul>
               )}
-              
-              {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
-                <div className="relative" data-assign-dropdown="true">
-                  <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+            </div>
+
+            {/* Input fields under Stages button */}
+            {selectedClient && areStagesEquivalent(currentStageName, 'Success') && (
+              <div className="flex flex-col items-start gap-1">
+                <label className="block text-sm font-semibold text-primary mb-1">Assign case handler</label>
+                <div ref={successStageHandlerContainerRef} className="relative w-full">
                   <input
                     type="text"
                     className="input input-bordered w-full"
-                    placeholder="---"
-                    value={schedulerSearchTerm}
+                    placeholder="Not assigned"
+                    value={successStageHandlerSearch}
                     onChange={e => {
-                      setSchedulerSearchTerm(e.target.value);
-                      setShowSchedulerDropdown(true);
+                      setSuccessStageHandlerSearch(e.target.value);
+                      setShowSuccessStageHandlerDropdown(true);
                     }}
-                    onFocus={() => setShowSchedulerDropdown(true)}
+                    onFocus={() => {
+                      setShowSuccessStageHandlerDropdown(true);
+                      setFilteredSuccessStageHandlerOptions(handlerOptions);
+                    }}
+                    autoComplete="off"
+                    disabled={isUpdatingSuccessStageHandler}
                   />
-                  {showSchedulerDropdown && (
+                  {showSuccessStageHandlerDropdown && (
                     <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
                       <button
                         type="button"
                         className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
                         onClick={() => {
-                          setSchedulerSearchTerm('');
-                          setShowSchedulerDropdown(false);
-                          updateScheduler('');
+                          setSuccessStageHandlerSearch('');
+                          setShowSuccessStageHandlerDropdown(false);
+                          setFilteredSuccessStageHandlerOptions(handlerOptions);
+                          void assignSuccessStageHandler(null);
                         }}
+                        disabled={isUpdatingSuccessStageHandler}
                       >
                         ---------
                       </button>
-                      {filteredSchedulerOptions.length > 0 ? (
-                        filteredSchedulerOptions.map(option => (
+                      {filteredSuccessStageHandlerOptions.length > 0 ? (
+                        filteredSuccessStageHandlerOptions.map(option => (
                           <button
                             type="button"
-                            key={option}
+                            key={option.id}
                             className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
                             onClick={() => {
-                              setSchedulerSearchTerm(option);
-                              setShowSchedulerDropdown(false);
-                              updateScheduler(option);
+                              setSuccessStageHandlerSearch(option.label);
+                              setShowSuccessStageHandlerDropdown(false);
+                              setFilteredSuccessStageHandlerOptions(handlerOptions);
+                              void assignSuccessStageHandler(option);
                             }}
+                            disabled={isUpdatingSuccessStageHandler}
                           >
-                            {option}
+                            {option.label}
                           </button>
                         ))
                       ) : (
                         <div className="px-4 py-3 text-sm text-base-content/60">
-                          No matches found
+                          No handlers found
                         </div>
                       )}
                     </div>
                   )}
                 </div>
-              )}
-            </div>
-            
-            <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
-              <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
-                <span>Actions</span>
-                <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
-              </label>
-              <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
-                {(() => {
-                  const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-                  const isUnactivated = isLegacy
-                    ? (selectedClient?.status === 10)
-                    : (selectedClient?.status === 'inactive');
-                  return isUnactivated;
-                })() ? (
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
-                ) : (
-                  <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
-                )}
-                <li>
-                  <a
-                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                    onClick={async () => {
-                      if (!selectedClient?.id) return;
-                      
-                      const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
-                      const leadId = isLegacyLead 
-                        ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
-                        : selectedClient.id;
-                      const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+              </div>
+            )}
 
-                      if (isInHighlightsState) {
-                        await removeFromHighlights(leadId, isLegacyLead);
-                      } else {
-                        await addToHighlights(leadId, leadNumber, isLegacyLead);
-                      }
-                      
-                      (document.activeElement as HTMLElement | null)?.blur();
-                    }}
-                  >
-                    {isInHighlightsState ? (
-                      <>
-                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                        <span className="font-medium">Remove from Highlights</span>
-                      </>
-                    ) : (
-                      <>
-                        <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
-                        <span className="font-medium">Add to Highlights</span>
-                      </>
-                    )}
-                  </a>
-                </li>
-                <li>
-                  <a
-                    className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
-                    onClick={() => {
-                      openEditLeadDrawer();
-                      (document.activeElement as HTMLElement | null)?.blur();
-                    }}
-                  >
-                    <PencilSquareIcon className="w-5 h-5 text-blue-500" />
-                    <span className="font-medium">Edit lead</span>
-                  </a>
-                </li>
-                <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
-                {isSuperuser && (
-                  <li>
-                    <a
-                      className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+            {selectedClient && areStagesEquivalent(currentStageName, 'created') && (
+              <div className="relative" data-assign-dropdown="true">
+                <label className="block text-sm font-medium text-primary mb-1">Assign to</label>
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
+                  placeholder="---"
+                  value={schedulerSearchTerm}
+                  onChange={e => {
+                    setSchedulerSearchTerm(e.target.value);
+                    setShowSchedulerDropdown(true);
+                  }}
+                  onFocus={() => setShowSchedulerDropdown(true)}
+                />
+                {showSchedulerDropdown && (
+                  <div className="absolute z-[60] mt-1 max-h-60 w-full overflow-y-auto rounded-xl border border-base-300 bg-base-100 shadow-2xl">
+                    <button
+                      type="button"
+                      className="w-full text-left px-4 py-2 text-sm hover:bg-base-200"
                       onClick={() => {
-                        setShowDeleteModal(true);
-                        (document.activeElement as HTMLElement | null)?.blur();
+                        setSchedulerSearchTerm('');
+                        setShowSchedulerDropdown(false);
+                        updateScheduler('');
                       }}
                     >
-                      <TrashIcon className="w-5 h-5 text-red-500" />
-                      <span className="text-red-600 font-medium">Delete Lead</span>
-                    </a>
-                  </li>
+                      ---------
+                    </button>
+                    {filteredSchedulerOptions.length > 0 ? (
+                      filteredSchedulerOptions.map(option => (
+                        <button
+                          type="button"
+                          key={option}
+                          className="w-full text-left px-4 py-2 text-sm hover:bg-primary/10"
+                          onClick={() => {
+                            setSchedulerSearchTerm(option);
+                            setShowSchedulerDropdown(false);
+                            updateScheduler(option);
+                          }}
+                        >
+                          {option}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="px-4 py-3 text-sm text-base-content/60">
+                        No matches found
+                      </div>
+                    )}
+                  </div>
                 )}
-              </ul>
-            </div>
-          </div>
-        </div>
-
-        {/* Tabs Navigation - Mobile */}
-        <div className="md:hidden px-4 py-2 mb-6 mt-2">
-              
-              <div
-                ref={mobileTabsRef}
-                className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-2 px-2"
-                style={{ WebkitOverflowScrolling: 'touch' }}
-              >
-                {/* Scroll indicator - fade gradient on left */}
-                {canScrollLeft && (
-                  <div 
-                    className="absolute left-0 top-0 bottom-0 w-8 pointer-events-none z-30"
-                    style={{
-                      background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
-                    }}
-                  />
-                )}
-                {/* Scroll indicator - fade gradient on right */}
-                {canScrollRight && (
-                  <div 
-                    className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none z-30"
-                    style={{
-                      background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
-                    }}
-                  />
-                )}
-                <div className="flex gap-2 pb-1 min-w-max">
-                  {tabs.map((tab) => {
-                    const isActive = activeTab === tab.id;
-                    return (
-                      <button
-                        key={tab.id}
-                        className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${
-                          isActive
-                            ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
-                            : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
-                        }`}
-                        onClick={() => setActiveTab(tab.id)}
-                      >
-                        <div className="relative">
-                          <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
-                          {tab.id === 'interactions' && tab.badge && (
-                            <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${
-                              isActive 
-                                ? 'bg-white/20 text-white' 
-                                : 'bg-purple-100 text-purple-700'
-                            }`}>
-                              {tab.badge}
-                            </div>
-                          )}
-                        </div>
-                        <span className={`text-xs font-semibold truncate max-w-[80px] ${
-                          isActive ? 'text-white' : 'text-gray-600'
-                        }`}>
-                          {tab.label}
-                        </span>
-                        {isActive && (
-                          <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
-        </div>
+            )}
+          </div>
 
-        {/* Tab Content - full width, white background */}
-        <div className="w-full bg-base-100 min-h-screen">
-          <div
-            key={`${activeTab}-${interactionCount}`}
-            className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
-          >
-                          {ActiveComponent && selectedClient && (
-                            <ActiveComponent
-                              key={`${activeTab}-${selectedClient.id}`}
-                              client={selectedClient}
-                              onClientUpdate={onClientUpdate}
-                              interactionsCache={interactionsCacheForLead}
-                              onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-                              onInteractionCountUpdate={handleInteractionCountUpdate}
-                              {...financeProps}
-                            />
-                          )}
+          <div className="dropdown dropdown-end flex-1 relative" style={{ zIndex: 9999, overflow: 'visible' }}>
+            <label tabIndex={0} className="btn btn-lg bg-white border-2 hover:bg-purple-50 gap-2 text-base w-full justify-between" style={{ color: '#4218CC', borderColor: '#4218CC' }}>
+              <span>Actions</span>
+              <ChevronDownIcon className="w-5 h-5" style={{ color: '#4218CC' }} />
+            </label>
+            <ul tabIndex={0} className="dropdown-content z-[9999] menu p-2 bg-white dark:bg-gray-800 rounded-xl w-56 shadow-2xl border border-gray-200" style={{ zIndex: 9999 }}>
+              {(() => {
+                const isLegacy = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+                const isUnactivated = isLegacy
+                  ? (selectedClient?.status === 10)
+                  : (selectedClient?.status === 'inactive');
+                return isUnactivated;
+              })() ? (
+                <li><a className="flex items-center gap-3 py-3 hover:bg-green-50 transition-colors rounded-lg" onClick={() => handleActivation()}><CheckCircleIcon className="w-5 h-5 text-green-500" /><span className="text-green-600 font-medium">Activate</span></a></li>
+              ) : (
+                <li><a className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg" onClick={() => setShowUnactivationModal(true)}><NoSymbolIcon className="w-5 h-5 text-red-500" /><span className="text-red-600 font-medium">Unactivate/Spam</span></a></li>
+              )}
+              <li>
+                <a
+                  className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                  onClick={async () => {
+                    if (!selectedClient?.id) return;
+
+                    const isLegacyLead = selectedClient.lead_type === 'legacy' || selectedClient.id?.toString().startsWith('legacy_');
+                    const leadId = isLegacyLead
+                      ? (typeof selectedClient.id === 'string' ? parseInt(selectedClient.id.replace('legacy_', '')) : selectedClient.id)
+                      : selectedClient.id;
+                    const leadNumber = selectedClient.lead_number || selectedClient.id?.toString();
+
+                    if (isInHighlightsState) {
+                      await removeFromHighlights(leadId, isLegacyLead);
+                    } else {
+                      await addToHighlights(leadId, leadNumber, isLegacyLead);
+                    }
+
+                    (document.activeElement as HTMLElement | null)?.blur();
+                  }}
+                >
+                  {isInHighlightsState ? (
+                    <>
+                      <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                      <span className="font-medium">Remove from Highlights</span>
+                    </>
+                  ) : (
+                    <>
+                      <StarIcon className="w-5 h-5" style={{ color: '#3E28CD' }} />
+                      <span className="font-medium">Add to Highlights</span>
+                    </>
+                  )}
+                </a>
+              </li>
+              <li>
+                <a
+                  className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg"
+                  onClick={() => {
+                    openEditLeadDrawer();
+                    (document.activeElement as HTMLElement | null)?.blur();
+                  }}
+                >
+                  <PencilSquareIcon className="w-5 h-5 text-blue-500" />
+                  <span className="font-medium">Edit lead</span>
+                </a>
+              </li>
+              <li><a className="flex items-center gap-3 py-3 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700 transition-colors rounded-lg" onClick={() => { setShowSubLeadDrawer(true); (document.activeElement as HTMLElement)?.blur(); }}><Squares2X2Icon className="w-5 h-5 text-green-500" /><span className="font-medium">Create Sub-Lead</span></a></li>
+              {isSuperuser && (
+                <li>
+                  <a
+                    className="flex items-center gap-3 py-3 hover:bg-red-50 transition-colors rounded-lg"
+                    onClick={() => {
+                      setShowDeleteModal(true);
+                      (document.activeElement as HTMLElement | null)?.blur();
+                    }}
+                  >
+                    <TrashIcon className="w-5 h-5 text-red-500" />
+                    <span className="text-red-600 font-medium">Delete Lead</span>
+                  </a>
+                </li>
+              )}
+            </ul>
           </div>
         </div>
+      </div>
+
+      {/* Tabs Navigation - Mobile */}
+      <div className="md:hidden px-4 py-2 mb-6 mt-2">
+
+        <div
+          ref={mobileTabsRef}
+          className="relative overflow-x-auto overflow-y-hidden scrollbar-hide touch-pan-x w-full -mx-2 px-2"
+          style={{ WebkitOverflowScrolling: 'touch' }}
+        >
+          {/* Scroll indicator - fade gradient on left */}
+          {canScrollLeft && (
+            <div
+              className="absolute left-0 top-0 bottom-0 w-8 pointer-events-none z-30"
+              style={{
+                background: 'linear-gradient(to right, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
+              }}
+            />
+          )}
+          {/* Scroll indicator - fade gradient on right */}
+          {canScrollRight && (
+            <div
+              className="absolute right-0 top-0 bottom-0 w-8 pointer-events-none z-30"
+              style={{
+                background: 'linear-gradient(to left, rgba(15, 23, 42, 0.15) 0%, rgba(255, 255, 255, 0.85) 45%, rgba(255, 255, 255, 0) 100%)'
+              }}
+            />
+          )}
+          <div className="flex gap-2 pb-1 min-w-max">
+            {tabs.map((tab) => {
+              const isActive = activeTab === tab.id;
+              return (
+                <button
+                  key={tab.id}
+                  className={`relative flex flex-col items-center justify-center p-3 rounded-lg transition-all duration-300 min-w-[85px] ${isActive
+                    ? 'bg-gradient-to-br from-purple-600 to-blue-600 text-white shadow-lg transform scale-105'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:bg-gray-700 dark:hover:bg-gray-700'
+                    }`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <div className="relative">
+                    <tab.icon className={`w-5 h-5 mb-1 ${isActive ? 'text-white' : 'text-gray-500'}`} />
+                    {tab.id === 'interactions' && tab.badge && (
+                      <div className={`absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full text-xs font-bold flex items-center justify-center ${isActive
+                        ? 'bg-white/20 text-white'
+                        : 'bg-purple-100 text-purple-700'
+                        }`}>
+                        {tab.badge}
+                      </div>
+                    )}
+                  </div>
+                  <span className={`text-xs font-semibold truncate max-w-[80px] ${isActive ? 'text-white' : 'text-gray-600'
+                    }`}>
+                    {tab.label}
+                  </span>
+                  {isActive && (
+                    <div className="absolute -bottom-0.5 left-1/2 transform -translate-x-1/2 w-1 h-1 bg-white dark:bg-gray-800 rounded-full"></div>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+
+      {/* Tab Content - full width, white background */}
+      <div className="w-full bg-base-100 min-h-screen">
+        <div
+          key={`${activeTab}-${interactionCount}`}
+          className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
+        >
+          {ActiveComponent && selectedClient && (
+            <ActiveComponent
+              key={`${activeTab}-${selectedClient.id}`}
+              client={selectedClient}
+              onClientUpdate={onClientUpdate}
+              interactionsCache={interactionsCacheForLead}
+              onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+              onInteractionCountUpdate={handleInteractionCountUpdate}
+              {...financeProps}
+            />
+          )}
+        </div>
+      </div>
       {/* Schedule Meeting Right Panel */}
       {showScheduleMeetingPanel && (
         <div className="fixed inset-0 z-50 flex">
@@ -13714,7 +13947,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             {/* Scrollable Content */}
             <div className="flex-1 overflow-y-auto p-8 pt-4">
               {/* Notify Client Toggle */}
@@ -13757,195 +13990,193 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               </div> */}
 
               <div className="flex flex-col gap-4">
-              {/* Location */}
-              <div>
-                <label className="block font-semibold mb-1">Location</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingFormData.location}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
-                >
-                  {meetingLocations.map((location) => (
-                    <option key={location.id} value={location.name}>
-                      {location.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
+                {/* Location */}
+                <div>
+                  <label className="block font-semibold mb-1">Location</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={meetingFormData.location}
+                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, location: e.target.value }))}
+                  >
+                    {meetingLocations.map((location) => (
+                      <option key={location.id} value={location.name}>
+                        {location.name}
+                      </option>
+                    ))}
+                  </select>
+                </div>
 
-              {/* Calendar */}
-              <div>
-                <label className="block font-semibold mb-1">Calendar</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingFormData.calendar}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
-                >
-                  <option value="current">Potential Client</option>
-                </select>
-              </div>
+                {/* Calendar */}
+                <div>
+                  <label className="block font-semibold mb-1">Calendar</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={meetingFormData.calendar}
+                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, calendar: e.target.value }))}
+                  >
+                    <option value="current">Potential Client</option>
+                  </select>
+                </div>
 
-              {/* Date */}
-              <div>
-                <label className="block font-semibold mb-1">Date</label>
-                <input
-                  type="date"
-                  className="input input-bordered w-full"
-                  value={meetingFormData.date}
-                  onChange={(e) => {
-                    setMeetingFormData(prev => ({ ...prev, date: e.target.value }));
-                    // Reset meeting counts when date changes
-                    setMeetingCountsByTime({});
-                  }}
-                  required
-                  min={new Date().toISOString().split('T')[0]}
+                {/* Date */}
+                <div>
+                  <label className="block font-semibold mb-1">Date</label>
+                  <input
+                    type="date"
+                    className="input input-bordered w-full"
+                    value={meetingFormData.date}
+                    onChange={(e) => {
+                      setMeetingFormData(prev => ({ ...prev, date: e.target.value }));
+                      // Reset meeting counts when date changes
+                      setMeetingCountsByTime({});
+                    }}
+                    required
+                    min={new Date().toISOString().split('T')[0]}
+                  />
+                </div>
+
+                {/* Time */}
+                <TimePicker
+                  value={meetingFormData.time}
+                  onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
+                  meetingCounts={meetingCountsByTime}
+                  label="Time"
                 />
-              </div>
 
-              {/* Time */}
-              <TimePicker
-                value={meetingFormData.time}
-                onChange={(time) => setMeetingFormData(prev => ({ ...prev, time }))}
-                meetingCounts={meetingCountsByTime}
-                label="Time"
-              />
+                {/* Manager (Optional) */}
+                <div className="relative" ref={managerDropdownRef}>
+                  <label className="block font-semibold mb-1">Manager (Optional)</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a manager..."
+                    value={meetingFormData.manager}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setMeetingFormData(prev => ({ ...prev, manager: value }));
+                      setManagerSearchTerm(value);
+                      setShowManagerDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setManagerSearchTerm(meetingFormData.manager || '');
+                      setShowManagerDropdown(true);
+                    }}
+                    autoComplete="off"
+                  />
+                  {showManagerDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {(() => {
+                        const searchTerm = (managerSearchTerm || meetingFormData.manager || '').toLowerCase();
+                        const filteredEmployees = allEmployees.filter(emp => {
+                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                        });
 
-              {/* Manager (Optional) */}
-              <div className="relative" ref={managerDropdownRef}>
-                <label className="block font-semibold mb-1">Manager (Optional)</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Select a manager..."
-                  value={meetingFormData.manager}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setMeetingFormData(prev => ({ ...prev, manager: value }));
-                    setManagerSearchTerm(value);
-                    setShowManagerDropdown(true);
-                  }}
-                  onFocus={() => {
-                    setManagerSearchTerm(meetingFormData.manager || '');
-                    setShowManagerDropdown(true);
-                  }}
-                  autoComplete="off"
-                />
-                {showManagerDropdown && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                    {(() => {
-                      const searchTerm = (managerSearchTerm || meetingFormData.manager || '').toLowerCase();
-                      const filteredEmployees = allEmployees.filter(emp => {
-                        return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                      });
-                      
-                      return filteredEmployees.length > 0 ? (
-                        filteredEmployees.map(emp => {
-                          const isUnavailable = meetingFormData.date && meetingFormData.time
-                            ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
-                            : false;
-                          return (
-                            <div
-                              key={emp.id}
-                              className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                isUnavailable
+                        return filteredEmployees.length > 0 ? (
+                          filteredEmployees.map(emp => {
+                            const isUnavailable = meetingFormData.date && meetingFormData.time
+                              ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                              : false;
+                            return (
+                              <div
+                                key={emp.id}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
                                   ? 'bg-red-50 text-red-600 hover:bg-red-100'
                                   : 'hover:bg-gray-100'
-                              }`}
-                              onClick={() => {
-                                setMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
-                                setManagerSearchTerm('');
-                                setShowManagerDropdown(false);
-                              }}
-                            >
-                              <span>{emp.display_name}</span>
-                              {isUnavailable && (
-                                <div className="flex items-center gap-1">
-                                  <ClockIcon className="w-4 h-4" />
-                                  <span className="text-xs">Unavailable</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="px-4 py-2 text-gray-500 text-center">
-                          No employees found
-                        </div>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>
+                                  }`}
+                                onClick={() => {
+                                  setMeetingFormData(prev => ({ ...prev, manager: emp.display_name }));
+                                  setManagerSearchTerm('');
+                                  setShowManagerDropdown(false);
+                                }}
+                              >
+                                <span>{emp.display_name}</span>
+                                {isUnavailable && (
+                                  <div className="flex items-center gap-1">
+                                    <ClockIcon className="w-4 h-4" />
+                                    <span className="text-xs">Unavailable</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-4 py-2 text-gray-500 text-center">
+                            No employees found
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
 
-              {/* Helper (Optional) */}
-              <div className="relative" ref={helperDropdownRef}>
-                <label className="block font-semibold mb-1">Helper (Optional)</label>
-                <input
-                  type="text"
-                  className="input input-bordered w-full"
-                  placeholder="Select a helper..."
-                  value={meetingFormData.helper}
-                  onChange={(e) => {
-                    const value = e.target.value;
-                    setMeetingFormData(prev => ({ ...prev, helper: value }));
-                    setHelperSearchTerm(value);
-                    setShowHelperDropdown(true);
-                  }}
-                  onFocus={() => {
-                    setHelperSearchTerm(meetingFormData.helper || '');
-                    setShowHelperDropdown(true);
-                  }}
-                  autoComplete="off"
-                />
-                {showHelperDropdown && (
-                  <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                    {(() => {
-                      const searchTerm = (helperSearchTerm || meetingFormData.helper || '').toLowerCase();
-                      const filteredEmployees = allEmployees.filter(emp => {
-                        return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
-                      });
-                      
-                      return filteredEmployees.length > 0 ? (
-                        filteredEmployees.map(emp => {
-                          const isUnavailable = meetingFormData.date && meetingFormData.time
-                            ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
-                            : false;
-                          return (
-                            <div
-                              key={emp.id}
-                              className={`px-4 py-2 cursor-pointer flex items-center justify-between ${
-                                isUnavailable
+                {/* Helper (Optional) */}
+                <div className="relative" ref={helperDropdownRef}>
+                  <label className="block font-semibold mb-1">Helper (Optional)</label>
+                  <input
+                    type="text"
+                    className="input input-bordered w-full"
+                    placeholder="Select a helper..."
+                    value={meetingFormData.helper}
+                    onChange={(e) => {
+                      const value = e.target.value;
+                      setMeetingFormData(prev => ({ ...prev, helper: value }));
+                      setHelperSearchTerm(value);
+                      setShowHelperDropdown(true);
+                    }}
+                    onFocus={() => {
+                      setHelperSearchTerm(meetingFormData.helper || '');
+                      setShowHelperDropdown(true);
+                    }}
+                    autoComplete="off"
+                  />
+                  {showHelperDropdown && (
+                    <div className="absolute z-50 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                      {(() => {
+                        const searchTerm = (helperSearchTerm || meetingFormData.helper || '').toLowerCase();
+                        const filteredEmployees = allEmployees.filter(emp => {
+                          return !searchTerm || emp.display_name.toLowerCase().includes(searchTerm);
+                        });
+
+                        return filteredEmployees.length > 0 ? (
+                          filteredEmployees.map(emp => {
+                            const isUnavailable = meetingFormData.date && meetingFormData.time
+                              ? isEmployeeUnavailable(emp.display_name, meetingFormData.date, meetingFormData.time)
+                              : false;
+                            return (
+                              <div
+                                key={emp.id}
+                                className={`px-4 py-2 cursor-pointer flex items-center justify-between ${isUnavailable
                                   ? 'bg-red-50 text-red-600 hover:bg-red-100'
                                   : 'hover:bg-gray-100'
-                              }`}
-                              onClick={() => {
-                                setMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
-                                setHelperSearchTerm('');
-                                setShowHelperDropdown(false);
-                              }}
-                            >
-                              <span>{emp.display_name}</span>
-                              {isUnavailable && (
-                                <div className="flex items-center gap-1">
-                                  <ClockIcon className="w-4 h-4" />
-                                  <span className="text-xs">Unavailable</span>
-                                </div>
-                              )}
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="px-4 py-2 text-gray-500 text-center">
-                          No employees found
-                        </div>
-                      );
-                    })()}
-                  </div>
-                )}
-              </div>
+                                  }`}
+                                onClick={() => {
+                                  setMeetingFormData(prev => ({ ...prev, helper: emp.display_name }));
+                                  setHelperSearchTerm('');
+                                  setShowHelperDropdown(false);
+                                }}
+                              >
+                                <span>{emp.display_name}</span>
+                                {isUnavailable && (
+                                  <div className="flex items-center gap-1">
+                                    <ClockIcon className="w-4 h-4" />
+                                    <span className="text-xs">Unavailable</span>
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-4 py-2 text-gray-500 text-center">
+                            No employees found
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  )}
+                </div>
 
-              {/* Extra fields only for Paid meeting - COMMENTED OUT */}
-              {/* {meetingType === 'paid' && (
+                {/* Extra fields only for Paid meeting - COMMENTED OUT */}
+                {/* {meetingType === 'paid' && (
                 <>
                   <div>
                     <label className="block font-semibold mb-1">Meeting collection manager</label>
@@ -14034,54 +14265,54 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </>
               )} */}
 
-              {/* Meeting Attendance Probability */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingFormData.attendance_probability}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
-                >
-                  <option value="Low">Low</option>
-                  <option value="Medium">Medium</option>
-                  <option value="High">High</option>
-                  <option value="Very High">Very High</option>
-                </select>
-              </div>
+                {/* Meeting Attendance Probability */}
+                <div>
+                  <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={meetingFormData.attendance_probability}
+                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, attendance_probability: e.target.value }))}
+                  >
+                    <option value="Low">Low</option>
+                    <option value="Medium">Medium</option>
+                    <option value="High">High</option>
+                    <option value="Very High">Very High</option>
+                  </select>
+                </div>
 
-              {/* Meeting Complexity */}
-              <div>
-                <label className="block font-semibold mb-1">Meeting Complexity</label>
-                <select
-                  className="select select-bordered w-full"
-                  value={meetingFormData.complexity}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
-                >
-                  <option value="Simple">Simple</option>
-                  <option value="Complex">Complex</option>
-                </select>
-              </div>
+                {/* Meeting Complexity */}
+                <div>
+                  <label className="block font-semibold mb-1">Meeting Complexity</label>
+                  <select
+                    className="select select-bordered w-full"
+                    value={meetingFormData.complexity}
+                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, complexity: e.target.value }))}
+                  >
+                    <option value="Simple">Simple</option>
+                    <option value="Complex">Complex</option>
+                  </select>
+                </div>
 
-              {/* Meeting Car Number */}
-              <div>
-                <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
-                <input
-                  id="car-number"
-                  type="text"
-                  className="input input-bordered w-full"
-                  value={meetingFormData.car_number}
-                  onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
-                  placeholder="Enter car number..."
-                />
-              </div>
+                {/* Meeting Car Number */}
+                <div>
+                  <label htmlFor="car-number" className="block font-semibold mb-1">Meeting Car Number</label>
+                  <input
+                    id="car-number"
+                    type="text"
+                    className="input input-bordered w-full"
+                    value={meetingFormData.car_number}
+                    onChange={(e) => setMeetingFormData(prev => ({ ...prev, car_number: e.target.value }))}
+                    placeholder="Enter car number..."
+                  />
+                </div>
               </div>
             </div>
-            
+
             {/* Fixed Footer */}
             <div className="p-8 pt-4 border-t border-base-300 bg-base-100">
               <div className="flex justify-end">
-                <button 
-                  className="btn btn-primary px-8" 
+                <button
+                  className="btn btn-primary px-8"
                   onClick={handleScheduleMeeting}
                   disabled={!meetingFormData.date || !meetingFormData.time || isCreatingMeeting}
                 >
@@ -14702,8 +14933,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="relative bg-base-100 rounded-xl shadow-2xl p-8 max-w-md w-full mx-4 z-50">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold text-error">Delete Lead</h3>
-              <button 
-                className="btn btn-ghost btn-sm btn-circle" 
+              <button
+                className="btn btn-ghost btn-sm btn-circle"
                 onClick={() => setShowDeleteModal(false)}
                 disabled={isDeletingLead}
               >
@@ -14726,15 +14957,15 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               )}
             </div>
             <div className="mt-6 flex gap-3 justify-end">
-              <button 
-                className="btn btn-ghost" 
+              <button
+                className="btn btn-ghost"
                 onClick={() => setShowDeleteModal(false)}
                 disabled={isDeletingLead}
               >
                 Cancel
               </button>
-              <button 
-                className="btn btn-error" 
+              <button
+                className="btn btn-error"
                 onClick={handleDeleteLead}
                 disabled={isDeletingLead}
               >
@@ -14768,11 +14999,11 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             <div className="flex flex-col gap-4 flex-1 overflow-y-auto">
               <div>
                 <label className="block font-semibold mb-1">Tags</label>
-                <input 
-                  type="text" 
-                  className="input input-bordered w-full" 
+                <input
+                  type="text"
+                  className="input input-bordered w-full"
                   placeholder="Search or select tags..."
-                  value={editLeadData.tags} 
+                  value={editLeadData.tags}
                   onChange={e => handleEditLeadChange('tags', e.target.value)}
                   list="tags-options"
                 />
@@ -14943,7 +15174,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       )}
-      
+
       {/* Manual Price Offer Modal */}
       {showManualPriceOfferModal && (
         <div className="fixed inset-0 z-[10000] md:flex md:items-center md:justify-center md:bg-black/30" style={{ zIndex: 10000 }}>
@@ -14975,7 +15206,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           </div>
         </div>
       )}
-      
+
       <SendPriceOfferModal
         isOpen={Boolean(showSendOfferModal && selectedClient)}
         onClose={() => setShowSendOfferModal(false)}
@@ -15022,77 +15253,37 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             {/* Scrollable Content Area */}
             <div className="flex-1 overflow-y-auto p-8 pt-6">
               <div className="flex flex-col gap-4">
-              {subLeadStep === 'initial' && (
-                <>
-                  <button
-                    className="btn btn-primary mb-4"
-                    onClick={() => {
-                      prefillSubLeadFormFromClient();
-                      setSubLeadStep('newProcedure');
-                    }}
-                  >
-                    New Procedure (Same Contact)
-                  </button>
-                  <button 
-                    className="btn btn-outline" 
-                    onClick={() => {
-                      // Pre-fill category, topic, facts, and special notes from existing client
-                      const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
-                      const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
-                      
-                      setSubLeadForm({
-                        name: '',
-                        email: '',
-                        phone: '',
-                        mobile: '',
-                        country: '',
-                        countryId: '',
-                        category: categoryOption?.label || selectedClient?.category || '',
-                        categoryId: baseCategoryId || '',
-                        topic: selectedClient?.topic || '',
-                        special_notes: selectedClient?.special_notes || '',
-                        source: '',
-                        language: '',
-                        tags: '',
-                        facts: selectedClient?.facts || '',
-                        handler: '',
-                        handlerId: '',
-                        currency: 'NIS',
-                        numApplicants: '',
-                        proposal: '',
-                        potentialValue: '',
-                      });
-                      setSubLeadStep('newContact');
-                    }}
-                  >
-                    Add New Contact
-                  </button>
-                  {/* Same Contract buttons - one for each contact with a contract */}
-                  {contactsWithContracts.map((item) => (
+                {subLeadStep === 'initial' && (
+                  <>
                     <button
-                      key={item.contactId}
-                      className="btn btn-outline btn-success"
+                      className="btn btn-primary mb-4"
                       onClick={() => {
-                        setSelectedContractContactId(item.contactId);
-                        setSelectedContractId(item.contractId);
-                        // Pre-fill form with client data
+                        prefillSubLeadFormFromClient();
+                        setSubLeadStep('newProcedure');
+                      }}
+                    >
+                      New Procedure (Same Contact)
+                    </button>
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => {
+                        // Pre-fill category, topic, facts, and special notes from existing client
                         const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
-                        const countryIdValue = item.contactCountryId ?? selectedClient?.country_id ?? '';
-                        const countryIdString =
-                          countryIdValue !== null && countryIdValue !== undefined ? String(countryIdValue) : '';
+                        const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
+
                         setSubLeadForm({
-                          name: item.contactName,
-                          email: item.contactEmail || selectedClient?.email || '',
-                          phone: item.contactPhone || selectedClient?.phone || '',
-                          mobile: item.contactMobile || selectedClient?.mobile || '',
+                          name: '',
+                          email: '',
+                          phone: '',
+                          mobile: '',
                           country: '',
-                          countryId: countryIdString,
-                          category: selectedClient?.category || '',
+                          countryId: '',
+                          category: categoryOption?.label || selectedClient?.category || '',
                           categoryId: baseCategoryId || '',
                           topic: selectedClient?.topic || '',
                           special_notes: selectedClient?.special_notes || '',
                           source: '',
-                          language: selectedClient?.language || '',
+                          language: '',
                           tags: '',
                           facts: selectedClient?.facts || '',
                           handler: '',
@@ -15102,425 +15293,465 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                           proposal: '',
                           potentialValue: '',
                         });
-                        setSubLeadStep('sameContract');
+                        setSubLeadStep('newContact');
                       }}
                     >
-                      Same Contract - {item.contactName}
+                      Add New Contact
                     </button>
-                  ))}
-                </>
-              )}
-              {subLeadStep === 'newContact' && (
-                <>
-                  <label className="block font-semibold mb-1">Category</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      className="input input-bordered w-full pr-10"
-                      value={subLeadForm.category}
-                      onChange={e => {
-                        const value = e.target.value;
-                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
-                      }}
-                      placeholder="Type to search categories..."
-                    />
-                    {subLeadForm.category && (
+                    {/* Same Contract buttons - one for each contact with a contract */}
+                    {contactsWithContracts.map((item) => (
                       <button
-                        type="button"
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                        key={item.contactId}
+                        className="btn btn-outline btn-success"
+                        onClick={() => {
+                          setSelectedContractContactId(item.contactId);
+                          setSelectedContractId(item.contractId);
+                          // Pre-fill form with client data
+                          const baseCategoryId = selectedClient?.category_id != null ? String(selectedClient.category_id) : '';
+                          const countryIdValue = item.contactCountryId ?? selectedClient?.country_id ?? '';
+                          const countryIdString =
+                            countryIdValue !== null && countryIdValue !== undefined ? String(countryIdValue) : '';
+                          setSubLeadForm({
+                            name: item.contactName,
+                            email: item.contactEmail || selectedClient?.email || '',
+                            phone: item.contactPhone || selectedClient?.phone || '',
+                            mobile: item.contactMobile || selectedClient?.mobile || '',
+                            country: '',
+                            countryId: countryIdString,
+                            category: selectedClient?.category || '',
+                            categoryId: baseCategoryId || '',
+                            topic: selectedClient?.topic || '',
+                            special_notes: selectedClient?.special_notes || '',
+                            source: '',
+                            language: selectedClient?.language || '',
+                            tags: '',
+                            facts: selectedClient?.facts || '',
+                            handler: '',
+                            handlerId: '',
+                            currency: 'NIS',
+                            numApplicants: '',
+                            proposal: '',
+                            potentialValue: '',
+                          });
+                          setSubLeadStep('sameContract');
+                        }}
                       >
-                        ✕
+                        Same Contract - {item.contactName}
                       </button>
-                    )}
-                    {subLeadForm.category && !subLeadForm.categoryId && (
-                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                        {categoryOptions
-                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                          .slice(0, 10)
-                          .map(opt => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                              onClick={() => {
-                                setSubLeadForm(f => ({
-                                  ...f,
-                                  categoryId: opt.id,
-                                  category: opt.label
-                                }));
-                              }}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                  <label className="block font-semibold mb-1 mt-4">Topic</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.topic}
-                    onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
-                    placeholder="Enter topic"
-                  />
-                  <label className="block font-semibold mb-1">Client Name</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.name}
-                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="Enter client name"
-                  />
-                  <label className="block font-semibold mb-1">Language</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.language}
-                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                  >
-                    <option value="">Select language...</option>
-                    {allLanguages.map(lang => (
-                      <option key={lang.id} value={lang.name || ''}>
-                        {lang.name || 'Unknown'}
-                      </option>
                     ))}
-                  </select>
-                  <label className="block font-semibold mb-1">Facts of Case</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.facts}
-                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                    placeholder="Enter facts of the case"
-                    rows={4}
-                  />
-                  <label className="block font-semibold mb-1">Special Notes</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.special_notes}
-                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                    placeholder="Enter special notes"
-                    rows={4}
-                  />
-                </>
-              )}
-              {subLeadStep === 'newContactDetails' && (
-                <>
-                  <label className="block font-semibold mb-1">Name *</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.name}
-                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="Enter contact name"
-                  />
-                  <label className="block font-semibold mb-1">Mobile</label>
-                  <div className="flex gap-2">
+                  </>
+                )}
+                {subLeadStep === 'newContact' && (
+                  <>
+                    <label className="block font-semibold mb-1">Category</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        className="input input-bordered w-full pr-10"
+                        value={subLeadForm.category}
+                        onChange={e => {
+                          const value = e.target.value;
+                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                        }}
+                        placeholder="Type to search categories..."
+                      />
+                      {subLeadForm.category && (
+                        <button
+                          type="button"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                        >
+                          ✕
+                        </button>
+                      )}
+                      {subLeadForm.category && !subLeadForm.categoryId && (
+                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                          {categoryOptions
+                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                            .slice(0, 10)
+                            .map(opt => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                onClick={() => {
+                                  setSubLeadForm(f => ({
+                                    ...f,
+                                    categoryId: opt.id,
+                                    category: opt.label
+                                  }));
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <label className="block font-semibold mb-1 mt-4">Topic</label>
+                    <input
+                      className="input input-bordered w-full"
+                      value={subLeadForm.topic}
+                      onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                      placeholder="Enter topic"
+                    />
+                    <label className="block font-semibold mb-1">Client Name</label>
+                    <input
+                      className="input input-bordered w-full"
+                      value={subLeadForm.name}
+                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="Enter client name"
+                    />
+                    <label className="block font-semibold mb-1">Language</label>
                     <select
-                      className="select select-bordered w-40"
-                      value={parsePhoneNumber(subLeadForm.mobile).countryCode}
-                      onChange={(e) => {
-                        const currentMobile = subLeadForm.mobile || '';
-                        const currentParsed = parsePhoneNumber(currentMobile);
-                        const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                        setSubLeadForm(f => ({ ...f, mobile: newNumber }));
-                      }}
+                      className="select select-bordered w-full"
+                      value={subLeadForm.language}
+                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
                     >
-                      {countryCodes.map((code) => (
-                        <option key={`${code.code}-${code.country}`} value={code.code}>
-                          {code.code} {code.name}
+                      <option value="">Select language...</option>
+                      {allLanguages.map(lang => (
+                        <option key={lang.id} value={lang.name || ''}>
+                          {lang.name || 'Unknown'}
                         </option>
                       ))}
                     </select>
-                    <input
-                      type="tel"
-                      placeholder="Enter mobile number"
-                      className="input input-bordered flex-1"
-                      value={parsePhoneNumber(subLeadForm.mobile).number}
-                      onChange={(e) => {
-                        const { countryCode } = parsePhoneNumber(subLeadForm.mobile);
-                        setSubLeadForm(f => ({ ...f, mobile: formatPhoneNumber(countryCode, e.target.value) }));
-                      }}
+                    <label className="block font-semibold mb-1">Facts of Case</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.facts}
+                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                      placeholder="Enter facts of the case"
+                      rows={4}
                     />
-                  </div>
-                  <label className="block font-semibold mb-1">Phone</label>
-                  <div className="flex gap-2">
+                    <label className="block font-semibold mb-1">Special Notes</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.special_notes}
+                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                      placeholder="Enter special notes"
+                      rows={4}
+                    />
+                  </>
+                )}
+                {subLeadStep === 'newContactDetails' && (
+                  <>
+                    <label className="block font-semibold mb-1">Name *</label>
+                    <input
+                      className="input input-bordered w-full"
+                      value={subLeadForm.name}
+                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="Enter contact name"
+                    />
+                    <label className="block font-semibold mb-1">Mobile</label>
+                    <div className="flex gap-2">
+                      <select
+                        className="select select-bordered w-40"
+                        value={parsePhoneNumber(subLeadForm.mobile).countryCode}
+                        onChange={(e) => {
+                          const currentMobile = subLeadForm.mobile || '';
+                          const currentParsed = parsePhoneNumber(currentMobile);
+                          const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                          setSubLeadForm(f => ({ ...f, mobile: newNumber }));
+                        }}
+                      >
+                        {countryCodes.map((code) => (
+                          <option key={`${code.code}-${code.country}`} value={code.code}>
+                            {code.code} {code.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="tel"
+                        placeholder="Enter mobile number"
+                        className="input input-bordered flex-1"
+                        value={parsePhoneNumber(subLeadForm.mobile).number}
+                        onChange={(e) => {
+                          const { countryCode } = parsePhoneNumber(subLeadForm.mobile);
+                          setSubLeadForm(f => ({ ...f, mobile: formatPhoneNumber(countryCode, e.target.value) }));
+                        }}
+                      />
+                    </div>
+                    <label className="block font-semibold mb-1">Phone</label>
+                    <div className="flex gap-2">
+                      <select
+                        className="select select-bordered w-40"
+                        value={parsePhoneNumber(subLeadForm.phone).countryCode}
+                        onChange={(e) => {
+                          const currentPhone = subLeadForm.phone || '';
+                          const currentParsed = parsePhoneNumber(currentPhone);
+                          const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
+                          setSubLeadForm(f => ({ ...f, phone: newNumber }));
+                        }}
+                      >
+                        {countryCodes.map((code) => (
+                          <option key={`${code.code}-${code.country}`} value={code.code}>
+                            {code.code} {code.name}
+                          </option>
+                        ))}
+                      </select>
+                      <input
+                        type="tel"
+                        placeholder="Enter phone number"
+                        className="input input-bordered flex-1"
+                        value={parsePhoneNumber(subLeadForm.phone).number}
+                        onChange={(e) => {
+                          const { countryCode } = parsePhoneNumber(subLeadForm.phone);
+                          setSubLeadForm(f => ({ ...f, phone: formatPhoneNumber(countryCode, e.target.value) }));
+                        }}
+                      />
+                    </div>
+                    <label className="block font-semibold mb-1">Email</label>
+                    <input
+                      className="input input-bordered w-full"
+                      value={subLeadForm.email}
+                      onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))}
+                      placeholder="Enter email address"
+                      type="email"
+                    />
+                    <label className="block font-semibold mb-1">Country</label>
                     <select
-                      className="select select-bordered w-40"
-                      value={parsePhoneNumber(subLeadForm.phone).countryCode}
-                      onChange={(e) => {
-                        const currentPhone = subLeadForm.phone || '';
-                        const currentParsed = parsePhoneNumber(currentPhone);
-                        const newNumber = currentParsed.number ? formatPhoneNumber(e.target.value, currentParsed.number) : e.target.value;
-                        setSubLeadForm(f => ({ ...f, phone: newNumber }));
+                      className="select select-bordered w-full"
+                      value={subLeadForm.country}
+                      onChange={e => {
+                        const countryName = e.target.value;
+                        const countryId = allCountries.find(c => c.name === countryName)?.id || '';
+                        setSubLeadForm(f => ({ ...f, country: countryName, countryId: countryId.toString() }));
                       }}
                     >
-                      {countryCodes.map((code) => (
-                        <option key={`${code.code}-${code.country}`} value={code.code}>
-                          {code.code} {code.name}
+                      <option value="">Select country...</option>
+                      {allCountries.map(country => (
+                        <option key={country.id} value={country.name}>
+                          {country.name}
                         </option>
                       ))}
                     </select>
+                  </>
+                )}
+                {subLeadStep === 'sameContract' && (
+                  <>
+                    <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
+                      <p className="text-sm text-blue-800">
+                        <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
+                      </p>
+                    </div>
+                    <label className="block font-semibold mb-1">Category</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        className="input input-bordered w-full pr-10"
+                        value={subLeadForm.category}
+                        onChange={e => {
+                          const value = e.target.value;
+                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                        }}
+                        placeholder="Type to search categories..."
+                      />
+                      {subLeadForm.category && (
+                        <button
+                          type="button"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                        >
+                          ✕
+                        </button>
+                      )}
+                      {subLeadForm.category && !subLeadForm.categoryId && (
+                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                          {categoryOptions
+                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                            .slice(0, 10)
+                            .map(opt => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                onClick={() => {
+                                  setSubLeadForm(f => ({
+                                    ...f,
+                                    categoryId: opt.id,
+                                    category: opt.label
+                                  }));
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <label className="block font-semibold mb-1">Name</label>
                     <input
-                      type="tel"
-                      placeholder="Enter phone number"
-                      className="input input-bordered flex-1"
-                      value={parsePhoneNumber(subLeadForm.phone).number}
-                      onChange={(e) => {
-                        const { countryCode } = parsePhoneNumber(subLeadForm.phone);
-                        setSubLeadForm(f => ({ ...f, phone: formatPhoneNumber(countryCode, e.target.value) }));
-                      }}
+                      className="input input-bordered w-full"
+                      value={subLeadForm.name}
+                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="Enter client name"
                     />
-                  </div>
-                  <label className="block font-semibold mb-1">Email</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.email}
-                    onChange={e => setSubLeadForm(f => ({ ...f, email: e.target.value }))}
-                    placeholder="Enter email address"
-                    type="email"
-                  />
-                  <label className="block font-semibold mb-1">Country</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.country}
-                    onChange={e => {
-                      const countryName = e.target.value;
-                      const countryId = allCountries.find(c => c.name === countryName)?.id || '';
-                      setSubLeadForm(f => ({ ...f, country: countryName, countryId: countryId.toString() }));
-                    }}
-                  >
-                    <option value="">Select country...</option>
-                    {allCountries.map(country => (
-                      <option key={country.id} value={country.name}>
-                        {country.name}
-                      </option>
-                    ))}
-                  </select>
-                </>
-              )}
-              {subLeadStep === 'sameContract' && (
-                <>
-                  <div className="mb-4 p-3 bg-blue-50 rounded-lg border border-blue-200">
-                    <p className="text-sm text-blue-800">
-                      <strong>Contract:</strong> {contactContracts[selectedContractContactId || 0]?.contractName || 'Contract'} - {contactContracts[selectedContractContactId || 0]?.contactName || 'Contact'}
-                    </p>
-                  </div>
-                  <label className="block font-semibold mb-1">Category</label>
-                  <div className="relative">
+                    <label className="block font-semibold mb-1">Language</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={subLeadForm.language}
+                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                    >
+                      <option value="">Select language...</option>
+                      {allLanguages.map(lang => (
+                        <option key={lang.id} value={lang.name || ''}>
+                          {lang.name || 'Unknown'}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="block font-semibold mb-1">Facts of Case</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.facts}
+                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                      placeholder="Enter facts of the case"
+                      rows={4}
+                    />
+                    <label className="block font-semibold mb-1">Special Notes</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.special_notes}
+                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                      placeholder="Enter special notes"
+                      rows={4}
+                    />
+                  </>
+                )}
+                {subLeadStep === 'newProcedure' && (
+                  <>
+                    <label className="block font-semibold mb-1">Category</label>
+                    <div className="relative">
+                      <input
+                        type="text"
+                        className="input input-bordered w-full pr-10"
+                        value={subLeadForm.category}
+                        onChange={e => {
+                          const value = e.target.value;
+                          setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                        }}
+                        placeholder="Type to search categories..."
+                      />
+                      {subLeadForm.category && (
+                        <button
+                          type="button"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
+                          onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
+                        >
+                          ✕
+                        </button>
+                      )}
+                      {subLeadForm.category && !subLeadForm.categoryId && (
+                        <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
+                          {categoryOptions
+                            .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
+                            .slice(0, 10)
+                            .map(opt => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
+                                onClick={() => {
+                                  setSubLeadForm(f => ({
+                                    ...f,
+                                    categoryId: opt.id,
+                                    category: opt.label
+                                  }));
+                                }}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                    <label className="block font-semibold mb-1 mt-4">Topic</label>
                     <input
-                      type="text"
-                      className="input input-bordered w-full pr-10"
-                      value={subLeadForm.category}
+                      className="input input-bordered w-full"
+                      value={subLeadForm.topic}
+                      onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
+                      placeholder="Enter topic"
+                    />
+                    <label className="block font-semibold mb-1">Client Name</label>
+                    <input
+                      className="input input-bordered w-full"
+                      value={subLeadForm.name}
+                      onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
+                      placeholder="Enter client name"
+                    />
+                    <label className="block font-semibold mb-1">Language</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={subLeadForm.language}
+                      onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
+                    >
+                      <option value="">Select language...</option>
+                      {allLanguages.map(lang => (
+                        <option key={lang.id} value={lang.name || ''}>
+                          {lang.name || 'Unknown'}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="block font-semibold mb-1">Facts of Case</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.facts}
+                      onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
+                      placeholder="Enter facts of the case"
+                      rows={4}
+                    />
+                    <label className="block font-semibold mb-1">Special Notes</label>
+                    <textarea
+                      className="textarea textarea-bordered w-full"
+                      value={subLeadForm.special_notes}
+                      onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
+                      placeholder="Enter special notes"
+                      rows={4}
+                    />
+                  </>
+                )}
+                {subLeadStep === 'details' && (
+                  <>
+                    <label className="block font-semibold mb-1">Handler</label>
+                    <select
+                      className="select select-bordered w-full"
+                      value={subLeadForm.handlerId}
                       onChange={e => {
                         const value = e.target.value;
-                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
+                        setSubLeadForm(f => ({
+                          ...f,
+                          handlerId: value,
+                          handler: handlerOptionsMap.get(value) || '',
+                        }));
                       }}
-                      placeholder="Type to search categories..."
-                    />
-                    {subLeadForm.category && (
-                      <button
-                        type="button"
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
-                      >
-                        ✕
-                      </button>
-                    )}
-                    {subLeadForm.category && !subLeadForm.categoryId && (
-                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                        {categoryOptions
-                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                          .slice(0, 10)
-                          .map(opt => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                              onClick={() => {
-                                setSubLeadForm(f => ({
-                                  ...f,
-                                  categoryId: opt.id,
-                                  category: opt.label
-                                }));
-                              }}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                  <label className="block font-semibold mb-1">Name</label>
-                  <input
-                    className="input input-bordered w-full"
-                    value={subLeadForm.name}
-                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="Enter client name"
-                  />
-                  <label className="block font-semibold mb-1">Language</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.language}
-                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                  >
-                    <option value="">Select language...</option>
-                    {allLanguages.map(lang => (
-                      <option key={lang.id} value={lang.name || ''}>
-                        {lang.name || 'Unknown'}
-                      </option>
-                    ))}
-                  </select>
-                  <label className="block font-semibold mb-1">Facts of Case</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.facts}
-                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                    placeholder="Enter facts of the case"
-                    rows={4}
-                  />
-                  <label className="block font-semibold mb-1">Special Notes</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.special_notes}
-                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                    placeholder="Enter special notes"
-                    rows={4}
-                  />
-                </>
-              )}
-              {subLeadStep === 'newProcedure' && (
-                <>
-                  <label className="block font-semibold mb-1">Category</label>
-                  <div className="relative">
-                    <input
-                      type="text"
-                      className="input input-bordered w-full pr-10"
-                      value={subLeadForm.category}
-                      onChange={e => {
-                        const value = e.target.value;
-                        setSubLeadForm(f => ({ ...f, category: value, categoryId: '' }));
-                      }}
-                      placeholder="Type to search categories..."
-                    />
-                    {subLeadForm.category && (
-                      <button
-                        type="button"
-                        className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600"
-                        onClick={() => setSubLeadForm(f => ({ ...f, category: '', categoryId: '' }))}
-                      >
-                        ✕
-                      </button>
-                    )}
-                    {subLeadForm.category && !subLeadForm.categoryId && (
-                      <div className="absolute z-50 w-full mt-1 bg-base-100 border border-base-300 rounded-lg shadow-lg max-h-60 overflow-y-auto">
-                        {categoryOptions
-                          .filter(opt => opt.label.toLowerCase().includes(subLeadForm.category.toLowerCase()))
-                          .slice(0, 10)
-                          .map(opt => (
-                            <button
-                              key={opt.id}
-                              type="button"
-                              className="w-full text-left px-4 py-2 hover:bg-base-200 transition-colors"
-                              onClick={() => {
-                                setSubLeadForm(f => ({
-                                  ...f,
-                                  categoryId: opt.id,
-                                  category: opt.label
-                                }));
-                              }}
-                            >
-                              {opt.label}
-                            </button>
-                          ))}
-                      </div>
-                    )}
-                  </div>
-                  <label className="block font-semibold mb-1 mt-4">Topic</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.topic}
-                    onChange={e => setSubLeadForm(f => ({ ...f, topic: e.target.value }))}
-                    placeholder="Enter topic"
-                  />
-                  <label className="block font-semibold mb-1">Client Name</label>
-                  <input 
-                    className="input input-bordered w-full" 
-                    value={subLeadForm.name}
-                    onChange={e => setSubLeadForm(f => ({ ...f, name: e.target.value }))}
-                    placeholder="Enter client name"
-                  />
-                  <label className="block font-semibold mb-1">Language</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.language}
-                    onChange={e => setSubLeadForm(f => ({ ...f, language: e.target.value }))}
-                  >
-                    <option value="">Select language...</option>
-                    {allLanguages.map(lang => (
-                      <option key={lang.id} value={lang.name || ''}>
-                        {lang.name || 'Unknown'}
-                      </option>
-                    ))}
-                  </select>
-                  <label className="block font-semibold mb-1">Facts of Case</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.facts}
-                    onChange={e => setSubLeadForm(f => ({ ...f, facts: e.target.value }))}
-                    placeholder="Enter facts of the case"
-                    rows={4}
-                  />
-                  <label className="block font-semibold mb-1">Special Notes</label>
-                  <textarea 
-                    className="textarea textarea-bordered w-full" 
-                    value={subLeadForm.special_notes}
-                    onChange={e => setSubLeadForm(f => ({ ...f, special_notes: e.target.value }))}
-                    placeholder="Enter special notes"
-                    rows={4}
-                  />
-                </>
-              )}
-              {subLeadStep === 'details' && (
-                <>
-                  <label className="block font-semibold mb-1">Handler</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={subLeadForm.handlerId}
-                    onChange={e => {
-                      const value = e.target.value;
-                      setSubLeadForm(f => ({
-                        ...f,
-                        handlerId: value,
-                        handler: handlerOptionsMap.get(value) || '',
-                      }));
-                    }}
-                  >
-                    <option value="">Select handler...</option>
-                    {handlerOptions.map(opt => (
-                      <option key={opt.id} value={opt.id}>
-                        {opt.label}
-                      </option>
-                    ))}
-                  </select>
-                  <label className="block font-semibold mb-1">Currency</label>
-                  <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
-                    <option value="NIS">NIS</option>
-                    <option value="USD">USD</option>
-                    <option value="EUR">EUR</option>
-                  </select>
-                  <label className="block font-semibold mb-1">Number of Applicants</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.numApplicants} onChange={e => setSubLeadForm(f => ({ ...f, numApplicants: e.target.value }))} />
-                  <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
-                  <label className="block font-semibold mb-1">Potential Value</label>
-                  <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
-                </>
-              )}
+                    >
+                      <option value="">Select handler...</option>
+                      {handlerOptions.map(opt => (
+                        <option key={opt.id} value={opt.id}>
+                          {opt.label}
+                        </option>
+                      ))}
+                    </select>
+                    <label className="block font-semibold mb-1">Currency</label>
+                    <select className="select select-bordered w-full" value={subLeadForm.currency} onChange={e => setSubLeadForm(f => ({ ...f, currency: e.target.value }))}>
+                      <option value="NIS">NIS</option>
+                      <option value="USD">USD</option>
+                      <option value="EUR">EUR</option>
+                    </select>
+                    <label className="block font-semibold mb-1">Number of Applicants</label>
+                    <input className="input input-bordered w-full" value={subLeadForm.numApplicants} onChange={e => setSubLeadForm(f => ({ ...f, numApplicants: e.target.value }))} />
+                    <label className="block font-semibold mb-1">Proposal (Amount Total)</label>
+                    <input className="input input-bordered w-full" value={subLeadForm.proposal} onChange={e => setSubLeadForm(f => ({ ...f, proposal: e.target.value }))} />
+                    <label className="block font-semibold mb-1">Potential Value</label>
+                    <input className="input input-bordered w-full" value={subLeadForm.potentialValue} onChange={e => setSubLeadForm(f => ({ ...f, potentialValue: e.target.value }))} />
+                  </>
+                )}
               </div>
             </div>
             {/* Fixed Footer with Action Button */}
             {subLeadStep === 'newContact' && (
               <div className="border-t border-base-300 p-4 bg-base-100">
-                <button 
-                  className="btn btn-primary w-full" 
+                <button
+                  className="btn btn-primary w-full"
                   onClick={() => setSubLeadStep('newContactDetails')}
                 >
                   Next: Contact Details
@@ -15529,13 +15760,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             )}
             {(subLeadStep === 'newContactDetails' || subLeadStep === 'sameContract' || subLeadStep === 'newProcedure' || subLeadStep === 'details') && (
               <div className="border-t border-base-300 p-4 bg-base-100">
-                <button 
-                  className="btn btn-primary w-full" 
-                  onClick={handleSaveSubLead} 
+                <button
+                  className="btn btn-primary w-full"
+                  onClick={handleSaveSubLead}
                   disabled={isSavingSubLead}
                 >
-                  {isSavingSubLead 
-                    ? (subLeadStep === 'details' ? 'Saving...' : 'Creating...') 
+                  {isSavingSubLead
+                    ? (subLeadStep === 'details' ? 'Saving...' : 'Creating...')
                     : (subLeadStep === 'details' ? 'Save Sub-Lead' : 'Create Sub-Lead')
                   }
                 </button>
@@ -15552,20 +15783,20 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold text-gray-900">Activate Lead</h3>
-              <button 
-                className="btn btn-ghost btn-sm" 
+              <button
+                className="btn btn-ghost btn-sm"
                 onClick={() => setShowActivationModal(false)}
               >
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             <div className="space-y-6">
               <div>
                 <p className="text-gray-600 mb-4">
                   Are you sure you want to activate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
                 </p>
-                
+
                 <div className="bg-green-50 border border-green-200 rounded-lg p-4">
                   <div className="flex items-center gap-2">
                     <CheckCircleIcon className="w-5 h-5 text-green-500" />
@@ -15575,16 +15806,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   </div>
                 </div>
               </div>
-              
+
               <div className="flex gap-3 justify-end">
-                <button 
-                  className="btn btn-outline" 
+                <button
+                  className="btn btn-outline"
                   onClick={() => setShowActivationModal(false)}
                 >
                   Cancel
                 </button>
-                <button 
-                  className="btn btn-success" 
+                <button
+                  className="btn btn-success"
                   onClick={handleActivation}
                 >
                   Activate Lead
@@ -15605,8 +15836,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="bg-white rounded-2xl shadow-2xl p-8 max-w-md w-full mx-4 z-10">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-2xl font-bold text-gray-900">Unactivate Lead</h3>
-              <button 
-                className="btn btn-ghost btn-sm" 
+              <button
+                className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setShowUnactivationModal(false);
                   setUnactivationReason('');
@@ -15616,16 +15847,16 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             <div className="space-y-6">
               <div>
                 <p className="text-gray-600 mb-4">
                   Are you sure you want to unactivate <strong>{selectedClient?.name}</strong> (Lead #{selectedClient?.lead_number})?
                 </p>
-                
+
                 <label className="block font-semibold mb-2 text-gray-900">Reason for Unactivation</label>
-                <select 
-                  className="select select-bordered w-full mb-4" 
+                <select
+                  className="select select-bordered w-full mb-4"
                   value={unactivationReason}
                   onChange={(e) => setUnactivationReason(e.target.value)}
                 >
@@ -15643,7 +15874,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   <option value="can't be reached">can't be reached</option>
                   <option value="expired">expired</option>
                 </select>
-                
+
                 <label className="block font-semibold mb-2 text-gray-900">Description</label>
                 <textarea
                   className="textarea textarea-bordered w-full min-h-[100px]"
@@ -15652,10 +15883,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   onChange={(e) => setDeactivateNotesDescription(e.target.value)}
                 />
               </div>
-              
+
               <div className="flex gap-3 justify-end">
-                <button 
-                  className="btn btn-outline" 
+                <button
+                  className="btn btn-outline"
                   onClick={() => {
                     setShowUnactivationModal(false);
                     setUnactivationReason('');
@@ -15664,8 +15895,8 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 >
                   Cancel
                 </button>
-                <button 
-                  className="btn btn-error" 
+                <button
+                  className="btn btn-error"
                   onClick={handleUnactivation}
                   disabled={!unactivationReason.trim() || !deactivateNotesDescription.trim()}
                 >
@@ -15687,19 +15918,19 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
           <div className="bg-white rounded-none shadow-2xl p-4 md:p-8 w-full h-full z-10 overflow-y-auto">
             <div className="flex items-center justify-between mb-6">
               <h3 className="text-xl md:text-2xl font-bold text-gray-900">Duplicate Contacts</h3>
-              <button 
-                className="btn btn-ghost btn-sm" 
+              <button
+                className="btn btn-ghost btn-sm"
                 onClick={() => setIsDuplicateModalOpen(false)}
               >
                 <XMarkIcon className="w-6 h-6" />
               </button>
             </div>
-            
+
             <div className="space-y-4">
               <p className="text-sm md:text-base text-gray-600 mb-4">
                 The following contacts have matching data (email, phone, or mobile) and are associated with other leads:
               </p>
-              
+
               {/* Mobile: horizontal scroll, Desktop: 3-column grid */}
               <div className="overflow-x-auto md:overflow-x-visible -mx-2 sm:-mx-4 md:-mx-0 px-2 sm:px-4 md:px-0">
                 <div className="flex md:grid md:grid-cols-3 gap-3 sm:gap-4 min-w-max md:min-w-0 pb-4">
@@ -15715,7 +15946,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       const badgeTextColour = getContrastingTextColor(stageColour);
                       const backgroundColor = stageColour || '#3f28cd';
                       const textColor = stageColour ? badgeTextColour : '#ffffff';
-                      
+
                       return (
                         <span
                           className="badge hover:opacity-90 transition-opacity duration-200 text-xs px-3 py-1 max-w-full"
@@ -15737,22 +15968,22 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
 
                     // Helper to get status icon
                     const getStatusIcon = (status: string | number | null, leadType: 'new' | 'legacy') => {
-                      const isInactive = leadType === 'legacy' 
+                      const isInactive = leadType === 'legacy'
                         ? (status === 10 || status === '10' || Number(status) === 10)
                         : (status === 'inactive');
-                      
+
                       if (isInactive) {
                         return <XCircleIcon className="h-7 w-7 text-error" title="Inactive" />;
                       } else {
                         return <CheckCircleIcon className="h-7 w-7 text-success" title="Active" />;
                       }
                     };
-                    
+
                     // Check if lead is inactive for styling
-                    const isInactive = dup.leadType === 'legacy' 
+                    const isInactive = dup.leadType === 'legacy'
                       ? (dup.status === 10 || dup.status === '10' || Number(dup.status) === 10)
                       : (dup.status === 'inactive');
-                    
+
                     const cardClasses = [
                       'card',
                       'shadow-lg',
@@ -15767,10 +15998,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                       'border',
                       isInactive ? 'bg-red-50 border-red-200' : 'bg-base-100 border-base-200',
                     ].join(' ');
-                    
+
                     return (
                       <div key={`${dup.contactId}-${dup.leadId}-${idx}`} className="flex-shrink-0 w-80 md:w-auto md:flex-shrink">
-                        <div 
+                        <div
                           className={cardClasses}
                           onClick={(e) => {
                             e.stopPropagation();
@@ -15790,7 +16021,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                                 {getStatusIcon(dup.status, dup.leadType)}
                               </div>
                             </div>
-                            
+
                             <p className="text-sm text-base-content/60 font-mono mb-4">
                               #{dup.leadNumber}
                             </p>
@@ -15872,10 +16103,10 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 </div>
               </div>
             </div>
-            
+
             <div className="flex gap-3 justify-end mt-6 pt-4 border-t border-gray-200">
-              <button 
-                className="btn btn-outline" 
+              <button
+                className="btn btn-outline"
                 onClick={() => setIsDuplicateModalOpen(false)}
               >
                 Close
@@ -15892,7 +16123,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
             className="fixed inset-0 bg-black/30"
             onClick={() => {
               setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(false); // Reset to default
+              setNotifyClientOnReschedule(false); // Reset to default
               setMeetingToDelete(null);
               setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
               setRescheduleOption('cancel');
@@ -15907,7 +16138,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 className="btn btn-ghost btn-sm"
                 onClick={() => {
                   setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(false); // Reset to default
+                  setNotifyClientOnReschedule(false); // Reset to default
                   setMeetingToDelete(null);
                   setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                   setRescheduleOption('cancel');
@@ -15934,13 +16165,13 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
               <div className="flex flex-col gap-4">
                 {/* Select Meeting - Optional for stage 21 */}
                 {(() => {
-                  const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage : 
-                                      (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
+                  const currentStage = typeof selectedClient?.stage === 'number' ? selectedClient.stage :
+                    (selectedClient?.stage ? parseInt(String(selectedClient.stage), 10) : null);
                   const isStage21 = currentStage === 21;
                   const showMeetingSelection = rescheduleMeetings.length > 0 && (rescheduleOption === 'cancel' || !isStage21);
-                  
+
                   if (!showMeetingSelection) return null;
-                  
+
                   return (
                     <div>
                       <label className="block font-semibold mb-1">
@@ -16008,7 +16239,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                     </button>
                   </div>
                   <p className="text-sm text-gray-500 mt-2">
-                    {rescheduleOption === 'cancel' 
+                    {rescheduleOption === 'cancel'
                       ? 'Cancel the meeting and send cancellation email to client.'
                       : 'Cancel the previous meeting and create a new one. Client will be notified of both actions.'}
                   </p>
@@ -16017,139 +16248,139 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                 {/* Form fields - only show when reschedule option is selected */}
                 {rescheduleOption === 'reschedule' && (
                   <>
-                {/* Location */}
-                <div>
-                  <label className="block font-semibold mb-1">Location</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={rescheduleFormData.location}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
-                  >
-                    {meetingLocations.map((location) => (
-                      <option key={location.id} value={location.name}>
-                        {location.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                    {/* Location */}
+                    <div>
+                      <label className="block font-semibold mb-1">Location</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.location}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, location: e.target.value }))}
+                      >
+                        {meetingLocations.map((location) => (
+                          <option key={location.id} value={location.name}>
+                            {location.name}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
 
-                {/* Calendar */}
-                <div>
-                  <label className="block font-semibold mb-1">Calendar</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={rescheduleFormData.calendar}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
-                  >
-                    <option value="current">Potential Client</option>
-                  </select>
-                </div>
+                    {/* Calendar */}
+                    <div>
+                      <label className="block font-semibold mb-1">Calendar</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.calendar}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, calendar: e.target.value }))}
+                      >
+                        <option value="current">Potential Client</option>
+                      </select>
+                    </div>
 
-                {/* Date */}
-                <div>
-                  <label className="block font-semibold mb-1">New Date</label>
-                  <input
-                    type="date"
-                    className="input input-bordered w-full"
-                    value={rescheduleFormData.date}
-                    onChange={(e) => {
-                      setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
-                      // Reset meeting counts when date changes
-                      setRescheduleMeetingCountsByTime({});
-                    }}
-                    required
-                    min={new Date().toISOString().split('T')[0]}
-                  />
-                </div>
+                    {/* Date */}
+                    <div>
+                      <label className="block font-semibold mb-1">New Date</label>
+                      <input
+                        type="date"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.date}
+                        onChange={(e) => {
+                          setRescheduleFormData((prev: any) => ({ ...prev, date: e.target.value }));
+                          // Reset meeting counts when date changes
+                          setRescheduleMeetingCountsByTime({});
+                        }}
+                        required
+                        min={new Date().toISOString().split('T')[0]}
+                      />
+                    </div>
 
-                {/* Time */}
-                <TimePicker
-                  value={rescheduleFormData.time}
-                  onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
-                  meetingCounts={rescheduleMeetingCountsByTime}
-                  label="New Time"
-                />
+                    {/* Time */}
+                    <TimePicker
+                      value={rescheduleFormData.time}
+                      onChange={(time) => setRescheduleFormData((prev: any) => ({ ...prev, time }))}
+                      meetingCounts={rescheduleMeetingCountsByTime}
+                      label="New Time"
+                    />
 
-                {/* Manager (Optional) */}
-                <div>
-                  <label className="block font-semibold mb-1">Manager (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a manager..."
-                    list="reschedule-meeting-manager-options"
-                    value={rescheduleFormData.manager}
-                    onChange={(e) =>
-                      setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))
-                    }
-                  />
-                  <datalist id="reschedule-meeting-manager-options">
-                    {allEmployees.map(emp => (
-                      <option key={emp.id} value={emp.display_name} />
-                    ))}
-                  </datalist>
-                </div>
+                    {/* Manager (Optional) */}
+                    <div>
+                      <label className="block font-semibold mb-1">Manager (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a manager..."
+                        list="reschedule-meeting-manager-options"
+                        value={rescheduleFormData.manager}
+                        onChange={(e) =>
+                          setRescheduleFormData((prev: any) => ({ ...prev, manager: e.target.value }))
+                        }
+                      />
+                      <datalist id="reschedule-meeting-manager-options">
+                        {allEmployees.map(emp => (
+                          <option key={emp.id} value={emp.display_name} />
+                        ))}
+                      </datalist>
+                    </div>
 
-                {/* Helper (Optional) */}
-                <div>
-                  <label className="block font-semibold mb-1">Helper (Optional)</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    placeholder="Select a helper..."
-                    list="reschedule-meeting-helper-options"
-                    value={rescheduleFormData.helper}
-                    onChange={(e) =>
-                      setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))
-                    }
-                  />
-                  <datalist id="reschedule-meeting-helper-options">
-                    {allEmployees.map(emp => (
-                      <option key={emp.id} value={emp.display_name} />
-                    ))}
-                  </datalist>
-                </div>
+                    {/* Helper (Optional) */}
+                    <div>
+                      <label className="block font-semibold mb-1">Helper (Optional)</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        placeholder="Select a helper..."
+                        list="reschedule-meeting-helper-options"
+                        value={rescheduleFormData.helper}
+                        onChange={(e) =>
+                          setRescheduleFormData((prev: any) => ({ ...prev, helper: e.target.value }))
+                        }
+                      />
+                      <datalist id="reschedule-meeting-helper-options">
+                        {allEmployees.map(emp => (
+                          <option key={emp.id} value={emp.display_name} />
+                        ))}
+                      </datalist>
+                    </div>
 
-                {/* Meeting Attendance Probability */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={rescheduleFormData.attendance_probability || 'Medium'}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
-                  >
-                    <option value="Low">Low</option>
-                    <option value="Medium">Medium</option>
-                    <option value="High">High</option>
-                    <option value="Very High">Very High</option>
-                  </select>
-                </div>
+                    {/* Meeting Attendance Probability */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Attendance Probability</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.attendance_probability || 'Medium'}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, attendance_probability: e.target.value }))}
+                      >
+                        <option value="Low">Low</option>
+                        <option value="Medium">Medium</option>
+                        <option value="High">High</option>
+                        <option value="Very High">Very High</option>
+                      </select>
+                    </div>
 
-                {/* Meeting Complexity */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Complexity</label>
-                  <select
-                    className="select select-bordered w-full"
-                    value={rescheduleFormData.complexity || 'Simple'}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
-                  >
-                    <option value="Simple">Simple</option>
-                    <option value="Complex">Complex</option>
-                  </select>
-                </div>
+                    {/* Meeting Complexity */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Complexity</label>
+                      <select
+                        className="select select-bordered w-full"
+                        value={rescheduleFormData.complexity || 'Simple'}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, complexity: e.target.value }))}
+                      >
+                        <option value="Simple">Simple</option>
+                        <option value="Complex">Complex</option>
+                      </select>
+                    </div>
 
-                {/* Meeting Car Number */}
-                <div>
-                  <label className="block font-semibold mb-1">Meeting Car Number</label>
-                  <input
-                    type="text"
-                    className="input input-bordered w-full"
-                    value={rescheduleFormData.car_number || ''}
-                    onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
-                    placeholder="Enter car number..."
-                  />
-                </div>
-                </>
+                    {/* Meeting Car Number */}
+                    <div>
+                      <label className="block font-semibold mb-1">Meeting Car Number</label>
+                      <input
+                        type="text"
+                        className="input input-bordered w-full"
+                        value={rescheduleFormData.car_number || ''}
+                        onChange={(e) => setRescheduleFormData((prev: any) => ({ ...prev, car_number: e.target.value }))}
+                        placeholder="Enter car number..."
+                      />
+                    </div>
+                  </>
                 )}
               </div>
             </div>
@@ -16161,7 +16392,7 @@ const computeNextSubLeadSuffix = async (baseLeadNumber: string): Promise<number>
                   className="btn btn-ghost"
                   onClick={() => {
                     setShowRescheduleDrawer(false);
-      setNotifyClientOnReschedule(false); // Reset to default
+                    setNotifyClientOnReschedule(false); // Reset to default
                     setMeetingToDelete(null);
                     setRescheduleFormData({ date: getTomorrowDate(), time: '09:00', location: 'Teams', calendar: 'current', manager: '', helper: '', amount: '', currency: 'NIS', attendance_probability: 'Medium', complexity: 'Simple', car_number: '' });
                     setRescheduleOption('cancel');
