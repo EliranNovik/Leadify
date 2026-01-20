@@ -8250,7 +8250,7 @@ const reports: ReportSection[] = [
   {
     category: 'Closers',
     items: [
-      { label: 'Super Pipeline', icon: BanknotesIcon, component: SuperPipelineClosersReport },
+      { label: 'Super Pipeline', icon: BanknotesIcon, route: '/reports/closer-super-pipeline' },
       // { label: 'Closers Quality', icon: StarIcon, component: ClosersQualityReport },
     ],
   },

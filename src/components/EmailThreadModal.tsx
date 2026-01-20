@@ -26,6 +26,44 @@ const normalizeEmailForFilter = (value?: string | null) =>
 const sanitizeEmailForFilter = (value: string) =>
   value.replace(/[^a-z0-9@._+!~-]/g, '');
 
+// Helper function to filter out @lawoffice.org.il emails
+const shouldExcludeLawOfficeEmail = (email?: string | null): boolean => {
+  if (!email) return false;
+  
+  // Handle different email formats
+  const emailStr = String(email);
+  const normalized = emailStr.toLowerCase().trim();
+  
+  // Remove any whitespace or special characters that might interfere
+  const cleanEmail = normalized.replace(/\s+/g, '');
+  
+  // Check multiple patterns to catch all variations
+  const patterns = [
+    '@lawoffice.org.il',
+    '@lawoffice.org.il ',
+    ' @lawoffice.org.il',
+    'lawoffice.org.il'
+  ];
+  
+  const shouldExclude = patterns.some(pattern => 
+    cleanEmail.includes(pattern) || 
+    cleanEmail.endsWith(pattern.trim()) ||
+    cleanEmail === pattern.trim()
+  );
+  
+  if (shouldExclude) {
+    console.log('🚫 [EmailThreadModal] shouldExcludeLawOfficeEmail: TRUE', {
+      original: email,
+      emailStr,
+      normalized,
+      cleanEmail,
+      type: typeof email
+    });
+  }
+  
+  return shouldExclude;
+};
+
 const collectContactEmails = (contact: Contact): string[] => {
   const emails: string[] = [];
   const pushEmail = (val?: string | null) => {
@@ -462,6 +500,29 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [showChat, setShowChat] = useState(false);
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
+  
+  // Wrapper to ensure allContacts always filters out @lawoffice.org.il
+  const setAllContactsFiltered = useCallback((contacts: Contact[]) => {
+    const filtered = contacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+    const filtered2 = filtered.filter(c => {
+      const email = String(c.email || '').toLowerCase().trim();
+      return !email.includes('@lawoffice.org.il');
+    });
+    
+    if (filtered2.length !== contacts.length) {
+      console.error(`❌ [EmailThreadModal] setAllContactsFiltered: Filtered out ${contacts.length - filtered2.length} @lawoffice.org.il contacts`);
+    }
+    
+    const lawOfficeInFiltered = filtered2.filter(c => shouldExcludeLawOfficeEmail(c.email));
+    if (lawOfficeInFiltered.length > 0) {
+      console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in setAllContactsFiltered result!', lawOfficeInFiltered);
+      const finalFiltered = filtered2.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+      setAllContacts(finalFiltered);
+    } else {
+      setAllContacts(filtered2);
+    }
+  }, []);
+  
   const [searchAllContacts, setSearchAllContacts] = useState('');
   const [toRecipients, setToRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
@@ -1217,30 +1278,64 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     return false;
   };
 
+  // Ref to track if we're currently fetching to prevent duplicate fetches
+  const isFetchingContactsRef = useRef(false);
+  const lastFetchKeyRef = useRef<string | null>(null);
+
   // Fetch all contacts
   useEffect(() => {
     const fetchContactsWithEmailConversations = async () => {
+      // Create a unique key for this fetch based on dependencies
+      const fetchKey = `${isOpen}-${showMyContactsOnly}-${currentUserEmployeeId || 'null'}-${currentUserFullName || 'null'}`;
+      
+      // Skip if we're already fetching the same thing
+      if (isFetchingContactsRef.current && lastFetchKeyRef.current === fetchKey) {
+        console.log('⏭️ [EmailThreadModal] Skipping duplicate fetch:', fetchKey);
+        return;
+      }
+      
+      console.log('🔄 [EmailThreadModal] fetchContactsWithEmailConversations called', {
+        isOpen,
+        showMyContactsOnly,
+        currentUserEmployeeId,
+        currentUserFullName,
+        fetchKey,
+        isCurrentlyFetching: isFetchingContactsRef.current,
+        lastFetchKey: lastFetchKeyRef.current
+      });
+      
       // If "My Contacts" is enabled but user info isn't loaded yet, wait for it
       if (showMyContactsOnly && !currentUserEmployeeId && !currentUserFullName) {
         console.log('⏳ Waiting for user info before fetching "My Contacts"');
         return;
       }
       
+      // Mark as fetching
+      isFetchingContactsRef.current = true;
+      lastFetchKeyRef.current = fetchKey;
+      
       try {
         setIsLoading(true);
         
         // Fetch unique client_id and legacy_id from emails table
         // Only get emails where client_id or legacy_id is not null
+        // IMPORTANT: We fetch ALL emails here (including @lawoffice.org.il) because we need to find
+        // which leads have email conversations. We'll filter the leads themselves, not the emails.
         const { data: emailsData, error: emailsError } = await supabase
           .from('emails')
-          .select('client_id, legacy_id')
+          .select('client_id, legacy_id, sender_email, recipient_list')
           .or('client_id.not.is.null,legacy_id.not.is.null');
+        
+        console.log(`📧 [EmailThreadModal] Fetched ${emailsData?.length || 0} emails from database`);
 
         if (emailsError) {
           console.error('Error fetching emails:', emailsError);
+          setIsLoading(false);
+          return;
         }
 
         // Get unique client IDs (new leads) and legacy IDs
+        // We'll filter contacts by their email field later, not by email thread participants
         const uniqueClientIds = new Set<string>();
         const uniqueLegacyIds = new Set<number>();
         
@@ -1296,11 +1391,31 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           if (leadsError) {
             console.error('Error fetching new leads:', leadsError);
           } else {
-            newLeadsData = (leadsData || []).map(lead => ({
+            const mappedNewLeads = (leadsData || []).map(lead => ({
               ...lead,
               lead_type: 'new' as const,
               client_uuid: lead.id ? String(lead.id) : null,
+              email: lead.email || '', // Ensure email is always a string
             }));
+            
+            console.log(`🔍 [EmailThreadModal] New leads before filter: ${mappedNewLeads.length}`);
+            
+            newLeadsData = mappedNewLeads.filter((lead: any) => {
+              // Filter out @lawoffice.org.il emails at the source using the same helper function
+              const shouldExclude = shouldExcludeLawOfficeEmail(lead.email);
+              if (shouldExclude) {
+                console.log('🔍 [EmailThreadModal] Filtering out new lead with @lawoffice.org.il at source:', lead.name, lead.email);
+              }
+              return !shouldExclude;
+            });
+            
+            console.log(`🔍 [EmailThreadModal] New leads after filter: ${newLeadsData.length} (filtered out ${mappedNewLeads.length - newLeadsData.length})`);
+            
+            // Debug: Check if any @lawoffice.org.il emails remain
+            const remainingLawOffice = newLeadsData.filter((lead: any) => shouldExcludeLawOfficeEmail(lead.email));
+            if (remainingLawOffice.length > 0) {
+              console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il emails in newLeadsData after filtering:', remainingLawOffice.map((l: any) => ({ name: l.name, email: l.email })));
+            }
           }
         }
 
@@ -1335,11 +1450,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           if (legacyLeadsError) {
             console.error('Error fetching legacy leads:', legacyLeadsError);
           } else {
-            legacyLeadsData = (legacyLeads || []).map(lead => ({
+            const mappedLegacyLeads = (legacyLeads || []).map(lead => ({
               id: `legacy_${lead.id}`, // Use legacy_ prefix like WhatsAppPage
               lead_number: lead.id?.toString(),
               name: lead.name || '',
-              email: lead.email || '',
+              email: lead.email || '', // Ensure email is always a string
               phone: lead.phone || '',
               mobile: lead.mobile || '',
               created_at: lead.cdate,
@@ -1361,15 +1476,94 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               helper: null, // Not used for legacy
               expert: null // Not used for legacy
             }));
+            
+            console.log(`🔍 [EmailThreadModal] Legacy leads before filter: ${mappedLegacyLeads.length}`);
+            
+            legacyLeadsData = mappedLegacyLeads.filter((lead: any) => {
+              // Filter out @lawoffice.org.il emails at the source using the same helper function
+              const shouldExclude = shouldExcludeLawOfficeEmail(lead.email);
+              if (shouldExclude) {
+                console.log('🔍 [EmailThreadModal] Filtering out legacy lead with @lawoffice.org.il at source:', lead.name, lead.email);
+              }
+              return !shouldExclude;
+            });
+            
+            console.log(`🔍 [EmailThreadModal] Legacy leads after filter: ${legacyLeadsData.length} (filtered out ${mappedLegacyLeads.length - legacyLeadsData.length})`);
+            
+            // Debug: Check if any @lawoffice.org.il emails remain
+            const remainingLawOffice = legacyLeadsData.filter((lead: any) => shouldExcludeLawOfficeEmail(lead.email));
+            if (remainingLawOffice.length > 0) {
+              console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il emails in legacyLeadsData after filtering:', remainingLawOffice.map((l: any) => ({ name: l.name, email: l.email })));
+            }
           }
         }
 
-        // Combine all contacts (already filtered at database level)
+        // Combine all contacts (already filtered at source, but double-check here)
+        // Debug: Verify the arrays before combining
+        console.log(`🔍 [EmailThreadModal] Before combining - newLeadsData.length: ${newLeadsData.length}, legacyLeadsData.length: ${legacyLeadsData.length}`);
+        console.log(`🔍 [EmailThreadModal] Sample legacyLeadsData emails:`, legacyLeadsData.slice(0, 10).map((l: any) => ({ name: l.name, email: l.email })));
+        
+        // Debug: Check ALL emails in legacyLeadsData for @lawoffice.org.il
+        const allLawOfficeInLegacy = legacyLeadsData.filter((l: any) => {
+          const email = String(l.email || '').toLowerCase().trim();
+          return email.includes('@lawoffice.org.il') || email.endsWith('@lawoffice.org.il');
+        });
+        console.log(`🔍 [EmailThreadModal] Total @lawoffice.org.il emails found in legacyLeadsData: ${allLawOfficeInLegacy.length}`);
+        if (allLawOfficeInLegacy.length > 0) {
+          console.error('❌ [EmailThreadModal] ALL @lawoffice.org.il emails in legacyLeadsData:', allLawOfficeInLegacy.map((l: any) => ({ name: l.name, email: l.email })));
+        }
+        
+        // Debug: Check if any @lawoffice.org.il emails are still in legacyLeadsData
+        const lawOfficeInLegacy = legacyLeadsData.filter((l: any) => shouldExcludeLawOfficeEmail(l.email));
+        if (lawOfficeInLegacy.length > 0) {
+          console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails in legacyLeadsData AFTER filtering:', lawOfficeInLegacy.length, 'contacts:', lawOfficeInLegacy.slice(0, 10).map((l: any) => ({ name: l.name, email: l.email })));
+        } else {
+          console.log('✅ [EmailThreadModal] No @lawoffice.org.il emails found in legacyLeadsData after filtering');
+        }
+        
         let allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
         
-        console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
+        // Debug: Check counts before final filtering
+        console.log(`🔍 [EmailThreadModal] Combined contacts: ${allContacts.length} (new: ${newLeadsData.length}, legacy: ${legacyLeadsData.length})`);
         
-        console.log(`📧 Fetched ${allContacts.length} contacts with email conversations (${newLeadsData.length} new + ${legacyLeadsData.length} legacy)`);
+        // Final safety filter: filter out contacts with @lawoffice.org.il email domain
+        const beforeFilterCount = allContacts.length;
+        
+        // Debug: log all emails that should be filtered
+        const lawOfficeEmails = allContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+        if (lawOfficeEmails.length > 0) {
+          console.error('🚫 [EmailThreadModal] CRITICAL: Found contacts with @lawoffice.org.il after source filtering:', lawOfficeEmails.map(c => ({
+            name: c.name,
+            email: c.email,
+            emailType: typeof c.email,
+            emailValue: JSON.stringify(c.email),
+            lead_number: c.lead_number,
+            lead_type: c.lead_type
+          })));
+        }
+        
+        allContacts = allContacts.filter(contact => {
+          const shouldExclude = shouldExcludeLawOfficeEmail(contact.email);
+          if (shouldExclude) {
+            console.error('🔍 [EmailThreadModal] CRITICAL: Filtering out contact with @lawoffice.org.il (should have been filtered at source):', {
+              name: contact.name,
+              email: contact.email,
+              lead_number: contact.lead_number,
+              lead_type: contact.lead_type,
+              emailType: typeof contact.email,
+              emailValue: JSON.stringify(contact.email)
+            });
+          }
+          return !shouldExclude;
+        });
+        
+        console.log(`🔍 [EmailThreadModal] After final filter: ${allContacts.length} contacts (filtered out ${beforeFilterCount - allContacts.length})`);
+        
+        if (beforeFilterCount - allContacts.length > 0) {
+          console.error(`❌ [EmailThreadModal] WARNING: Had to filter ${beforeFilterCount - allContacts.length} contacts that should have been filtered at source!`);
+        }
+        
+        console.log(`📧 [EmailThreadModal] Fetched ${allContacts.length} contacts with email conversations (${beforeFilterCount} before filtering, filtered out ${beforeFilterCount - allContacts.length} @lawoffice.org.il contacts)`);
         
         // Fetch last message time and unread status for each contact
         const contactsWithLastMessage = await Promise.all(
@@ -1500,12 +1694,80 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Filter out null contacts
         const filtered = contactsWithLastMessage.filter(Boolean) as Contact[];
         
+        // Additional filter: ensure no @lawoffice.org.il emails slipped through
+        // This is a safety check - we already filtered before processing, but double-check here
+        const contactsWithoutLawOffice = filtered.filter(contact => {
+          const shouldExclude = shouldExcludeLawOfficeEmail(contact.email);
+          if (shouldExclude) {
+            console.log('🔍 [EmailThreadModal] Filtering out contact with @lawoffice.org.il (final filter):', {
+              name: contact.name,
+              email: contact.email,
+              lead_number: contact.lead_number,
+              lead_type: contact.lead_type
+            });
+          }
+          return !shouldExclude;
+        });
+        
+        console.log(`📧 [EmailThreadModal] After filtering @lawoffice.org.il: ${contactsWithoutLawOffice.length} contacts (filtered out ${filtered.length - contactsWithoutLawOffice.length})`);
+        
+        // Debug: Check if any @lawoffice.org.il emails remain
+        const remainingLawOffice = contactsWithoutLawOffice.filter(c => shouldExcludeLawOfficeEmail(c.email));
+        if (remainingLawOffice.length > 0) {
+          console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found contacts with @lawoffice.org.il after filtering:', remainingLawOffice.map(c => ({
+            name: c.name,
+            email: c.email,
+            emailType: typeof c.email,
+            emailValue: JSON.stringify(c.email),
+            lead_number: c.lead_number
+          })));
+        }
+        
+        // Final safety filter: ensure NO @lawoffice.org.il emails make it to state
+        // Apply filter multiple times to be absolutely sure
+        let finalFilteredContacts = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+        finalFilteredContacts = finalFilteredContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email)); // Double filter
+        finalFilteredContacts = finalFilteredContacts.filter(c => {
+          const email = String(c.email || '').toLowerCase().trim();
+          return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
+        }); // Triple filter with direct check
+        
+        if (finalFilteredContacts.length !== contactsWithoutLawOffice.length) {
+          console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${contactsWithoutLawOffice.length - finalFilteredContacts.length} more @lawoffice.org.il contacts before setting state!`);
+        }
+        
+        // Final verification before setting state
+        const lawOfficeInFinal = finalFilteredContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+        if (lawOfficeInFinal.length > 0) {
+          console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails in finalFilteredContacts after triple filtering!', lawOfficeInFinal);
+          // Remove them one more time
+          finalFilteredContacts = finalFilteredContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+        }
+        
+        console.log(`✅ [EmailThreadModal] Setting allContacts with ${finalFilteredContacts.length} contacts (after filtering ${contactsWithoutLawOffice.length - finalFilteredContacts.length} @lawoffice.org.il contacts)`);
+        
+        // Final verification - check one more time before setting state
+        const lawOfficeBeforeState = finalFilteredContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+        if (lawOfficeBeforeState.length > 0) {
+          console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails RIGHT BEFORE setting allContacts state!', lawOfficeBeforeState);
+          // Remove them
+          finalFilteredContacts = finalFilteredContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+        }
+        
         // Store all contacts for contact selector (we'll use searchLeads for this)
-        setAllContacts(allContacts);
-        setFilteredAllContacts(allContacts);
+        console.log(`✅ [EmailThreadModal] FINAL: Setting allContacts with ${finalFilteredContacts.length} contacts`);
+        setAllContactsFiltered(finalFilteredContacts);
+        setFilteredAllContacts(finalFilteredContacts);
+        
+        // Verify state was set correctly (async check)
+        setTimeout(() => {
+          // This will run after state update
+          console.log(`🔍 [EmailThreadModal] State verification: allContacts should have ${finalFilteredContacts.length} contacts`);
+        }, 100);
         
         // Show only contacts with emails in main list, sorted by last message time
-        const sortedContacts = filtered
+        // Filter out @lawoffice.org.il emails from the main contacts list as well
+        const sortedContacts = contactsWithoutLawOffice
           .sort((a, b) => {
             if (a.last_message_time && b.last_message_time) {
               return new Date(b.last_message_time).getTime() - new Date(a.last_message_time).getTime();
@@ -1515,14 +1777,36 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             return a.name.localeCompare(b.name);
           });
  
+        // Debug: Check sortedContacts for @lawoffice.org.il before setting
+        const lawOfficeInSorted = sortedContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+        if (lawOfficeInSorted.length > 0) {
+          console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in sortedContacts:', lawOfficeInSorted.map(c => ({
+            name: c.name,
+            email: c.email,
+            emailType: typeof c.email
+          })));
+        }
+        
         setContacts(sortedContacts);
         // Apply search filter if there's a search query
         if (searchQuery.trim()) {
-          const filtered = sortedContacts.filter(contact =>
-            contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            contact.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
-            contact.lead_number?.toLowerCase().includes(searchQuery.toLowerCase())
-          );
+          const filtered = sortedContacts.filter(contact => {
+            // Safety check: exclude @lawoffice.org.il emails even in search results
+            if (shouldExcludeLawOfficeEmail(contact.email)) {
+              console.log('🔍 [EmailThreadModal] Filtering out @lawoffice.org.il in search results:', contact.name, contact.email);
+              return false;
+            }
+            return contact.name?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              contact.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
+              contact.lead_number?.toLowerCase().includes(searchQuery.toLowerCase());
+          });
+          
+          // Debug: Check filtered search results
+          const lawOfficeInFiltered = filtered.filter(c => shouldExcludeLawOfficeEmail(c.email));
+          if (lawOfficeInFiltered.length > 0) {
+            console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in filtered search results:', lawOfficeInFiltered);
+          }
+          
           setFilteredContacts(filtered);
         } else {
           setFilteredContacts(sortedContacts);
@@ -1540,11 +1824,22 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         toast.error('Failed to load contacts');
       } finally {
         setIsLoading(false);
+        isFetchingContactsRef.current = false;
+        console.log('✅ [EmailThreadModal] fetchContactsWithEmailConversations completed');
       }
     };
 
     if (isOpen) {
-      fetchContactsWithEmailConversations();
+      // Add a small delay to prevent multiple rapid fetches when dependencies change
+      const timeoutId = setTimeout(() => {
+        console.log('⏰ [EmailThreadModal] useEffect timeout triggered - calling fetchContactsWithEmailConversations');
+        fetchContactsWithEmailConversations();
+      }, 100);
+      
+      return () => {
+        console.log('🧹 [EmailThreadModal] useEffect cleanup - clearing timeout');
+        clearTimeout(timeoutId);
+      };
     }
   }, [isOpen, showMyContactsOnly, currentUserEmployeeId, currentUserFullName]);
 
@@ -1734,8 +2029,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         });
         
         if (!existingContact) {
-          setContacts(prev => [contactForList, ...prev]);
-          setFilteredContacts(prev => [contactForList, ...prev]);
+          // Filter out @lawoffice.org.il emails before adding
+          if (!shouldExcludeLawOfficeEmail(contactForList.email)) {
+            setContacts(prev => [contactForList, ...prev]);
+            setFilteredContacts(prev => [contactForList, ...prev]);
+          } else {
+            console.error('❌ [EmailThreadModal] CRITICAL: Attempted to add contact with @lawoffice.org.il:', contactForList);
+          }
         }
         
         // Small delay to ensure state updates are processed
@@ -1766,9 +2066,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             lead_type: result.lead_type,
             client_uuid: result.lead_type === 'new' ? String(result.id) : null,
           };
-          setContacts(prev => [newContact, ...prev]);
-          setFilteredContacts(prev => [newContact, ...prev]);
-          contactToSelect = newContact;
+          // Filter out @lawoffice.org.il emails before adding
+          if (!shouldExcludeLawOfficeEmail(newContact.email)) {
+            setContacts(prev => [newContact, ...prev]);
+            setFilteredContacts(prev => [newContact, ...prev]);
+            contactToSelect = newContact;
+          } else {
+            console.error('❌ [EmailThreadModal] CRITICAL: Attempted to add contact with @lawoffice.org.il:', newContact);
+            // Skip setting contact if we can't add it and no existing contact
+            if (!existingContact) {
+              return; // Don't set selected contact if we filtered it out
+            }
+            contactToSelect = existingContact;
+          }
         } else {
           contactToSelect = existingContact;
         }
@@ -1776,7 +2086,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
     } else {
       // For main contacts, fetch contacts and select the main one
-      let contactToSelect: Contact;
+      let contactToSelect: Contact | undefined;
       const existingContact = contacts.find(c => {
         if (result.lead_type === 'legacy') {
           return c.id === `legacy_${result.id}` || c.lead_number === result.lead_number;
@@ -1797,11 +2107,22 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           lead_type: result.lead_type,
           client_uuid: result.lead_type === 'new' ? String(result.id) : null,
         };
-        setContacts(prev => [newContact, ...prev]);
-        setFilteredContacts(prev => [newContact, ...prev]);
-        contactToSelect = newContact;
+        // Filter out @lawoffice.org.il emails before adding
+        if (!shouldExcludeLawOfficeEmail(newContact.email)) {
+          setContacts(prev => [newContact, ...prev]);
+          setFilteredContacts(prev => [newContact, ...prev]);
+          contactToSelect = newContact;
+        } else {
+          console.error('❌ [EmailThreadModal] CRITICAL: Attempted to add contact with @lawoffice.org.il:', newContact);
+          // Skip setting contact if we can't add it and no existing contact
+          return; // Don't set selected contact if we filtered it out
+        }
       } else {
         contactToSelect = existingContact;
+      }
+      
+      if (!contactToSelect) {
+        return; // Safety check
       }
       
       const isLegacyLead = contactToSelect.lead_type === 'legacy' || contactToSelect.id.toString().startsWith('legacy_');
@@ -1839,15 +2160,87 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [filteredAllContacts, setFilteredAllContacts] = useState<Contact[]>([]);
   
   useEffect(() => {
+    console.log(`🔄 [EmailThreadModal] useEffect for filteredAllContacts triggered, allContacts.length: ${allContacts.length}`);
+    
+    // Debug: Check allContacts for @lawoffice.org.il BEFORE filtering
+    // Also check with direct string matching
+    const lawOfficeInAllContacts = allContacts.filter(c => {
+      const email = String(c.email || '').toLowerCase().trim();
+      return shouldExcludeLawOfficeEmail(c.email) || email.includes('@lawoffice.org.il');
+    });
+    if (lawOfficeInAllContacts.length > 0) {
+      console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails in allContacts state!', {
+        count: lawOfficeInAllContacts.length,
+        contacts: lawOfficeInAllContacts.map(c => ({ 
+          name: c.name, 
+          email: c.email, 
+          emailType: typeof c.email,
+          emailValue: JSON.stringify(c.email),
+          id: c.id 
+        }))
+      });
+    }
+    
+    // First filter out @lawoffice.org.il emails, then apply search filter
+    // Apply multiple filters to be absolutely sure
+    let contactsWithoutLawOffice = allContacts.filter(contact => !shouldExcludeLawOfficeEmail(contact.email));
+    contactsWithoutLawOffice = contactsWithoutLawOffice.filter(contact => {
+      const email = String(contact.email || '').toLowerCase().trim();
+      return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
+    });
+    
+    // Debug: Check if any @lawoffice.org.il emails remain
+    const remainingLawOffice = contactsWithoutLawOffice.filter(c => shouldExcludeLawOfficeEmail(c.email));
+    if (remainingLawOffice.length > 0) {
+      console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails in contactsWithoutLawOffice:', remainingLawOffice);
+      // Remove them
+      contactsWithoutLawOffice = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+    }
+    
     if (!searchAllContacts.trim()) {
-      setFilteredAllContacts(allContacts);
+      // Final safety check before setting state - triple filter
+      let finalFiltered = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+      finalFiltered = finalFiltered.filter(c => {
+        const email = String(c.email || '').toLowerCase().trim();
+        return !email.includes('@lawoffice.org.il');
+      });
+      
+      if (finalFiltered.length !== contactsWithoutLawOffice.length) {
+        console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${contactsWithoutLawOffice.length - finalFiltered.length} more @lawoffice.org.il contacts in useEffect!`);
+      }
+      
+      console.log(`✅ [EmailThreadModal] Setting filteredAllContacts with ${finalFiltered.length} contacts (no search)`);
+      setFilteredAllContacts(finalFiltered);
     } else {
-      const filtered = allContacts.filter(contact =>
-        contact.name?.toLowerCase().includes(searchAllContacts.toLowerCase()) ||
-        contact.email?.toLowerCase().includes(searchAllContacts.toLowerCase()) ||
-        contact.lead_number?.toLowerCase().includes(searchAllContacts.toLowerCase())
-      );
-      setFilteredAllContacts(filtered);
+      let filtered = contactsWithoutLawOffice.filter(contact => {
+        // Additional safety check in search
+        if (shouldExcludeLawOfficeEmail(contact.email)) {
+          console.error('🔍 [EmailThreadModal] CRITICAL: Filtering out @lawoffice.org.il in search:', contact.name, contact.email);
+          return false;
+        }
+        const email = String(contact.email || '').toLowerCase().trim();
+        if (email.includes('@lawoffice.org.il')) {
+          console.error('🔍 [EmailThreadModal] CRITICAL: Filtering out @lawoffice.org.il in search (direct check):', contact.name, contact.email);
+          return false;
+        }
+        return contact.name?.toLowerCase().includes(searchAllContacts.toLowerCase()) ||
+          contact.email?.toLowerCase().includes(searchAllContacts.toLowerCase()) ||
+          contact.lead_number?.toLowerCase().includes(searchAllContacts.toLowerCase());
+      });
+      
+      // Final safety check before setting state - triple filter
+      let finalFiltered = filtered.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+      finalFiltered = finalFiltered.filter(c => {
+        const email = String(c.email || '').toLowerCase().trim();
+        return !email.includes('@lawoffice.org.il');
+      });
+      
+      if (finalFiltered.length !== filtered.length) {
+        console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${filtered.length - finalFiltered.length} more @lawoffice.org.il contacts in search!`);
+      }
+      
+      console.log(`✅ [EmailThreadModal] Setting filteredAllContacts with ${finalFiltered.length} contacts (with search: "${searchAllContacts}")`);
+      setFilteredAllContacts(finalFiltered);
     }
   }, [searchAllContacts, allContacts]);
 
@@ -3558,9 +3951,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     onClick={() => setShowMyContactsOnly(false)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                       !showMyContactsOnly
-                        ? 'bg-purple-600 text-white shadow-sm'
+                        ? 'text-white shadow-sm'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
+                    style={!showMyContactsOnly ? { backgroundColor: '#3A1CC1' } : {}}
                   >
                     All Contacts
                   </button>
@@ -3569,9 +3963,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     onClick={() => setShowMyContactsOnly(true)}
                     className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
                       showMyContactsOnly
-                        ? 'bg-purple-600 text-white shadow-sm'
+                        ? 'text-white shadow-sm'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
                     }`}
+                    style={showMyContactsOnly ? { backgroundColor: '#3A1CC1' } : {}}
                   >
                     My Contacts
                   </button>
@@ -3593,7 +3988,69 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
             {/* Contacts List - Scrollable */}
             <div className="flex-1 overflow-y-auto min-h-0">
-              {filteredContacts.map((contact) => (
+              {(() => {
+                // Final safety check: filter out @lawoffice.org.il emails right before rendering
+                // Apply multiple filters to be absolutely sure
+                let safeContacts = filteredContacts.filter(contact => !shouldExcludeLawOfficeEmail(contact.email));
+                safeContacts = safeContacts.filter(contact => {
+                  const email = String(contact.email || '').toLowerCase().trim();
+                  return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
+                });
+                
+                // Debug: log any contacts that still have @lawoffice.org.il
+                const remainingLawOffice = safeContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+                if (remainingLawOffice.length > 0) {
+                  console.error('❌ [EmailThreadModal] CRITICAL: Found contacts with @lawoffice.org.il after filtering:', remainingLawOffice);
+                  safeContacts = safeContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+                }
+                
+                // Log what we're about to render
+                console.log(`🎨 [EmailThreadModal] Rendering ${safeContacts.length} contacts in main list (from ${filteredContacts.length} filteredContacts)`);
+                
+                // Final check - log ALL emails being rendered and check for @lawoffice.org.il
+                const emailsBeingRendered = safeContacts.map(c => c.email).filter(Boolean);
+                const lawOfficeInRender = emailsBeingRendered.filter(e => shouldExcludeLawOfficeEmail(e));
+                if (lawOfficeInRender.length > 0) {
+                  console.error('❌ [EmailThreadModal] CRITICAL: About to render contacts with @lawoffice.org.il emails!', lawOfficeInRender);
+                }
+                
+                // Also check the actual contact objects
+                const lawOfficeContacts = safeContacts.filter(c => {
+                  const email = String(c.email || '').toLowerCase().trim();
+                  return email.includes('@lawoffice.org.il') || shouldExcludeLawOfficeEmail(c.email);
+                });
+                if (lawOfficeContacts.length > 0) {
+                  console.error('❌ [EmailThreadModal] CRITICAL: Found contact objects with @lawoffice.org.il in safeContacts!', lawOfficeContacts.map(c => ({
+                    name: c.name,
+                    email: c.email,
+                    id: c.id,
+                    lead_number: c.lead_number
+                  })));
+                  // Remove them
+                  safeContacts = safeContacts.filter(c => {
+                    const email = String(c.email || '').toLowerCase().trim();
+                    return !email.includes('@lawoffice.org.il') && !shouldExcludeLawOfficeEmail(c.email);
+                  });
+                }
+                
+                // Log sample of emails being rendered (first 10)
+                console.log(`📋 [EmailThreadModal] Sample emails being rendered:`, safeContacts.slice(0, 10).map(c => c.email));
+                
+                return safeContacts;
+              })().filter(contact => {
+                // Final check right before rendering each contact
+                if (shouldExcludeLawOfficeEmail(contact.email)) {
+                  console.error('❌ [EmailThreadModal] CRITICAL: About to render contact with @lawoffice.org.il in main list!', contact);
+                  return false; // Don't render
+                }
+                return true;
+              }).map((contact) => {
+                // One more check in the map function
+                if (shouldExcludeLawOfficeEmail(contact.email)) {
+                  console.error('❌ [EmailThreadModal] CRITICAL: Contact with @lawoffice.org.il passed all filters and is being rendered!', contact);
+                  return null; // Don't render
+                }
+                return (
                                                   <div
                    key={contact.id}
                    onClick={() => handleContactSelect(contact)}
@@ -3613,7 +4070,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                         {contact.name}
                       </div>
                        <div className="text-xs md:text-sm text-gray-500 truncate" dir="ltr">
-                         {contact.email}
+                         {(() => {
+                           // Debug: log if this contact has @lawoffice.org.il email
+                           if (shouldExcludeLawOfficeEmail(contact.email)) {
+                             console.error('❌ [EmailThreadModal] RENDERING CONTACT WITH @lawoffice.org.il:', {
+                               name: contact.name,
+                               email: contact.email,
+                               id: contact.id,
+                               lead_number: contact.lead_number
+                             });
+                           }
+                           return contact.email;
+                         })()}
                        </div>
                                                 <div className="flex items-center justify-between">
                            <div className="text-xs text-gray-400">
@@ -3635,7 +4103,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                      </div>
                   </div>
                 </div>
-              ))}
+                );
+              })}
             </div>
 
             {/* New Email Button - Fixed at bottom */}
@@ -4380,36 +4849,82 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               ) : (
                 <div className="space-y-2">
-                  {filteredAllContacts.map((contact) => (
-                    <div
-                      key={contact.id}
-                      onClick={() => handleContactSelectForNewEmail(contact)}
-                      className="p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
-                          {contact.name?.charAt(0).toUpperCase()}
-                        </div>
-                        <div className="flex-1 min-w-0">
-                          <div 
-                            className="font-semibold text-gray-900 truncate"
-                            dir="auto"
-                          >
-                            {contact.name}
+                  {(() => {
+                    // Final safety check: filter out @lawoffice.org.il emails right before rendering
+                    // Apply multiple filters to be absolutely sure
+                    let safeContacts = filteredAllContacts.filter(contact => !shouldExcludeLawOfficeEmail(contact.email));
+                    safeContacts = safeContacts.filter(contact => {
+                      const email = String(contact.email || '').toLowerCase().trim();
+                      return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
+                    });
+                    
+                    // Final verification
+                    const lawOfficeInRender = safeContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
+                    if (lawOfficeInRender.length > 0) {
+                      console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in safeContacts before render!', lawOfficeInRender);
+                      safeContacts = safeContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
+                    }
+                    
+                    if (safeContacts.length !== filteredAllContacts.length) {
+                      console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${filteredAllContacts.length - safeContacts.length} @lawoffice.org.il contacts at render time!`);
+                    }
+                    
+                    return safeContacts;
+                  })().filter(contact => {
+                    // Final check right before rendering each contact
+                    if (shouldExcludeLawOfficeEmail(contact.email)) {
+                      console.error('❌ [EmailThreadModal] CRITICAL: About to render contact with @lawoffice.org.il!', contact);
+                      return false; // Don't render
+                    }
+                    return true;
+                  }).map((contact) => {
+                    // Final check right before rendering each contact
+                    if (shouldExcludeLawOfficeEmail(contact.email)) {
+                      console.error('❌ [EmailThreadModal] CRITICAL: About to render contact with @lawoffice.org.il in map!', contact);
+                      return null; // Don't render
+                    }
+                    return (
+                      <div
+                        key={contact.id}
+                        onClick={() => handleContactSelectForNewEmail(contact)}
+                        className="p-3 border border-gray-200 rounded-lg cursor-pointer hover:bg-gray-50 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold">
+                            {contact.name?.charAt(0).toUpperCase()}
                           </div>
-                          <div className="text-sm text-gray-500 truncate" dir="ltr">
-                            {contact.email || 'No email'}
+                          <div className="flex-1 min-w-0">
+                            <div 
+                              className="font-semibold text-gray-900 truncate"
+                              dir="auto"
+                            >
+                              {contact.name}
+                            </div>
+                            <div className="text-sm text-gray-500 truncate" dir="ltr">
+                              {(() => {
+                                // Debug: log if this contact has @lawoffice.org.il email
+                                if (shouldExcludeLawOfficeEmail(contact.email)) {
+                                  console.error('❌ [EmailThreadModal] RENDERING CONTACT WITH @lawoffice.org.il (All Contacts tab):', {
+                                    name: contact.name,
+                                    email: contact.email,
+                                    id: contact.id,
+                                    lead_number: contact.lead_number
+                                  });
+                                }
+                                return contact.email || 'No email';
+                              })()}
+                            </div>
+                            <div className="text-xs text-gray-400" dir="ltr">
+                              Lead: {contact.lead_number}
+                            </div>
                           </div>
-                          <div className="text-xs text-gray-400" dir="ltr">
-                            Lead: {contact.lead_number}
+                          <div className="text-xs text-gray-400">
+                            {contact.lead_type === 'legacy' ? 'Legacy' : 'New'}
                           </div>
-                        </div>
-                        <div className="text-xs text-gray-400">
-                          {contact.lead_type === 'legacy' ? 'Legacy' : 'New'}
                         </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
