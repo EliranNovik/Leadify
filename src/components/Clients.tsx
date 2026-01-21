@@ -1048,18 +1048,39 @@ const Clients: React.FC<ClientsProps> = ({
     console.log('🔍 Category not found, returning empty string for categoryId:', categoryId);
     return ''; // Return empty string instead of ID to show "Not specified"
   };
-  const { lead_number = "" } = useParams();
+  const { lead_number = "", "*": subleadSuffix = "" } = useParams<{ lead_number?: string; "*"?: string }>();
   const location = useLocation();
   const navType = useNavigationType();
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const requestedLeadNumber = searchParams.get('lead');
-  const fullLeadNumber = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
+  // Construct fullLeadNumber: if we have a sublead suffix from route params, combine it with lead_number
+  // Otherwise, extract from pathname as fallback (handles both /clients/L210764/3 and /clients/2104625?lead=L210764%2F3)
+  const fullLeadNumberFromPath = decodeURIComponent(location.pathname.replace(/^\/clients\//, '').replace(/\/$/, '').replace(/\/master$/, ''));
+  // If we have both lead_number and subleadSuffix from route params, combine them
+  // Otherwise, use requestedLeadNumber from query (for legacy format) or fullLeadNumberFromPath
+  const fullLeadNumber = (subleadSuffix && lead_number)
+    ? `${lead_number}/${subleadSuffix}`
+    : (requestedLeadNumber || lead_number || fullLeadNumberFromPath);
 
   const buildClientRoute = useCallback((manualId?: string | null, leadNumberValue?: string | null) => {
     const manualString = manualId?.toString().trim() || '';
     const leadString = leadNumberValue?.toString().trim() || '';
     const isSubLeadNumber = leadString.includes('/');
 
+    // For new leads with subleads (format like L210764/3), use direct path format
+    // Check if leadString looks like a new lead (starts with L or is UUID format)
+    const isNewLeadFormat = leadString && (
+      leadString.startsWith('L') ||
+      leadString.startsWith('C') ||
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(leadString.split('/')[0])
+    );
+
+    if (isSubLeadNumber && isNewLeadFormat) {
+      // New lead sublead: use direct path format like /clients/L210764/3
+      return `/clients/${encodeURIComponent(leadString)}`;
+    }
+
+    // Legacy leads with subleads: use query parameter format
     if (isSubLeadNumber && manualString !== '') {
       const query = leadString !== '' ? `?lead=${encodeURIComponent(leadString)}` : '';
       return `/clients/${encodeURIComponent(manualString)}` + query;
@@ -2161,13 +2182,13 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     // Add /1 suffix to master leads (frontend only)
-    // A lead is a master if: it has no master_id AND (isMasterLead is true OR has sub-leads)
+    // A lead is a master if: it has no master_id AND it has subleads
     const hasNoMasterId = !lead.master_id || String(lead.master_id).trim() === '';
     const hasSubLeads = subLeads && subLeads.length > 0;
-    // Use isMasterLead state or check subLeads array - either indicates it's a master lead
-    const shouldAddSuffix = hasNoMasterId && (isMasterLead || hasSubLeads);
+    const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || hasSubLeads);
 
-    if (shouldAddSuffix) {
+    // Only add /1 to master leads that actually have subleads
+    if (isMasterWithSubLeads && !hasExistingSuffix) {
       displayNumber = `${baseNumber}/1`;
     } else {
       displayNumber = baseNumber;
@@ -3101,14 +3122,27 @@ const Clients: React.FC<ClientsProps> = ({
         }
 
         // Also try by lead_number for new leads
-        queries.push(
-          supabase
-            .from('leads')
-            .select('*')
-            .eq('lead_number', effectiveLeadNumber)
-            .single()
-            .then(({ data, error }) => ({ type: 'lead_number', data, error }))
-        );
+        // If effectiveLeadNumber contains '/', it's a sublead - query by exact match
+        // Otherwise, query by lead_number
+        if (effectiveLeadNumber.includes('/')) {
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('lead_number', effectiveLeadNumber)
+              .single()
+              .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+          );
+        } else {
+          queries.push(
+            supabase
+              .from('leads')
+              .select('*')
+              .eq('lead_number', effectiveLeadNumber)
+              .single()
+              .then(({ data, error }) => ({ type: 'lead_number', data, error }))
+          );
+        }
 
         // Wait for all queries to complete
         const results = await Promise.allSettled(queries);
@@ -9345,16 +9379,60 @@ const Clients: React.FC<ClientsProps> = ({
     }
 
     // For new leads, fetch the master lead's lead_number
+    // master_id can be either a UUID (new lead) or numeric (legacy lead)
     const fetchMasterLeadNumber = async () => {
       try {
-        const { data, error } = await supabase
-          .from('leads')
-          .select('lead_number')
-          .eq('id', selectedClient.master_id)
-          .single();
+        const masterId = selectedClient.master_id;
+        console.log('🔍 Fetching master lead number for new lead sublead:', {
+          subleadId: selectedClient?.id,
+          masterId: masterId,
+          masterIdType: typeof masterId
+        });
 
-        if (error) throw error;
-        setMasterLeadNumberForNewLead(data?.lead_number || null);
+        // Check if master_id is UUID or numeric
+        const isUUID = typeof masterId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(masterId);
+
+        let leadNumber: string | null = null;
+
+        if (isUUID) {
+          // Query leads table with UUID
+          const { data, error } = await supabase
+            .from('leads')
+            .select('lead_number')
+            .eq('id', masterId)
+            .single();
+
+          if (error) {
+            console.error('Error fetching master lead number from leads table:', error);
+            throw error;
+          }
+          leadNumber = data?.lead_number || null;
+        } else {
+          // master_id is numeric, so it's a legacy lead ID
+          // Query leads_lead table and use the ID as lead_number
+          const numericId = parseInt(String(masterId), 10);
+          if (!isNaN(numericId)) {
+            const { data, error } = await supabase
+              .from('leads_lead')
+              .select('id')
+              .eq('id', numericId)
+              .single();
+
+            if (error) {
+              console.error('Error fetching master lead number from leads_lead table:', error);
+              throw error;
+            }
+            // For legacy leads, the lead_number is just the ID
+            leadNumber = data?.id ? String(data.id) : null;
+          }
+        }
+
+        console.log('🔍 Master lead number fetched:', {
+          masterId: masterId,
+          masterLeadNumber: leadNumber,
+          isUUID
+        });
+        setMasterLeadNumberForNewLead(leadNumber);
       } catch (error) {
         console.error('Error fetching master lead number:', error);
         setMasterLeadNumberForNewLead(null);
@@ -13381,8 +13459,15 @@ const Clients: React.FC<ClientsProps> = ({
 
       {/* Tabs Navigation */}
 
-      {/* Tabs Navigation - Desktop */}
-      <div className="hidden md:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
+      {/* Tabs Navigation - Desktop Only (Hidden on Mobile) - Using style tag to ensure it's hidden */}
+      <style>{`
+        @media (max-width: 1023px) {
+          .desktop-tabs-navigation {
+            display: none !important;
+          }
+        }
+      `}</style>
+      <div className="desktop-tabs-navigation hidden lg:block bg-white dark:bg-gray-800 rounded-xl shadow-lg border border-gray-200 dark:border-gray-700 mb-6 mx-6">
         <div className="w-full">
           {/* Desktop version */}
           <div className="flex flex-col px-4 py-4 gap-4">
@@ -13848,8 +13933,8 @@ const Clients: React.FC<ClientsProps> = ({
         </div>
       </div>
 
-      {/* Tabs Navigation - Mobile */}
-      <div className="md:hidden px-4 py-2 mb-6 mt-2">
+      {/* Tabs Navigation - Mobile (Hidden - using bottom oval navigation instead) */}
+      <div className="hidden px-4 py-2 mb-6 mt-2">
 
         <div
           ref={mobileTabsRef}
@@ -13918,15 +14003,17 @@ const Clients: React.FC<ClientsProps> = ({
           className="p-2 sm:p-4 md:p-6 pb-6 md:pb-6 mb-4 md:mb-0"
         >
           {ActiveComponent && selectedClient && (
-            <ActiveComponent
-              key={`${activeTab}-${selectedClient.id}`}
-              client={selectedClient}
-              onClientUpdate={onClientUpdate}
-              interactionsCache={interactionsCacheForLead}
-              onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
-              onInteractionCountUpdate={handleInteractionCountUpdate}
-              {...financeProps}
-            />
+            <div className="md:pb-0 pb-32">
+              <ActiveComponent
+                key={`${activeTab}-${selectedClient.id}`}
+                client={selectedClient}
+                onClientUpdate={onClientUpdate}
+                interactionsCache={interactionsCacheForLead}
+                onInteractionsCacheUpdate={handleInteractionsCacheUpdate}
+                onInteractionCountUpdate={handleInteractionCountUpdate}
+                {...financeProps}
+              />
+            </div>
           )}
         </div>
       </div>
@@ -16454,6 +16541,40 @@ const Clients: React.FC<ClientsProps> = ({
           }
         }}
       />
+
+      {/* Mobile Tabs Navigation - Bottom of page, horizontal oval box, horizontally scrollable */}
+      <div className="md:hidden fixed bottom-0 left-0 right-0 z-50 pb-safe">
+        <div className="flex justify-center px-4 pb-4">
+          <div className="bg-white dark:bg-gray-800 rounded-full shadow-2xl border-2 border-gray-200 dark:border-gray-700 px-3 py-3 overflow-x-auto scrollbar-hide" style={{ borderRadius: '9999px', maxWidth: '95vw' }}>
+            <div className="flex items-center gap-2" style={{ scrollBehavior: 'smooth' }}>
+              {tabs.map((tab) => (
+                <button
+                  key={tab.id}
+                  className={`relative flex items-center justify-center gap-2 px-4 py-3 rounded-full font-semibold text-sm transition-all duration-300 whitespace-nowrap flex-shrink-0 ${activeTab === tab.id
+                    ? 'bg-gradient-to-r from-purple-600 to-blue-600 text-white shadow-lg'
+                    : 'text-gray-600 dark:text-gray-400 hover:text-gray-900 dark:hover:text-gray-100 hover:bg-gray-50 dark:hover:bg-gray-700'
+                    }`}
+                  onClick={() => setActiveTab(tab.id)}
+                >
+                  <tab.icon className={`w-5 h-5 flex-shrink-0 ${activeTab === tab.id ? 'text-white' : 'text-gray-500'}`} />
+                  <span className={`saira-light font-bold text-xs ${activeTab === tab.id ? 'text-white' : 'text-gray-600'}`}>{tab.label}</span>
+                  {tab.id === 'interactions' && tab.badge && (
+                    <div className={`badge badge-sm font-bold ${activeTab === tab.id
+                      ? 'bg-white/20 text-white border-white/30'
+                      : 'bg-purple-100 text-purple-700 border-purple-200'
+                      }`}>
+                      {tab.badge}
+                    </div>
+                  )}
+                  {activeTab === tab.id && (
+                    <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-white dark:bg-gray-800 rounded-full shadow-lg"></div>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
     </div>
   );
 };

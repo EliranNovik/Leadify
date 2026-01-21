@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { supabase } from '../../lib/supabase';
 import TimelineHistoryButtons from './TimelineHistoryButtons';
@@ -11,6 +11,50 @@ import ReactDOM from 'react-dom';
 import { BanknotesIcon as BanknotesIconSolid } from '@heroicons/react/24/solid';
 import { PencilLine, Trash2 } from 'lucide-react';
 import { DocumentTextIcon, Cog6ToothIcon, ChartPieIcon, PlusIcon, ChatBubbleLeftRightIcon, DocumentCheckIcon } from '@heroicons/react/24/outline';
+
+// Portal dropdown component for admin actions
+const AdminDropdownPortal: React.FC<{
+  anchorRef: React.RefObject<HTMLButtonElement>;
+  open: boolean;
+  onClose: () => void;
+  children: React.ReactNode;
+}> = ({ anchorRef, open, onClose, children }) => {
+  const [style, setStyle] = useState<React.CSSProperties>({});
+
+  useEffect(() => {
+    if (open && anchorRef.current) {
+      const rect = anchorRef.current.getBoundingClientRect();
+      setStyle({
+        position: 'fixed',
+        top: rect.bottom + 4,
+        right: window.innerWidth - rect.right,
+        zIndex: 99999,
+      });
+    }
+  }, [open, anchorRef]);
+
+  useEffect(() => {
+    if (!open) return;
+    const handle = (e: MouseEvent) => {
+      const target = e.target as HTMLElement;
+      if (anchorRef.current && !anchorRef.current.contains(target) && !target.closest('.admin-dropdown-menu')) {
+        onClose();
+      }
+    };
+    document.addEventListener('mousedown', handle);
+    return () => document.removeEventListener('mousedown', handle);
+  }, [open, anchorRef, onClose]);
+
+  if (!open) return null;
+
+  return ReactDOM.createPortal(
+    <div style={style} className="admin-dropdown-menu">
+      {children}
+    </div>,
+    document.body
+  );
+};
+
 import { generateProformaName } from '../../lib/proforma';
 import { getClientContracts, getContractDetails } from '../../lib/contractAutomation';
 import { ArrowPathIcon } from '@heroicons/react/24/outline';
@@ -34,6 +78,8 @@ interface PaymentPlan {
   ready_to_pay_by?: number | null; // Employee ID who marked it as ready to pay
   ready_to_pay_by_display_name?: string | null; // Display name of employee who marked it as ready to pay
   client_id?: number | null; // Contact ID (client_id from payment plan row)
+  sent_to_finance?: boolean; // Flag to indicate if payment was sent to finance
+  sent_to_finance_at?: string | null; // Timestamp when payment was sent to finance
 }
 
 interface FinancePlan {
@@ -95,12 +141,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [isSavingPaymentRow, setIsSavingPaymentRow] = useState(false);
   const [viewMode, setViewMode] = useState<'table' | 'boxes'>('table');
   const [collapsedContacts, setCollapsedContacts] = useState<{ [key: string]: boolean }>({});
-  
+  const [openDropdownPaymentId, setOpenDropdownPaymentId] = useState<string | number | null>(null);
+  const dropdownButtonRefs = useRef<{ [key: string | number]: HTMLButtonElement | null }>({});
+
   // Initialize all contacts as collapsed by default
   useEffect(() => {
     if (financePlan && financePlan.payments.length > 0) {
       const contacts = [...new Set(financePlan.payments.map(p => p.client))];
-      
+
       // Only initialize if we haven't set up collapse state yet
       if (Object.keys(collapsedContacts).length === 0) {
         const initialCollapsedState = contacts.reduce((acc, contactName) => {
@@ -125,7 +173,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Add state and handler for editing subtotal at the top of the component:
   const [isEditingSubtotal, setIsEditingSubtotal] = useState(false);
   const [editableSubtotal, setEditableSubtotal] = useState('');
-  
+
   // Helper: map lead currency codes/names to the symbols used in the auto‑plan selector
   const mapLeadCurrencyToSymbol = (code?: string | null): string => {
     if (!code) return '₪';
@@ -155,7 +203,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return orderNumber; // Return as-is if can't parse
       }
     }
-    
+
     // Handle numeric input
     if (typeof orderNumber === 'number') {
       switch (orderNumber) {
@@ -167,7 +215,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         default: return 'First Payment'; // Default fallback
       }
     }
-    
+
     // Default fallback for null/undefined
     return 'First Payment';
   };
@@ -229,7 +277,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         const totalAmount = (!prev.totalAmount || Number(prev.totalAmount) <= 0) && suggestedTotal > 0
           ? String(suggestedTotal)
           : prev.totalAmount;
-        
+
         // Initialize payment amounts if not set or if total amount changed
         let paymentAmounts = prev.paymentAmounts || [];
         if (paymentAmounts.length === 0 && totalAmount) {
@@ -237,7 +285,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const total = Number(totalAmount);
           paymentAmounts = prev.paymentPercents.map(percent => (total * percent) / 100);
         }
-        
+
         return {
           ...prev,
           currency,
@@ -249,7 +297,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       });
     }
   }, [client]);
-  
+
   const saveSubtotal = () => {
     // Update the first row's total to match the edited subtotal
     if (proformaData && proformaData.rows && proformaData.rows.length > 0) {
@@ -271,7 +319,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     try {
       // Generate secure token
       const secureToken = `payment_${Date.now()}_${Math.random().toString(36).substring(2, 15)}`;
-      
+
       // Set expiration date (30 days from now)
       const expiresAt = new Date();
       expiresAt.setDate(expiresAt.getDate() + 30);
@@ -298,10 +346,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       // Generate the payment URL
       const paymentUrl = `${window.location.origin}/payment/${secureToken}`;
-      
+
       // Copy to clipboard
       await navigator.clipboard.writeText(paymentUrl);
-      
+
       toast.success('Payment link copied to clipboard!');
     } catch (error) {
       console.error('Error generating payment link:', error);
@@ -316,13 +364,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const currentDate = new Date().toISOString().split('T')[0]; // Get today's date in YYYY-MM-DD format
       const currentUserEmployeeId = await getCurrentUserEmployeeId();
       const currentUserName = await getCurrentUserName();
-      
+
       let error;
       if (isLegacyLead) {
         // For legacy leads, update finances_paymentplanrow table
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
-          .update({ 
+          .update({
             ready_to_pay: true,
             ready_to_pay_by: currentUserEmployeeId,
             due_by_id: currentUserEmployeeId,
@@ -335,7 +383,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // For new leads, update payment_plans table
         const { error: newError } = await supabase
           .from('payment_plans')
-          .update({ 
+          .update({
             ready_to_pay: true,
             ready_to_pay_by: currentUserEmployeeId,
             due_date: currentDate // Set due date to current date
@@ -364,7 +412,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             changed_by: currentUserName,
             notes: `Payment marked as ready to pay by ${currentUserName}`
           });
-        
+
         if (historyError) console.error('Error logging payment marked as ready to pay:', historyError);
       }
 
@@ -390,15 +438,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (!prev) return prev;
         return {
           ...prev,
-          payments: prev.payments.map(p => 
-            p.id === payment.id 
-              ? { 
-                  ...p, 
-                  ready_to_pay: true, 
-                  dueDate: currentDate,
-                  ready_to_pay_by: currentUserEmployeeId,
-                  ready_to_pay_by_display_name: currentUserDisplayName,
-                }
+          payments: prev.payments.map(p =>
+            p.id === payment.id
+              ? {
+                ...p,
+                ready_to_pay: true,
+                dueDate: currentDate,
+                ready_to_pay_by: currentUserEmployeeId,
+                ready_to_pay_by_display_name: currentUserDisplayName,
+              }
               : p
           )
         };
@@ -425,8 +473,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (!prev) return prev;
       return {
         ...prev,
-        payments: prev.payments.map(p => 
-          p.id === payment.id 
+        payments: prev.payments.map(p =>
+          p.id === payment.id
             ? { ...p, ready_to_pay: false } as PaymentPlan
             : p
         )
@@ -467,8 +515,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           if (!prev) return prev;
           return {
             ...prev,
-            payments: prev.payments.map(p => 
-              p.id === payment.id 
+            payments: prev.payments.map(p =>
+              p.id === payment.id
                 ? { ...p, ready_to_pay: true } as PaymentPlan
                 : p
             )
@@ -492,7 +540,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             changed_by: currentUserName,
             notes: `Payment reverted from ready to pay by ${currentUserName}`
           });
-        
+
         if (historyError) console.error('Error logging payment reverted from ready to pay:', historyError);
       }
 
@@ -505,8 +553,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (!prev) return prev;
         return {
           ...prev,
-          payments: prev.payments.map(p => 
-            p.id === payment.id 
+          payments: prev.payments.map(p =>
+            p.id === payment.id
               ? { ...p, ready_to_pay: true } as PaymentPlan
               : p
           )
@@ -534,29 +582,29 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Find the payment to check if it's legacy
     const payment = financePlan?.payments.find(p => p.id === id);
     const isLegacyPayment = payment?.isLegacy;
-    
+
     // Immediately update the UI state
     setPaidMap(prev => ({ ...prev, [id]: true }));
-    
+
     // Update the finance plan state to immediately show paid status
     setFinancePlan(prev => {
       if (!prev) return prev;
       return {
         ...prev,
-        payments: prev.payments.map(payment => 
-          payment.id === id 
+        payments: prev.payments.map(payment =>
+          payment.id === id
             ? { ...payment, paid: true, paid_at: new Date(paidDate).toISOString() }
             : payment
         )
       };
     });
-    
+
     if (onPaymentMarkedPaid) onPaymentMarkedPaid(id);
-    
+
     try {
       const currentUserName = await getCurrentUserName();
       const paidAtDate = new Date(paidDate).toISOString();
-      
+
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
         const { error } = await supabase
@@ -565,7 +613,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             actual_date: paidDate, // Set actual_date to selected date
           })
           .eq('id', id);
-          
+
         if (!error) {
           toast.success('Legacy payment marked as paid!');
           setShowPaidDateModal(false);
@@ -579,8 +627,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             if (!prev) return prev;
             return {
               ...prev,
-              payments: prev.payments.map(payment => 
-                payment.id === id 
+              payments: prev.payments.map(payment =>
+                payment.id === id
                   ? { ...payment, paid: false, paid_at: undefined }
                   : payment
               )
@@ -604,15 +652,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               changed_by: currentUserName,
               notes: `Payment marked as paid by ${currentUserName} on ${paidDate}`
             });
-          
+
           if (historyError) console.error('Error logging payment marked as paid:', historyError);
         } else {
           // Legacy payment marked as paid - skipping change logging
         }
-        
+
         // Check if this is a legacy lead
         const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-        
+
         // Update DB based on lead type
         let error = null;
         if (isLegacyLead) {
@@ -636,7 +684,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .eq('id', id);
           error = newError;
         }
-          
+
         if (!error) {
           toast.success('Payment marked as paid!');
           setShowPaidDateModal(false);
@@ -650,8 +698,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             if (!prev) return prev;
             return {
               ...prev,
-              payments: prev.payments.map(payment => 
-                payment.id === id 
+              payments: prev.payments.map(payment =>
+                payment.id === id
                   ? { ...payment, paid: false, paid_at: undefined }
                   : payment
               )
@@ -668,8 +716,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (!prev) return prev;
         return {
           ...prev,
-          payments: prev.payments.map(payment => 
-            payment.id === id 
+          payments: prev.payments.map(payment =>
+            payment.id === id
               ? { ...payment, paid: false, paid_at: undefined }
               : payment
           )
@@ -679,12 +727,118 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
   };
 
+  // Handler to mark payment as sent to finance
+  const handleSentToFinance = async (payment: PaymentPlan) => {
+    try {
+      const isLegacy = payment.isLegacy;
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+
+      let error = null;
+
+      if (isLegacy || isLegacyLead) {
+        // For legacy payments, update finances_paymentplanrow table
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({ sent_to_finance: true, sent_to_finance_at: new Date().toISOString() })
+          .eq('id', payment.id);
+        error = legacyError;
+      } else {
+        // For new payments, update payment_plans table
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({ sent_to_finance: true, sent_to_finance_at: new Date().toISOString() })
+          .eq('id', payment.id);
+        error = newError;
+      }
+
+      if (error) throw error;
+
+      toast.success('Payment marked as sent to finance');
+
+      // Refresh payment plans
+      await refreshPaymentPlans();
+
+      // Close dropdown
+      setOpenDropdownPaymentId(null);
+    } catch (error: any) {
+      console.error('Error marking payment as sent to finance:', error);
+      toast.error(`Failed to mark as sent to finance: ${error?.message || 'Unknown error'}`);
+    }
+  };
+
+  // Handler to revert marked as paid
+  const handleRevertMarkedAsPaid = async (payment: PaymentPlan) => {
+    try {
+      const isLegacy = payment.isLegacy;
+      const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
+      const paymentId = payment.id;
+
+      let error = null;
+
+      if (isLegacy || isLegacyLead) {
+        // For legacy payments, update finances_paymentplanrow table
+        // Set actual_date to null to revert paid status
+        const { error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .update({
+            actual_date: null
+          })
+          .eq('id', paymentId);
+        error = legacyError;
+      } else {
+        // For new payments, update payment_plans table
+        const { error: newError } = await supabase
+          .from('payment_plans')
+          .update({
+            paid: false,
+            paid_at: null,
+            paid_by: null
+          })
+          .eq('id', paymentId);
+        error = newError;
+      }
+
+      if (error) throw error;
+
+      toast.success('Payment reverted from paid status');
+
+      // Update local state
+      setPaidMap(prev => {
+        const newMap = { ...prev };
+        delete newMap[paymentId];
+        return newMap;
+      });
+
+      // Update finance plan state
+      setFinancePlan(prev => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          payments: prev.payments.map(p =>
+            p.id === paymentId
+              ? { ...p, paid: false, paid_at: undefined, paid_by: undefined }
+              : p
+          )
+        };
+      });
+
+      // Refresh payment plans
+      await refreshPaymentPlans();
+
+      // Close dropdown
+      setOpenDropdownPaymentId(null);
+    } catch (error: any) {
+      console.error('Error reverting payment from paid status:', error);
+      toast.error(`Failed to revert payment: ${error?.message || 'Unknown error'}`);
+    }
+  };
+
   // Fetch current user's superuser status and collection status
   useEffect(() => {
     const fetchUserPermissions = async () => {
       try {
         const { data: { user }, error: authError } = await supabase.auth.getUser();
-        
+
         if (authError || !user) {
           setIsSuperuser(false);
           setIsCollection(false);
@@ -697,7 +851,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .select('is_superuser, employee_id')
           .eq('auth_id', user.id)
           .maybeSingle();
-        
+
         // If not found by auth_id, try by email
         if (!userData && user.email) {
           const { data: userByEmail, error: emailError } = await supabase
@@ -705,16 +859,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .select('is_superuser, employee_id')
             .eq('email', user.email)
             .maybeSingle();
-          
+
           userData = userByEmail;
           error = emailError;
         }
 
         if (!error && userData) {
           // Check if user is superuser (handle boolean, string, or number)
-          const superuserStatus = userData.is_superuser === true || 
-                                  userData.is_superuser === 'true' || 
-                                  userData.is_superuser === 1;
+          const superuserStatus = userData.is_superuser === true ||
+            userData.is_superuser === 'true' ||
+            userData.is_superuser === 1;
           setIsSuperuser(superuserStatus);
 
           // Check if user has is_collection = true in tenants_employee table
@@ -724,13 +878,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               .select('is_collection')
               .eq('id', userData.employee_id)
               .maybeSingle();
-            
+
             if (!employeeError && employeeData) {
               // Check if is_collection is true (handle boolean, string 't', or number)
-              const collectionStatus = employeeData.is_collection === true || 
-                                      employeeData.is_collection === 't' || 
-                                      employeeData.is_collection === 'true' ||
-                                      employeeData.is_collection === 1;
+              const collectionStatus = employeeData.is_collection === true ||
+                employeeData.is_collection === 't' ||
+                employeeData.is_collection === 'true' ||
+                employeeData.is_collection === 1;
               setIsCollection(collectionStatus);
             } else {
               setIsCollection(false);
@@ -752,18 +906,35 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     fetchUserPermissions();
   }, []);
 
+  // Close dropdown when clicking outside
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      const target = event.target as HTMLElement;
+      if (!target.closest('.dropdown')) {
+        setOpenDropdownPaymentId(null);
+      }
+    };
+
+    if (openDropdownPaymentId !== null) {
+      document.addEventListener('click', handleClickOutside);
+      return () => {
+        document.removeEventListener('click', handleClickOutside);
+      };
+    }
+  }, [openDropdownPaymentId]);
+
   // Define fetchContacts at component level so it can be called from multiple places
   // Returns the contacts array so it can be used immediately without waiting for state update
   const fetchContacts = async (): Promise<any[]> => {
     if (!client?.id) return [];
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, fetch contacts from leads_contact and lead_leadcontact tables
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       try {
         // Fetch contacts from lead_leadcontact and leads_contact tables
         const { data: leadContacts, error: leadContactsError } = await supabase
@@ -782,20 +953,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             )
           `)
           .eq('lead_id', legacyId);
-        
+
         if (leadContactsError) {
           console.error('Error fetching legacy lead contacts:', leadContactsError);
           setContacts([]);
           return [];
         }
-        
+
         if (leadContacts && leadContacts.length > 0) {
           // Transform contacts to include the contact data
           const contactsWithData = leadContacts.map((leadContact: any) => {
-            const contactData = Array.isArray(leadContact.leads_contact) 
-              ? leadContact.leads_contact[0] 
+            const contactData = Array.isArray(leadContact.leads_contact)
+              ? leadContact.leads_contact[0]
               : leadContact.leads_contact;
-            
+
             return {
               id: contactData?.id || leadContact.contact_id,
               name: contactData?.name || '',
@@ -805,7 +976,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               isMain: leadContact.main === 'true' || leadContact.main === true,
             };
           });
-          
+
           setContacts(contactsWithData);
           console.log('✅ fetchContacts: Loaded contacts', contactsWithData.map(c => ({ id: c.id, name: c.name })));
           return contactsWithData;
@@ -819,11 +990,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return [];
       }
     }
-    
+
     // For new leads, fetch contacts from lead_leadcontact and leads_contact tables using newlead_id
     try {
       console.log('🔍 fetchContacts: Fetching contacts for new lead with leadId:', client.id);
-      
+
       const { data: leadContacts, error: leadContactsError } = await supabase
         .from('lead_leadcontact')
         .select(`
@@ -840,22 +1011,22 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           )
         `)
         .eq('newlead_id', client.id);
-      
+
       console.log('🔍 leadContacts query result:', { leadContacts, leadContactsError, leadId: client.id });
-      
+
       if (leadContactsError) {
         console.error('Error fetching new lead contacts:', leadContactsError);
         setContacts([]);
         return [];
       }
-      
+
       if (leadContacts && leadContacts.length > 0) {
         // Transform contacts to include the contact data
         const contactsWithData = leadContacts.map((leadContact: any) => {
-          const contactData = Array.isArray(leadContact.leads_contact) 
-            ? leadContact.leads_contact[0] 
+          const contactData = Array.isArray(leadContact.leads_contact)
+            ? leadContact.leads_contact[0]
             : leadContact.leads_contact;
-          
+
           return {
             id: contactData?.id || leadContact.contact_id,
             name: contactData?.name || '',
@@ -865,7 +1036,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             isMain: leadContact.main === 'true' || leadContact.main === true,
           };
         });
-        
+
         console.log('✅ Processed contacts:', contactsWithData);
         console.log('✅ Setting contacts state with', contactsWithData.length, 'contacts');
         setContacts(contactsWithData);
@@ -888,56 +1059,56 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Fetch payment plans when component mounts or client changes
   useEffect(() => {
-      const fetchPaymentPlans = async () => {
-    if (!client?.id) {
-      setIsLoadingFinancePlan(false);
-      return;
-    }
-    
-    // Prevent duplicate fetches
-    if (isFetchingRef.current) {
-      return;
-    }
-    
-    // Check if contacts are already loaded for this client
-    const clientIdKey = client.id.toString();
-    const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && contacts.length > 0;
-    
-    isFetchingRef.current = true;
-    setIsLoadingFinancePlan(true);
-    
-    // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
-    // This prevents payment plans from being incorrectly labeled with main client name
-    // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
-    let currentContacts = contacts;
-    if (!contactsAlreadyLoaded) {
-      currentContacts = await fetchContacts();
-      contactsLoadedRef.current = clientIdKey;
-    }
-    
-    // Check if this is a legacy lead
-    const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+    const fetchPaymentPlans = async () => {
+      if (!client?.id) {
+        setIsLoadingFinancePlan(false);
+        return;
+      }
+
+      // Prevent duplicate fetches
+      if (isFetchingRef.current) {
+        return;
+      }
+
+      // Check if contacts are already loaded for this client
+      const clientIdKey = client.id.toString();
+      const contactsAlreadyLoaded = contactsLoadedRef.current === clientIdKey && contacts.length > 0;
+
+      isFetchingRef.current = true;
+      setIsLoadingFinancePlan(true);
+
+      // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
+      // This prevents payment plans from being incorrectly labeled with main client name
+      // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
+      let currentContacts = contacts;
+      if (!contactsAlreadyLoaded) {
+        currentContacts = await fetchContacts();
+        contactsLoadedRef.current = clientIdKey;
+      }
+
+      // Check if this is a legacy lead
+      const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
+
       try {
         let data = null;
         let error = null;
-        
+
         if (isLegacyLead) {
           // For legacy leads, fetch from finances_paymentplanrow table
           const legacyIdStr = client.id.toString().replace('legacy_', '');
           const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
-          
+
           if (!legacyId || isNaN(legacyId)) {
             console.error('Invalid legacy lead ID:', client.id);
             setIsLoadingFinancePlan(false);
             isFetchingRef.current = false;
             return;
           }
-          
+
           // For legacy leads, fetch payments by lead_id
           // Contacts are now guaranteed to be loaded before this function runs (via await fetchContacts())
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
-          
+
           console.log('🔍 fetchPaymentPlans (legacy): Starting fetch', {
             legacyId,
             clientId: client.id,
@@ -945,7 +1116,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             contactIds,
             contactNames: currentContacts.map(c => ({ id: c.id, name: c.name }))
           });
-          
+
           // Build query to fetch payments for this specific lead
           // CRITICAL: FIRST match by lead_id to id in leads_lead
           // THEN match by client_id to contact_id (done in filter below)
@@ -965,17 +1136,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .eq('lead_id', legacyId) // Use numeric lead_id to ensure correct matching for this specific lead
             .is('cancel_date', null)
             .order('date', { ascending: true });
-          
+
           // No fallback by client_id - we must match by lead_id only
           // Multiple leads can share the same contact, so matching by client_id would include payments from other leads
-          
+
           console.log('🔍 fetchPaymentPlans (legacy): Query result', {
             legacyId,
             dataCount: legacyData?.length || 0,
             error: legacyError,
             rawPayments: legacyData?.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id, date: p.date })) || []
           });
-          
+
           // DIAGNOSTIC: Check if there are ANY payment plans for this lead_id (including canceled ones)
           // This helps diagnose why no payments are being returned
           if ((!legacyData || legacyData.length === 0) && !legacyError) {
@@ -985,21 +1156,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               .eq('lead_id', legacyId)
               .order('date', { ascending: true })
               .limit(10);
-            
+
             console.log('🔍 DIAGNOSTIC: All payment plans for lead_id (including canceled):', {
               legacyId,
               contactIds,
               diagnosticCount: diagnosticData?.length || 0,
-              diagnosticPayments: diagnosticData?.map((p: any) => ({ 
-                id: p.id, 
-                lead_id: p.lead_id, 
-                client_id: p.client_id, 
+              diagnosticPayments: diagnosticData?.map((p: any) => ({
+                id: p.id,
+                lead_id: p.lead_id,
+                client_id: p.client_id,
                 cancel_date: p.cancel_date,
                 date: p.date,
                 clientIdMatches: p.client_id ? contactIds.includes(Number(p.client_id)) : 'null'
               })) || []
             });
-            
+
             // DIAGNOSTIC: Check if payment plans exist with client_id matching contact_id but different/missing lead_id
             // This helps identify if payment plans are stored with wrong lead_id
             if (contactIds.length > 0) {
@@ -1009,15 +1180,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 .in('client_id', contactIds)
                 .order('date', { ascending: true })
                 .limit(20);
-              
+
               console.log('🔍 DIAGNOSTIC: Payment plans by client_id (contact_id):', {
                 legacyId,
                 contactIds,
                 diagnosticByClientIdCount: diagnosticByClientId?.length || 0,
-                diagnosticByClientIdPayments: diagnosticByClientId?.map((p: any) => ({ 
-                  id: p.id, 
-                  lead_id: p.lead_id, 
-                  client_id: p.client_id, 
+                diagnosticByClientIdPayments: diagnosticByClientId?.map((p: any) => ({
+                  id: p.id,
+                  lead_id: p.lead_id,
+                  client_id: p.client_id,
                   cancel_date: p.cancel_date,
                   date: p.date,
                   leadIdMatches: p.lead_id ? Number(p.lead_id) === legacyId : 'null',
@@ -1026,7 +1197,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               });
             }
           }
-          
+
           // CRITICAL: Only filter by lead_id - don't filter by client_id
           // Multiple leads can share the same contact (client_id), so we must match by lead_id first
           // Grouping by client_id is done later for display purposes only
@@ -1036,33 +1207,33 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               totalPayments: legacyData.length,
               payments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
-            
+
             legacyData = legacyData.filter((plan: any) => {
               const planLeadId = plan.lead_id ? Number(plan.lead_id) : null;
-              
+
               // Match by lead_id only - don't filter by client_id
               if (planLeadId !== legacyId) {
                 console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: legacyId, planId: plan.id });
                 return false;
               }
-              
-              console.log('✅ Including payment for lead (matched by lead_id):', { 
-                planId: plan.id, 
+
+              console.log('✅ Including payment for lead (matched by lead_id):', {
+                planId: plan.id,
                 planLeadId,
                 planClientId: plan.client_id,
                 legacyId
               });
-              
+
               return true;
             });
-            
+
             console.log('✅ fetchPaymentPlans (legacy): Filtered payments (matched by lead_id only)', {
               legacyId,
               filteredCount: legacyData.length,
               filteredPayments: legacyData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
           }
-          
+
           data = legacyData;
           error = legacyError;
         } else {
@@ -1070,7 +1241,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           // Filter out canceled payments (cancel_date is null for active payments)
           // Match by BOTH lead_id AND client_id (contact_id) to ensure subleads with same contact don't show each other's plans
           const contactIds = currentContacts.length > 0 ? currentContacts.map(c => c.id).filter(id => id != null && !isNaN(Number(id))).map(id => Number(id)) : [];
-          
+
           // Build query to fetch payments for this specific lead/sublead
           // CRITICAL: We must filter by BOTH lead_id AND client_id to prevent showing payments from other leads
           // First, fetch by lead_id to get all payments for this specific lead
@@ -1086,7 +1257,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .eq('lead_id', client.id) // Use the specific lead_id for this lead/sublead
             .is('cancel_date', null)
             .order('date', { ascending: true });
-          
+
           // CRITICAL: Only filter by lead_id - don't filter by client_id
           // Multiple leads can share the same contact (client_id), so we must match by lead_id first
           // Grouping by client_id is done later for display purposes only
@@ -1096,33 +1267,33 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               totalPayments: regularData.length,
               payments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
-            
+
             regularData = regularData.filter((plan: any) => {
               const planLeadId = plan.lead_id ? String(plan.lead_id) : null;
-              
+
               // Match by lead_id only - don't filter by client_id
               if (planLeadId !== String(client.id)) {
                 console.warn('⚠️ Payment plan has incorrect lead_id:', { planLeadId, expectedLeadId: client.id, planId: plan.id });
                 return false;
               }
-              
-              console.log('✅ Including payment for lead (matched by lead_id):', { 
-                planId: plan.id, 
+
+              console.log('✅ Including payment for lead (matched by lead_id):', {
+                planId: plan.id,
                 planLeadId,
                 planClientId: plan.client_id,
                 leadId: client.id
               });
-              
+
               return true;
             });
-            
+
             console.log('✅ fetchPaymentPlans (new): Filtered payments (matched by lead_id only)', {
               leadId: client.id,
               filteredCount: regularData.length,
               filteredPayments: regularData.map((p: any) => ({ id: p.id, lead_id: p.lead_id, client_id: p.client_id }))
             });
           }
-          
+
           data = regularData;
           error = regularError;
         }
@@ -1136,7 +1307,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           let total = 0;
           let vat = 0;
           let payments = [];
-          
+
           if (isLegacyLead) {
             // Fetch employee display names for due_by_id values
             const dueByIds = new Set<number>();
@@ -1145,14 +1316,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 dueByIds.add(plan.due_by_id);
               }
             });
-            
+
             const dueByEmployeeMap = new Map<number, string>();
             if (dueByIds.size > 0) {
               const { data: employeesData } = await supabase
                 .from('tenants_employee')
                 .select('id, display_name')
                 .in('id', Array.from(dueByIds));
-              
+
               if (employeesData) {
                 employeesData.forEach((emp: any) => {
                   if (emp.id && emp.display_name) {
@@ -1161,17 +1332,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 });
               }
             }
-            
+
             // Transform legacy data to match the finance plan structure
             // First, process all payments to calculate totals and get currency info
             const processedPayments = data.map(plan => {
               const value = Number(plan.value || 0);
               let valueVat = Number(plan.vat_value || 0);
-              
+
               // Get currency from the joined accounting_currencies table
               let currency = '₪'; // Default fallback
               let currencyId = plan.currency_id;
-              
+
               if (plan.accounting_currencies && plan.accounting_currencies.name) {
                 currency = plan.accounting_currencies.name;
                 currencyId = plan.accounting_currencies.id;
@@ -1185,7 +1356,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   default: currency = '₪'; break;
                 }
               }
-              
+
               // For NIS (currency_id = 1), ensure VAT calculation is correct
               // If vat_value is 0 or null, calculate it based on the value and date
               // Use 17% VAT for dates before 2025-01-01, 18% VAT for dates on or after 2025-01-01
@@ -1194,9 +1365,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 const vatRate = getVatRateForLegacyLead(paymentDate);
                 valueVat = Math.round(value * vatRate * 100) / 100;
               }
-              
+
               const paymentTotal = value + valueVat;
-              
+
               return {
                 plan,
                 value,
@@ -1206,86 +1377,89 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 paymentTotal
               };
             });
-            
-          // Calculate totals using the same VAT logic
-          let total = 0;
-          let vat = 0;
-          processedPayments.forEach(processed => {
-            total += processed.paymentTotal;
-            vat += processed.valueVat;
-          });
-          
-          // Group payments by contact to calculate percentages per contact
-          const paymentsByContact = new Map<string, typeof processedPayments>();
-          processedPayments.forEach(processed => {
-            const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
-            if (!paymentsByContact.has(contactName)) {
-              paymentsByContact.set(contactName, []);
-            }
-            paymentsByContact.get(contactName)!.push(processed);
-          });
-          
-          // Calculate total per contact and then calculate percentages
-          payments = processedPayments.map(processed => {
-            const { plan, value, valueVat, currency, paymentTotal } = processed;
-            
-            // Get contact name from client_id
-            const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
-            
-            // Calculate total for this contact's payments
-            const contactPayments = paymentsByContact.get(contactName) || [];
-            const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
-            
-            // Calculate percentage based on this contact's total, not the global total
-            const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
 
-            // Debug: Log employee data if available
-            if (plan.ready_to_pay && plan.ready_to_pay_by) {
-              console.log('🔍 Payment ready_to_pay debug:', {
-                paymentId: plan.id,
-                ready_to_pay_by: plan.ready_to_pay_by,
-                tenants_employee: plan.tenants_employee,
-                display_name: plan.tenants_employee?.display_name
-              });
-            }
+            // Calculate totals using the same VAT logic
+            let total = 0;
+            let vat = 0;
+            processedPayments.forEach(processed => {
+              total += processed.paymentTotal;
+              vat += processed.valueVat;
+            });
 
-            // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
-            // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
-            // IMPORTANT: Show X button (revert) if due_date exists, even if due_by_id is missing
-            const hasDueDate = !!plan.due_date;
-            const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
-            const isReadyToPay = plan.ready_to_pay || hasDueDate; // Changed: use hasDueDate instead of hasDueDateAndDueBy
-            // For legacy leads, prioritize due_by_id over ready_to_pay_by
-            const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
-            // For legacy leads, get employee name from due_by_id using the map we fetched
-            // If due_by_id is missing, we won't have a display name, but button should still show
-            const readyToPayByDisplayName = hasDueDateAndDueBy 
-              ? (dueByEmployeeMap.get(plan.due_by_id) || null)
-              : (plan.tenants_employee?.display_name || null);
-            
-            return {
-              id: plan.id,
-              duePercent: calculatedDuePercent,
-              dueDate: plan.date || plan.due_date,
-              value,
-              valueVat,
-              client: contactName, // Use contact name from client_id mapping
-              order: plan.order ? getOrderText(plan.order) : 'First Payment',
-              proforma: null, // Legacy doesn't have proforma
-              notes: plan.notes || '',
-              paid: plan.actual_date ? true : false, // If actual_date is set, consider it paid
-              paid_at: plan.actual_date,
-              paid_by: undefined, // Legacy doesn't track who paid
-              currency,
-              isLegacy: true, // Flag to identify legacy payments
-              ready_to_pay: isReadyToPay,
-              ready_to_pay_text: (plan as any).ready_to_pay_text || null,
-              ready_to_pay_date: (plan as any).ready_to_pay_date || null,
-              ready_to_pay_by: readyToPayBy,
-              ready_to_pay_by_display_name: readyToPayByDisplayName,
-              client_id: plan.client_id ? Number(plan.client_id) : null, // Include client_id (contact_id) for proforma creation
-            };
-          });
+            // Group payments by contact to calculate percentages per contact
+            const paymentsByContact = new Map<string, typeof processedPayments>();
+            processedPayments.forEach(processed => {
+              const contactName = getContactNameFromClientId(processed.plan.client_id, currentContacts);
+              if (!paymentsByContact.has(contactName)) {
+                paymentsByContact.set(contactName, []);
+              }
+              paymentsByContact.get(contactName)!.push(processed);
+            });
+
+            // Calculate total per contact and then calculate percentages
+            payments = processedPayments.map(processed => {
+              const { plan, value, valueVat, currency, paymentTotal } = processed;
+
+              // Get contact name from client_id
+              const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
+
+              // Calculate total for this contact's payments
+              const contactPayments = paymentsByContact.get(contactName) || [];
+              const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
+
+              // Calculate percentage based on this contact's total, not the global total
+              const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
+
+              // Debug: Log employee data if available
+              if (plan.ready_to_pay && plan.ready_to_pay_by) {
+                console.log('🔍 Payment ready_to_pay debug:', {
+                  paymentId: plan.id,
+                  ready_to_pay_by: plan.ready_to_pay_by,
+                  tenants_employee: plan.tenants_employee,
+                  display_name: plan.tenants_employee?.display_name
+                });
+              }
+
+              // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
+              // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
+              // IMPORTANT: Show X button (revert) if due_date exists, even if due_by_id is missing
+              const hasDueDate = !!plan.due_date;
+              const hasDueDateAndDueBy = plan.due_date && plan.due_by_id;
+              const isReadyToPay = plan.ready_to_pay || hasDueDate; // Changed: use hasDueDate instead of hasDueDateAndDueBy
+              // For legacy leads, prioritize due_by_id over ready_to_pay_by
+              const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
+              // For legacy leads, get employee name from due_by_id using the map we fetched
+              // If due_by_id is missing, we won't have a display name, but button should still show
+              const readyToPayByDisplayName = hasDueDateAndDueBy
+                ? (dueByEmployeeMap.get(plan.due_by_id) || null)
+                : (plan.tenants_employee?.display_name || null);
+
+              return {
+                id: plan.id,
+                duePercent: calculatedDuePercent,
+                dueDate: plan.date || plan.due_date,
+                value,
+                valueVat,
+                client: contactName, // Use contact name from client_id mapping
+                order: plan.order ? getOrderText(plan.order) : 'First Payment',
+                proforma: null, // Legacy doesn't have proforma
+                notes: plan.notes || '',
+                paid: plan.actual_date ? true : false, // If actual_date is set, consider it paid
+                paid_at: plan.actual_date,
+                paid_by: undefined, // Legacy doesn't track who paid
+                currency,
+                isLegacy: true, // Flag to identify legacy payments
+                ready_to_pay: isReadyToPay,
+                ready_to_pay_text: (plan as any).ready_to_pay_text || null,
+                ready_to_pay_date: (plan as any).ready_to_pay_date || null,
+                ready_to_pay_by: readyToPayBy,
+                ready_to_pay_by_display_name: readyToPayByDisplayName,
+                client_id: plan.client_id ? Number(plan.client_id) : null, // Include client_id (contact_id) for proforma creation
+                sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
+                sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
+                original_due_date: plan.due_date || null, // Store original due_date for legacy leads to check if it exists
+              };
+            });
           } else {
             // Transform regular data to match the finance plan structure
             // First, process all payments - use vat_value directly from database (no auto-calculation)
@@ -1294,12 +1468,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               // Use the actual vat_value from the database (numeric column)
               const valueVat = Number(plan.value_vat || 0);
               const currency = plan.currency || '₪';
-              
+
               // Do NOT auto-calculate VAT - use the value from the database
               // This allows VAT to be 0 when checkbox is unchecked
-              
+
               const paymentTotal = value + valueVat;
-              
+
               return {
                 plan,
                 value,
@@ -1308,11 +1482,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 paymentTotal
               };
             });
-            
+
             // Calculate totals using the same VAT logic
             total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
             vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
-            
+
             // Group payments by contact to calculate percentages per contact
             const paymentsByContact = new Map<string, typeof processedPayments>();
             processedPayments.forEach(processed => {
@@ -1322,21 +1496,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               }
               paymentsByContact.get(contactName)!.push(processed);
             });
-            
+
             // Calculate total per contact and then calculate percentages
             payments = processedPayments.map(processed => {
               const { plan, value, valueVat, currency, paymentTotal } = processed;
-              
+
               // Get contact name
               const contactName = plan.client_name || 'Unknown Contact';
-              
+
               // Calculate total for this contact's payments
               const contactPayments = paymentsByContact.get(contactName) || [];
               const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
-              
+
               // Calculate percentage based on this contact's total, not the global total
               const duePercentStr = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
-              
+
               return {
                 id: plan.id,
                 duePercent: duePercentStr,
@@ -1357,6 +1531,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 ready_to_pay_date: (plan as any).ready_to_pay_date || null,
                 ready_to_pay_by: plan.ready_to_pay_by || null,
                 ready_to_pay_by_display_name: plan.tenants_employee?.display_name || null,
+                sent_to_finance: plan.sent_to_finance || false, // Include sent_to_finance flag
+                sent_to_finance_at: plan.sent_to_finance_at || null, // Include sent_to_finance_at timestamp
               };
             });
           }
@@ -1386,21 +1562,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         isFetchingRef.current = false;
       }
     };
-    
+
     fetchPaymentPlans();
   }, [client?.id]);
 
-      const fetchContracts = async () => {
+  const fetchContracts = async () => {
     if (!client?.id || typeof client.id !== 'string' || client.id.length === 0) return;
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, fetch contract information from lead_leadcontact table
       try {
         const legacyId = client.id.toString().replace('legacy_', '');
-        
+
         // Fetch legacy contract data with lead information
         const { data: legacyContracts, error } = await supabase
           .from('lead_leadcontact')
@@ -1418,13 +1594,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             )
           `)
           .eq('lead_id', legacyId);
-        
+
         if (error) {
           console.error('Error fetching legacy contracts:', error);
           setContracts([]);
           return;
         }
-        
+
         if (legacyContracts && legacyContracts.length > 0) {
           // Fetch signed date from stage 60 (agreement signed) for this lead
           const { data: signedStageData, error: stageError } = await supabase
@@ -1435,9 +1611,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .order('cdate', { ascending: false })
             .limit(1)
             .single();
-          
+
           const signedDate = signedStageData?.cdate || null;
-          
+
           // Transform legacy contract data to match the expected format
           const transformedContracts = legacyContracts.map((contract, index) => {
             // Use database fields instead of parsing HTML
@@ -1445,7 +1621,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const totalAmount = leadData?.total || 0;
             const applicantCount = leadData?.no_of_applicants || 1;
             const costPerApplicant = applicantCount > 0 ? totalAmount / applicantCount : 0;
-            
+
             return {
               id: contract.id,
               status: contract.signed_contract_html ? 'signed' : 'draft',
@@ -1468,7 +1644,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               isLegacy: true
             };
           });
-          
+
           setContracts(transformedContracts);
         } else {
           setContracts([]);
@@ -1479,7 +1655,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       }
       return;
     }
-    
+
     try {
       const contractData = await getClientContracts(client.id);
       setContracts(contractData || []);
@@ -1506,14 +1682,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       // fetchPaymentPlans will be called by its own useEffect, and it will await fetchContacts() again
       // This ensures contacts are always loaded before payment plans
       fetchContracts();
-      
+
       // Fetch available currencies
       try {
         const { data, error } = await supabase
           .from('accounting_currencies')
           .select('id, name, iso_code')
           .order('id', { ascending: true });
-        
+
         if (error) {
           console.error('Error fetching currencies:', error);
           // Set fallback currencies
@@ -1562,7 +1738,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   const refreshPaymentPlans = async () => {
     if (!client?.id) return;
-    
+
     // CRITICAL: Ensure contacts are loaded BEFORE fetching payment plans
     // This prevents payment plans from being incorrectly labeled with main client name
     // Get contacts directly from fetchContacts (returns immediately, doesn't wait for state update)
@@ -1573,44 +1749,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       currentContacts = await fetchContacts();
       contactsLoadedRef.current = clientIdKey;
     }
-    
+
     // Check if this is a legacy lead
     const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-    
+
     try {
       let data = null;
       let error = null;
-      
-              if (isLegacyLead) {
-          // For legacy leads, fetch from finances_paymentplanrow table
-          const legacyId = client.id.toString().replace('legacy_', '');
-          
-              // Query finances_paymentplanrow table with currency information
-              // Filter out canceled payments (cancel_date is null for active payments)
-              // Fetch payments by both lead_id (text) and client_id (bigint) for legacy leads
-              const numericId = parseInt(legacyId);
-              const isNumericIdValid = !isNaN(numericId);
-              
-              // Build OR condition: lead_id matches OR client_id matches main lead ID or contact IDs
-              // Only use contact IDs if contacts array is loaded (non-empty)
-              const contactIds = contacts.length > 0 ? contacts.map(c => c.id).filter(id => id != null) : [];
-              const allClientIds = [numericId, ...contactIds].filter(id => id != null && !isNaN(Number(id)));
-              
-              // Build OR condition properly - each condition separated by comma
-              let orCondition = `lead_id.eq.${legacyId}`;
-              if (isNumericIdValid) {
-                orCondition += `,client_id.eq.${numericId}`;
-              }
-              // Add contact IDs to OR condition
-              contactIds.forEach(contactId => {
-                if (contactId != null && !isNaN(Number(contactId))) {
-                  orCondition += `,client_id.eq.${contactId}`;
-                }
-              });
-              
-              const { data: legacyData, error: legacyError } = await supabase
-                .from('finances_paymentplanrow')
-                .select(`
+
+      if (isLegacyLead) {
+        // For legacy leads, fetch from finances_paymentplanrow table
+        const legacyId = client.id.toString().replace('legacy_', '');
+
+        // Query finances_paymentplanrow table with currency information
+        // Filter out canceled payments (cancel_date is null for active payments)
+        // Fetch payments by both lead_id (text) and client_id (bigint) for legacy leads
+        const numericId = parseInt(legacyId);
+        const isNumericIdValid = !isNaN(numericId);
+
+        // Build OR condition: lead_id matches OR client_id matches main lead ID or contact IDs
+        // Only use contact IDs if contacts array is loaded (non-empty)
+        const contactIds = contacts.length > 0 ? contacts.map(c => c.id).filter(id => id != null) : [];
+        const allClientIds = [numericId, ...contactIds].filter(id => id != null && !isNaN(Number(id)));
+
+        // Build OR condition properly - each condition separated by comma
+        let orCondition = `lead_id.eq.${legacyId}`;
+        if (isNumericIdValid) {
+          orCondition += `,client_id.eq.${numericId}`;
+        }
+        // Add contact IDs to OR condition
+        contactIds.forEach(contactId => {
+          if (contactId != null && !isNaN(Number(contactId))) {
+            orCondition += `,client_id.eq.${contactId}`;
+          }
+        });
+
+        const { data: legacyData, error: legacyError } = await supabase
+          .from('finances_paymentplanrow')
+          .select(`
                   *,
                   accounting_currencies!finances_paymentplanrow_currency_id_fkey (
                     name,
@@ -1621,12 +1797,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     display_name
                   )
                 `)
-                .or(orCondition)
-                .is('cancel_date', null)
-                .order('date', { ascending: true });
-          
-          data = legacyData;
-          error = legacyError;
+          .or(orCondition)
+          .is('cancel_date', null)
+          .order('date', { ascending: true });
+
+        data = legacyData;
+        error = legacyError;
       } else {
         // For regular leads, fetch from payment_plans table
         // Filter out canceled payments (cancel_date is null for active payments)
@@ -1642,17 +1818,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', client.id)
           .is('cancel_date', null)
           .order('due_date', { ascending: true });
-        
+
         data = regularData;
         error = regularError;
       }
-      
+
       if (error) throw error;
       if (data && data.length > 0) {
         let total = 0;
         let vat = 0;
         let payments = [];
-        
+
         if (isLegacyLead) {
           // Fetch employee display names for due_by_id values
           const dueByIds = new Set<number>();
@@ -1661,14 +1837,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               dueByIds.add(plan.due_by_id);
             }
           });
-          
+
           const dueByEmployeeMap = new Map<number, string>();
           if (dueByIds.size > 0) {
             const { data: employeesData } = await supabase
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', Array.from(dueByIds));
-            
+
             if (employeesData) {
               employeesData.forEach((emp: any) => {
                 if (emp.id && emp.display_name) {
@@ -1677,17 +1853,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               });
             }
           }
-          
+
           // Transform legacy data with proper currency and VAT handling
           // First, process all payments to calculate totals and get currency info
           const processedPayments = data.map(plan => {
             const value = Number(plan.value || 0);
             let valueVat = Number(plan.vat_value || 0);
-            
+
             // Get currency from the joined accounting_currencies table
             let currency = '₪'; // Default fallback
             let currencyId = plan.currency_id;
-            
+
             if (plan.accounting_currencies && plan.accounting_currencies.name) {
               currency = plan.accounting_currencies.name;
               currencyId = plan.accounting_currencies.id;
@@ -1701,7 +1877,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 default: currency = '₪'; break;
               }
             }
-            
+
             // For NIS (currency_id = 1), ensure VAT calculation is correct
             // Use 17% VAT for dates before 2026-01-01, 18% VAT for dates on or after 2026-01-01
             if (currencyId === 1 && (valueVat === 0 || !plan.vat_value)) {
@@ -1709,9 +1885,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               const vatRate = getVatRateForLegacyLead(paymentDate);
               valueVat = Math.round(value * vatRate * 100) / 100;
             }
-            
+
             const paymentTotal = value + valueVat;
-            
+
             return {
               plan,
               value,
@@ -1720,7 +1896,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paymentTotal
             };
           });
-          
+
           // Calculate totals using the same VAT logic
           let total = 0;
           let vat = 0;
@@ -1728,7 +1904,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             total += processed.paymentTotal;
             vat += processed.valueVat;
           });
-          
+
           // Group payments by contact to calculate percentages per contact
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
@@ -1738,21 +1914,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
             paymentsByContact.get(contactName)!.push(processed);
           });
-          
+
           // Calculate total per contact and then calculate percentages
           payments = processedPayments.map(processed => {
             const { plan, value, valueVat, currency, paymentTotal } = processed;
-            
+
             // Get contact name from client_id
             const contactName = getContactNameFromClientId(plan.client_id, currentContacts);
-            
+
             // Calculate total for this contact's payments
             const contactPayments = paymentsByContact.get(contactName) || [];
             const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
-            
+
             // Calculate percentage based on this contact's total, not the global total
             const calculatedDuePercent = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
-            
+
             // For legacy leads: if due_date is set (even without due_by_id), treat as ready_to_pay
             // This is because legacy leads use due_date and due_by_id instead of ready_to_pay flag
             // IMPORTANT: Show X button (revert) if due_date exists, even if due_by_id is missing
@@ -1763,10 +1939,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const readyToPayBy = hasDueDateAndDueBy ? plan.due_by_id : (plan.ready_to_pay_by || null);
             // For legacy leads, get employee name from due_by_id using the map we fetched
             // If due_by_id is missing, we won't have a display name, but button should still show
-            const readyToPayByDisplayName = hasDueDateAndDueBy 
+            const readyToPayByDisplayName = hasDueDateAndDueBy
               ? (dueByEmployeeMap.get(plan.due_by_id) || null)
               : (plan.tenants_employee?.display_name || null);
-            
+
             return {
               id: plan.id,
               duePercent: calculatedDuePercent,
@@ -1794,14 +1970,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             const value = Number(plan.value);
             let valueVat = Number(plan.value_vat || 0);
             const currency = plan.currency || '₪';
-            
+
             // For NIS currency, calculate VAT if not set
             if (currency === '₪' && (!valueVat || valueVat === 0)) {
               valueVat = Math.round(value * 0.18 * 100) / 100;
             }
-            
+
             const paymentTotal = value + valueVat;
-            
+
             return {
               plan,
               value,
@@ -1810,11 +1986,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
               paymentTotal
             };
           });
-          
+
           // Calculate totals using the same VAT logic
           total = processedPayments.reduce((sum, processed) => sum + processed.paymentTotal, 0);
           vat = processedPayments.reduce((sum, processed) => sum + processed.valueVat, 0);
-          
+
           // Group payments by contact to calculate percentages per contact
           const paymentsByContact = new Map<string, typeof processedPayments>();
           processedPayments.forEach(processed => {
@@ -1824,21 +2000,21 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             }
             paymentsByContact.get(contactName)!.push(processed);
           });
-          
+
           // Calculate total per contact and then calculate percentages
           payments = processedPayments.map(processed => {
             const { plan, value, valueVat, currency, paymentTotal } = processed;
-            
+
             // Get contact name
             const contactName = plan.client_name || 'Unknown Contact';
-            
+
             // Calculate total for this contact's payments
             const contactPayments = paymentsByContact.get(contactName) || [];
             const contactTotal = contactPayments.reduce((sum, p) => sum + p.paymentTotal, 0);
-            
+
             // Calculate percentage based on this contact's total, not the global total
             const duePercentStr = contactTotal > 0 ? Math.round((paymentTotal / contactTotal) * 100).toString() + '%' : '0%';
-            
+
             return {
               id: plan.id,
               duePercent: duePercentStr,
@@ -1860,14 +2036,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             };
           });
         }
-        
+
         // Update paidMap to reflect the paid status from database
         const newPaidMap: { [id: string]: boolean } = {};
         payments.forEach(payment => {
           newPaidMap[payment.id.toString()] = payment.paid || false;
         });
         setPaidMap(newPaidMap);
-        
+
         setFinancePlan({
           total: Math.round(total * 100) / 100,
           vat: Math.round(vat * 100) / 100,
@@ -1904,14 +2080,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     try {
       // Get the currency from the first payment in the finance plan
       const currency = financePlan?.payments?.[0]?.currency || '₪';
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client.lead_type === 'legacy' || client.id.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, update the leads_lead table
         const legacyId = client.id.toString().replace('legacy_', '');
-        
+
         // Get currency_id from client (same logic as balance badge)
         const currencyId = (client as any).currency_id;
         // Convert to number for comparison (handle both string and number types)
@@ -1920,7 +2096,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         if (!numericCurrencyId || isNaN(numericCurrencyId)) {
           numericCurrencyId = 1; // Default to NIS
         }
-        
+
         // Determine which column to update based on currency_id
         // If currency_id is 1 (NIS/ILS), save to total_base; otherwise save to total
         const updateData: any = {};
@@ -1929,12 +2105,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         } else {
           updateData.total = newBalance;
         }
-        
+
         const { error } = await supabase
           .from('leads_lead')
           .update(updateData)
           .eq('id', legacyId);
-        
+
         if (error) {
           console.error('Error updating legacy lead balance:', error);
           toast.error('Failed to update client balance');
@@ -1949,12 +2125,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // For new leads, update the leads table
         const { error } = await supabase
           .from('leads')
-          .update({ 
+          .update({
             balance: newBalance,
             balance_currency: currency
           })
           .eq('id', client.id);
-        
+
         if (error) {
           console.error('Error updating client balance:', error);
           toast.error('Failed to update client balance');
@@ -1975,7 +2151,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Helper functions for percentage calculation feature
   const getTotalAmount = () => {
     if (!financePlan) return 0;
-    
+
     // For legacy leads, use the contract total from leads_lead.total column
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (isLegacyLead && contracts.length > 0) {
@@ -1984,27 +2160,27 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return legacyContract.total_amount;
       }
     }
-    
+
     // For new leads, use the client's balance column
     if (!isLegacyLead && client?.balance) {
       return client.balance;
     }
-    
+
     // Final fallback: Calculate total from all payments (both paid and unpaid)
     return financePlan.payments.reduce((sum, payment) => sum + payment.value + payment.valueVat, 0);
   };
 
   const getLeftToPlanAmount = (forContact?: string) => {
     if (!financePlan) return 0;
-    
+
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     // If a specific contact is provided, calculate left to plan for that contact only
     if (forContact) {
       // Filter payments for this specific contact
       const contactPayments = financePlan.payments.filter(p => p.client === forContact);
       const contactPlannedValue = contactPayments.reduce((sum, payment) => sum + payment.value, 0);
-      
+
       // For legacy leads, use contract total_amount if available
       if (isLegacyLead && contracts.length > 0) {
         const legacyContract = contracts.find(c => c.isLegacy);
@@ -2015,18 +2191,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           return Math.max(0, leftToPlan);
         }
       }
-      
+
       // For new leads, use balance
       if (!isLegacyLead && client?.balance) {
         const leftToPlan = client.balance - contactPlannedValue;
         return Math.max(0, leftToPlan);
       }
-      
+
       // Fallback: use total amount
       const totalAmount = getTotalAmount();
       return Math.max(0, totalAmount - contactPlannedValue);
     }
-    
+
     // Global calculation (all contacts combined)
     // For legacy leads, calculate based on total column vs payment values
     if (isLegacyLead && contracts.length > 0) {
@@ -2039,7 +2215,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return Math.max(0, leftToPlan); // Don't return negative values
       }
     }
-    
+
     // For new leads, calculate based on balance vs payment values
     if (!isLegacyLead && client?.balance) {
       // Calculate sum of payment values (without VAT) across all contacts
@@ -2048,23 +2224,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const leftToPlan = client.balance - totalPlannedValue;
       return Math.max(0, leftToPlan); // Don't return negative values
     }
-    
+
     // Fallback: Use percentage-based calculation
     const totalAmount = getTotalAmount();
-    
+
     // Calculate total planned amount based on due percentages
     const totalPlannedPercent = financePlan.payments.reduce((sum, payment) => {
-      const percent = typeof payment.duePercent === 'string' 
-        ? parseFloat(payment.duePercent.replace('%', '')) 
+      const percent = typeof payment.duePercent === 'string'
+        ? parseFloat(payment.duePercent.replace('%', ''))
         : (payment.duePercent || 0);
       return sum + percent;
     }, 0);
-    
+
     // If 100% is already planned, there's nothing left to plan
     if (totalPlannedPercent >= 100) {
       return 0;
     }
-    
+
     // Calculate remaining percentage and convert to amount
     const remainingPercent = 100 - totalPlannedPercent;
     return Math.round((totalAmount * remainingPercent) / 100);
@@ -2077,7 +2253,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const calculatedValue = Math.round((baseAmount * percentage) / 100);
     // Calculate percentage based on the payment value vs total column
     const calculatedPercent = Math.round((calculatedValue / getTotalAmount()) * 100);
-    
+
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     let currency = '₪'; // Default
@@ -2086,17 +2262,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } else {
       currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     }
-    
+
     // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
     const shouldApplyVat = currency === '₪';
-    
+
     setNewPaymentData((prev: any) => ({
       ...prev,
       value: calculatedValue,
       duePercent: calculatedPercent,
       valueVat: shouldApplyVat ? Math.round(calculatedValue * 0.18 * 100) / 100 : 0
     }));
-    
+
     setShowPercentageModal(false);
     setPercentageValue(percentage);
   };
@@ -2112,10 +2288,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     const contactName = newPaymentData.client || addingPaymentContact || '';
     const amount = type === 'total' ? getTotalAmount() : getLeftToPlanAmount(contactName || undefined);
     const totalAmount = getTotalAmount();
-    
+
     // Calculate the percentage based on the amount
     const percentage = totalAmount > 0 ? Math.round((amount / totalAmount) * 100) : 0;
-    
+
     // Get the currency from the finance plan or client data
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     let currency = '₪'; // Default
@@ -2124,10 +2300,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     } else {
       currency = financePlan?.payments[0]?.currency || client?.balance_currency || '₪';
     }
-    
+
     // Only apply VAT for Israeli Shekels (₪), not for other currencies like USD ($)
     const shouldApplyVat = currency === '₪';
-    
+
     // Set the values in the new payment form
     setNewPaymentData((prev: any) => ({
       ...prev,
@@ -2140,12 +2316,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Function to fetch deleted payments
   const fetchDeletedPayments = async () => {
     if (!client) return;
-    
+
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       try {
         // Fetch canceled payments (cancel_date is not null)
         const { data: deletedData, error } = await supabase
@@ -2160,12 +2336,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', legacyId)
           .not('cancel_date', 'is', null)
           .order('cancel_date', { ascending: false });
-        
+
         if (error) {
           console.error('Error fetching deleted payments:', error);
           return;
         }
-        
+
         setDeletedPayments(deletedData || []);
       } catch (error) {
         console.error('Error fetching deleted payments:', error);
@@ -2180,12 +2356,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', client.id)
           .not('cancel_date', 'is', null)
           .order('cancel_date', { ascending: false });
-        
+
         if (error) {
           console.error('Error fetching deleted payments:', error);
           return;
         }
-        
+
         setDeletedPayments(deletedData || []);
       } catch (error) {
         console.error('Error fetching deleted payments:', error);
@@ -2197,7 +2373,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const handleRestorePayment = async (paymentId: number) => {
     try {
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       let error;
       if (isLegacyLead) {
         // Restore legacy payment in finances_paymentplanrow table
@@ -2214,9 +2390,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('id', paymentId);
         error = newError;
       }
-      
+
       if (error) throw error;
-      
+
       toast.success('Payment restored successfully!');
       await fetchDeletedPayments(); // Refresh deleted payments list
       await refreshPaymentPlans(); // Refresh main payments list
@@ -2229,12 +2405,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Function to fetch legacy proformas
   const fetchLegacyProformas = async () => {
     if (!client) return;
-    
+
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       const legacyId = client.id.toString().replace('legacy_', '');
-      
+
       try {
         // Use the view we created in the SQL script
         const { data: proformaData, error } = await supabase
@@ -2242,12 +2418,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .select('*')
           .eq('lead_id', legacyId)
           .order('cdate', { ascending: false });
-        
+
         if (error) {
           console.error('Error fetching legacy proformas:', error);
           return;
         }
-        
+
         setLegacyProformas(proformaData || []);
       } catch (error) {
         console.error('Error fetching legacy proformas:', error);
@@ -2259,25 +2435,25 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const getAllAvailableContacts = (): Array<{ name: string; isMain: boolean; id?: number }> => {
     const allContacts: Array<{ name: string; isMain: boolean; id?: number }> = [];
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
-    console.log('🔍 getAllAvailableContacts called:', { 
-      contactsLength: contacts?.length || 0, 
+
+    console.log('🔍 getAllAvailableContacts called:', {
+      contactsLength: contacts?.length || 0,
       contacts: contacts,
       currentClientName: client?.name,
-      isLegacyLead 
+      isLegacyLead
     });
-    
+
     if (isLegacyLead) {
       // For legacy leads, include contacts from the contacts array
       // The main contact's ID is the legacy lead ID (numeric)
       const legacyId = client?.id?.toString().replace('legacy_', '');
       const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
-      
+
       // Add main contact with its ID (the legacy lead's numeric ID)
       if (client?.name && numericLegacyId && !isNaN(numericLegacyId)) {
         allContacts.push({ name: client.name, isMain: true, id: numericLegacyId });
       }
-      
+
       // Add additional contacts from contacts array (they have contact_id from leads_contact)
       if (contacts && contacts.length > 0) {
         contacts.forEach(contact => {
@@ -2292,10 +2468,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (contacts && contacts.length > 0) {
         contacts.forEach(contact => {
           if (contact.name) {
-            allContacts.push({ 
-              name: contact.name, 
-              isMain: contact.isMain || false, 
-              id: contact.id 
+            allContacts.push({
+              name: contact.name,
+              isMain: contact.isMain || false,
+              id: contact.id
             });
           }
         });
@@ -2304,8 +2480,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Fallback: if no contacts found in database, at least include the main client name
         // Note: client.id is a string (UUID) for new leads, but id in contacts should be number
         // So we don't set id here for new leads fallback
-        allContacts.push({ 
-          name: client.name, 
+        allContacts.push({
+          name: client.name,
           isMain: true
         });
         console.log('⚠️ getAllAvailableContacts: No contacts in state, using fallback:', client.name);
@@ -2313,34 +2489,34 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         console.warn('⚠️ getAllAvailableContacts: No contacts and no currentClient name');
       }
     }
-    
+
     return allContacts;
   };
-  
+
   // Helper function to get client_id for a contact name
   const getClientIdForContact = (contactName: string): number | null => {
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (!contactName) {
       console.warn('🔍 getClientIdForContact: contactName is empty or undefined');
       return null;
     }
-    
+
     // CRITICAL: Always look up the contact in the contacts array first
     // This ensures we use the contact_id (from leads_contact table) instead of the lead_id
     const normalizedContactName = contactName.trim();
     const contact = contacts.find(c => c.name && c.name.trim() === normalizedContactName);
-    
+
     if (contact?.id) {
-      console.log('🔍 getClientIdForContact: Contact found in contacts array', { 
-        contactName: normalizedContactName, 
-        contactId: contact.id, 
+      console.log('🔍 getClientIdForContact: Contact found in contacts array', {
+        contactName: normalizedContactName,
+        contactId: contact.id,
         isMain: contact.isMain,
         allContacts: contacts.map(c => ({ name: c.name, id: c.id }))
       });
       return contact.id; // Return the contact_id from leads_contact table
     }
-    
+
     // Fallback: If contact not found in array, try legacy lead ID (for backward compatibility)
     // But this should rarely happen if contacts are loaded correctly
     if (isLegacyLead) {
@@ -2348,23 +2524,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       if (normalizedContactName === normalizedClientName) {
         const legacyId = client?.id?.toString().replace('legacy_', '');
         const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
-        console.warn('⚠️ getClientIdForContact: Main contact not found in contacts array, using lead_id as fallback', { 
-          contactName: normalizedContactName, 
+        console.warn('⚠️ getClientIdForContact: Main contact not found in contacts array, using lead_id as fallback', {
+          contactName: normalizedContactName,
           clientId: numericLegacyId,
           availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
         });
         return numericLegacyId && !isNaN(numericLegacyId) ? numericLegacyId : null;
       }
     }
-    
-    console.warn('🔍 getClientIdForContact: Contact not found', { 
-      contactName: normalizedContactName, 
+
+    console.warn('🔍 getClientIdForContact: Contact not found', {
+      contactName: normalizedContactName,
       clientName: client?.name,
       availableContacts: contacts.map(c => ({ name: c.name, id: c.id }))
     });
     return null;
   };
-  
+
   // Helper function to get contact name from client_id for legacy payments
   // contactsArray parameter allows passing contacts directly to avoid state timing issues
   const getContactNameFromClientId = (clientId: number | null | undefined, contactsArray?: any[]): string => {
@@ -2373,19 +2549,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!clientId) {
       return client?.name || 'Legacy Client';
     }
-    
+
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
     if (!isLegacyLead) {
       return client?.name || 'Legacy Client';
     }
-    
+
     // Check if client_id matches the main lead ID
     const legacyId = client?.id?.toString().replace('legacy_', '');
     const numericLegacyId = legacyId ? parseInt(legacyId, 10) : null;
     if (numericLegacyId && clientId === numericLegacyId) {
       return client?.name || 'Legacy Client';
     }
-    
+
     // Check if client_id matches a contact ID
     // Normalize both IDs to numbers for comparison to handle type mismatches
     const normalizedClientId = typeof clientId === 'string' ? parseInt(clientId, 10) : clientId;
@@ -2393,20 +2569,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const normalizedContactId = typeof c.id === 'string' ? parseInt(c.id, 10) : c.id;
       return normalizedContactId === normalizedClientId;
     });
-    
+
     if (contact?.name) {
       console.log('✅ getContactNameFromClientId: Found contact', { clientId, contactId: contact.id, contactName: contact.name });
       return contact.name;
     }
-    
+
     // Debug: Log when contact is not found
-    console.warn('⚠️ getContactNameFromClientId: Contact not found', { 
-      clientId, 
+    console.warn('⚠️ getContactNameFromClientId: Contact not found', {
+      clientId,
       normalizedClientId,
       contactsCount: contactsToUse.length,
       availableContactIds: contactsToUse.map(c => ({ id: c.id, name: c.name, idType: typeof c.id }))
     });
-    
+
     // If contact not found, don't fallback to main client - return a placeholder
     // This prevents incorrectly labeling contact payments as main client payments
     // The name will be corrected once contacts are loaded and payment plans refresh
@@ -2415,23 +2591,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Helper function to get contact name by contact_id
   const getContactName = (contactId: number, contract?: any) => {
-    
+
     // If contract has contact_name, use it directly
     if (contract?.contact_name) {
       return contract.contact_name;
     }
-    
+
     // If contactId is null, undefined, or 0, return main contact name
     if (!contactId || contactId === 0) {
       return client?.name || 'Main Contact';
     }
-    
+
     // Try to find the contact by ID
     const contact = contacts.find(c => c.id === contactId);
     if (contact?.name) {
       return contact.name;
     }
-    
+
     // If not found, try to get from additional_contacts array
     if (client?.additional_contacts && Array.isArray(client.additional_contacts)) {
       // contact_id might be the index in the additional_contacts array
@@ -2440,7 +2616,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         return client.additional_contacts[contactIndex].name || `Contact ${contactId}`;
       }
     }
-    
+
     // Fallback
     return `Contact ${contactId}`;
   };
@@ -2463,10 +2639,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy payment
       const isLegacyPayment = editPaymentData.isLegacy;
-      
+
       // Get the original payment data to compare changes
       let originalPayment;
       if (isLegacyPayment) {
@@ -2486,16 +2662,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .single();
         originalPayment = newPayment;
       }
-      
+
       if (!originalPayment) {
         throw new Error('Original payment not found');
       }
-      
+
       // Original payment and edit payment data available for comparison
-      
+
       // Track changes for each field
       const changes = [];
-      
+
       // Helper function to extract numeric value from duePercent (may be "100%" or 100)
       const parseDuePercent = (value: any): number => {
         if (typeof value === 'string') {
@@ -2506,7 +2682,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         }
         return typeof value === 'number' ? value : 0;
       };
-      
+
       // Convert both original and edit values to numbers for proper comparison
       // Handle different field names for legacy vs new payments
       const originalDuePercent = parseDuePercent(isLegacyPayment ? originalPayment.due_percent : originalPayment.due_percent);
@@ -2515,7 +2691,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       const editValue = Number(editPaymentData.value);
       const originalValueVat = Number(isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat);
       const editValueVat = Number(editPaymentData.valueVat);
-      
+
       if (originalDuePercent !== editDuePercent) {
         changes.push({
           payment_plan_id: editPaymentData.id,
@@ -2539,9 +2715,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_at: new Date().toISOString(),
         });
       }
-      
-              if (originalValue !== editValue) {
-          changes.push({
+
+      if (originalValue !== editValue) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
           field_name: 'value',
           old_value: originalPayment.value?.toString() || '',
@@ -2550,9 +2726,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_at: new Date().toISOString()
         });
       }
-      
-              if (originalValueVat !== editValueVat) {
-          changes.push({
+
+      if (originalValueVat !== editValueVat) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
           field_name: isLegacyPayment ? 'vat_value' : 'value_vat',
           old_value: (isLegacyPayment ? originalPayment.vat_value : originalPayment.value_vat)?.toString() || '',
@@ -2561,9 +2737,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_at: new Date().toISOString()
         });
       }
-      
-              if (originalPayment.client_name !== editPaymentData.client) {
-          changes.push({
+
+      if (originalPayment.client_name !== editPaymentData.client) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
           field_name: 'client_name',
           old_value: originalPayment.client_name || '',
@@ -2572,7 +2748,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_at: new Date().toISOString()
         });
       }
-      
+
       // Check order changes - handle both legacy (numeric) and new (string) payments
       if (isLegacyPayment) {
         // For legacy payments, order is stored as a number, need to convert for comparison
@@ -2622,9 +2798,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           });
         }
       }
-      
-              if (originalPayment.notes !== editPaymentData.notes) {
-          changes.push({
+
+      if (originalPayment.notes !== editPaymentData.notes) {
+        changes.push({
           payment_plan_id: editPaymentData.id,
           field_name: 'notes',
           old_value: originalPayment.notes || '',
@@ -2633,15 +2809,15 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_at: new Date().toISOString()
         });
       }
-      
-              // Total changes detected and logged
-      
+
+      // Total changes detected and logged
+
       // Update the payment plan
       let error;
       if (isLegacyPayment) {
         // For legacy payments, update finances_paymentplanrow table
         const dueDateValue = editPaymentData.dueDate || null;
-        
+
         // Map payment order strings to numeric values for legacy payments
         const getOrderNumber = (orderString: string): number => {
           switch (orderString) {
@@ -2653,12 +2829,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             default: return 1; // Default to first payment
           }
         };
-        
+
         const orderValue = editPaymentData.order ? getOrderNumber(editPaymentData.order) : null;
-        
+
         // Parse due_percent to remove % sign if present
         const duePercentValue = parseDuePercent(editPaymentData.duePercent);
-        
+
         const { error: legacyError } = await supabase
           .from('finances_paymentplanrow')
           .update({
@@ -2676,14 +2852,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // For new payments, update payment_plans table
         // Parse due_percent to remove % sign if present
         const duePercentValue = parseDuePercent(editPaymentData.duePercent);
-        
+
         // Calculate VAT based on checkbox state at save time
         // If checkbox is unchecked, VAT must be 0
         // If checkbox is checked, calculate 18% of the value
         const vatValue = !editPaymentIncludeVat
           ? 0
           : Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100;
-        
+
         console.log('💾 Saving payment - VAT calculation:', {
           editPaymentIncludeVat,
           checkboxChecked: editPaymentIncludeVat,
@@ -2691,7 +2867,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           calculatedVatValue: vatValue,
           editPaymentDataValueVat: editPaymentData.valueVat
         });
-        
+
         const { error: newError } = await supabase
           .from('payment_plans')
           .update({
@@ -2707,7 +2883,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         error = newError;
       }
       if (error) throw error;
-      
+
       // Insert all changes into payment_plan_changes table (only for new payments)
       // Legacy payments don't use this table since lead_id has NOT NULL constraint
       if (changes.length > 0 && !isLegacyPayment) {
@@ -2716,18 +2892,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           ...change,
           lead_id: client?.id // Use UUID for new leads
         }));
-        
+
         const { error: changesError } = await supabase
           .from('payment_plan_changes')
           .insert(changesWithLeadId);
-        
-                  if (changesError) {
-            console.error('Error logging changes:', changesError);
-          }
-        } else if (changes.length > 0 && isLegacyPayment) {
-          // Legacy payment changes - skipping change logging
+
+        if (changesError) {
+          console.error('Error logging changes:', changesError);
         }
-      
+      } else if (changes.length > 0 && isLegacyPayment) {
+        // Legacy payment changes - skipping change logging
+      }
+
       toast.success('Payment row updated!');
       setEditingPaymentId(null);
       setEditPaymentData({});
@@ -2744,10 +2920,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!window.confirm('Are you sure you want to delete this payment row?')) return;
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy payment
       const isLegacyPayment = row.isLegacy;
-      
+
       // Log the deletion in payment_plan_changes table (only for new payments)
       // Legacy payments don't use this table since lead_id has NOT NULL constraint
       if (!isLegacyPayment) {
@@ -2772,7 +2948,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             changed_by: currentUserName,
             changed_at: new Date().toISOString()
           });
-        
+
         if (historyError) {
           console.error('Error logging deletion:', historyError);
           toast.error('Failed to log deletion history.');
@@ -2781,7 +2957,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
       } else {
         // Legacy payment deletion - skipping change logging
       }
-      
+
       // Delete the payment plan
       let error;
       if (isLegacyPayment) {
@@ -2800,7 +2976,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         error = newError;
       }
       if (error) throw error;
-      
+
       toast.success('Payment row deleted!');
       await refreshPaymentPlans();
     } catch (error) {
@@ -2812,20 +2988,20 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Handler to delete all payments for a specific contact
   const handleDeletePaymentPlan = async (contactName: string) => {
     if (!window.confirm(`Are you sure you want to delete all payment rows for "${contactName}"? This action cannot be undone.`)) return;
-    
+
     try {
       const currentUserName = await getCurrentUserName();
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, get client_id for the contact
         const clientIdForContact = getClientIdForContact(contactName);
-        
+
         if (clientIdForContact === null) {
           toast.error(`Failed to find contact ID for "${contactName}". Cannot delete payment plan.`);
           return;
         }
-        
+
         // Get all payments for this contact before deletion (for logging)
         const legacyId = client?.id?.toString().replace('legacy_', '');
         const { data: paymentsToDelete, error: fetchError } = await supabase
@@ -2834,18 +3010,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', legacyId)
           .eq('client_id', clientIdForContact)
           .is('cancel_date', null);
-        
+
         if (fetchError) {
           console.error('Error fetching payments to delete:', fetchError);
           toast.error('Failed to fetch payments for deletion.');
           return;
         }
-        
+
         if (!paymentsToDelete || paymentsToDelete.length === 0) {
           toast.success('No payments found for this contact.');
           return;
         }
-        
+
         // Soft delete all payments for this contact
         const { error: deleteError } = await supabase
           .from('finances_paymentplanrow')
@@ -2853,9 +3029,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', legacyId)
           .eq('client_id', clientIdForContact)
           .is('cancel_date', null);
-        
+
         if (deleteError) throw deleteError;
-        
+
         toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
       } else {
         // For new leads, use client_name to identify payments
@@ -2866,18 +3042,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', client?.id)
           .eq('client_name', contactName)
           .is('cancel_date', null);
-        
+
         if (fetchError) {
           console.error('Error fetching payments to delete:', fetchError);
           toast.error('Failed to fetch payments for deletion.');
           return;
         }
-        
+
         if (!paymentsToDelete || paymentsToDelete.length === 0) {
           toast.success('No payments found for this contact.');
           return;
         }
-        
+
         // Log deletions in payment_plan_changes table
         const changesToInsert = paymentsToDelete.map(payment => ({
           payment_plan_id: payment.id,
@@ -2897,18 +3073,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           changed_by: currentUserName,
           changed_at: new Date().toISOString()
         }));
-        
+
         if (changesToInsert.length > 0) {
           const { error: historyError } = await supabase
             .from('payment_plan_changes')
             .insert(changesToInsert);
-          
+
           if (historyError) {
             console.error('Error logging deletions:', historyError);
             // Continue with deletion even if logging fails
           }
         }
-        
+
         // Soft delete all payments for this contact
         const { error: deleteError } = await supabase
           .from('payment_plans')
@@ -2916,12 +3092,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           .eq('lead_id', client?.id)
           .eq('client_name', contactName)
           .is('cancel_date', null);
-        
+
         if (deleteError) throw deleteError;
-        
+
         toast.success(`Successfully deleted ${paymentsToDelete.length} payment(s) for "${contactName}"`);
       }
-      
+
       await refreshPaymentPlans();
     } catch (error) {
       console.error('Error deleting payment plan:', error);
@@ -2933,10 +3109,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const generateProformaContent = async (data: any, createdBy: string) => {
     const total = data.rows.reduce((sum: number, r: any) => sum + Number(r.total), 0);
     const totalWithVat = data.addVat ? Math.round(total * 1.18 * 100) / 100 : total;
-    
+
     // Generate proforma name
     const proformaName = await generateProformaName();
-    
+
     return JSON.stringify({
       client: data.client,
       clientId: data.clientId,
@@ -2961,7 +3137,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const handleOpenProforma = async (payment: PaymentPlan) => {
     const proformaName = await generateProformaName();
     setGeneratedProformaName(proformaName);
-    
+
     setProformaData({
       client: client?.name,
       clientId: client?.id,
@@ -3026,7 +3202,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             createdBy = user.email;
           }
         }
-      } catch {}
+      } catch { }
       // Generate proforma content with name and createdBy
       const proformaContent = await generateProformaContent(proformaData, createdBy);
       // Save proforma to the database for the specific payment row
@@ -3048,7 +3224,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   // Function to view existing proforma
   const handleViewProforma = (payment: PaymentPlan) => {
     if (!payment.proforma || payment.proforma.trim() === '') return;
-    
+
     try {
       const proformaData = JSON.parse(payment.proforma);
       setGeneratedProformaName(proformaData.proformaName || 'Proforma');
@@ -3068,7 +3244,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     if (!proformaData || proformaData.trim() === '') {
       return 'Proforma';
     }
-    
+
     try {
       const parsed = JSON.parse(proformaData);
       return parsed.proformaName || 'Proforma';
@@ -3081,12 +3257,12 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
   const [addingPaymentContact, setAddingPaymentContact] = useState<string | null>(null); // table context
   const [showDrawerNewPayment, setShowDrawerNewPayment] = useState(false); // finance-plan drawer context
   const [newPaymentData, setNewPaymentData] = useState<any>({});
-  
+
   // Add superuser state
   const [isSuperuser, setIsSuperuser] = useState(false);
   // Add collection user state
   const [isCollection, setIsCollection] = useState(false);
-  
+
   // Add state for available currencies
   const [availableCurrencies, setAvailableCurrencies] = useState<Array<{ id: number; name: string; iso_code: string }>>([]);
 
@@ -3095,7 +3271,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     // Determine the correct currency for this client
     let currency = '₪'; // Default
     const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-    
+
     if (isLegacyLead) {
       // For legacy leads, use balance_currency
       currency = client?.balance_currency || '₪';
@@ -3172,19 +3348,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     setIsSavingPaymentRow(true);
     try {
       const currentUserName = await getCurrentUserName();
-      
+
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, save to finances_paymentplanrow table
         const legacyIdStr = client?.id?.toString().replace('legacy_', '');
         const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
-        
+
         if (!legacyId || isNaN(legacyId)) {
           throw new Error('Invalid legacy lead ID');
         }
-        
+
         // Determine currency_id based on the payment currency
         let currencyId = 1; // Default to NIS
         const currency = newPaymentData.currency || '₪';
@@ -3197,7 +3373,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             default: currencyId = 1; break;
           }
         }
-        
+
         // Map payment order strings to numeric values for legacy payments
         const getOrderNumber = (orderString: string): number => {
           switch (orderString) {
@@ -3212,11 +3388,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         // Generate a unique numeric ID for the new payment
         const paymentId = Date.now() + Math.floor(Math.random() * 1000000);
-        
+
         // Get client_id for the contact (from context, as dropdown is removed)
         const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
         const clientIdForContact = getClientIdForContact(contactForPayment);
-        
+
         const paymentData = {
           id: paymentId,
           cdate: new Date().toISOString().split('T')[0], // Current date
@@ -3236,7 +3412,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           currency_id: currencyId,
           client_id: clientIdForContact, // Set client_id to separate payments by contact
         };
-        
+
         const { data, error } = await supabase
           .from('finances_paymentplanrow')
           .insert(paymentData)
@@ -3248,19 +3424,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Get client_id for the contact
         const contactForPayment = newPaymentData.client || addingPaymentContact || client?.name || '';
         const clientIdForContact = getClientIdForContact(contactForPayment);
-        
+
         // Calculate VAT based on checkbox state (includeVat)
         // If checkbox is checked, calculate VAT; if unchecked, VAT is 0
-        const vatValue = newPaymentData.includeVat !== false 
-          ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100 
+        const vatValue = newPaymentData.includeVat !== false
+          ? Math.round(Number(newPaymentData.value) * 0.18 * 100) / 100
           : 0;
-        
+
         // Ensure we're using the correct lead_id for this specific lead/sublead
         const leadIdForPayment = client?.id;
         if (!leadIdForPayment) {
           throw new Error('Invalid lead ID');
         }
-        
+
         const paymentData: any = {
           lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
           due_percent: Number(newPaymentData.duePercent) || Number(100),
@@ -3274,13 +3450,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           currency: newPaymentData.currency || '₪',
           created_by: currentUserName,
         };
-        
+
         // Add client_id if available (int8 column for contact_id)
         // This ensures payments are correctly associated with the specific contact for this lead
         if (clientIdForContact !== null) {
           paymentData.client_id = clientIdForContact;
         }
-        
+
         const { data, error } = await supabase
           .from('payment_plans')
           .insert(paymentData)
@@ -3310,25 +3486,25 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     }
 
     const totalAmount = Number(autoPlanData.totalAmount);
-    
+
     // Use payment amounts if available, otherwise calculate from percentages
     const paymentAmounts = autoPlanData.paymentAmounts && autoPlanData.paymentAmounts.length > 0
       ? autoPlanData.paymentAmounts.slice(0, autoPlanData.numberOfPayments)
       : (() => {
-          const percents = autoPlanData.paymentPercents || [];
-          const activePercents = percents.slice(0, autoPlanData.numberOfPayments);
-          return activePercents.map(percent => (totalAmount * Number(percent || 0)) / 100);
-        })();
-    
+        const percents = autoPlanData.paymentPercents || [];
+        const activePercents = percents.slice(0, autoPlanData.numberOfPayments);
+        return activePercents.map(percent => (totalAmount * Number(percent || 0)) / 100);
+      })();
+
     // Calculate percentages from amounts for display/storage
-    const activePercents = paymentAmounts.map(amount => 
+    const activePercents = paymentAmounts.map(amount =>
       totalAmount > 0 ? Math.round((amount / totalAmount) * 100 * 100) / 100 : 0
     );
-    
+
     // Check if amounts sum to total (allow small floating point differences)
     const sumOfAmounts = paymentAmounts.reduce((sum, amount) => sum + (amount || 0), 0);
     const amountsMatch = Math.abs(sumOfAmounts - totalAmount) < 0.01;
-    
+
     // Show warning but allow creation if amounts don't match
     if (!amountsMatch) {
       const difference = Math.abs(sumOfAmounts - totalAmount);
@@ -3353,16 +3529,16 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
       // Check if this is a legacy lead
       const isLegacyLead = client?.lead_type === 'legacy' || client?.id?.toString().startsWith('legacy_');
-      
+
       if (isLegacyLead) {
         // For legacy leads, save to finances_paymentplanrow table
         const legacyIdStr = client?.id?.toString().replace('legacy_', '');
         const legacyId = legacyIdStr ? parseInt(legacyIdStr, 10) : null;
-        
+
         if (!legacyId || isNaN(legacyId)) {
           throw new Error('Invalid legacy lead ID');
         }
-        
+
         // Determine currency_id based on the payment currency
         let currencyId = 1; // Default to NIS
         const currency = autoPlanData.currency || '₪';
@@ -3390,31 +3566,31 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
         const legacyPayments = [];
         const today = new Date();
-        
+
         // Get client_id for the selected contact (outside the loop since it's the same for all payments)
         const selectedContactName = autoPlanData.contact || client?.name || '';
-        console.log('🔍 handleCreateAutoPlan: Getting client_id for contact', { 
-          selectedContactName, 
+        console.log('🔍 handleCreateAutoPlan: Getting client_id for contact', {
+          selectedContactName,
           autoPlanDataContact: autoPlanData.contact,
           clientName: client?.name,
           contactsCount: currentContacts.length,
           contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
         });
-        
+
         // Use currentContacts array (from fetchContacts) instead of state
         const normalizedContactName = selectedContactName.trim();
         const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
         const clientIdForContact = contact?.id ? Number(contact.id) : null;
-        
-        console.log('🔍 handleCreateAutoPlan: client_id result', { 
-          clientIdForContact, 
+
+        console.log('🔍 handleCreateAutoPlan: client_id result', {
+          clientIdForContact,
           selectedContactName,
           contactId: contact?.id,
           contactFound: !!contact
         });
-        
+
         if (clientIdForContact === null) {
-          console.error('⚠️ handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', { 
+          console.error('⚠️ handleCreateAutoPlan: Failed to get client_id (contact_id) for contact', {
             selectedContactName,
             availableContacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
           });
@@ -3462,23 +3638,23 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             currency_id: currencyId,
             client_id: clientIdForContact, // Set client_id to separate payments by contact
           };
-          
-          console.log('🔍 handleCreateAutoPlan: Adding payment row', { 
-            paymentIndex: i, 
-            client_id: paymentRow.client_id, 
+
+          console.log('🔍 handleCreateAutoPlan: Adding payment row', {
+            paymentIndex: i,
+            client_id: paymentRow.client_id,
             contactName: selectedContactName,
-            lead_id: paymentRow.lead_id 
+            lead_id: paymentRow.lead_id
           });
-          
+
           legacyPayments.push(paymentRow);
         }
 
-        console.log('🔍 handleCreateAutoPlan: Inserting payments', { 
-          count: legacyPayments.length, 
+        console.log('🔍 handleCreateAutoPlan: Inserting payments', {
+          count: legacyPayments.length,
           samplePayment: legacyPayments[0],
           allClientIds: legacyPayments.map(p => p.client_id)
         });
-        
+
         const { data: insertedLegacyPayments, error: legacyPaymentInsertError } = await supabase
           .from('finances_paymentplanrow')
           .insert(legacyPayments)
@@ -3488,8 +3664,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           console.error('❌ handleCreateAutoPlan: Error inserting payments', legacyPaymentInsertError);
           throw legacyPaymentInsertError;
         }
-        
-        console.log('✅ handleCreateAutoPlan: Payments inserted successfully', { 
+
+        console.log('✅ handleCreateAutoPlan: Payments inserted successfully', {
           inserted: insertedLegacyPayments,
           insertedClientIds: insertedLegacyPayments?.map(p => p.client_id)
         });
@@ -3501,17 +3677,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
         // Get client_id for the selected contact (for new leads)
         // Use currentContacts array (from fetchContacts) instead of state to ensure we have the latest data
         const selectedContactName = autoPlanData.contact || client?.name || '';
-        console.log('🔍 handleCreateAutoPlan (new leads): Getting client_id for contact', { 
-          selectedContactName, 
+        console.log('🔍 handleCreateAutoPlan (new leads): Getting client_id for contact', {
+          selectedContactName,
           contactsCount: currentContacts.length,
           contacts: currentContacts.map(c => ({ name: c.name, id: c.id }))
         });
-        
+
         // Look up contact in currentContacts array to get contact_id (not lead_id)
         const normalizedContactName = selectedContactName.trim();
         const contact = currentContacts.find(c => c.name && c.name.trim() === normalizedContactName);
         const clientIdForContact = contact?.id ? Number(contact.id) : null;
-        
+
         console.log('🔍 handleCreateAutoPlan (new leads): client_id result', {
           clientIdForContact,
           selectedContactName,
@@ -3519,7 +3695,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           contactFound: !!contact,
           isInteger: clientIdForContact !== null && Number.isInteger(clientIdForContact)
         });
-        
+
         if (clientIdForContact === null || !Number.isInteger(clientIdForContact)) {
           console.error('⚠️ handleCreateAutoPlan (new leads): Failed to get client_id (contact_id) for contact', {
             selectedContactName,
@@ -3554,17 +3730,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const vatValue = autoPlanData.includeVat
             ? Math.round(value * 0.18 * 100) / 100
             : 0;
-          
+
           // Use custom order from paymentOrders array, or fallback to default based on position
           const defaultOrder = i === 0 ? 'First Payment' : i === autoPlanData.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
           const orderText = paymentOrders[i] || defaultOrder;
-          
+
           // Ensure we're using the correct lead_id for this specific lead/sublead
           const leadIdForPayment = client?.id;
           if (!leadIdForPayment) {
             throw new Error('Invalid lead ID');
           }
-          
+
           const paymentData: any = {
             lead_id: leadIdForPayment, // Use the specific lead_id for this lead/sublead
             due_percent: paymentPercent,
@@ -3577,13 +3753,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             currency: autoPlanData.currency,
             created_by: currentUserName,
           };
-          
+
           // Add client_id if available (int8 column for contact_id)
           // This ensures payments are correctly associated with the specific contact for this lead
           if (clientIdForContact !== null) {
             paymentData.client_id = clientIdForContact;
           }
-          
+
           payments.push(paymentData);
         }
 
@@ -3623,7 +3799,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           const { error: historyError } = await supabase
             .from('payment_plan_changes')
             .insert(updatedChanges);
-          
+
           if (historyError) console.error('Error logging auto plan creation:', historyError);
         }
       }
@@ -3711,41 +3887,41 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
 
   // Helper function to get current user's full name from Supabase users table
   const getCurrentUserName = async (): Promise<string> => {
-          try {
-        // Get current user from Supabase auth
-        const { data: { user } } = await supabase.auth.getUser();
-        
-        if (!user?.email) {
-          return 'System User';
-        }
-      
-              // Get user from users table
-        const { data: userData, error } = await supabase
-          .from('users')
-          .select('full_name, first_name, last_name, email')
-          .eq('email', user.email)
-          .single();
-        
-        if (error) {
-          return user.email;
-        }
-        
-        if (userData) {
-          if (userData.full_name) {
-            return userData.full_name;
-          } else if (userData.first_name && userData.last_name) {
-            const name = `${userData.first_name} ${userData.last_name}`;
-            return name;
-          } else if (userData.first_name) {
-            return userData.first_name;
-          } else if (userData.last_name) {
-            return userData.last_name;
-          } else {
-            return userData.email;
-          }
-        }
-        
+    try {
+      // Get current user from Supabase auth
+      const { data: { user } } = await supabase.auth.getUser();
+
+      if (!user?.email) {
+        return 'System User';
+      }
+
+      // Get user from users table
+      const { data: userData, error } = await supabase
+        .from('users')
+        .select('full_name, first_name, last_name, email')
+        .eq('email', user.email)
+        .single();
+
+      if (error) {
         return user.email;
+      }
+
+      if (userData) {
+        if (userData.full_name) {
+          return userData.full_name;
+        } else if (userData.first_name && userData.last_name) {
+          const name = `${userData.first_name} ${userData.last_name}`;
+          return name;
+        } else if (userData.first_name) {
+          return userData.first_name;
+        } else if (userData.last_name) {
+          return userData.last_name;
+        } else {
+          return userData.email;
+        }
+      }
+
+      return user.email;
     } catch (error) {
       console.error('Error getting current user name:', error);
       return 'System User';
@@ -3757,18 +3933,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
     try {
       // Get current user from Supabase auth
       const { data: { user } } = await supabase.auth.getUser();
-      
+
       if (!user) {
         return null;
       }
-    
+
       // Get user from users table with employee_id
       const { data: userData, error } = await supabase
         .from('users')
         .select('employee_id')
         .eq('auth_id', user.id)
         .single();
-      
+
       if (error || !userData) {
         // Try by email as fallback
         if (user.email) {
@@ -3777,18 +3953,18 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             .select('employee_id')
             .eq('email', user.email)
             .single();
-          
+
           if (userDataByEmail?.employee_id && typeof userDataByEmail.employee_id === 'number') {
             return userDataByEmail.employee_id;
           }
         }
         return null;
       }
-      
+
       if (userData?.employee_id && typeof userData.employee_id === 'number') {
         return userData.employee_id;
       }
-      
+
       return null;
     } catch (error) {
       console.error('Error getting current user employee_id:', error);
@@ -3923,39 +4099,39 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             } else {
                               setIsCustomPaymentCount(false);
                               const count = Number(e.target.value);
-                            setAutoPlanData(prev => {
-                              let percents: number[];
-                              let orders: string[];
-                              if (count === 1) {
-                                // For single payment, set to 100%
-                                percents = [100];
-                                orders = ['Single Payment'];
-                              } else if (count === 3) {
-                                // Special default for 3 payments
-                                percents = [50, 25, 25];
-                                orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
-                              } else {
-                                // Even split that sums to 100
-                                const base = Math.floor(100 / count);
-                                percents = Array.from({ length: count }, () => base);
-                                const remainder = 100 - base * count;
-                                for (let i = 0; i < remainder; i++) {
-                                  percents[i] += 1;
+                              setAutoPlanData(prev => {
+                                let percents: number[];
+                                let orders: string[];
+                                if (count === 1) {
+                                  // For single payment, set to 100%
+                                  percents = [100];
+                                  orders = ['Single Payment'];
+                                } else if (count === 3) {
+                                  // Special default for 3 payments
+                                  percents = [50, 25, 25];
+                                  orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
+                                } else {
+                                  // Even split that sums to 100
+                                  const base = Math.floor(100 / count);
+                                  percents = Array.from({ length: count }, () => base);
+                                  const remainder = 100 - base * count;
+                                  for (let i = 0; i < remainder; i++) {
+                                    percents[i] += 1;
+                                  }
+                                  // Generate default orders
+                                  orders = Array.from({ length: count }, (_, i) => {
+                                    if (i === 0) return 'First Payment';
+                                    if (i === count - 1) return 'Final Payment';
+                                    return 'Intermediate Payment';
+                                  });
                                 }
-                                // Generate default orders
-                                orders = Array.from({ length: count }, (_, i) => {
-                                  if (i === 0) return 'First Payment';
-                                  if (i === count - 1) return 'Final Payment';
-                                  return 'Intermediate Payment';
-                                });
-                              }
-                              return {
-                                ...prev,
-                                numberOfPayments: count,
-                                paymentPercents: percents,
-                                paymentOrders: orders,
-                              };
-                            });
+                                return {
+                                  ...prev,
+                                  numberOfPayments: count,
+                                  paymentPercents: percents,
+                                  paymentOrders: orders,
+                                };
+                              });
                             }
                           }}
                         >
@@ -3990,7 +4166,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   } else if (count === 3) {
                                     // Special default for 3 payments
                                     percents = [50, 25, 25];
-                                    amounts = totalAmount > 0 
+                                    amounts = totalAmount > 0
                                       ? [totalAmount * 0.5, totalAmount * 0.25, totalAmount * 0.25]
                                       : [0, 0, 0];
                                     orders = ['First Payment', 'Intermediate Payment', 'Final Payment'];
@@ -4039,129 +4215,130 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                               isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
                             const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                             return (
-                            <div key={index} className="flex items-center gap-2">
-                              <select
-                                className="select select-bordered w-40 text-sm"
-                                value={currentOrder}
-                                onChange={(e) => {
-                                  setAutoPlanData(prev => {
-                                    const next = [...(prev.paymentOrders || [])];
-                                    // Ensure array length
-                                    while (next.length < prev.numberOfPayments) {
-                                      const idx = next.length;
-                                      const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
-                                      next.push(defaultOrder);
+                              <div key={index} className="flex items-center gap-2">
+                                <select
+                                  className="select select-bordered w-40 text-sm"
+                                  value={currentOrder}
+                                  onChange={(e) => {
+                                    setAutoPlanData(prev => {
+                                      const next = [...(prev.paymentOrders || [])];
+                                      // Ensure array length
+                                      while (next.length < prev.numberOfPayments) {
+                                        const idx = next.length;
+                                        const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+                                        next.push(defaultOrder);
+                                      }
+                                      next[index] = e.target.value;
+                                      return {
+                                        ...prev,
+                                        paymentOrders: next,
+                                      };
+                                    });
+                                  }}
+                                >
+                                  <option value="First Payment">First Payment</option>
+                                  <option value="Intermediate Payment">Intermediate Payment</option>
+                                  <option value="Final Payment">Final Payment</option>
+                                  <option value="Single Payment">Single Payment</option>
+                                  <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                </select>
+                                <input
+                                  type="number"
+                                  className="input input-bordered w-24 no-arrows"
+                                  min={0}
+                                  max={100}
+                                  value={autoPlanData.paymentPercents[index] ?? 0}
+                                  onFocus={(e) => {
+                                    // Select all text when focused for easy editing
+                                    e.target.select();
+                                  }}
+                                  onChange={(e) => {
+                                    const percentValue = Number(e.target.value || 0);
+                                    const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                    setAutoPlanData(prev => {
+                                      const nextPercents = [...(prev.paymentPercents || [])];
+                                      // Ensure array length
+                                      while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
+                                      nextPercents[index] = percentValue;
+
+                                      // Also update payment amounts when percentage changes
+                                      const nextAmounts = [...(prev.paymentAmounts || [])];
+                                      while (nextAmounts.length < prev.numberOfPayments) {
+                                        const idx = nextAmounts.length;
+                                        const total = Number(prev.totalAmount || 0);
+                                        const percent = prev.paymentPercents[idx] ?? 0;
+                                        nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
+                                      }
+                                      if (totalAmount > 0) {
+                                        nextAmounts[index] = (totalAmount * percentValue) / 100;
+                                      }
+
+                                      return {
+                                        ...prev,
+                                        paymentPercents: nextPercents,
+                                        paymentAmounts: nextAmounts,
+                                      };
+                                    });
+                                  }}
+                                />
+                                <span className="text-sm">%</span>
+                                <input
+                                  type="number"
+                                  className="input input-bordered w-32 no-arrows"
+                                  min={0}
+                                  step="0.01"
+                                  value={(() => {
+                                    // Use paymentAmounts if available, otherwise calculate from percentage
+                                    const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                    let amount: number;
+                                    if (autoPlanData.paymentAmounts && autoPlanData.paymentAmounts[index] !== undefined) {
+                                      amount = autoPlanData.paymentAmounts[index];
+                                    } else {
+                                      const percent = autoPlanData.paymentPercents[index] ?? 0;
+                                      amount = totalAmount > 0 ? (totalAmount * percent) / 100 : 0;
                                     }
-                                    next[index] = e.target.value;
-                                    return {
-                                      ...prev,
-                                      paymentOrders: next,
-                                    };
-                                  });
-                                }}
-                              >
-                                <option value="First Payment">First Payment</option>
-                                <option value="Intermediate Payment">Intermediate Payment</option>
-                                <option value="Final Payment">Final Payment</option>
-                                <option value="Single Payment">Single Payment</option>
-                                <option value="Expense (no VAT)">Expense (no VAT)</option>
-                              </select>
-                              <input
-                                type="number"
-                                className="input input-bordered w-24 no-arrows"
-                                min={0}
-                                max={100}
-                                value={autoPlanData.paymentPercents[index] ?? 0}
-                                onFocus={(e) => {
-                                  // Select all text when focused for easy editing
-                                  e.target.select();
-                                }}
-                                onChange={(e) => {
-                                  const percentValue = Number(e.target.value || 0);
-                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                  setAutoPlanData(prev => {
-                                    const nextPercents = [...(prev.paymentPercents || [])];
-                                    // Ensure array length
-                                    while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
-                                    nextPercents[index] = percentValue;
-                                    
-                                    // Also update payment amounts when percentage changes
-                                    const nextAmounts = [...(prev.paymentAmounts || [])];
-                                    while (nextAmounts.length < prev.numberOfPayments) {
-                                      const idx = nextAmounts.length;
-                                      const total = Number(prev.totalAmount || 0);
-                                      const percent = prev.paymentPercents[idx] ?? 0;
-                                      nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
-                                    }
-                                    if (totalAmount > 0) {
-                                      nextAmounts[index] = (totalAmount * percentValue) / 100;
-                                    }
-                                    
-                                    return {
-                                      ...prev,
-                                      paymentPercents: nextPercents,
-                                      paymentAmounts: nextAmounts,
-                                    };
-                                  });
-                                }}
-                              />
-                              <span className="text-sm">%</span>
-                              <input
-                                type="number"
-                                className="input input-bordered w-32 no-arrows"
-                                min={0}
-                                step="0.01"
-                                value={(() => {
-                                  // Use paymentAmounts if available, otherwise calculate from percentage
-                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                  let amount: number;
-                                  if (autoPlanData.paymentAmounts && autoPlanData.paymentAmounts[index] !== undefined) {
-                                    amount = autoPlanData.paymentAmounts[index];
-                                  } else {
-                                    const percent = autoPlanData.paymentPercents[index] ?? 0;
-                                    amount = totalAmount > 0 ? (totalAmount * percent) / 100 : 0;
-                                  }
-                                  // Return as number (not string with .toFixed) to allow easy editing
-                                  return amount;
-                                })()}
-                                onFocus={(e) => {
-                                  // Select all text when focused for easy editing
-                                  e.target.select();
-                                }}
-                                onChange={(e) => {
-                                  const amountValue = Number(e.target.value || 0);
-                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                  
-                                  setAutoPlanData(prev => {
-                                    // Update payment amounts array
-                                    const nextAmounts = [...(prev.paymentAmounts || [])];
-                                    while (nextAmounts.length < prev.numberOfPayments) {
-                                      const idx = nextAmounts.length;
-                                      const total = Number(prev.totalAmount || 0);
-                                      const percent = prev.paymentPercents[idx] ?? 0;
-                                      nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
-                                    }
-                                    nextAmounts[index] = amountValue;
-                                    
-                                    // Also update percentage if total amount is available
-                                    const nextPercents = [...(prev.paymentPercents || [])];
-                                    while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
-                                    if (totalAmount > 0) {
-                                      nextPercents[index] = Math.round((amountValue / totalAmount) * 100 * 100) / 100;
-                                    }
-                                    
-                                    return {
-                                      ...prev,
-                                      paymentAmounts: nextAmounts,
-                                      paymentPercents: nextPercents,
-                                    };
-                                  });
-                                }}
-                                placeholder="0"
-                              />
-                              <span className="text-sm">{autoPlanData.currency || '₪'}</span>
-                            </div>
-                          )})}
+                                    // Return as number (not string with .toFixed) to allow easy editing
+                                    return amount;
+                                  })()}
+                                  onFocus={(e) => {
+                                    // Select all text when focused for easy editing
+                                    e.target.select();
+                                  }}
+                                  onChange={(e) => {
+                                    const amountValue = Number(e.target.value || 0);
+                                    const totalAmount = Number(autoPlanData.totalAmount || 0);
+
+                                    setAutoPlanData(prev => {
+                                      // Update payment amounts array
+                                      const nextAmounts = [...(prev.paymentAmounts || [])];
+                                      while (nextAmounts.length < prev.numberOfPayments) {
+                                        const idx = nextAmounts.length;
+                                        const total = Number(prev.totalAmount || 0);
+                                        const percent = prev.paymentPercents[idx] ?? 0;
+                                        nextAmounts.push(total > 0 ? (total * percent) / 100 : 0);
+                                      }
+                                      nextAmounts[index] = amountValue;
+
+                                      // Also update percentage if total amount is available
+                                      const nextPercents = [...(prev.paymentPercents || [])];
+                                      while (nextPercents.length < prev.numberOfPayments) nextPercents.push(0);
+                                      if (totalAmount > 0) {
+                                        nextPercents[index] = Math.round((amountValue / totalAmount) * 100 * 100) / 100;
+                                      }
+
+                                      return {
+                                        ...prev,
+                                        paymentAmounts: nextAmounts,
+                                        paymentPercents: nextPercents,
+                                      };
+                                    });
+                                  }}
+                                  placeholder="0"
+                                />
+                                <span className="text-sm">{autoPlanData.currency || '₪'}</span>
+                              </div>
+                            )
+                          })}
                           {(() => {
                             // Calculate sum of payment amounts
                             const totalAmount = Number(autoPlanData.totalAmount || 0);
@@ -4169,19 +4346,19 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             const sumOfAmounts = paymentAmounts.length > 0
                               ? paymentAmounts.reduce((sum, amount) => sum + (amount || 0), 0)
                               : autoPlanData.paymentPercents.slice(0, autoPlanData.numberOfPayments).reduce((sum, percent) => {
-                                  return sum + (totalAmount * (percent || 0) / 100);
-                                }, 0);
-                            
+                                return sum + (totalAmount * (percent || 0) / 100);
+                              }, 0);
+
                             const amountsMatch = Math.abs(sumOfAmounts - totalAmount) < 0.01; // Allow small floating point differences
-                            
+
                             return (
                               <div className="space-y-1">
                                 {!amountsMatch && totalAmount > 0 && (
                                   <div className="flex items-center gap-2 text-xs text-orange-600 bg-orange-50 p-2 rounded border border-orange-200">
                                     <ExclamationTriangleIcon className="w-4 h-4" />
                                     <span>
-                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'}) 
-                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}). 
+                                      <strong>Warning:</strong> Sum of payment amounts ({sumOfAmounts.toFixed(2)} {autoPlanData.currency || '₪'})
+                                      doesn't match total amount ({totalAmount.toFixed(2)} {autoPlanData.currency || '₪'}).
                                       Difference: {(sumOfAmounts - totalAmount).toFixed(2)} {autoPlanData.currency || '₪'}
                                     </span>
                                   </div>
@@ -4515,11 +4692,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     )}
                     <span className="hidden md:inline ml-1">{viewMode === 'table' ? 'Box View' : 'Table View'}</span>
                   </button>
-                  
+
                 </div>
               </div>
             </div>
-            
+
             {/* Content */}
             <div className="p-6">
               {/* Group payments by contact */}
@@ -4558,44 +4735,44 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     <div key={contactName} className="mb-8">
                       {/* Contact Header */}
                       <div className="mb-4">
-                      <div className="mb-2 flex justify-end">
-       <button
-         className="btn btn-xs btn-outline btn-primary"
-         onClick={() => fetchPaymentHistory(contactName)}
-       >
-         {openHistoryContact === contactName ? 'Hide' : 'Show'} Payment History
-       </button>
-     </div>
-     {openHistoryContact === contactName && (
-       <div className="bg-base-100 rounded-lg shadow p-4 mt-2">
-         <h4 className="font-semibold mb-2">Payment History</h4>
-         {paymentHistory[contactName]?.length ? (
-           <table className="table w-full text-sm">
-             <thead>
-               <tr>
-                 <th>Date</th>
-                 <th>Amount</th>
-                 <th>Method</th>
-                 <th>Status</th>
-               </tr>
-             </thead>
-             <tbody>
-               {paymentHistory[contactName].map((tx, idx) => (
-                 <tr key={tx.id || idx}>
-                   <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
-                   <td>{tx.amount ? `₪${tx.amount.toLocaleString()}` : ''}</td>
-                   <td>{tx.payment_method || ''}</td>
-                   <td>{tx.status || ''}</td>
-                 </tr>
-               ))}
-             </tbody>
-           </table>
-         ) : (
-           <div className="text-gray-500">No payment history found.</div>
-         )}
-       </div>
-     )}
-                        <div 
+                        <div className="mb-2 flex justify-end">
+                          <button
+                            className="btn btn-xs btn-outline btn-primary"
+                            onClick={() => fetchPaymentHistory(contactName)}
+                          >
+                            {openHistoryContact === contactName ? 'Hide' : 'Show'} Payment History
+                          </button>
+                        </div>
+                        {openHistoryContact === contactName && (
+                          <div className="bg-base-100 rounded-lg shadow p-4 mt-2">
+                            <h4 className="font-semibold mb-2">Payment History</h4>
+                            {paymentHistory[contactName]?.length ? (
+                              <table className="table w-full text-sm">
+                                <thead>
+                                  <tr>
+                                    <th>Date</th>
+                                    <th>Amount</th>
+                                    <th>Method</th>
+                                    <th>Status</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {paymentHistory[contactName].map((tx, idx) => (
+                                    <tr key={tx.id || idx}>
+                                      <td>{tx.created_at ? new Date(tx.created_at).toLocaleString() : ''}</td>
+                                      <td>{tx.amount ? `₪${tx.amount.toLocaleString()}` : ''}</td>
+                                      <td>{tx.payment_method || ''}</td>
+                                      <td>{tx.status || ''}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            ) : (
+                              <div className="text-gray-500">No payment history found.</div>
+                            )}
+                          </div>
+                        )}
+                        <div
                           className="flex items-center gap-3 bg-white rounded-lg p-4 border border-purple-200 cursor-pointer hover:from-purple-100 hover:to-blue-100 transition-all duration-200"
                           onClick={() => setCollapsedContacts(prev => ({ ...prev, [contactName]: !prev[contactName] }))}
                           title={collapsedContacts[contactName] ? "Expand payments" : "Collapse payments"}
@@ -4654,15 +4831,14 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     return (
                                       <tr
                                         key={p.id || idx}
-                                        className={`transition-all duration-200 ${
-                                          isPaid
-                                            ? 'bg-green-50 border-l-4 border-green-400'
-                                            : idx % 2 === 0
-                                              ? 'bg-white border-l-4 border-transparent'
-                                              : 'bg-base-100 border-l-4 border-transparent'
-                                        } hover:bg-blue-50 rounded-xl shadow-sm`}
-                                        style={{ 
-                                          verticalAlign: 'middle', 
+                                        className={`transition-all duration-200 ${isPaid
+                                          ? 'bg-green-50 border-l-4 border-green-400'
+                                          : idx % 2 === 0
+                                            ? 'bg-white border-l-4 border-transparent'
+                                            : 'bg-base-100 border-l-4 border-transparent'
+                                          } hover:bg-blue-50 rounded-xl shadow-sm`}
+                                        style={{
+                                          verticalAlign: 'middle',
                                           position: 'relative',
                                           ...(isPaid && {
                                             backgroundImage: `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='200' height='100' viewBox='0 0 200 100'%3E%3Ctext x='100' y='50' font-family='Arial, sans-serif' font-size='24' font-weight='bold' fill='rgba(34,197,94,0.13)' text-anchor='middle' dominant-baseline='middle' transform='rotate(-20 100 50)'%3EPAID%3C/text%3E%3C/svg%3E")`,
@@ -4674,97 +4850,97 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                       >
                                         {/* Each column in correct order: */}
                                         <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-  {editingPaymentId === p.id ? (
-    <input
-      type="number"
-      min={0}
-      max={100}
-      className="input input-bordered input-lg w-20 text-center font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-      value={editPaymentData.duePercent}
-      onChange={e => {
-        const newDuePercent = Number(e.target.value);
-        setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent }));
-      }}
-    />
-  ) : (
-    p.duePercent
-  )}
-</td>
+                                          {editingPaymentId === p.id ? (
+                                            <input
+                                              type="number"
+                                              min={0}
+                                              max={100}
+                                              className="input input-bordered input-lg w-20 text-center font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                              value={editPaymentData.duePercent}
+                                              onChange={e => {
+                                                const newDuePercent = Number(e.target.value);
+                                                setEditPaymentData((d: any) => ({ ...d, duePercent: newDuePercent }));
+                                              }}
+                                            />
+                                          ) : (
+                                            p.duePercent
+                                          )}
+                                        </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-  {editingPaymentId === p.id ? (
-    <input
-      type="date"
-      className="input input-bordered w-48 text-right"
-      value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
-      onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
-      required
-    />
-  ) : (
-    <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-  )}
-</td>
+                                          {editingPaymentId === p.id ? (
+                                            <input
+                                              type="date"
+                                              className="input input-bordered w-48 text-right"
+                                              value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
+                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
+                                              required
+                                            />
+                                          ) : (
+                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                          )}
+                                        </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-  {editingPaymentId === p.id ? (
-    <div className="flex items-center gap-2">
-      <input
-        type="number"
-        className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-        value={editPaymentData.value}
-        onChange={(e) => {
-          const newValue = Number(e.target.value) || 0;
-          const currency = editPaymentData.currency || p.currency || '₪';
-          // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
-          const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
-          setEditPaymentData((d: any) => ({ 
-            ...d, 
-            value: newValue,
-            valueVat: newValueVat,
-            currency: currency // Explicitly preserve currency
-          }));
-        }}
-      />
-                      <span className='text-gray-500 font-bold'>+
-        <input
-          type="number"
-          className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-          value={editPaymentData.valueVat || 0}
-          readOnly={editingValueVatId !== p.id}
-          onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
-          title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
-        />
-      </span>
-      {editingValueVatId === p.id ? (
-        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
-          <CheckIcon className="w-4 h-4 text-green-600" />
-        </button>
-      ) : (
-        <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
-          <PencilIcon className="w-4 h-4 text-blue-600" />
-        </button>
-      )}
-      <label className="label cursor-pointer gap-2 ml-2">
-        <input
-          type="checkbox"
-          className="checkbox checkbox-sm checkbox-primary"
-          checked={editPaymentIncludeVat}
-          onChange={(e) => {
-            const includeVat = e.target.checked;
-            setEditPaymentIncludeVat(includeVat);
-            const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
-            setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
-          }}
-        />
-        <span className="label-text text-xs">VAT</span>
-      </label>
-    </div>
-  ) : (
-    <span className="text-sm font-bold text-gray-900">
-      {getCurrencySymbol(p.currency)}
-      {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-      + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-    </span>
-  )}
-</td>
+                                          {editingPaymentId === p.id ? (
+                                            <div className="flex items-center gap-2">
+                                              <input
+                                                type="number"
+                                                className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                                value={editPaymentData.value}
+                                                onChange={(e) => {
+                                                  const newValue = Number(e.target.value) || 0;
+                                                  const currency = editPaymentData.currency || p.currency || '₪';
+                                                  // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
+                                                  const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+                                                  setEditPaymentData((d: any) => ({
+                                                    ...d,
+                                                    value: newValue,
+                                                    valueVat: newValueVat,
+                                                    currency: currency // Explicitly preserve currency
+                                                  }));
+                                                }}
+                                              />
+                                              <span className='text-gray-500 font-bold'>+
+                                                <input
+                                                  type="number"
+                                                  className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                                  value={editPaymentData.valueVat || 0}
+                                                  readOnly={editingValueVatId !== p.id}
+                                                  onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                                  title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
+                                                />
+                                              </span>
+                                              {editingValueVatId === p.id ? (
+                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
+                                                  <CheckIcon className="w-4 h-4 text-green-600" />
+                                                </button>
+                                              ) : (
+                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
+                                                  <PencilIcon className="w-4 h-4 text-blue-600" />
+                                                </button>
+                                              )}
+                                              <label className="label cursor-pointer gap-2 ml-2">
+                                                <input
+                                                  type="checkbox"
+                                                  className="checkbox checkbox-sm checkbox-primary"
+                                                  checked={editPaymentIncludeVat}
+                                                  onChange={(e) => {
+                                                    const includeVat = e.target.checked;
+                                                    setEditPaymentIncludeVat(includeVat);
+                                                    const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
+                                                    setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
+                                                  }}
+                                                />
+                                                <span className="label-text text-xs">VAT</span>
+                                              </label>
+                                            </div>
+                                          ) : (
+                                            <span className="text-sm font-bold text-gray-900">
+                                              {getCurrencySymbol(p.currency)}
+                                              {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                            </span>
+                                          )}
+                                        </td>
                                         <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
                                           <span className="text-sm font-bold text-gray-900">{getCurrencySymbol(p.currency)}{(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}</span>
                                         </td>
@@ -4773,7 +4949,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {editingPaymentId === p.id ? (
-                                            <select 
+                                            <select
                                               className="select select-bordered w-full max-w-[200px]"
                                               value={editPaymentData.order || 'Intermediate Payment'}
                                               onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
@@ -4794,17 +4970,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                             (() => {
                                               // For legacy leads, try to match proformas with specific payment rows
                                               // Only show proformas that are specifically linked to this payment row
-                                              const paymentProformas = legacyProformas.filter(proforma => 
+                                              const paymentProformas = legacyProformas.filter(proforma =>
                                                 proforma.ppr_id === p.id
                                               );
-                                              
+
                                               if (paymentProformas.length > 0) {
                                                 return (
                                                   <div className="flex flex-col gap-1">
                                                     {paymentProformas.slice(0, 2).map((proforma, idx) => (
-                                                      <button 
+                                                      <button
                                                         key={proforma.id}
-                                                        className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium" 
+                                                        className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
                                                         title={`View Proforma ${proforma.id}`}
                                                         onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
                                                       >
@@ -4818,13 +4994,13 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 );
                                               } else {
                                                 return (
-                                                  <button 
-                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
-                                                    title="Create Proforma" 
-                                                    onClick={e => { 
-                                                      e.preventDefault(); 
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                    title="Create Proforma"
+                                                    onClick={e => {
+                                                      e.preventDefault();
                                                       const clientId = p.client_id ? `&client_id=${p.client_id}` : '';
-                                                      navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`); 
+                                                      navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}${clientId}`);
                                                     }}
                                                     style={{ padding: 0 }}
                                                   >
@@ -4834,17 +5010,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               }
                                             })()
                                           ) : p.proforma && p.proforma.trim() !== '' ? (
-                                            <button 
-                                              className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                                              title="View Proforma" 
+                                            <button
+                                              className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
+                                              title="View Proforma"
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
                                             >
                                               {getProformaName(p.proforma)}
                                             </button>
                                           ) : (
-                                            <button 
-                                              className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
-                                              title="Create Proforma" 
+                                            <button
+                                              className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                              title="Create Proforma"
                                               onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
                                               style={{ padding: 0 }}
                                             >
@@ -4854,17 +5030,17 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
                                           {editingPaymentId === p.id ? (
-                                            <input 
-                                              className="input input-bordered w-full max-w-[200px] text-right" 
-                                              value={editPaymentData.notes || ''} 
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))} 
-                                              placeholder="Notes" 
+                                            <input
+                                              className="input input-bordered w-full max-w-[200px] text-right"
+                                              value={editPaymentData.notes || ''}
+                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, notes: e.target.value }))}
+                                              placeholder="Notes"
                                             />
                                           ) : (
                                             p.notes
                                           )}
                                         </td>
-                                        <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
+                                        <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3" style={{ overflow: 'visible', position: 'relative' }}>
                                           {p.id ? (
                                             editingPaymentId === p.id ? (
                                               <>
@@ -4931,6 +5107,67 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                     <CurrencyDollarIcon className="w-5 h-5" />
                                                   </button>
                                                 )}
+                                                {/* Admin dropdown button - only for superusers/collection when paid */}
+                                                {isPaid && (isSuperuser || isCollection) && (
+                                                  <>
+                                                    <button
+                                                      ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
+                                                      className="btn btn-sm btn-circle bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                                                      title="Admin Actions"
+                                                      onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+                                                      }}
+                                                      style={{ padding: 0 }}
+                                                    >
+                                                      <Cog6ToothIcon className="w-5 h-5" />
+                                                    </button>
+                                                    <AdminDropdownPortal
+                                                      anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
+                                                      open={openDropdownPaymentId === p.id}
+                                                      onClose={() => setOpenDropdownPaymentId(null)}
+                                                    >
+                                                      <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
+                                                        {(() => {
+                                                          // For legacy leads: don't show if due_date exists
+                                                          // For new leads: don't show if ready_to_pay is TRUE
+                                                          const shouldShowSentToFinance = p.isLegacy
+                                                            ? !(p as any).original_due_date // Legacy: hide if due_date exists
+                                                            : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
+
+                                                          return shouldShowSentToFinance ? (
+                                                            <li>
+                                                              <button
+                                                                className="text-sm"
+                                                                onClick={(e) => {
+                                                                  e.stopPropagation();
+                                                                  handleSentToFinance(p);
+                                                                  setOpenDropdownPaymentId(null);
+                                                                }}
+                                                              >
+                                                                Sent to Finance
+                                                              </button>
+                                                            </li>
+                                                          ) : null;
+                                                        })()}
+                                                        <li>
+                                                          <button
+                                                            className="text-sm text-red-600"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
+                                                                handleRevertMarkedAsPaid(p);
+                                                                setOpenDropdownPaymentId(null);
+                                                              }
+                                                            }}
+                                                          >
+                                                            Revert Marked as Paid
+                                                          </button>
+                                                        </li>
+                                                      </ul>
+                                                    </AdminDropdownPortal>
+                                                  </>
+                                                )}
                                                 {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
                                                 {(!isPaid || isSuperuser || isCollection) && (
                                                   <button
@@ -4964,11 +5201,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                     viewMode === 'table' ? (
                                       <tr key={`new-payment-${contactName}`}>
                                         <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <input 
-                                            type="number" 
-                                            className="input input-bordered w-20 text-center" 
-                                            value={newPaymentData.duePercent} 
-                                            onChange={e => setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} 
+                                          <input
+                                            type="number"
+                                            className="input input-bordered w-20 text-center"
+                                            value={newPaymentData.duePercent}
+                                            onChange={e => setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))}
                                             placeholder="%"
                                           />
                                         </td>
@@ -4986,11 +5223,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               if (currency === '₪' && includeVat) {
                                                 vat = Math.round(Number(value) * 0.18 * 100) / 100;
                                               }
-                                              
+
                                               // Calculate due percentage based on value vs total column
                                               const totalAmount = getTotalAmount();
                                               const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
-                                              
+
                                               setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
                                             }} />
                                             <span className='text-gray-500 font-bold'>+</span>
@@ -5004,9 +5241,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </span>
                                         </td>
                                         <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                          <select 
-                                            className="select select-bordered w-full max-w-[200px]" 
-                                            value={newPaymentData.paymentOrder} 
+                                          <select
+                                            className="select select-bordered w-full max-w-[200px]"
+                                            value={newPaymentData.paymentOrder}
                                             onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
                                           >
                                             <option value="First Payment">First Payment</option>
@@ -5021,9 +5258,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex flex-col gap-2 items-center">
                                             <input className="input input-bordered w-full max-w-[200px] text-right" value={newPaymentData.notes} onChange={e => setNewPaymentData((d: any) => ({ ...d, notes: e.target.value }))} placeholder="Notes" />
                                             <div className="flex gap-2 items-center">
-                                              <select 
-                                                className="select select-bordered select-xs w-24" 
-                                                value={newPaymentData.currency || '₪'} 
+                                              <select
+                                                className="select select-bordered select-xs w-24"
+                                                value={newPaymentData.currency || '₪'}
                                                 onChange={e => {
                                                   const selectedCurrency = e.target.value;
                                                   const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
@@ -5032,8 +5269,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                   if (selectedCurrency === '₪' && includeVat) {
                                                     vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
                                                   }
-                                                  setNewPaymentData((d: any) => ({ 
-                                                    ...d, 
+                                                  setNewPaymentData((d: any) => ({
+                                                    ...d,
                                                     currency: selectedCurrency,
                                                     currencyId: selectedCurrencyData?.id || 1,
                                                     includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
@@ -5055,10 +5292,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 )}
                                               </select>
                                               <label className="label cursor-pointer gap-1">
-                                                <input 
-                                                  type="checkbox" 
-                                                  className="checkbox checkbox-xs" 
-                                                  checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'} 
+                                                <input
+                                                  type="checkbox"
+                                                  className="checkbox checkbox-xs"
+                                                  checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
                                                   disabled={(newPaymentData.currency || '₪') !== '₪'}
                                                   onChange={e => {
                                                     const includeVat = e.target.checked;
@@ -5084,11 +5321,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                                            <input 
-                                              type="number" 
-                                              className="input input-bordered w-20 text-center" 
-                                              value={newPaymentData.duePercent} 
-                                              onChange={e => setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} 
+                                            <input
+                                              type="number"
+                                              className="input input-bordered w-20 text-center"
+                                              value={newPaymentData.duePercent}
+                                              onChange={e => setNewPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))}
                                               placeholder="%"
                                             />
                                           </div>
@@ -5122,11 +5359,11 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                               if (currency === '₪' && includeVat) {
                                                 vat = Math.round(Number(value) * 0.18 * 100) / 100;
                                               }
-                                              
+
                                               // Calculate due percentage based on value vs total column
                                               const totalAmount = getTotalAmount();
                                               const duePercent = totalAmount > 0 ? Math.round((Number(value) / totalAmount) * 100) : 0;
-                                              
+
                                               setNewPaymentData((d: any) => ({ ...d, value, valueVat: vat, duePercent }));
                                             }} />
                                           </div>
@@ -5136,9 +5373,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Currency</span>
-                                            <select 
-                                              className="select select-bordered w-full" 
-                                              value={newPaymentData.currency || '₪'} 
+                                            <select
+                                              className="select select-bordered w-full"
+                                              value={newPaymentData.currency || '₪'}
                                               onChange={e => {
                                                 const selectedCurrency = e.target.value;
                                                 const selectedCurrencyData = availableCurrencies.find(c => c.name === selectedCurrency);
@@ -5147,8 +5384,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                                 if (selectedCurrency === '₪' && includeVat) {
                                                   vat = Math.round(Number(newPaymentData.value || 0) * 0.18 * 100) / 100;
                                                 }
-                                                setNewPaymentData((d: any) => ({ 
-                                                  ...d, 
+                                                setNewPaymentData((d: any) => ({
+                                                  ...d,
                                                   currency: selectedCurrency,
                                                   currencyId: selectedCurrencyData?.id || 1,
                                                   includeVat: selectedCurrency === '₪' ? (d.includeVat !== false) : false,
@@ -5173,10 +5410,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Include VAT</span>
                                             <label className="label cursor-pointer justify-end gap-2">
-                                              <input 
-                                                type="checkbox" 
-                                                className="checkbox checkbox-sm" 
-                                                checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'} 
+                                              <input
+                                                type="checkbox"
+                                                className="checkbox checkbox-sm"
+                                                checked={newPaymentData.includeVat !== false && (newPaymentData.currency || '₪') === '₪'}
                                                 disabled={(newPaymentData.currency || '₪') !== '₪'}
                                                 onChange={e => {
                                                   const includeVat = e.target.checked;
@@ -5192,9 +5429,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                           </div>
                                           <div className="flex items-center justify-between py-3">
                                             <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                                            <select 
-                                              className="select select-bordered w-full" 
-                                              value={newPaymentData.paymentOrder} 
+                                            <select
+                                              className="select select-bordered w-full"
+                                              value={newPaymentData.paymentOrder}
                                               onChange={e => setNewPaymentData((d: any) => ({ ...d, paymentOrder: e.target.value }))}
                                             >
                                               <option value="First Payment">First Payment</option>
@@ -5218,7 +5455,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   )}
                                 </tbody>
                               </table>
-                              
+
                               {/* Add new payment and Delete payment plan buttons for this contact (table view) */}
                               {!addingPaymentContact && (
                                 <div className="mt-4 flex justify-start gap-2">
@@ -5240,465 +5477,526 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                                   </button>
                                 </div>
                               )}
-                              
+
                               {/* Total and Left to Plan Display - Below Payment Table */}
                               {addingPaymentContact === contactName && (
-                              <div className="mt-6 p-6">
-                                <div className="flex flex-col md:flex-row gap-6 items-center justify-center">
-                                  {/* Total Amount */}
-                                  <div 
-                                    className="flex items-center gap-4 bg-white rounded-xl px-6 py-4 shadow-lg border border-purple-200 min-w-[200px] cursor-pointer hover:shadow-xl hover:scale-105 transition-all duration-200"
-                                    onClick={() => handleBoxClick('total')}
-                                    title="Click to use full total amount"
-                                  >
-                                    <div className="flex flex-col items-center">
-                                      <span className="text-base font-medium text-gray-600">Total Amount</span>
-                                      <span className="text-2xl font-bold text-purple-600">
-                                        {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getTotalAmount().toLocaleString()}
-                                      </span>
-                                    </div>
-                                    <button 
-                                      className="btn btn-md bg-purple-600 text-white border-purple-600 hover:bg-purple-700 hover:border-purple-700 rounded-full px-4"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        openPercentageModal('total');
-                                      }}
-                                      title="Calculate percentage of total amount"
+                                <div className="mt-6 p-6">
+                                  <div className="flex flex-col md:flex-row gap-6 items-center justify-center">
+                                    {/* Total Amount */}
+                                    <div
+                                      className="flex items-center gap-4 bg-white rounded-xl px-6 py-4 shadow-lg border border-purple-200 min-w-[200px] cursor-pointer hover:shadow-xl hover:scale-105 transition-all duration-200"
+                                      onClick={() => handleBoxClick('total')}
+                                      title="Click to use full total amount"
                                     >
-                                      %
-                                    </button>
-                                  </div>
-                                  
-                                  {/* Left to Plan Amount */}
-                                  <div 
-                                    className="flex items-center gap-4 bg-white rounded-xl px-6 py-4 shadow-lg border border-green-200 min-w-[200px] cursor-pointer hover:shadow-xl hover:scale-105 transition-all duration-200"
-                                    onClick={() => handleBoxClick('leftToPlan')}
-                                    title="Click to use left to plan amount"
-                                  >
-                                    <div className="flex flex-col items-center">
-                                      <span className="text-base font-medium text-gray-600">Left to Plan</span>
-                                      <span className="text-2xl font-bold text-green-600">
-                                        {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
-                                      </span>
+                                      <div className="flex flex-col items-center">
+                                        <span className="text-base font-medium text-gray-600">Total Amount</span>
+                                        <span className="text-2xl font-bold text-purple-600">
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getTotalAmount().toLocaleString()}
+                                        </span>
+                                      </div>
+                                      <button
+                                        className="btn btn-md bg-purple-600 text-white border-purple-600 hover:bg-purple-700 hover:border-purple-700 rounded-full px-4"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openPercentageModal('total');
+                                        }}
+                                        title="Calculate percentage of total amount"
+                                      >
+                                        %
+                                      </button>
                                     </div>
-                                    <button 
-                                      className="btn btn-md btn-success rounded-full px-4"
-                                      onClick={(e) => {
-                                        e.stopPropagation();
-                                        openPercentageModal('leftToPlan');
-                                      }}
-                                      title="Calculate percentage of left to plan amount"
+
+                                    {/* Left to Plan Amount */}
+                                    <div
+                                      className="flex items-center gap-4 bg-white rounded-xl px-6 py-4 shadow-lg border border-green-200 min-w-[200px] cursor-pointer hover:shadow-xl hover:scale-105 transition-all duration-200"
+                                      onClick={() => handleBoxClick('leftToPlan')}
+                                      title="Click to use left to plan amount"
                                     >
-                                      %
-                                    </button>
+                                      <div className="flex flex-col items-center">
+                                        <span className="text-base font-medium text-gray-600">Left to Plan</span>
+                                        <span className="text-2xl font-bold text-green-600">
+                                          {getCurrencySymbol(financePlan?.payments[0]?.currency || '₪')}{getLeftToPlanAmount(newPaymentData.client || addingPaymentContact || undefined).toLocaleString()}
+                                        </span>
+                                      </div>
+                                      <button
+                                        className="btn btn-md btn-success rounded-full px-4"
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openPercentageModal('leftToPlan');
+                                        }}
+                                        title="Calculate percentage of left to plan amount"
+                                      >
+                                        %
+                                      </button>
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
                               )}
                             </div>
                           ) : (
                             <>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 gap-y-8">
-                              {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
-                                const isPaid = p.paid;
-                                return (
-                                  <div
-                                    key={p.id || idx}
-                                    className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
-                                    style={{ position: 'relative', overflow: 'hidden' }}
-                                  >
+                              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 gap-y-8">
+                                {sortedContactPayments.map((p: PaymentPlan, idx: number) => {
+                                  const isPaid = p.paid;
+                                  return (
+                                    <div
+                                      key={p.id || idx}
+                                      className={`bg-white rounded-2xl p-6 shadow-2xl hover:shadow-3xl transition-all duration-200 border flex flex-col gap-0 relative group min-h-[480px] ${isPaid ? 'border-green-500 ring-2 ring-green-400' : 'border-base-200'}`}
+                                      style={{ position: 'relative', overflow: 'hidden' }}
+                                    >
 
-                                    {/* Paid Watermark */}
-                                    {isPaid && (
-                                      <div style={{
-                                        position: 'absolute',
-                                        top: '50%',
-                                        left: '50%',
-                                        transform: 'translate(-50%, -50%) rotate(-20deg)',
-                                        fontSize: '3rem',
-                                        color: 'rgba(34,197,94,0.15)',
-                                        fontWeight: 900,
-                                        letterSpacing: 2,
-                                        pointerEvents: 'none',
-                                        zIndex: 10,
-                                        textShadow: '0 2px 8px rgba(34,197,94,0.2)'
-                                      }}>PAID</div>
-                                    )}
-                                    {/* Due Badge */}
-                                    {p.proforma && !isPaid && (
-                                      <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
-                                    )}
-                                    {/* Card content */}
-                                    {editingPaymentId === p.id ? (
-                                      <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
-                                          <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
-                                        </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
-                                          {editingPaymentId === p.id ? (
-                                            <input
-                                              type="date"
-                                              className="input input-bordered w-48 text-right"
-                                              value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
-                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
-                                              required
-                                            />
-                                          ) : (
-                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
-                                          )}
-                                        </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
-                                          <div className="flex items-center gap-2">
-                                            <input
-                                              type="number"
-                                              className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
-                                              value={editPaymentData.value}
-                                              onChange={(e) => {
-                                                const newValue = Number(e.target.value) || 0;
-                                                const currency = editPaymentData.currency || p.currency || '₪';
-                                                // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
-                                                const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
-                                                setEditPaymentData((d: any) => ({ 
-                                                  ...d, 
-                                                  value: newValue,
-                                                  valueVat: newValueVat,
-                                                  currency: currency // Explicitly preserve currency
-                                                }));
-                                              }}
-                                            />
-                                            <span className='text-gray-500 font-bold'>+</span>
-                                            <input
-                                              type="number"
-                                              className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
-                                              value={editPaymentData.valueVat || 0}
-                                              readOnly={editingValueVatId !== p.id}
-                                              onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
-                                              title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
-                                            />
-                                            {editingValueVatId === p.id ? (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
-                                                <CheckIcon className="w-4 h-4 text-green-600" />
-                                              </button>
-                                            ) : (
-                                              <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
-                                                <PencilIcon className="w-4 h-4 text-blue-600" />
-                                              </button>
-                                            )}
-                                            <label className="label cursor-pointer gap-2 ml-2">
-                                              <input
-                                                type="checkbox"
-                                                className="checkbox checkbox-sm checkbox-primary"
-                                                checked={editPaymentIncludeVat}
-                                                onChange={(e) => {
-                                                  const includeVat = e.target.checked;
-                                                  setEditPaymentIncludeVat(includeVat);
-                                                  const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
-                                                  setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
-                                                }}
-                                              />
-                                              <span className="label-text text-xs">VAT</span>
-                                            </label>
-                                          </div>
-                                        </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total</span>
-                                          <div className="flex items-center gap-2">
-                                            <input
-                                              type="number"
-                                              className="input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows bg-gray-100 text-gray-500 cursor-not-allowed"
-                                              value={Number(editPaymentData.value || 0) + Number(editPaymentData.valueVat || 0)}
-                                              readOnly={true}
-                                            />
-                                            <span className="text-xs text-gray-500">(auto)</span>
-                                          </div>
-                                        </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
-                                          <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
-                                        </div>
-                                        <div className="flex items-center justify-between py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
-                                          <select 
-                                            className="select select-bordered w-48"
-                                            value={editPaymentData.order || 'Intermediate Payment'}
-                                            onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
-                                          >
-                                            <option value="First Payment">First Payment</option>
-                                            <option value="Intermediate Payment">Intermediate Payment</option>
-                                            <option value="Final Payment">Final Payment</option>
-                                            <option value="Single Payment">Single Payment</option>
-                                            <option value="Expense (no VAT)">Expense (no VAT)</option>
-                                          </select>
-                                        </div>
-                                        <div className="flex flex-col py-3">
-                                          <span className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Notes</span>
-                                          <textarea 
-                                            className="textarea textarea-bordered w-full resize-none overflow-hidden" 
-                                            value={editPaymentData.notes || ''} 
-                                            onChange={(e) => {
-                                              const target = e.target as HTMLTextAreaElement;
-                                              setEditPaymentData((d: any) => ({ ...d, notes: target.value }));
-                                              // Auto-expand textarea
-                                              target.style.height = 'auto';
-                                              target.style.height = target.scrollHeight + 'px';
-                                            }}
-                                            onFocus={(e) => {
-                                              // Initialize height on focus
-                                              const target = e.target as HTMLTextAreaElement;
-                                              target.style.height = 'auto';
-                                              target.style.height = target.scrollHeight + 'px';
-                                            }}
-                                            rows={1}
-                                            style={{ minHeight: '2.5rem' }}
-                                          />
-                                        </div>
-                                        <div className="flex gap-2 justify-end pt-4">
-                                          <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
-                                          <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
-                                        </div>
-                                      </div>
-                                    ) : (
-                                      <div className="flex flex-col gap-0 divide-y divide-base-200">
-                                        {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
-                                        <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
-                                          {/* Order (left) */}
-                                          <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
-                                          {/* Percent (center) */}
-                                          <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
-                                            {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
-                                          </span>
-                                          {/* Actions (right) */}
-                                          <div className="flex gap-2 items-center ml-4">
-                                            {p.id ? (
-                                              <>
-                                                {!p.isLegacy && isSuperuser && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title="Delete"
-                                                    onClick={() => handleDeletePayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <TrashIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                                {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
-                                                  <button
-                                                    className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                                    title="Edit"
-                                                    onClick={() => handleEditPayment(p)}
-                                                    style={{ padding: 0 }}
-                                                  >
-                                                    <PencilIcon className="w-5 h-5" />
-                                                  </button>
-                                                )}
-                                              </>
-                                            ) : (
-                                              <span className="text-gray-400">—</span>
-                                            )}
-                                          </div>
-                                        </div>
-                                        
-                                        {/* Payment details */}
+                                      {/* Paid Watermark */}
+                                      {isPaid && (
+                                        <div style={{
+                                          position: 'absolute',
+                                          top: '50%',
+                                          left: '50%',
+                                          transform: 'translate(-50%, -50%) rotate(-20deg)',
+                                          fontSize: '3rem',
+                                          color: 'rgba(34,197,94,0.15)',
+                                          fontWeight: 900,
+                                          letterSpacing: 2,
+                                          pointerEvents: 'none',
+                                          zIndex: 10,
+                                          textShadow: '0 2px 8px rgba(34,197,94,0.2)'
+                                        }}>PAID</div>
+                                      )}
+                                      {/* Due Badge */}
+                                      {p.proforma && !isPaid && (
+                                        <span className="absolute top-4 right-4 bg-yellow-400 text-white font-bold px-4 py-1 rounded-full shadow-lg text-xs z-20 animate-pulse">Due</span>
+                                      )}
+                                      {/* Card content */}
+                                      {editingPaymentId === p.id ? (
                                         <div className="flex flex-col gap-0 divide-y divide-base-200">
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
-                                            <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due %</span>
+                                            <input className="input input-bordered w-40 text-right" value={editPaymentData.duePercent} onChange={e => setEditPaymentData((d: any) => ({ ...d, duePercent: e.target.value }))} />
                                           </div>
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
-                                            <span className="text-sm font-bold text-gray-900">
-                                              {getCurrencySymbol(p.currency)}
-                                              {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                              + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                            </span>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Due Date</span>
+                                            {editingPaymentId === p.id ? (
+                                              <input
+                                                type="date"
+                                                className="input input-bordered w-48 text-right"
+                                                value={editPaymentData.dueDate ? editPaymentData.dueDate.slice(0, 10) : ''}
+                                                onChange={e => setEditPaymentData((d: any) => ({ ...d, dueDate: e.target.value }))}
+                                                required
+                                              />
+                                            ) : (
+                                              <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                            )}
                                           </div>
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TOTAL</span>
-                                            <span className="text-sm font-bold text-gray-900">
-                                              {getCurrencySymbol(p.currency)}
-                                              {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                            </span>
-                                          </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">CLIENT</span>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Value</span>
                                             <div className="flex items-center gap-2">
-                                              <span className="text-sm font-bold text-gray-900">{p.client}</span>
+                                              <input
+                                                type="number"
+                                                className="input input-bordered input-lg w-32 text-right font-bold rounded-xl border-2 border-blue-300 focus:border-blue-500 no-arrows"
+                                                value={editPaymentData.value}
+                                                onChange={(e) => {
+                                                  const newValue = Number(e.target.value) || 0;
+                                                  const currency = editPaymentData.currency || p.currency || '₪';
+                                                  // Recalculate VAT based on checkbox state: 18% if includeVat is checked, 0 otherwise
+                                                  const newValueVat = editPaymentIncludeVat ? Math.round(newValue * 0.18 * 100) / 100 : 0;
+                                                  setEditPaymentData((d: any) => ({
+                                                    ...d,
+                                                    value: newValue,
+                                                    valueVat: newValueVat,
+                                                    currency: currency // Explicitly preserve currency
+                                                  }));
+                                                }}
+                                              />
+                                              <span className='text-gray-500 font-bold'>+</span>
+                                              <input
+                                                type="number"
+                                                className={`input input-bordered input-lg w-20 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows ${editingValueVatId === p.id ? '' : 'bg-gray-100 text-gray-500 cursor-not-allowed'}`}
+                                                value={editPaymentData.valueVat || 0}
+                                                readOnly={editingValueVatId !== p.id}
+                                                onChange={editingValueVatId === p.id ? (e) => setEditPaymentData((d: any) => ({ ...d, valueVat: e.target.value })) : undefined}
+                                                title={editingValueVatId !== p.id ? 'Click pencil icon to manually edit VAT' : ''}
+                                              />
+                                              {editingValueVatId === p.id ? (
+                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(null)} title="Done editing VAT manually">
+                                                  <CheckIcon className="w-4 h-4 text-green-600" />
+                                                </button>
+                                              ) : (
+                                                <button className="btn btn-xs btn-ghost ml-1" onClick={() => setEditingValueVatId(p.id)} title="Manually edit VAT (overrides auto-calculation)">
+                                                  <PencilIcon className="w-4 h-4 text-blue-600" />
+                                                </button>
+                                              )}
+                                              <label className="label cursor-pointer gap-2 ml-2">
+                                                <input
+                                                  type="checkbox"
+                                                  className="checkbox checkbox-sm checkbox-primary"
+                                                  checked={editPaymentIncludeVat}
+                                                  onChange={(e) => {
+                                                    const includeVat = e.target.checked;
+                                                    setEditPaymentIncludeVat(includeVat);
+                                                    const newValueVat = includeVat ? Math.round(Number(editPaymentData.value || 0) * 0.18 * 100) / 100 : 0;
+                                                    setEditPaymentData((d: any) => ({ ...d, valueVat: newValueVat }));
+                                                  }}
+                                                />
+                                                <span className="label-text text-xs">VAT</span>
+                                              </label>
                                             </div>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PAYMENT DATE</span>
-                                            <span className="text-sm font-bold text-gray-900">
-                                              {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
-                                            </span>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Total</span>
+                                            <div className="flex items-center gap-2">
+                                              <input
+                                                type="number"
+                                                className="input input-bordered input-lg w-28 text-right font-bold rounded-xl border-2 border-blue-300 no-arrows bg-gray-100 text-gray-500 cursor-not-allowed"
+                                                value={Number(editPaymentData.value || 0) + Number(editPaymentData.valueVat || 0)}
+                                                readOnly={true}
+                                              />
+                                              <span className="text-xs text-gray-500">(auto)</span>
+                                            </div>
                                           </div>
                                           <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PROFORMA</span>
-                                            <div className="text-sm">
-                                              {p.isLegacy ? (
-                                                // For legacy leads, show proforma if available
-                                                (() => {
-                                                  // For legacy leads, try to match proformas with specific payment rows
-                                                  // Only show proformas that are specifically linked to this payment row
-                                                  const paymentProformas = legacyProformas.filter(proforma => 
-                                                    proforma.ppr_id === p.id
-                                                  );
-                                                  
-                                                  if (paymentProformas.length > 0) {
-                                                    return (
-                                                      <div className="flex flex-col gap-1">
-                                                        {paymentProformas.slice(0, 1).map((proforma, idx) => (
-                                                          <button 
-                                                            key={proforma.id}
-                                                            className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium" 
-                                                            title={`View Proforma ${proforma.id}`}
-                                                            onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
-                                                          >
-                                                            Proforma {proforma.id}
-                                                          </button>
-                                                        ))}
-                                                        {paymentProformas.length > 1 && (
-                                                          <span className="text-xs text-gray-500">+{paymentProformas.length - 1} more</span>
-                                                        )}
-                                                      </div>
-                                                    );
-                                                  } else {
-                                                    return (
-                                                      <button 
-                                                        className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
-                                                        title="Create Proforma" 
-                                                        onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
-                                                        style={{ padding: 0 }}
-                                                      >
-                                                        <PlusIcon className="w-5 h-5" />
-                                                      </button>
-                                                    );
-                                                  }
-                                                })()
-                                              ) : p.proforma && p.proforma.trim() !== '' ? (
-                                                <button 
-                                                  className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40" 
-                                                  title="View Proforma" 
-                                                  onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
-                                                >
-                                                  {getProformaName(p.proforma)}
-                                                </button>
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Client</span>
+                                            <input className="input input-bordered w-48 text-right" value={editPaymentData.client} onChange={e => setEditPaymentData((d: any) => ({ ...d, client: e.target.value }))} />
+                                          </div>
+                                          <div className="flex items-center justify-between py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">Order</span>
+                                            <select
+                                              className="select select-bordered w-48"
+                                              value={editPaymentData.order || 'Intermediate Payment'}
+                                              onChange={e => setEditPaymentData((d: any) => ({ ...d, order: e.target.value }))}
+                                            >
+                                              <option value="First Payment">First Payment</option>
+                                              <option value="Intermediate Payment">Intermediate Payment</option>
+                                              <option value="Final Payment">Final Payment</option>
+                                              <option value="Single Payment">Single Payment</option>
+                                              <option value="Expense (no VAT)">Expense (no VAT)</option>
+                                            </select>
+                                          </div>
+                                          <div className="flex flex-col py-3">
+                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider mb-2">Notes</span>
+                                            <textarea
+                                              className="textarea textarea-bordered w-full resize-none overflow-hidden"
+                                              value={editPaymentData.notes || ''}
+                                              onChange={(e) => {
+                                                const target = e.target as HTMLTextAreaElement;
+                                                setEditPaymentData((d: any) => ({ ...d, notes: target.value }));
+                                                // Auto-expand textarea
+                                                target.style.height = 'auto';
+                                                target.style.height = target.scrollHeight + 'px';
+                                              }}
+                                              onFocus={(e) => {
+                                                // Initialize height on focus
+                                                const target = e.target as HTMLTextAreaElement;
+                                                target.style.height = 'auto';
+                                                target.style.height = target.scrollHeight + 'px';
+                                              }}
+                                              rows={1}
+                                              style={{ minHeight: '2.5rem' }}
+                                            />
+                                          </div>
+                                          <div className="flex gap-2 justify-end pt-4">
+                                            <button className="btn btn-xs btn-success" onClick={handleSaveEditPayment} disabled={isSavingPaymentRow}>Save</button>
+                                            <button className="btn btn-xs btn-ghost" onClick={handleCancelEditPayment}>Cancel</button>
+                                          </div>
+                                        </div>
+                                      ) : (
+                                        <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                          {/* Improved purple row: order left, percent center, actions right (icons black on white circle) */}
+                                          <div className="flex items-center bg-white text-primary rounded-t-2xl px-5 py-3" style={{ minHeight: '64px' }}>
+                                            {/* Order (left) */}
+                                            <span className="text-xs font-bold uppercase tracking-wider text-left truncate" style={{ minWidth: '120px' }}>{p.order}</span>
+                                            {/* Percent (center) */}
+                                            <span className="font-extrabold text-3xl tracking-tight text-center w-24 flex-shrink-0 flex-grow-0">
+                                              {p.duePercent && p.duePercent.includes('%') ? p.duePercent : `${p.duePercent || '0'}%`}
+                                            </span>
+                                            {/* Actions (right) */}
+                                            <div className="flex gap-2 items-center ml-4">
+                                              {p.id ? (
+                                                <>
+                                                  {!p.isLegacy && isSuperuser && (
+                                                    <button
+                                                      className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                      title="Delete"
+                                                      onClick={() => handleDeletePayment(p)}
+                                                      style={{ padding: 0 }}
+                                                    >
+                                                      <TrashIcon className="w-5 h-5" />
+                                                    </button>
+                                                  )}
+                                                  {!p.isLegacy && (!isPaid || isSuperuser || isCollection) && (
+                                                    <button
+                                                      className="btn btn-sm btn-circle bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                      title="Edit"
+                                                      onClick={() => handleEditPayment(p)}
+                                                      style={{ padding: 0 }}
+                                                    >
+                                                      <PencilIcon className="w-5 h-5" />
+                                                    </button>
+                                                  )}
+                                                </>
                                               ) : (
-                                                <button 
-                                                  className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center" 
-                                                  title="Create Proforma" 
-                                                  onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
-                                                  style={{ padding: 0 }}
-                                                >
-                                                  <PlusIcon className="w-5 h-5" />
-                                                </button>
+                                                <span className="text-gray-400">—</span>
                                               )}
                                             </div>
                                           </div>
-                                          <div className="flex items-center justify-between py-3">
-                                            <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
-                                            <span className="text-sm font-bold text-gray-900">{p.notes}</span>
+
+                                          {/* Payment details */}
+                                          <div className="flex flex-col gap-0 divide-y divide-base-200">
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">DUE DATE</span>
+                                              <span className="text-sm font-bold text-gray-900">{formatDateDDMMYYYY(p.dueDate)}</span>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">VALUE</span>
+                                              <span className="text-sm font-bold text-gray-900">
+                                                {getCurrencySymbol(p.currency)}
+                                                {p.value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                                + {p.valueVat.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">TOTAL</span>
+                                              <span className="text-sm font-bold text-gray-900">
+                                                {getCurrencySymbol(p.currency)}
+                                                {(p.value + p.valueVat).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">CLIENT</span>
+                                              <div className="flex items-center gap-2">
+                                                <span className="text-sm font-bold text-gray-900">{p.client}</span>
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PAYMENT DATE</span>
+                                              <span className="text-sm font-bold text-gray-900">
+                                                {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
+                                              </span>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">PROFORMA</span>
+                                              <div className="text-sm">
+                                                {p.isLegacy ? (
+                                                  // For legacy leads, show proforma if available
+                                                  (() => {
+                                                    // For legacy leads, try to match proformas with specific payment rows
+                                                    // Only show proformas that are specifically linked to this payment row
+                                                    const paymentProformas = legacyProformas.filter(proforma =>
+                                                      proforma.ppr_id === p.id
+                                                    );
+
+                                                    if (paymentProformas.length > 0) {
+                                                      return (
+                                                        <div className="flex flex-col gap-1">
+                                                          {paymentProformas.slice(0, 1).map((proforma, idx) => (
+                                                            <button
+                                                              key={proforma.id}
+                                                              className="btn btn-sm btn-outline btn-success border-success/40 text-xs font-medium"
+                                                              title={`View Proforma ${proforma.id}`}
+                                                              onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/${proforma.id}`); }}
+                                                            >
+                                                              Proforma {proforma.id}
+                                                            </button>
+                                                          ))}
+                                                          {paymentProformas.length > 1 && (
+                                                            <span className="text-xs text-gray-500">+{paymentProformas.length - 1} more</span>
+                                                          )}
+                                                        </div>
+                                                      );
+                                                    } else {
+                                                      return (
+                                                        <button
+                                                          className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                          title="Create Proforma"
+                                                          onClick={e => { e.preventDefault(); navigate(`/proforma-legacy/create/${client.id.toString().replace('legacy_', '')}?ppr_id=${p.id}`); }}
+                                                          style={{ padding: 0 }}
+                                                        >
+                                                          <PlusIcon className="w-5 h-5" />
+                                                        </button>
+                                                      );
+                                                    }
+                                                  })()
+                                                ) : p.proforma && p.proforma.trim() !== '' ? (
+                                                  <button
+                                                    className="btn btn-sm btn-outline btn-success text-xs font-medium border-success/40"
+                                                    title="View Proforma"
+                                                    onClick={e => { e.preventDefault(); navigate(`/proforma/${p.id}`); }}
+                                                  >
+                                                    {getProformaName(p.proforma)}
+                                                  </button>
+                                                ) : (
+                                                  <button
+                                                    className="btn btn-sm btn-circle bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                    title="Create Proforma"
+                                                    onClick={e => { e.preventDefault(); navigate(`/proforma/create/${p.id}`); }}
+                                                    style={{ padding: 0 }}
+                                                  >
+                                                    <PlusIcon className="w-5 h-5" />
+                                                  </button>
+                                                )}
+                                              </div>
+                                            </div>
+                                            <div className="flex items-center justify-between py-3">
+                                              <span className="text-xs font-medium text-gray-400 uppercase tracking-wider">NOTES</span>
+                                              <span className="text-sm font-bold text-gray-900">{p.notes}</span>
+                                            </div>
                                           </div>
-                                        </div>
-                                        
-                                        {/* Payment status indicator */}
-                                        <div className="absolute bottom-4 right-4 flex gap-2">
-                                          {/* Payment Link icon - disabled for legacy */}
-                                          {p.proforma && !isPaid && !p.isLegacy && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
-                                              title="Generate Payment Link"
-                                              onClick={() => handleGeneratePaymentLink(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <LinkIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {/* Ready to Pay button - available for all */}
-                                          {!isPaid && !p.ready_to_pay && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
-                                              title="Mark as Ready to Pay"
-                                              onClick={() => handleMarkAsReadyToPay(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <PaperAirplaneIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {/* Sent to Finances indicator with revert button */}
-                                          {!isPaid && p.ready_to_pay && (
-                                            <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
+
+                                          {/* Payment status indicator */}
+                                          <div className="absolute bottom-4 right-4 flex gap-2" style={{ overflow: 'visible', zIndex: 9999 }}>
+                                            {/* Payment Link icon - disabled for legacy */}
+                                            {p.proforma && !isPaid && !p.isLegacy && (
                                               <button
-                                                className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
-                                                title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
-                                                onClick={() => handleRevertReadyToPay(p)}
+                                                className="btn btn-circle btn-md bg-blue-100 hover:bg-blue-200 text-blue-700 border-blue-300 border-2 shadow-sm flex items-center justify-center"
+                                                title="Generate Payment Link"
+                                                onClick={() => handleGeneratePaymentLink(p)}
                                                 style={{ padding: 0 }}
                                               >
-                                                <XMarkIcon className="w-5 h-5" />
+                                                <LinkIcon className="w-5 h-5" />
                                               </button>
-                                            </div>
-                                          )}
-                                          {/* Dollar icon (small) - only for superusers or collection users */}
-                                          {!isPaid && (isSuperuser || isCollection) && (
+                                            )}
+                                            {/* Ready to Pay button - available for all */}
+                                            {!isPaid && !p.ready_to_pay && (
+                                              <button
+                                                className="btn btn-circle btn-md bg-yellow-100 hover:bg-yellow-200 text-yellow-700 border-yellow-300 border-2 shadow-sm flex items-center justify-center"
+                                                title="Mark as Ready to Pay"
+                                                onClick={() => handleMarkAsReadyToPay(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <PaperAirplaneIcon className="w-5 h-5" />
+                                              </button>
+                                            )}
+                                            {/* Sent to Finances indicator with revert button */}
+                                            {!isPaid && p.ready_to_pay && (
+                                              <div className="tooltip tooltip-top z-[9999]" data-tip={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Ready to pay - Click to revert'}>
+                                                <button
+                                                  className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-700 border-red-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title={p.ready_to_pay_by_display_name ? `Marked by ${p.ready_to_pay_by_display_name} - Click to revert` : 'Revert Ready to Pay'}
+                                                  onClick={() => handleRevertReadyToPay(p)}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <XMarkIcon className="w-5 h-5" />
+                                                </button>
+                                              </div>
+                                            )}
+                                            {/* Dollar icon (small) - only for superusers or collection users */}
+                                            {!isPaid && (isSuperuser || isCollection) && (
+                                              <button
+                                                className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
+                                                title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
+                                                onClick={() => handleOpenPaidDateModal(p.id)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <CurrencyDollarIcon className="w-5 h-5" />
+                                              </button>
+                                            )}
+                                            {/* Admin dropdown button - only for superusers/collection when paid */}
+                                            {isPaid && (isSuperuser || isCollection) && (
+                                              <>
+                                                <button
+                                                  ref={(el) => { dropdownButtonRefs.current[p.id] = el; }}
+                                                  className="btn btn-circle btn-md bg-purple-100 hover:bg-purple-200 text-purple-700 border-purple-300 border-2 shadow-sm flex items-center justify-center"
+                                                  title="Admin Actions"
+                                                  onClick={(e) => {
+                                                    e.stopPropagation();
+                                                    setOpenDropdownPaymentId(openDropdownPaymentId === p.id ? null : p.id);
+                                                  }}
+                                                  style={{ padding: 0 }}
+                                                >
+                                                  <Cog6ToothIcon className="w-5 h-5" />
+                                                </button>
+                                                <AdminDropdownPortal
+                                                  anchorRef={{ current: dropdownButtonRefs.current[p.id] }}
+                                                  open={openDropdownPaymentId === p.id}
+                                                  onClose={() => setOpenDropdownPaymentId(null)}
+                                                >
+                                                  <ul className="menu bg-base-100 rounded-box w-52 p-2 shadow-lg border border-gray-200">
+                                                    {(() => {
+                                                      // For legacy leads: don't show if due_date exists
+                                                      // For new leads: don't show if ready_to_pay is TRUE
+                                                      const shouldShowSentToFinance = p.isLegacy
+                                                        ? !(p as any).original_due_date // Legacy: hide if due_date exists
+                                                        : !p.ready_to_pay; // New: hide if ready_to_pay is TRUE
+
+                                                      return shouldShowSentToFinance ? (
+                                                        <li>
+                                                          <button
+                                                            className="text-sm"
+                                                            onClick={(e) => {
+                                                              e.stopPropagation();
+                                                              handleSentToFinance(p);
+                                                              setOpenDropdownPaymentId(null);
+                                                            }}
+                                                          >
+                                                            Sent to Finance
+                                                          </button>
+                                                        </li>
+                                                      ) : null;
+                                                    })()}
+                                                    <li>
+                                                      <button
+                                                        className="text-sm text-red-600"
+                                                        onClick={(e) => {
+                                                          e.stopPropagation();
+                                                          if (window.confirm('Are you sure you want to revert this payment from paid status?')) {
+                                                            handleRevertMarkedAsPaid(p);
+                                                            setOpenDropdownPaymentId(null);
+                                                          }
+                                                        }}
+                                                      >
+                                                        Revert Marked as Paid
+                                                      </button>
+                                                    </li>
+                                                  </ul>
+                                                </AdminDropdownPortal>
+                                              </>
+                                            )}
+                                            {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
+                                            {(!isPaid || isSuperuser || isCollection) && (
+                                              <button
+                                                className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
+                                                title="Edit"
+                                                onClick={() => handleEditPayment(p)}
+                                                style={{ padding: 0 }}
+                                              >
+                                                <PencilIcon className="w-5 h-5" />
+                                              </button>
+                                            )}
+                                            {/* Delete icon (small) - available for all users */}
                                             <button
-                                              className="btn btn-circle btn-md bg-green-100 hover:bg-green-200 text-green-700 border-green-300 border-2 shadow-sm flex items-center justify-center"
-                                              title={p.isLegacy ? "Mark Legacy Payment as Paid" : "Mark as Paid"}
-                                              onClick={() => handleOpenPaidDateModal(p.id)}
+                                              className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
+                                              title="Delete"
+                                              onClick={() => handleDeletePayment(p)}
                                               style={{ padding: 0 }}
                                             >
-                                              <CurrencyDollarIcon className="w-5 h-5" />
+                                              <TrashIcon className="w-5 h-5" />
                                             </button>
-                                          )}
-                                          {/* Edit icon (small) - only for superusers/collection if paid, available for all if not paid */}
-                                          {(!isPaid || isSuperuser || isCollection) && (
-                                            <button
-                                              className="btn btn-circle btn-md bg-gray-100 hover:bg-gray-200 text-primary border-none shadow-sm flex items-center justify-center"
-                                              title="Edit"
-                                              onClick={() => handleEditPayment(p)}
-                                              style={{ padding: 0 }}
-                                            >
-                                              <PencilIcon className="w-5 h-5" />
-                                            </button>
-                                          )}
-                                          {/* Delete icon (small) - available for all users */}
-                                          <button
-                                            className="btn btn-circle btn-md bg-red-100 hover:bg-red-200 text-red-500 border-none shadow-sm flex items-center justify-center"
-                                            title="Delete"
-                                            onClick={() => handleDeletePayment(p)}
-                                            style={{ padding: 0 }}
-                                          >
-                                            <TrashIcon className="w-5 h-5" />
-                                          </button>
+                                          </div>
                                         </div>
-                                      </div>
-                                    )}
-                                  </div>
-                                );
-                              })}
-                            </div>
-                            {/* Add new payment and Delete payment plan buttons for this contact (box view) */}
-                            {!addingPaymentContact && (
-                              <div className="mt-4 flex justify-start gap-2">
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
-                                  onClick={() => handleAddNewPayment(contactName)}
-                                >
-                                  <PlusIcon className="w-4 h-4" />
-                                  Add new payment
-                                </button>
-                                <button
-                                  type="button"
-                                  className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
-                                  onClick={() => handleDeletePaymentPlan(contactName)}
-                                >
-                                  <TrashIcon className="w-4 h-4" />
-                                  Delete payment plan
-                                </button>
+                                      )}
+                                    </div>
+                                  );
+                                })}
                               </div>
-                            )}
+                              {/* Add new payment and Delete payment plan buttons for this contact (box view) */}
+                              {!addingPaymentContact && (
+                                <div className="mt-4 flex justify-start gap-2">
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline btn-primary text-xs font-medium flex items-center gap-2"
+                                    onClick={() => handleAddNewPayment(contactName)}
+                                  >
+                                    <PlusIcon className="w-4 h-4" />
+                                    Add new payment
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="btn btn-sm btn-outline btn-error text-xs font-medium flex items-center gap-2"
+                                    onClick={() => handleDeletePaymentPlan(contactName)}
+                                  >
+                                    <TrashIcon className="w-4 h-4" />
+                                    Delete payment plan
+                                  </button>
+                                </div>
+                              )}
                             </>
                           )}
                         </>
@@ -5707,7 +6005,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   );
                 });
               })()}
-              
+
               {/* Buttons for creating payment plans */}
               <div className="mt-10 flex justify-start gap-4">
                 <button
@@ -5739,158 +6037,158 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     </svg>
                   </div>
                 </div>
-                
+
                 {showDeletedPayments && (
                   <div className="mt-4 p-6 bg-white rounded-xl border border-gray-200">
-                  
-                  {deletedPayments.length > 0 ? (
-                    <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
-                      <table className="min-w-full rounded-xl overflow-hidden">
-                        <thead className="bg-base-200 sticky top-0 z-10">
-                          <tr>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Deleted Date</th>
-                            <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Actions</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {deletedPayments.map((p: any, idx: number) => (
-                            <tr
-                              key={p.id || idx}
-                              className="bg-red-50 border-l-4 border-red-400 hover:bg-red-100 rounded-xl shadow-sm transition-all duration-200"
-                              style={{ 
-                                verticalAlign: 'middle', 
-                                position: 'relative'
-                              }}
-                            >
-                              {/* Due % */}
-                              <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
-                                {p.due_percent || p.duePercent}
-                              </td>
-                              
-                              {/* Due Date */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                <span className="text-sm font-bold text-gray-900">
-                                  {formatDateDDMMYYYY(p.date || p.due_date)}
-                                </span>
-                              </td>
-                              
-                              {/* Value */}
-                              <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                <span className="text-sm font-bold text-gray-900">
-                                  {(() => {
-                                    const isLegacyPayment = p.accounting_currencies;
-                                    const currency = isLegacyPayment 
-                                      ? p.accounting_currencies?.iso_code || '₪'
-                                      : p.currency || '₪';
-                                    const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
-                                    
-                                    return (
-                                      <>
-                                        {getCurrencySymbol(currency)}{Number(p.value || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                        + {Number(vatValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                      </>
-                                    );
-                                  })()}
-                                </span>
-                              </td>
-                              
-                              {/* Total */}
-                              <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
-                                <span className="text-sm font-bold text-gray-900">
-                                  {(() => {
-                                    const isLegacyPayment = p.accounting_currencies;
-                                    const currency = isLegacyPayment 
-                                      ? p.accounting_currencies?.iso_code || '₪'
-                                      : p.currency || '₪';
-                                    const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
-                                    
-                                    return (
-                                      <>
-                                        {getCurrencySymbol(currency)}{(Number(p.value || 0) + Number(vatValue || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                                      </>
-                                    );
-                                  })()}
-                                </span>
-                              </td>
-                              
-                              {/* Contact */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                <div className="flex items-center justify-center gap-2">
-                                  <div className="w-6 h-6 bg-gradient-to-br from-red-500 to-pink-600 rounded-full flex items-center justify-center">
-                                    <UserIcon className="w-3 h-3 text-white" />
-                                  </div>
-                                  <div className="text-left">
-                                    <div className="text-sm font-semibold text-gray-900 flex items-center gap-2">
-                                      {p.client || p.client_name}
+
+                    {deletedPayments.length > 0 ? (
+                      <div className="bg-white rounded-xl border border-gray-200 overflow-x-auto">
+                        <table className="min-w-full rounded-xl overflow-hidden">
+                          <thead className="bg-base-200 sticky top-0 z-10">
+                            <tr>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due %</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Due Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Value</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Total</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Contact</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Payment Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Order</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Proforma</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Notes</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Deleted Date</th>
+                              <th className="px-4 py-3 text-center text-xs font-bold text-gray-700 uppercase tracking-wider">Actions</th>
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {deletedPayments.map((p: any, idx: number) => (
+                              <tr
+                                key={p.id || idx}
+                                className="bg-red-50 border-l-4 border-red-400 hover:bg-red-100 rounded-xl shadow-sm transition-all duration-200"
+                                style={{
+                                  verticalAlign: 'middle',
+                                  position: 'relative'
+                                }}
+                              >
+                                {/* Due % */}
+                                <td className="font-bold text-lg align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  {p.due_percent || p.duePercent}
+                                </td>
+
+                                {/* Due Date */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  <span className="text-sm font-bold text-gray-900">
+                                    {formatDateDDMMYYYY(p.date || p.due_date)}
+                                  </span>
+                                </td>
+
+                                {/* Value */}
+                                <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  <span className="text-sm font-bold text-gray-900">
+                                    {(() => {
+                                      const isLegacyPayment = p.accounting_currencies;
+                                      const currency = isLegacyPayment
+                                        ? p.accounting_currencies?.iso_code || '₪'
+                                        : p.currency || '₪';
+                                      const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
+
+                                      return (
+                                        <>
+                                          {getCurrencySymbol(currency)}{Number(p.value || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                          + {Number(vatValue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </>
+                                      );
+                                    })()}
+                                  </span>
+                                </td>
+
+                                {/* Total */}
+                                <td className="font-bold align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  <span className="text-sm font-bold text-gray-900">
+                                    {(() => {
+                                      const isLegacyPayment = p.accounting_currencies;
+                                      const currency = isLegacyPayment
+                                        ? p.accounting_currencies?.iso_code || '₪'
+                                        : p.currency || '₪';
+                                      const vatValue = isLegacyPayment ? p.vat_value : p.value_vat;
+
+                                      return (
+                                        <>
+                                          {getCurrencySymbol(currency)}{(Number(p.value || 0) + Number(vatValue || 0)).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                                        </>
+                                      );
+                                    })()}
+                                  </span>
+                                </td>
+
+                                {/* Contact */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  <div className="flex items-center justify-center gap-2">
+                                    <div className="w-6 h-6 bg-gradient-to-br from-red-500 to-pink-600 rounded-full flex items-center justify-center">
+                                      <UserIcon className="w-3 h-3 text-white" />
+                                    </div>
+                                    <div className="text-left">
+                                      <div className="text-sm font-semibold text-gray-900 flex items-center gap-2">
+                                        {p.client || p.client_name}
+                                      </div>
                                     </div>
                                   </div>
-                                </div>
-                              </td>
-                              
-                              {/* Payment Date */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
-                              </td>
-                              
-                              {/* Order */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                {p.order ? getOrderText(p.order) : p.payment_order ? getOrderText(p.payment_order) : '---'}
-                              </td>
-                              
-                              {/* Proforma */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                {p.proforma && p.proforma.trim() !== '' ? (
-                                  <span className="text-sm text-gray-600 line-through">
-                                    {p.proforma}
+                                </td>
+
+                                {/* Payment Date */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  {p.paid_at ? new Date(p.paid_at).toLocaleDateString() : '---'}
+                                </td>
+
+                                {/* Order */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  {p.order ? getOrderText(p.order) : p.payment_order ? getOrderText(p.payment_order) : '---'}
+                                </td>
+
+                                {/* Proforma */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  {p.proforma && p.proforma.trim() !== '' ? (
+                                    <span className="text-sm text-gray-600 line-through">
+                                      {p.proforma}
+                                    </span>
+                                  ) : (
+                                    <span className="text-sm text-gray-400">---</span>
+                                  )}
+                                </td>
+
+                                {/* Notes */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  {p.notes || '---'}
+                                </td>
+
+                                {/* Deleted Date */}
+                                <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
+                                  <span className="text-sm font-medium text-red-600">
+                                    {p.cancel_date ? new Date(p.cancel_date).toLocaleDateString() : '---'}
                                   </span>
-                                ) : (
-                                  <span className="text-sm text-gray-400">---</span>
-                                )}
-                              </td>
-                              
-                              {/* Notes */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                {p.notes || '---'}
-                              </td>
-                              
-                              {/* Deleted Date */}
-                              <td className="align-middle text-center px-4 py-3 whitespace-nowrap">
-                                <span className="text-sm font-medium text-red-600">
-                                  {p.cancel_date ? new Date(p.cancel_date).toLocaleDateString() : '---'}
-                                </span>
-                              </td>
-                              
-                              {/* Actions */}
-                              <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
-                                <button
-                                  className="btn btn-xs btn-success"
-                                  onClick={() => handleRestorePayment(p.id)}
-                                  title="Restore this payment"
-                                >
-                                  <ArrowUturnLeftIcon className="w-3 h-3" />
-                                  Restore
-                                </button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  ) : (
-                    <div className="text-center py-8 text-gray-500">
-                      <TrashIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
-                      <p>No deleted payments found</p>
-                    </div>
-                  )}
+                                </td>
+
+                                {/* Actions */}
+                                <td className="flex gap-2 justify-end align-middle min-w-[80px] px-4 py-3">
+                                  <button
+                                    className="btn btn-xs btn-success"
+                                    onClick={() => handleRestorePayment(p.id)}
+                                    title="Restore this payment"
+                                  >
+                                    <ArrowUturnLeftIcon className="w-3 h-3" />
+                                    Restore
+                                  </button>
+                                </td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    ) : (
+                      <div className="text-center py-8 text-gray-500">
+                        <TrashIcon className="w-12 h-12 mx-auto mb-4 text-gray-300" />
+                        <p>No deleted payments found</p>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -5944,28 +6242,28 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                         {proformaData.rows.map((row: any, idx: number) => (
                           <tr key={idx} className="hover:bg-gray-50 transition-colors">
                             <td>
-                              <input 
-                                className="input input-bordered w-56 text-base py-3 px-4" 
-                                value={row.description} 
+                              <input
+                                className="input input-bordered w-56 text-base py-3 px-4"
+                                value={row.description}
                                 onChange={e => handleProformaRowChange(idx, 'description', e.target.value)}
                                 readOnly={proformaData?.isViewMode}
                                 placeholder="Item description"
                               />
                             </td>
                             <td>
-                              <input 
-                                className="input input-bordered w-16 text-base text-right py-3 px-4" 
-                                type="number" 
-                                value={row.qty} 
+                              <input
+                                className="input input-bordered w-16 text-base text-right py-3 px-4"
+                                type="number"
+                                value={row.qty}
                                 onChange={e => handleProformaRowChange(idx, 'qty', Number(e.target.value))}
                                 readOnly={proformaData?.isViewMode}
                               />
                             </td>
                             <td>
-                              <input 
-                                className="input input-bordered w-32 text-base text-right py-3 px-4" 
-                                type="number" 
-                                value={row.rate} 
+                              <input
+                                className="input input-bordered w-32 text-base text-right py-3 px-4"
+                                type="number"
+                                value={row.rate}
                                 onChange={e => handleProformaRowChange(idx, 'rate', Number(e.target.value))}
                                 readOnly={proformaData?.isViewMode}
                               />
@@ -5975,8 +6273,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             </td>
                             {!proformaData?.isViewMode && (
                               <td>
-                                <button 
-                                  className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50" 
+                                <button
+                                  className="btn btn-ghost btn-xs text-red-500 hover:bg-red-50"
                                   onClick={() => handleDeleteProformaRow(idx)}
                                 >
                                   <TrashIcon className="w-4 h-4" />
@@ -5989,8 +6287,8 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     </table>
                   </div>
                   {!proformaData?.isViewMode && (
-                    <button 
-                      className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50" 
+                    <button
+                      className="btn btn-outline btn-sm mt-4 text-blue-600 border-blue-300 hover:bg-blue-50"
                       onClick={handleAddProformaRow}
                     >
                       <PlusIcon className="w-4 h-4 mr-1" />
@@ -6008,10 +6306,10 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="form-control">
                       <label className="label cursor-pointer justify-start gap-3">
-                        <input 
-                          type="checkbox" 
-                          className="checkbox checkbox-primary" 
-                          checked={proformaData.addVat} 
+                        <input
+                          type="checkbox"
+                          className="checkbox checkbox-primary"
+                          checked={proformaData.addVat}
                           onChange={e => setProformaData((prev: any) => ({ ...prev, addVat: e.target.checked }))}
                           disabled={proformaData?.isViewMode}
                         />
@@ -6023,9 +6321,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                       <label className="label">
                         <span className="label-text font-medium">Bank Account</span>
                       </label>
-                      <select 
-                        className="select select-bordered w-full" 
-                        value={proformaData.bankAccount} 
+                      <select
+                        className="select select-bordered w-full"
+                        value={proformaData.bankAccount}
                         onChange={e => setProformaData((prev: any) => ({ ...prev, bankAccount: e.target.value }))}
                         disabled={proformaData?.isViewMode}
                       >
@@ -6043,9 +6341,9 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                     <ChatBubbleLeftRightIcon className="w-5 h-5 text-purple-600" />
                     Notes
                   </h3>
-                  <textarea 
-                    className="textarea textarea-bordered w-full min-h-[120px] text-sm" 
-                    value={proformaData.notes} 
+                  <textarea
+                    className="textarea textarea-bordered w-full min-h-[120px] text-sm"
+                    value={proformaData.notes}
                     onChange={e => setProformaData((prev: any) => ({ ...prev, notes: e.target.value }))}
                     readOnly={proformaData?.isViewMode}
                     placeholder="Add any additional notes or terms..."
@@ -6159,7 +6457,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
           </div>
         </div>, document.body)
       }
-      
+
       {!hideTimelineHistory && <TimelineHistoryButtons client={client} />}
 
       {/* Stages Drawer for creating a new finance plan */}
@@ -6361,87 +6659,88 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                             isFirst ? 'First Payment' : isLast ? 'Final Payment' : 'Intermediate Payment';
                           const currentOrder = autoPlanData.paymentOrders?.[index] || defaultLabel;
                           return (
-                          <div key={index} className="flex items-center gap-2">
-                            <select
-                              className="select select-bordered w-40 text-sm"
-                              value={currentOrder}
-                              onChange={(e) => {
-                                setAutoPlanData(prev => {
-                                  const next = [...(prev.paymentOrders || [])];
-                                  // Ensure array length
-                                  while (next.length < prev.numberOfPayments) {
-                                    const idx = next.length;
-                                    const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
-                                    next.push(defaultOrder);
-                                  }
-                                  next[index] = e.target.value;
-                                  return {
-                                    ...prev,
-                                    paymentOrders: next,
-                                  };
-                                });
-                              }}
-                            >
-                              <option value="First Payment">First Payment</option>
-                              <option value="Intermediate Payment">Intermediate Payment</option>
-                              <option value="Final Payment">Final Payment</option>
-                              <option value="Single Payment">Single Payment</option>
-                              <option value="Expense (no VAT)">Expense (no VAT)</option>
-                            </select>
-                            <input
-                              type="number"
-                              className="input input-bordered w-24 no-arrows"
-                              min={0}
-                              max={100}
-                              value={autoPlanData.paymentPercents[index] ?? 0}
-                              onChange={(e) => {
-                                const percentValue = Number(e.target.value || 0);
-                                const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                setAutoPlanData(prev => {
-                                  const next = [...(prev.paymentPercents || [])];
-                                  // Ensure array length
-                                  while (next.length < prev.numberOfPayments) next.push(0);
-                                  next[index] = percentValue;
-                                  return {
-                                    ...prev,
-                                    paymentPercents: next,
-                                  };
-                                });
-                              }}
-                            />
-                            <span className="text-sm">%</span>
-                            <input
-                              type="number"
-                              className="input input-bordered w-32 no-arrows"
-                              min={0}
-                              step="0.01"
-                              value={(() => {
-                                const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                const percent = autoPlanData.paymentPercents[index] ?? 0;
-                                return totalAmount > 0 ? ((totalAmount * percent) / 100).toFixed(2) : '0.00';
-                              })()}
-                              onChange={(e) => {
-                                const amountValue = Number(e.target.value || 0);
-                                const totalAmount = Number(autoPlanData.totalAmount || 0);
-                                if (totalAmount > 0) {
-                                  const newPercent = (amountValue / totalAmount) * 100;
+                            <div key={index} className="flex items-center gap-2">
+                              <select
+                                className="select select-bordered w-40 text-sm"
+                                value={currentOrder}
+                                onChange={(e) => {
+                                  setAutoPlanData(prev => {
+                                    const next = [...(prev.paymentOrders || [])];
+                                    // Ensure array length
+                                    while (next.length < prev.numberOfPayments) {
+                                      const idx = next.length;
+                                      const defaultOrder = idx === 0 ? 'First Payment' : idx === prev.numberOfPayments - 1 ? 'Final Payment' : 'Intermediate Payment';
+                                      next.push(defaultOrder);
+                                    }
+                                    next[index] = e.target.value;
+                                    return {
+                                      ...prev,
+                                      paymentOrders: next,
+                                    };
+                                  });
+                                }}
+                              >
+                                <option value="First Payment">First Payment</option>
+                                <option value="Intermediate Payment">Intermediate Payment</option>
+                                <option value="Final Payment">Final Payment</option>
+                                <option value="Single Payment">Single Payment</option>
+                                <option value="Expense (no VAT)">Expense (no VAT)</option>
+                              </select>
+                              <input
+                                type="number"
+                                className="input input-bordered w-24 no-arrows"
+                                min={0}
+                                max={100}
+                                value={autoPlanData.paymentPercents[index] ?? 0}
+                                onChange={(e) => {
+                                  const percentValue = Number(e.target.value || 0);
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
                                   setAutoPlanData(prev => {
                                     const next = [...(prev.paymentPercents || [])];
                                     // Ensure array length
                                     while (next.length < prev.numberOfPayments) next.push(0);
-                                    next[index] = Math.round(newPercent * 100) / 100; // Round to 2 decimal places
+                                    next[index] = percentValue;
                                     return {
                                       ...prev,
                                       paymentPercents: next,
                                     };
                                   });
-                                }
-                              }}
-                              placeholder="0.00"
-                            />
-                            <span className="text-sm">{autoPlanData.currency || '₪'}</span>
-                          </div>
-                        )})}
+                                }}
+                              />
+                              <span className="text-sm">%</span>
+                              <input
+                                type="number"
+                                className="input input-bordered w-32 no-arrows"
+                                min={0}
+                                step="0.01"
+                                value={(() => {
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                  const percent = autoPlanData.paymentPercents[index] ?? 0;
+                                  return totalAmount > 0 ? ((totalAmount * percent) / 100).toFixed(2) : '0.00';
+                                })()}
+                                onChange={(e) => {
+                                  const amountValue = Number(e.target.value || 0);
+                                  const totalAmount = Number(autoPlanData.totalAmount || 0);
+                                  if (totalAmount > 0) {
+                                    const newPercent = (amountValue / totalAmount) * 100;
+                                    setAutoPlanData(prev => {
+                                      const next = [...(prev.paymentPercents || [])];
+                                      // Ensure array length
+                                      while (next.length < prev.numberOfPayments) next.push(0);
+                                      next[index] = Math.round(newPercent * 100) / 100; // Round to 2 decimal places
+                                      return {
+                                        ...prev,
+                                        paymentPercents: next,
+                                      };
+                                    });
+                                  }
+                                }}
+                                placeholder="0.00"
+                              />
+                              <span className="text-sm">{autoPlanData.currency || '₪'}</span>
+                            </div>
+                          )
+                        })}
                         <div className="text-xs text-gray-500">
                           Sum must be exactly 100%. If not, you'll see an error when creating the plan.
                         </div>
@@ -6488,7 +6787,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
             <p className="text-sm text-gray-600 mb-6">
               Calculate {percentageType === 'total' ? 'total amount' : 'left to plan amount'} percentage:
             </p>
-            
+
             <div className="space-y-6">
               {/* Percentage Buttons */}
               <div className="bg-gray-50 rounded-lg p-4">
@@ -6508,7 +6807,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   ))}
                 </div>
               </div>
-              
+
               {/* Custom Input */}
               <div className="border-t pt-4">
                 <h4 className="text-sm font-medium text-gray-700 mb-3">Or Enter Custom Percentage:</h4>
@@ -6532,7 +6831,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                   </button>
                 </div>
               </div>
-              
+
               {/* Base Amount Info */}
               <div className="bg-blue-50 rounded-lg p-3">
                 <div className="text-sm text-gray-600">
@@ -6549,7 +6848,7 @@ const FinancesTab: React.FC<FinancesTabProps> = ({ client, onClientUpdate, onPay
                 )}
               </div>
             </div>
-            
+
             <div className="flex justify-end gap-3 mt-6 pt-4 border-t">
               <button
                 className="btn btn-ghost"

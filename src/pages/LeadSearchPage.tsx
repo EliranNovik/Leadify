@@ -624,7 +624,7 @@ const getContrastingTextColor = (hexColor?: string | null) => {
 };
 
 // Table View Component
-const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (leadNumber: string, event?: React.MouseEvent) => void }) => {
+const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], selectedColumns: string[], onLeadClick: (lead: Lead | string, event?: React.MouseEvent) => void }) => {
   // Helper function to get currency symbol
   const getCurrencySymbol = (currencyId: any) => {
     if (!currencyId) return '₪'; // Default to NIS
@@ -847,12 +847,10 @@ const TableView = ({ leads, selectedColumns, onLeadClick }: { leads: Lead[], sel
               key={lead.id || index} 
               className="hover cursor-pointer transition-colors duration-200 hover:bg-blue-50 active:bg-blue-100"
               onClick={(e) => {
-                const leadNumber = (lead as any).lead_number || lead.id?.toString();
-                if (leadNumber) {
-                  onLeadClick(leadNumber, e);
-                }
+                // Pass the full lead object so we can access manual_id and other properties
+                onLeadClick(lead, e);
               }}
-              title={`Click to view lead ${(lead as any).lead_number || lead.id}`}
+              title={`Click to view lead ${(lead as any).display_lead_number || (lead as any).lead_number || lead.id}`}
             >
               {selectedColumns.map((columnKey) => {
                 const columnValue = getColumnValue(lead, columnKey);
@@ -944,12 +942,52 @@ const LeadSearchPage: React.FC = () => {
   const navigate = useNavigate();
 
   // Handle lead click navigation
-  const handleLeadClick = (leadNumber: string, event?: React.MouseEvent) => {
+  const handleLeadClick = (lead: Lead | string, event?: React.MouseEvent) => {
+    // Handle both string (legacy) and Lead object (new)
+    let leadNumber: string;
+    let manualId: string | null = null;
+    let leadType: 'new' | 'legacy' | undefined;
+    
+    if (typeof lead === 'string') {
+      // Legacy: just a lead number string
+      leadNumber = lead;
+    } else {
+      // New: full lead object
+      const anyLead = lead as any;
+      leadNumber = anyLead.display_lead_number || anyLead.lead_number || lead.id?.toString() || '';
+      manualId = anyLead.manual_id || null;
+      leadType = anyLead.lead_type;
+    }
+    
+    if (!leadNumber) return;
+    
+    // Check if it's a sublead (contains '/')
+    const isSubLead = leadNumber.includes('/');
+    
+    // Build the URL using the same logic as Clients.tsx buildClientRoute
+    let path = '';
+    
+    if (isSubLead && manualId) {
+      // Sublead with manual_id: use query parameter format like /clients/2104625?lead=L210764%2F3
+      // This matches the format used by Clients.tsx buildClientRoute
+      path = `/clients/${encodeURIComponent(manualId)}?lead=${encodeURIComponent(leadNumber)}`;
+    } else if (isSubLead && !manualId && leadType === 'new') {
+      // New lead sublead without manual_id: extract base from display_lead_number
+      // For new leads, manual_id might be the same as the base lead_number
+      const baseNumber = leadNumber.split('/')[0];
+      path = `/clients/${encodeURIComponent(baseNumber)}?lead=${encodeURIComponent(leadNumber)}`;
+    } else {
+      // Regular lead: use manual_id if available, otherwise use lead_number
+      const identifier = manualId || leadNumber;
+      path = `/clients/${encodeURIComponent(identifier)}`;
+    }
+    
     if (event && (event.metaKey || event.ctrlKey)) {
       // Open in new tab if Cmd (Mac) or Ctrl (Windows/Linux) is pressed
-      window.open(`/clients/${leadNumber}`, '_blank');
+      window.open(path, '_blank');
     } else {
-      navigate(`/clients/${leadNumber}`);
+      // Navigate using React Router
+      navigate(path);
     }
   };
 
@@ -3058,6 +3096,7 @@ const LeadSearchPage: React.FC = () => {
       // Calculate sublead suffixes for new leads (similar to Clients.tsx)
       // Group subleads by master_id and calculate suffixes based on id ordering
       const newSubLeadSuffixMap = new Map<string, number>();
+      const newMasterIdsWithSubLeads = new Set<string>(); // Track which master IDs have subleads
       const newLeadsWithMaster = filteredNewLeads.filter((l: any) => l.master_id);
       const newMasterIds = Array.from(new Set(newLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
       
@@ -3069,6 +3108,11 @@ const LeadSearchPage: React.FC = () => {
           const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
           return aId - bId;
         });
+        
+        // Mark this master ID as having subleads
+        if (sameMasterLeads.length > 0) {
+          newMasterIdsWithSubLeads.add(masterId);
+        }
         
         sameMasterLeads.forEach((lead: any, index: number) => {
           const leadKey = lead.id?.toString();
@@ -3095,16 +3139,29 @@ const LeadSearchPage: React.FC = () => {
             const leadKey = anyLead.id?.toString();
             const suffix = leadKey ? newSubLeadSuffixMap.get(leadKey) : undefined;
             
-            // Find the master lead to get its lead_number or manual_id
+            // Find the master lead to get its lead_number (prefer lead_number over manual_id for new leads)
             const masterLead = filteredNewLeads.find((l: any) => l.id === anyLead.master_id);
-            const masterLeadNumber = masterLead?.lead_number || masterLead?.manual_id || anyLead.master_id?.toString() || '';
+            // For new leads, always use lead_number (not manual_id) for sublead display
+            const masterLeadNumber = masterLead?.lead_number || anyLead.master_id?.toString() || '';
             
             // Use calculated suffix if available, otherwise default to /2
             displayLeadNumber = suffix ? `${masterLeadNumber}/${suffix}` : `${masterLeadNumber}/2`;
           }
         } else {
           // It's a master lead or standalone lead
-          displayLeadNumber = anyLead.manual_id || anyLead.lead_number || anyLead.id?.toString?.() || '';
+          // For new leads, prefer lead_number over manual_id
+          const baseNumber = anyLead.lead_number || anyLead.manual_id || anyLead.id?.toString?.() || '';
+          // Add /1 suffix ONLY if this master lead has subleads
+          // Check if this lead's ID is in the set of master IDs that have subleads
+          const leadIdStr = anyLead.id?.toString();
+          const hasSubLeads = leadIdStr && newMasterIdsWithSubLeads.has(leadIdStr);
+          
+          // Check if it already has a suffix
+          if (hasSubLeads && baseNumber && !baseNumber.includes('/')) {
+            displayLeadNumber = `${baseNumber}/1`;
+          } else {
+            displayLeadNumber = baseNumber;
+          }
         }
 
         return {
@@ -3208,6 +3265,7 @@ const LeadSearchPage: React.FC = () => {
       // Calculate sublead suffixes for legacy leads (similar to Clients.tsx)
       // Group subleads by master_id and calculate suffixes based on id ordering
       const legacySubLeadSuffixMap = new Map<string, number>();
+      const legacyMasterIdsWithSubLeads = new Set<string>(); // Track which master IDs have subleads
       const legacyLeadsWithMaster = filteredLegacyLeads.filter((l: any) => l.master_id);
       const legacyMasterIds = Array.from(new Set(legacyLeadsWithMaster.map((l: any) => l.master_id?.toString()).filter(Boolean)));
       
@@ -3219,6 +3277,11 @@ const LeadSearchPage: React.FC = () => {
           const bId = typeof b.id === 'string' ? parseInt(b.id) || 0 : (b.id || 0);
           return aId - bId;
         });
+        
+        // Mark this master ID as having subleads
+        if (sameMasterLeads.length > 0) {
+          legacyMasterIdsWithSubLeads.add(masterId);
+        }
         
         sameMasterLeads.forEach((lead: any, index: number) => {
           const leadKey = lead.id?.toString();
@@ -3276,10 +3339,21 @@ const LeadSearchPage: React.FC = () => {
           }
         } else {
           // It's a master lead or standalone lead
-          displayLeadNumber = legacyLeadAny.manual_id ||
+          const baseNumber = legacyLeadAny.manual_id ||
             legacyLead.lead_number ||
             legacyLead.id?.toString?.() ||
             '';
+          // Add /1 suffix ONLY if this master lead has subleads
+          // Check if this lead's ID is in the set of master IDs that have subleads
+          const leadIdStr = legacyLead.id?.toString();
+          const hasSubLeads = leadIdStr && legacyMasterIdsWithSubLeads.has(leadIdStr);
+          
+          // Check if it already has a suffix
+          if (hasSubLeads && baseNumber && !baseNumber.includes('/')) {
+            displayLeadNumber = `${baseNumber}/1`;
+          } else {
+            displayLeadNumber = baseNumber;
+          }
         }
 
         return {
@@ -3579,10 +3653,8 @@ const LeadSearchPage: React.FC = () => {
       key={lead.id} 
       className={cardClasses}
       onClick={(e) => {
-        const leadNumber = lead.lead_number || lead.id?.toString();
-        if (leadNumber) {
-          handleLeadClick(leadNumber, e);
-        }
+        // Pass the full lead object so we can access manual_id and other properties
+        handleLeadClick(lead, e);
       }}
     >
       <div className="card-body p-5 relative">

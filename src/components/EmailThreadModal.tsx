@@ -29,14 +29,14 @@ const sanitizeEmailForFilter = (value: string) =>
 // Helper function to filter out @lawoffice.org.il emails
 const shouldExcludeLawOfficeEmail = (email?: string | null): boolean => {
   if (!email) return false;
-  
+
   // Handle different email formats
   const emailStr = String(email);
   const normalized = emailStr.toLowerCase().trim();
-  
+
   // Remove any whitespace or special characters that might interfere
   const cleanEmail = normalized.replace(/\s+/g, '');
-  
+
   // Check multiple patterns to catch all variations
   const patterns = [
     '@lawoffice.org.il',
@@ -44,13 +44,13 @@ const shouldExcludeLawOfficeEmail = (email?: string | null): boolean => {
     ' @lawoffice.org.il',
     'lawoffice.org.il'
   ];
-  
-  const shouldExclude = patterns.some(pattern => 
-    cleanEmail.includes(pattern) || 
+
+  const shouldExclude = patterns.some(pattern =>
+    cleanEmail.includes(pattern) ||
     cleanEmail.endsWith(pattern.trim()) ||
     cleanEmail === pattern.trim()
   );
-  
+
   if (shouldExclude) {
     console.log('🚫 [EmailThreadModal] shouldExcludeLawOfficeEmail: TRUE', {
       original: email,
@@ -60,7 +60,7 @@ const shouldExcludeLawOfficeEmail = (email?: string | null): boolean => {
       type: typeof email
     });
   }
-  
+
   return shouldExclude;
 };
 
@@ -279,61 +279,61 @@ const convertBodyToHtml = (text: string) => {
     anchorPlaceholders.push(match);
     return `__ANCHOR_PLACEHOLDER_${placeholderIndex++}__`;
   });
-  
+
   // Convert plain URLs to links (but skip those already in anchor tags)
   const urlRegex = /(https?:\/\/[^\s<>]+)/gi;
   const escaped = textWithPlaceholders.replace(urlRegex, url => {
     const safeUrl = url.replace(/"/g, '&quot;');
     return `<a href="${safeUrl}" target="_blank" rel="noopener noreferrer">${url}</a>`;
   });
-  
+
   // Restore original anchor tags
   let result = escaped;
   anchorPlaceholders.forEach((anchor, index) => {
     result = result.replace(`__ANCHOR_PLACEHOLDER_${index}__`, anchor);
   });
-  
+
   // Preserve line breaks: convert \n to <br>
   result = result
     .replace(/\r\n/g, '\n')  // Normalize line endings
     .replace(/\r/g, '\n')    // Handle old Mac line endings
     .replace(/\n/g, '<br>'); // Convert to HTML line breaks
-  
+
   // Use dir="auto" to let the browser automatically detect text direction
   // This handles mixed content (English + Hebrew) correctly
   result = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${result}</div>`;
-  
+
   return result;
 };
 
 // Filter out problematic image URLs that are known to be blocked by CORS
 const filterProblematicImages = (html: string): string => {
   if (!html) return html;
-  
+
   // List of domains/patterns that are commonly blocked by CORS
   const problematicPatterns = [
     'lh7-rt.googleusercontent.com',
     'googleusercontent.com',
     'drive.google.com',
   ];
-  
+
   // Remove img tags with problematic URLs to prevent CORS errors
   let filteredHtml = html;
-  
+
   problematicPatterns.forEach(pattern => {
     // Escape special regex characters in the pattern
     const escapedPattern = pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-    
+
     // More aggressive regex to catch all variations of img tags with problematic URLs
     // This will match img tags containing the pattern anywhere (in src, alt, or other attributes)
     const regex = new RegExp(
       `<img[^>]*?${escapedPattern}[^>]*?>`,
       'gis'
     );
-    
+
     // Replace problematic img tags with empty string (remove them completely)
     filteredHtml = filteredHtml.replace(regex, '');
-    
+
     // Also try matching with src attribute specifically (more specific match)
     const srcRegex = new RegExp(
       `<img[^>]*?src\\s*=\\s*["'][^"']*?${escapedPattern}[^"']*?["'][^>]*?>`,
@@ -341,14 +341,14 @@ const filterProblematicImages = (html: string): string => {
     );
     filteredHtml = filteredHtml.replace(srcRegex, '');
   });
-  
+
   return filteredHtml;
 };
 
 const sanitizeEmailHtml = (html: string): string => {
   // First filter out problematic images
   const filteredHtml = filterProblematicImages(html);
-  
+
   return sanitizeHtml(filteredHtml, {
     allowedTags: ['p', 'b', 'i', 'u', 'ul', 'ol', 'li', 'br', 'strong', 'em', 'a', 'span', 'div', 'body', 'img'],
     allowedAttributes: {
@@ -365,7 +365,7 @@ const sanitizeEmailHtml = (html: string): string => {
 };
 
 const replaceTemplateTokens = async (
-  content: string, 
+  content: string,
   contact: Contact | null,
   options?: {
     meetingDate?: string;
@@ -375,15 +375,15 @@ const replaceTemplateTokens = async (
   }
 ) => {
   if (!content) return '';
-  
+
   // Build context for template replacement
-  const isLegacyLead = contact?.lead_type === 'legacy' || 
-                       (contact?.id && contact.id.toString().startsWith('legacy_'));
-  
+  const isLegacyLead = contact?.lead_type === 'legacy' ||
+    (contact?.id && contact.id.toString().startsWith('legacy_'));
+
   // Determine client ID and legacy ID
   let clientId: string | null = null;
   let legacyId: number | null = null;
-  
+
   if (isLegacyLead) {
     if (contact?.lead_number) {
       const numeric = parseInt(contact.lead_number.replace(/[^0-9]/g, ''), 10);
@@ -397,7 +397,7 @@ const replaceTemplateTokens = async (
   } else {
     clientId = contact?.client_uuid || contact?.id?.toString() || null;
   }
-  
+
   const context = {
     clientId,
     legacyId,
@@ -411,7 +411,7 @@ const replaceTemplateTokens = async (
     meetingLocation: options?.meetingLocation || null,
     meetingLink: options?.meetingLink || null,
   };
-  
+
   return await replaceEmailTemplateParams(content, context);
 };
 
@@ -424,7 +424,7 @@ const isOfficeEmail = (email: string | null | undefined): boolean => {
 // Build email-to-display-name mapping for all employees
 const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   const emailToNameMap = new Map<string, string>();
-  
+
   try {
     // Fetch all employees and users in parallel
     const [employeesResult, usersResult] = await Promise.all([
@@ -437,12 +437,12 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
         .select('employee_id, email')
         .not('email', 'is', null)
     ]);
-    
+
     if (employeesResult.error || usersResult.error) {
       console.error('Error fetching employees/users for email mapping:', employeesResult.error || usersResult.error);
       return emailToNameMap;
     }
-    
+
     // Create employee_id to email mapping from users table
     const employeeIdToEmail = new Map<number, string>();
     usersResult.data?.forEach((user: any) => {
@@ -450,17 +450,17 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
         employeeIdToEmail.set(user.employee_id, user.email.toLowerCase());
       }
     });
-    
+
     // Map emails to display names
     employeesResult.data?.forEach((emp: any) => {
       if (!emp.display_name) return;
-      
+
       // Method 1: Use email from users table (employee_id match)
       const emailFromUsers = employeeIdToEmail.get(emp.id);
       if (emailFromUsers) {
         emailToNameMap.set(emailFromUsers, emp.display_name);
       }
-      
+
       // Method 2: Use pattern matching (display_name.toLowerCase().replace(/\s+/g, '.') + '@lawoffice.org.il')
       const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
       emailToNameMap.set(patternEmail, emp.display_name);
@@ -468,7 +468,7 @@ const buildEmployeeEmailToNameMap = async (): Promise<Map<string, string>> => {
   } catch (error) {
     console.error('Error building employee email-to-name map:', error);
   }
-  
+
   return emailToNameMap;
 };
 
@@ -500,7 +500,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [showChat, setShowChat] = useState(false);
   const [showContactSelector, setShowContactSelector] = useState(false);
   const [allContacts, setAllContacts] = useState<Contact[]>([]);
-  
+
   // Wrapper to ensure allContacts always filters out @lawoffice.org.il
   const setAllContactsFiltered = useCallback((contacts: Contact[]) => {
     const filtered = contacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
@@ -508,11 +508,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       const email = String(c.email || '').toLowerCase().trim();
       return !email.includes('@lawoffice.org.il');
     });
-    
+
     if (filtered2.length !== contacts.length) {
       console.error(`❌ [EmailThreadModal] setAllContactsFiltered: Filtered out ${contacts.length - filtered2.length} @lawoffice.org.il contacts`);
     }
-    
+
     const lawOfficeInFiltered = filtered2.filter(c => shouldExcludeLawOfficeEmail(c.email));
     if (lawOfficeInFiltered.length > 0) {
       console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in setAllContactsFiltered result!', lawOfficeInFiltered);
@@ -522,14 +522,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       setAllContacts(filtered2);
     }
   }, []);
-  
+
   const [searchAllContacts, setSearchAllContacts] = useState('');
   const [toRecipients, setToRecipients] = useState<string[]>([]);
   const [ccRecipients, setCcRecipients] = useState<string[]>([]);
   const [toInput, setToInput] = useState('');
   const [ccInput, setCcInput] = useState('');
   const [recipientError, setRecipientError] = useState<string | null>(null);
-  
+
   // Employee autocomplete state
   const [employees, setEmployees] = useState<Array<{ email: string; name: string }>>([]);
   const [toSuggestions, setToSuggestions] = useState<Array<{ email: string; name: string }>>([]);
@@ -546,26 +546,26 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const [templateDropdownOpen, setTemplateDropdownOpen] = useState(false);
   const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
   const templateDropdownRef = useRef<HTMLDivElement | null>(null);
-  
+
   // Template filters
   const [templateLanguageFilter, setTemplateLanguageFilter] = useState<string | null>(null);
   const [templatePlacementFilter, setTemplatePlacementFilter] = useState<number | null>(null);
   const [availableLanguages, setAvailableLanguages] = useState<Array<{ id: string; name: string }>>([]);
   const [availablePlacements, setAvailablePlacements] = useState<Array<{ id: number; name: string }>>([]);
-  
+
   // AI suggestions state
   const [isLoadingAI, setIsLoadingAI] = useState(false);
   const [aiSuggestions, setAiSuggestions] = useState<string[]>([]);
   const [showAISuggestions, setShowAISuggestions] = useState(false);
-  
+
   // Lead contacts modal state (for adding contacts to recipients)
   const [showContactsModal, setShowContactsModal] = useState(false);
   const [modalLeadContacts, setModalLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactIds, setSelectedContactIds] = useState<Set<number>>(new Set());
   const [loadingContacts, setLoadingContacts] = useState(false);
-  
+
   const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  
+
   // New Email Modal state
   const [isNewEmailModalOpen, setIsNewEmailModalOpen] = useState(false);
   const [newEmailSearchTerm, setNewEmailSearchTerm] = useState('');
@@ -577,26 +577,26 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const previousRawSearchValueRef = useRef<string>('');
   const filteredTemplates = useMemo(() => {
     let filtered = templates;
-    
+
     // Filter by language
     if (templateLanguageFilter) {
       filtered = filtered.filter(template => template.languageId === templateLanguageFilter);
     }
-    
+
     // Filter by placement
     if (templatePlacementFilter !== null) {
       filtered = filtered.filter(template => template.placementId === templatePlacementFilter);
     }
-    
+
     // Filter by search query
     const query = templateSearch.trim().toLowerCase();
     if (query) {
       filtered = filtered.filter(template => template.name.toLowerCase().includes(query));
     }
-    
+
     return filtered;
   }, [templates, templateSearch, templateLanguageFilter, templatePlacementFilter]);
-  
+
   const fileInputRef = useRef<HTMLInputElement>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const isManuallySettingContactIdRef = useRef(false);
@@ -612,11 +612,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   });
   const [downloadingAttachments, setDownloadingAttachments] = useState<Record<string, boolean>>({});
   const [currentUserFullName, setCurrentUserFullName] = useState('');
-  
+
   // State for lead contacts (all contacts associated with the selected lead)
   const [leadContacts, setLeadContacts] = useState<ContactInfo[]>([]);
   const [selectedContactId, setSelectedContactId] = useState<number | null>(null);
-  
+
   // State for role-based filtering
   const [currentUserEmployeeId, setCurrentUserEmployeeId] = useState<number | null>(null);
   const [isSuperuser, setIsSuperuser] = useState<boolean | null>(null);
@@ -683,13 +683,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
         // Parse templates and match with language/placement names
         const parsed = (templatesResult.data || []).map((template: any) => {
-          const placement = Array.isArray(template.email_templates_placement) 
-            ? template.email_templates_placement[0] 
+          const placement = Array.isArray(template.email_templates_placement)
+            ? template.email_templates_placement[0]
             : template.email_templates_placement;
-          
+
           const languageId = template.language_id ? String(template.language_id) : null;
           const languageName = languageId ? languageMap.get(languageId) || null : null;
-          
+
           return {
             id: typeof template.id === 'number' ? template.id : Number(template.id),
             name: template.name || `Template ${template.id}`,
@@ -741,7 +741,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         if (authUser) {
           setUserId(authUser.id);
           setUserEmail(authUser.email || '');
-          
+
           // Fetch database user ID from users table for read_by field
           if (authUser.email && authUser.email.includes('@')) {
             // Try by email first
@@ -750,7 +750,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               .select('id, full_name, email, employee_id, is_superuser')
               .eq('email', authUser.email)
               .maybeSingle();
-            
+
             if (!error && userRow) {
               setDatabaseUserId(userRow.id);
               if (userRow.full_name) {
@@ -773,7 +773,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 .select('id, full_name, email, employee_id, is_superuser')
                 .eq('auth_id', authUser.id)
                 .maybeSingle();
-              
+
               if (!authIdError && userByAuthId) {
                 setDatabaseUserId(userByAuthId.id);
                 if (userByAuthId.full_name) {
@@ -868,13 +868,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         const employeeList: Array<{ email: string; name: string }> = [];
         employeesResult.data?.forEach((emp: any) => {
           if (!emp.display_name) return;
-          
+
           // Method 1: Use email from users table
           const emailFromUsers = employeeIdToEmail.get(emp.id);
           if (emailFromUsers) {
             employeeList.push({ email: emailFromUsers, name: emp.display_name });
           }
-          
+
           // Method 2: Also add pattern email
           const patternEmail = `${emp.display_name.toLowerCase().replace(/\s+/g, '.')}@lawoffice.org.il`;
           // Only add if it's different from the actual email
@@ -887,7 +887,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         const uniqueEmployees = Array.from(
           new Map(employeeList.map(emp => [emp.email, emp])).values()
         );
-        
+
         setEmployees(uniqueEmployees);
       } catch (error) {
         console.error('Error fetching employees:', error);
@@ -947,11 +947,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   // Search employees locally
   const searchEmployees = (searchText: string): Array<{ email: string; name: string }> => {
     if (!searchText || searchText.trim().length < 1) return [];
-    
+
     const searchLower = searchText.trim().toLowerCase();
     return employees
-      .filter(emp => 
-        emp.name.toLowerCase().includes(searchLower) || 
+      .filter(emp =>
+        emp.name.toLowerCase().includes(searchLower) ||
         emp.email.toLowerCase().includes(searchLower)
       )
       .slice(0, 10); // Limit to 10 results
@@ -961,7 +961,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     const value = type === 'to' ? toInput : ccInput;
     const suggestions = type === 'to' ? toSuggestions : ccSuggestions;
     const showSuggestions = type === 'to' ? showToSuggestions : showCcSuggestions;
-    
+
     if (event.key === 'ArrowDown' && showSuggestions && suggestions.length > 0) {
       event.preventDefault();
       // Select first suggestion
@@ -971,7 +971,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
       return;
     }
-    
+
     if (event.key === 'Escape') {
       if (type === 'to') {
         setShowToSuggestions(false);
@@ -980,7 +980,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
       return;
     }
-    
+
     const keys = ['Enter', ',', ';'];
     if (keys.includes(event.key)) {
       event.preventDefault();
@@ -1030,7 +1030,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               if (recipientError) {
                 setRecipientError(null);
               }
-              
+
               // Search employees immediately as user types
               if (newValue.trim().length > 0) {
                 const results = searchEmployees(newValue.trim());
@@ -1086,7 +1086,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             <PlusIcon className="w-3 h-3" />
           </button>
         </div>
-        
+
         {/* Autocomplete Suggestions Dropdown */}
         {showSuggestions && suggestions.length > 0 && (
           <div
@@ -1147,7 +1147,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       const trimmedExisting = existing.replace(/\s*$/, '');
       // If label is provided, create HTML anchor tag with label as clickable text
       // If no label, just use the URL (convertBodyToHtml will make it clickable)
-      const linkLine = label 
+      const linkLine = label
         ? `<a href="${formattedUrl.replace(/"/g, '&quot;')}" target="_blank" rel="noopener noreferrer">${label}</a>`
         : formattedUrl;
       return trimmedExisting ? `${trimmedExisting}\n\n${linkLine}` : linkLine;
@@ -1171,26 +1171,26 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   const handleTemplateSelect = async (template: EmailTemplate) => {
     setSelectedTemplateId(template.id);
-    
+
     // Replace template tokens (async to fetch meeting data if needed)
     const templatedBody = await replaceTemplateTokens(template.content, selectedContact);
     const finalBody = templatedBody || template.content || template.rawContent;
-    
+
     if (template.subject && template.subject.trim()) {
       const templatedSubject = await replaceTemplateTokens(template.subject, selectedContact);
       setSubject(templatedSubject);
     }
-    
+
     setNewMessage(finalBody);
-    
+
     // Check if template is Hebrew based on language or content
     const isHebrew = isHebrewLanguage(template.languageId, template.languageName) || containsHebrew(finalBody);
     setNewMessageIsRTL(isHebrew);
-    
+
     setTemplateSearch(template.name);
     setTemplateDropdownOpen(false);
   };
-  
+
   // MSAL for email sending
 
 
@@ -1287,13 +1287,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     const fetchContactsWithEmailConversations = async () => {
       // Create a unique key for this fetch based on dependencies
       const fetchKey = `${isOpen}-${showMyContactsOnly}-${currentUserEmployeeId || 'null'}-${currentUserFullName || 'null'}`;
-      
+
       // Skip if we're already fetching the same thing
       if (isFetchingContactsRef.current && lastFetchKeyRef.current === fetchKey) {
         console.log('⏭️ [EmailThreadModal] Skipping duplicate fetch:', fetchKey);
         return;
       }
-      
+
       console.log('🔄 [EmailThreadModal] fetchContactsWithEmailConversations called', {
         isOpen,
         showMyContactsOnly,
@@ -1303,20 +1303,20 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         isCurrentlyFetching: isFetchingContactsRef.current,
         lastFetchKey: lastFetchKeyRef.current
       });
-      
+
       // If "My Contacts" is enabled but user info isn't loaded yet, wait for it
       if (showMyContactsOnly && !currentUserEmployeeId && !currentUserFullName) {
         console.log('⏳ Waiting for user info before fetching "My Contacts"');
         return;
       }
-      
+
       // Mark as fetching
       isFetchingContactsRef.current = true;
       lastFetchKeyRef.current = fetchKey;
-      
+
       try {
         setIsLoading(true);
-        
+
         // Fetch unique client_id and legacy_id from emails table
         // Only get emails where client_id or legacy_id is not null
         // IMPORTANT: We fetch ALL emails here (including @lawoffice.org.il) because we need to find
@@ -1325,7 +1325,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           .from('emails')
           .select('client_id, legacy_id, sender_email, recipient_list')
           .or('client_id.not.is.null,legacy_id.not.is.null');
-        
+
         console.log(`📧 [EmailThreadModal] Fetched ${emailsData?.length || 0} emails from database`);
 
         if (emailsError) {
@@ -1338,7 +1338,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // We'll filter contacts by their email field later, not by email thread participants
         const uniqueClientIds = new Set<string>();
         const uniqueLegacyIds = new Set<number>();
-        
+
         (emailsData || []).forEach((email: any) => {
           if (email.client_id) {
             uniqueClientIds.add(String(email.client_id));
@@ -1351,17 +1351,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Fetch new leads with email conversations (with role filter if enabled)
         const newLeadIds = Array.from(uniqueClientIds);
         let newLeadsData: any[] = [];
-        
+
         if (newLeadIds.length > 0) {
           let query = supabase
             .from('leads')
             .select('id, name, email, lead_number, phone, mobile, created_at, topic, closer, scheduler, handler, manager, helper, expert, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id');
-          
+
           // Apply role filter if "My Contacts" is enabled AND we have user info
           if (showMyContactsOnly && (currentUserEmployeeId || currentUserFullName)) {
             // Build filter conditions for new leads
             const newLeadConditions: string[] = [];
-            
+
             // Text fields (saved as display names): closer, scheduler, handler
             if (currentUserFullName) {
               const fullNameLower = currentUserFullName.trim().toLowerCase();
@@ -1369,7 +1369,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               newLeadConditions.push(`scheduler.ilike.%${fullNameLower}%`);
               newLeadConditions.push(`handler.ilike.%${fullNameLower}%`);
             }
-            
+
             // Numeric fields (saved as employee IDs): manager, helper, expert, case_handler_id
             if (currentUserEmployeeId) {
               newLeadConditions.push(`manager.eq.${currentUserEmployeeId}`);
@@ -1377,12 +1377,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               newLeadConditions.push(`expert.eq.${currentUserEmployeeId}`);
               newLeadConditions.push(`case_handler_id.eq.${currentUserEmployeeId}`);
             }
-            
+
             if (newLeadConditions.length > 0) {
               query = query.or(newLeadConditions.join(','));
             }
           }
-          
+
           // Always filter by lead IDs that have email conversations
           query = query.in('id', newLeadIds);
 
@@ -1397,9 +1397,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               client_uuid: lead.id ? String(lead.id) : null,
               email: lead.email || '', // Ensure email is always a string
             }));
-            
+
             console.log(`🔍 [EmailThreadModal] New leads before filter: ${mappedNewLeads.length}`);
-            
+
             newLeadsData = mappedNewLeads.filter((lead: any) => {
               // Filter out @lawoffice.org.il emails at the source using the same helper function
               const shouldExclude = shouldExcludeLawOfficeEmail(lead.email);
@@ -1408,9 +1408,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               }
               return !shouldExclude;
             });
-            
+
             console.log(`🔍 [EmailThreadModal] New leads after filter: ${newLeadsData.length} (filtered out ${mappedNewLeads.length - newLeadsData.length})`);
-            
+
             // Debug: Check if any @lawoffice.org.il emails remain
             const remainingLawOffice = newLeadsData.filter((lead: any) => shouldExcludeLawOfficeEmail(lead.email));
             if (remainingLawOffice.length > 0) {
@@ -1422,12 +1422,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Fetch legacy leads with email conversations (with role filter if enabled)
         const legacyLeadIds = Array.from(uniqueLegacyIds).filter(id => !isNaN(id));
         let legacyLeadsData: any[] = [];
-        
+
         if (legacyLeadIds.length > 0) {
           let query = supabase
             .from('leads_lead')
             .select('id, name, email, phone, mobile, cdate, category_id, closer_id, meeting_scheduler_id, meeting_manager_id, meeting_lawyer_id, expert_id, case_handler_id');
-          
+
           // Apply role filter if "My Contacts" is enabled AND we have user info
           if (showMyContactsOnly && currentUserEmployeeId) {
             // Build filter conditions for legacy leads (all numeric IDs)
@@ -1441,7 +1441,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             ];
             query = query.or(legacyConditions.join(','));
           }
-          
+
           // Always filter by lead IDs that have email conversations
           query = query.in('id', legacyLeadIds);
 
@@ -1476,9 +1476,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               helper: null, // Not used for legacy
               expert: null // Not used for legacy
             }));
-            
+
             console.log(`🔍 [EmailThreadModal] Legacy leads before filter: ${mappedLegacyLeads.length}`);
-            
+
             legacyLeadsData = mappedLegacyLeads.filter((lead: any) => {
               // Filter out @lawoffice.org.il emails at the source using the same helper function
               const shouldExclude = shouldExcludeLawOfficeEmail(lead.email);
@@ -1487,9 +1487,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               }
               return !shouldExclude;
             });
-            
+
             console.log(`🔍 [EmailThreadModal] Legacy leads after filter: ${legacyLeadsData.length} (filtered out ${mappedLegacyLeads.length - legacyLeadsData.length})`);
-            
+
             // Debug: Check if any @lawoffice.org.il emails remain
             const remainingLawOffice = legacyLeadsData.filter((lead: any) => shouldExcludeLawOfficeEmail(lead.email));
             if (remainingLawOffice.length > 0) {
@@ -1502,7 +1502,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Debug: Verify the arrays before combining
         console.log(`🔍 [EmailThreadModal] Before combining - newLeadsData.length: ${newLeadsData.length}, legacyLeadsData.length: ${legacyLeadsData.length}`);
         console.log(`🔍 [EmailThreadModal] Sample legacyLeadsData emails:`, legacyLeadsData.slice(0, 10).map((l: any) => ({ name: l.name, email: l.email })));
-        
+
         // Debug: Check ALL emails in legacyLeadsData for @lawoffice.org.il
         const allLawOfficeInLegacy = legacyLeadsData.filter((l: any) => {
           const email = String(l.email || '').toLowerCase().trim();
@@ -1512,7 +1512,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         if (allLawOfficeInLegacy.length > 0) {
           console.error('❌ [EmailThreadModal] ALL @lawoffice.org.il emails in legacyLeadsData:', allLawOfficeInLegacy.map((l: any) => ({ name: l.name, email: l.email })));
         }
-        
+
         // Debug: Check if any @lawoffice.org.il emails are still in legacyLeadsData
         const lawOfficeInLegacy = legacyLeadsData.filter((l: any) => shouldExcludeLawOfficeEmail(l.email));
         if (lawOfficeInLegacy.length > 0) {
@@ -1520,15 +1520,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         } else {
           console.log('✅ [EmailThreadModal] No @lawoffice.org.il emails found in legacyLeadsData after filtering');
         }
-        
+
         let allContacts: Contact[] = [...newLeadsData, ...legacyLeadsData];
-        
+
         // Debug: Check counts before final filtering
         console.log(`🔍 [EmailThreadModal] Combined contacts: ${allContacts.length} (new: ${newLeadsData.length}, legacy: ${legacyLeadsData.length})`);
-        
+
         // Final safety filter: filter out contacts with @lawoffice.org.il email domain
         const beforeFilterCount = allContacts.length;
-        
+
         // Debug: log all emails that should be filtered
         const lawOfficeEmails = allContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
         if (lawOfficeEmails.length > 0) {
@@ -1541,7 +1541,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             lead_type: c.lead_type
           })));
         }
-        
+
         allContacts = allContacts.filter(contact => {
           const shouldExclude = shouldExcludeLawOfficeEmail(contact.email);
           if (shouldExclude) {
@@ -1556,25 +1556,25 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
           return !shouldExclude;
         });
-        
+
         console.log(`🔍 [EmailThreadModal] After final filter: ${allContacts.length} contacts (filtered out ${beforeFilterCount - allContacts.length})`);
-        
+
         if (beforeFilterCount - allContacts.length > 0) {
           console.error(`❌ [EmailThreadModal] WARNING: Had to filter ${beforeFilterCount - allContacts.length} contacts that should have been filtered at source!`);
         }
-        
+
         console.log(`📧 [EmailThreadModal] Fetched ${allContacts.length} contacts with email conversations (${beforeFilterCount} before filtering, filtered out ${beforeFilterCount - allContacts.length} @lawoffice.org.il contacts)`);
-        
+
         // Fetch last message time and unread status for each contact
         const contactsWithLastMessage = await Promise.all(
           allContacts.map(async (contact) => {
             const isLegacyContact = contact.lead_type === 'legacy';
             const legacyId = isLegacyContact
               ? (() => {
-                  const raw = contact.lead_number ?? contact.id;
-                  const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
-                  return Number.isFinite(numeric) ? numeric : null;
-                })()
+                const raw = contact.lead_number ?? contact.id;
+                const numeric = parseInt(String(raw).replace(/[^0-9]/g, ''), 10);
+                return Number.isFinite(numeric) ? numeric : null;
+              })()
               : null;
 
             if (isLegacyContact && legacyId === null) {
@@ -1606,7 +1606,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             // For contacts, we need to check by both client_id/legacy_id AND contact_id when available
             const sevenDaysAgo = new Date();
             sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
- 
+
             // First, try to find a contact with matching email to get contact_id
             let contactIdForUnread: number | null = null;
             if (contact.email) {
@@ -1615,14 +1615,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               const leadIdForContact = isLegacyForContact
                 ? (contact.lead_number ? parseInt(contact.lead_number.replace(/[^0-9]/g, ''), 10) : null)
                 : (contact.client_uuid || contact.id);
-              
+
               if (leadIdForContact) {
                 try {
                   const contactsList = await fetchLeadContacts(
-                    String(leadIdForContact), 
+                    String(leadIdForContact),
                     isLegacyForContact
                   );
-                  const matchingContact = contactsList.find((c: ContactInfo) => 
+                  const matchingContact = contactsList.find((c: ContactInfo) =>
                     c.email && contact.email && c.email.toLowerCase() === contact.email.toLowerCase()
                   );
                   if (matchingContact) {
@@ -1633,10 +1633,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 }
               }
             }
-            
+
             // Build query for unread emails
             let unreadMessages: { id: string }[] | null = null;
-            
+
             if (isLegacyContact && legacyId !== null) {
               // For legacy contacts: check by legacy_id and optionally by contact_id
               let query = supabase
@@ -1646,13 +1646,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 .eq('direction', 'incoming')
                 .gte('sent_at', sevenDaysAgo.toISOString())
                 .or('is_read.is.null,is_read.eq.false');
-              
+
               const { data } = await query;
-              
+
               // Filter in memory if we have a contact_id
               if (contactIdForUnread && data) {
                 // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
-                const filtered = data.filter((email: any) => 
+                const filtered = data.filter((email: any) =>
                   !email.contact_id || email.contact_id === contactIdForUnread
                 );
                 unreadMessages = filtered;
@@ -1668,13 +1668,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 .eq('direction', 'incoming')
                 .gte('sent_at', sevenDaysAgo.toISOString())
                 .or('is_read.is.null,is_read.eq.false');
-              
+
               const { data } = await query;
-              
+
               // Filter in memory if we have a contact_id
               if (contactIdForUnread && data) {
                 // Include emails that match contact_id OR don't have contact_id set (fallback to main contact)
-                const filtered = data.filter((email: any) => 
+                const filtered = data.filter((email: any) =>
                   !email.contact_id || email.contact_id === contactIdForUnread
                 );
                 unreadMessages = filtered;
@@ -1682,7 +1682,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 unreadMessages = data ?? null;
               }
             }
- 
+
             return {
               ...contact,
               last_message_time: lastMessage?.sent_at || null,
@@ -1693,7 +1693,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
         // Filter out null contacts
         const filtered = contactsWithLastMessage.filter(Boolean) as Contact[];
-        
+
         // Additional filter: ensure no @lawoffice.org.il emails slipped through
         // This is a safety check - we already filtered before processing, but double-check here
         const contactsWithoutLawOffice = filtered.filter(contact => {
@@ -1708,9 +1708,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
           return !shouldExclude;
         });
-        
+
         console.log(`📧 [EmailThreadModal] After filtering @lawoffice.org.il: ${contactsWithoutLawOffice.length} contacts (filtered out ${filtered.length - contactsWithoutLawOffice.length})`);
-        
+
         // Debug: Check if any @lawoffice.org.il emails remain
         const remainingLawOffice = contactsWithoutLawOffice.filter(c => shouldExcludeLawOfficeEmail(c.email));
         if (remainingLawOffice.length > 0) {
@@ -1722,7 +1722,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             lead_number: c.lead_number
           })));
         }
-        
+
         // Final safety filter: ensure NO @lawoffice.org.il emails make it to state
         // Apply filter multiple times to be absolutely sure
         let finalFilteredContacts = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
@@ -1731,11 +1731,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           const email = String(c.email || '').toLowerCase().trim();
           return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
         }); // Triple filter with direct check
-        
+
         if (finalFilteredContacts.length !== contactsWithoutLawOffice.length) {
           console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${contactsWithoutLawOffice.length - finalFilteredContacts.length} more @lawoffice.org.il contacts before setting state!`);
         }
-        
+
         // Final verification before setting state
         const lawOfficeInFinal = finalFilteredContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
         if (lawOfficeInFinal.length > 0) {
@@ -1743,9 +1743,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           // Remove them one more time
           finalFilteredContacts = finalFilteredContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
         }
-        
+
         console.log(`✅ [EmailThreadModal] Setting allContacts with ${finalFilteredContacts.length} contacts (after filtering ${contactsWithoutLawOffice.length - finalFilteredContacts.length} @lawoffice.org.il contacts)`);
-        
+
         // Final verification - check one more time before setting state
         const lawOfficeBeforeState = finalFilteredContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
         if (lawOfficeBeforeState.length > 0) {
@@ -1753,18 +1753,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           // Remove them
           finalFilteredContacts = finalFilteredContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
         }
-        
+
         // Store all contacts for contact selector (we'll use searchLeads for this)
         console.log(`✅ [EmailThreadModal] FINAL: Setting allContacts with ${finalFilteredContacts.length} contacts`);
         setAllContactsFiltered(finalFilteredContacts);
         setFilteredAllContacts(finalFilteredContacts);
-        
+
         // Verify state was set correctly (async check)
         setTimeout(() => {
           // This will run after state update
           console.log(`🔍 [EmailThreadModal] State verification: allContacts should have ${finalFilteredContacts.length} contacts`);
         }, 100);
-        
+
         // Show only contacts with emails in main list, sorted by last message time
         // Filter out @lawoffice.org.il emails from the main contacts list as well
         const sortedContacts = contactsWithoutLawOffice
@@ -1776,7 +1776,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             if (b.last_message_time) return 1;
             return a.name.localeCompare(b.name);
           });
- 
+
         // Debug: Check sortedContacts for @lawoffice.org.il before setting
         const lawOfficeInSorted = sortedContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
         if (lawOfficeInSorted.length > 0) {
@@ -1786,7 +1786,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             emailType: typeof c.email
           })));
         }
-        
+
         setContacts(sortedContacts);
         // Apply search filter if there's a search query
         if (searchQuery.trim()) {
@@ -1800,18 +1800,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               contact.email?.toLowerCase().includes(searchQuery.toLowerCase()) ||
               contact.lead_number?.toLowerCase().includes(searchQuery.toLowerCase());
           });
-          
+
           // Debug: Check filtered search results
           const lawOfficeInFiltered = filtered.filter(c => shouldExcludeLawOfficeEmail(c.email));
           if (lawOfficeInFiltered.length > 0) {
             console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in filtered search results:', lawOfficeInFiltered);
           }
-          
+
           setFilteredContacts(filtered);
         } else {
           setFilteredContacts(sortedContacts);
         }
-        
+
         // If current selected contact is no longer in the filtered list, clear it
         if (selectedContact && !sortedContacts.some(c => c.id === selectedContact.id)) {
           console.log(`⚠️ Selected contact ${selectedContact.name} is no longer in filtered list, clearing selection`);
@@ -1835,7 +1835,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         console.log('⏰ [EmailThreadModal] useEffect timeout triggered - calling fetchContactsWithEmailConversations');
         fetchContactsWithEmailConversations();
       }, 100);
-      
+
       return () => {
         console.log('🧹 [EmailThreadModal] useEffect cleanup - clearing timeout');
         clearTimeout(timeoutId);
@@ -1915,9 +1915,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     const startsWithZero = digits.startsWith('0') && digits.length >= 4;
     const isLeadNumber = isNumeric && digits.length <= 6 && !startsWithZero;
     const isVeryShortQuery = trimmedQuery.length < 3;
-    
-    const isQueryExtension = previousQuery && 
-      trimmedQuery.length > previousQuery.length && 
+
+    const isQueryExtension = previousQuery &&
+      trimmedQuery.length > previousQuery.length &&
       trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
       masterSearchResultsRef.current.length > 0 &&
       !isNumeric && // Don't use incremental filtering for pure numeric queries
@@ -1925,13 +1925,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       !isLeadNumber && // Don't use incremental filtering for lead numbers
       !isVeryShortQuery && // Don't use incremental filtering for very short queries
       previousQuery.length >= 3; // Previous query must also be at least 3 chars
-    
+
     if (isQueryExtension) {
       // Filter existing results client-side for faster response
       // This prevents unnecessary API calls when user is just continuing to type
       // Only works for text queries (names, emails) with sufficient length
       const filtered = filterResultsClientSide(masterSearchResultsRef.current, trimmedQuery);
-      
+
       // If filtering results in empty results, perform a new search instead
       // This handles cases where the extended query doesn't match any existing results
       if (filtered.length === 0 && masterSearchResultsRef.current.length > 0) {
@@ -1981,32 +1981,32 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     // This ensures selectedContactId is set before selectedContact changes trigger the useEffect
     if (result.isContact && !result.isMainContact) {
       const isLegacyLead = result.lead_type === 'legacy';
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof result.id === 'string' ? result.id.replace('legacy_', '') : String(result.id))
         : result.id;
-      
+
       const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
-      const selectedContactFromList = fetchedContacts.find(c => 
+      const selectedContactFromList = fetchedContacts.find(c =>
         (c.phone && result.phone && c.phone === result.phone) ||
         (c.mobile && result.mobile && c.mobile === result.mobile) ||
         (c.email && result.email && c.email === result.email) ||
         (c.name && (result.contactName || result.name) && c.name === (result.contactName || result.name))
       );
-      
+
       if (selectedContactFromList) {
         // Set flag to prevent useEffect from overriding our manual selection
         isManuallySettingContactIdRef.current = true;
-        
+
         // Set contacts and contact ID FIRST, before setting selectedContact
         setLeadContacts(fetchedContacts);
         setSelectedContactId(selectedContactFromList.id);
-        
+
         // Create a Contact object that represents the SPECIFIC CONTACT, not the lead
         // Use contactName if available, otherwise fall back to name
         const contactName = result.contactName || result.name || selectedContactFromList.name;
         const contactEmail = selectedContactFromList.email || result.email || '';
         const contactPhone = selectedContactFromList.phone || result.phone || '';
-        
+
         const contactForList: Contact = {
           id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
           name: contactName, // Use the contact's name, not the lead's name
@@ -2018,7 +2018,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           lead_type: result.lead_type,
           client_uuid: result.lead_type === 'new' ? String(result.id) : null,
         };
-        
+
         // Check if this contact already exists in the list
         const existingContact = contacts.find(c => {
           if (result.lead_type === 'legacy') {
@@ -2027,7 +2027,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             return c.id === result.id || c.lead_number === result.lead_number;
           }
         });
-        
+
         if (!existingContact) {
           // Filter out @lawoffice.org.il emails before adding
           if (!shouldExcludeLawOfficeEmail(contactForList.email)) {
@@ -2037,10 +2037,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             console.error('❌ [EmailThreadModal] CRITICAL: Attempted to add contact with @lawoffice.org.il:', contactForList);
           }
         }
-        
+
         // Small delay to ensure state updates are processed
         await new Promise(resolve => setTimeout(resolve, 50));
-        
+
         // Now set the selected contact to the CONTACT, not the lead
         setSelectedContact(contactForList);
       } else {
@@ -2053,7 +2053,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             return c.id === result.id || c.lead_number === result.lead_number;
           }
         });
-        
+
         if (!existingContact) {
           const newContact: Contact = {
             id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
@@ -2094,7 +2094,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           return c.id === result.id || c.lead_number === result.lead_number;
         }
       });
-      
+
       if (!existingContact) {
         const newContact: Contact = {
           id: result.lead_type === 'legacy' ? `legacy_${result.id}` : result.id,
@@ -2120,22 +2120,22 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       } else {
         contactToSelect = existingContact;
       }
-      
+
       if (!contactToSelect) {
         return; // Safety check
       }
-      
+
       const isLegacyLead = contactToSelect.lead_type === 'legacy' || contactToSelect.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof contactToSelect.id === 'string' ? contactToSelect.id.replace('legacy_', '') : String(contactToSelect.id))
         : contactToSelect.client_uuid || contactToSelect.id;
-      
+
       const fetchedContacts = await fetchLeadContacts(leadId, isLegacyLead);
       setLeadContacts(fetchedContacts);
-      
+
       // Set selected contact
       setSelectedContact(contactToSelect);
-      
+
       if (fetchedContacts.length > 0) {
         const mainContact = fetchedContacts.find(c => c.isMain) || fetchedContacts[0];
         setSelectedContactId(mainContact.id);
@@ -2149,7 +2149,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     masterSearchResultsRef.current = [];
     previousSearchQueryRef.current = '';
     previousRawSearchValueRef.current = '';
-    
+
     // Open chat on mobile
     if (isMobile) {
       setShowChat(true);
@@ -2158,10 +2158,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   // Filter all contacts for contact selector
   const [filteredAllContacts, setFilteredAllContacts] = useState<Contact[]>([]);
-  
+
   useEffect(() => {
     console.log(`🔄 [EmailThreadModal] useEffect for filteredAllContacts triggered, allContacts.length: ${allContacts.length}`);
-    
+
     // Debug: Check allContacts for @lawoffice.org.il BEFORE filtering
     // Also check with direct string matching
     const lawOfficeInAllContacts = allContacts.filter(c => {
@@ -2171,16 +2171,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     if (lawOfficeInAllContacts.length > 0) {
       console.error('❌ [EmailThreadModal] CRITICAL ERROR: Found @lawoffice.org.il emails in allContacts state!', {
         count: lawOfficeInAllContacts.length,
-        contacts: lawOfficeInAllContacts.map(c => ({ 
-          name: c.name, 
-          email: c.email, 
+        contacts: lawOfficeInAllContacts.map(c => ({
+          name: c.name,
+          email: c.email,
           emailType: typeof c.email,
           emailValue: JSON.stringify(c.email),
-          id: c.id 
+          id: c.id
         }))
       });
     }
-    
+
     // First filter out @lawoffice.org.il emails, then apply search filter
     // Apply multiple filters to be absolutely sure
     let contactsWithoutLawOffice = allContacts.filter(contact => !shouldExcludeLawOfficeEmail(contact.email));
@@ -2188,7 +2188,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       const email = String(contact.email || '').toLowerCase().trim();
       return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
     });
-    
+
     // Debug: Check if any @lawoffice.org.il emails remain
     const remainingLawOffice = contactsWithoutLawOffice.filter(c => shouldExcludeLawOfficeEmail(c.email));
     if (remainingLawOffice.length > 0) {
@@ -2196,7 +2196,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       // Remove them
       contactsWithoutLawOffice = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
     }
-    
+
     if (!searchAllContacts.trim()) {
       // Final safety check before setting state - triple filter
       let finalFiltered = contactsWithoutLawOffice.filter(c => !shouldExcludeLawOfficeEmail(c.email));
@@ -2204,11 +2204,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         const email = String(c.email || '').toLowerCase().trim();
         return !email.includes('@lawoffice.org.il');
       });
-      
+
       if (finalFiltered.length !== contactsWithoutLawOffice.length) {
         console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${contactsWithoutLawOffice.length - finalFiltered.length} more @lawoffice.org.il contacts in useEffect!`);
       }
-      
+
       console.log(`✅ [EmailThreadModal] Setting filteredAllContacts with ${finalFiltered.length} contacts (no search)`);
       setFilteredAllContacts(finalFiltered);
     } else {
@@ -2227,18 +2227,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           contact.email?.toLowerCase().includes(searchAllContacts.toLowerCase()) ||
           contact.lead_number?.toLowerCase().includes(searchAllContacts.toLowerCase());
       });
-      
+
       // Final safety check before setting state - triple filter
       let finalFiltered = filtered.filter(c => !shouldExcludeLawOfficeEmail(c.email));
       finalFiltered = finalFiltered.filter(c => {
         const email = String(c.email || '').toLowerCase().trim();
         return !email.includes('@lawoffice.org.il');
       });
-      
+
       if (finalFiltered.length !== filtered.length) {
         console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${filtered.length - finalFiltered.length} more @lawoffice.org.il contacts in search!`);
       }
-      
+
       console.log(`✅ [EmailThreadModal] Setting filteredAllContacts with ${finalFiltered.length} contacts (with search: "${searchAllContacts}")`);
       setFilteredAllContacts(finalFiltered);
     }
@@ -2246,12 +2246,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   useEffect(() => {
     if (typeof window === 'undefined') return;
-    
+
     // For non-superusers, only count unread messages from "My Contacts" (contacts that match user roles)
     // The contacts array is already filtered at the database level when showMyContactsOnly is true
     // For superusers, count all unread messages from all contacts
     let contactsToCount = contacts;
-    
+
     // If user is not a superuser, ensure we only count contacts from "My Contacts"
     // (This should already be filtered, but we verify for safety)
     if (isSuperuser === false && showMyContactsOnly) {
@@ -2261,7 +2261,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       // Superusers see all contacts, so count all
       contactsToCount = contacts;
     }
-    
+
     const totalUnread = contactsToCount.reduce((sum, contact) => sum + (contact.unread_count || 0), 0);
     window.dispatchEvent(new CustomEvent('email:unread-count', { detail: { count: totalUnread } }));
   }, [contacts, isSuperuser, showMyContactsOnly]);
@@ -2276,7 +2276,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         id: propSelectedContact.contact.id,
         name: propSelectedContact.contact.name,
         email: propSelectedContact.contact.email || '',
-        lead_number: propSelectedContact.leadType === 'legacy' 
+        lead_number: propSelectedContact.leadType === 'legacy'
           ? String(propSelectedContact.leadId)
           : (typeof propSelectedContact.leadId === 'string' ? propSelectedContact.leadId : String(propSelectedContact.leadId)),
         lead_type: propSelectedContact.leadType,
@@ -2291,7 +2291,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   // This useEffect is now mainly for initial setup - handleContactSelect handles contact switching
   useEffect(() => {
     if (propSelectedContact) return; // Skip if we have a prop contact
-    
+
     const fetchContactsForLead = async () => {
       if (!selectedContact) {
         setLeadContacts([]);
@@ -2300,13 +2300,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
 
       const isLegacyLead = selectedContact.lead_type === 'legacy' || selectedContact.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof selectedContact.id === 'string' ? selectedContact.id.replace('legacy_', '') : String(selectedContact.id))
         : (selectedContact.client_uuid || selectedContact.id);
 
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
       setLeadContacts(contacts);
-      
+
       // Only set selectedContactId if it's not already set or if the current one is not in the contacts list
       // This preserves the contact selection when coming from "New Email" modal or handleContactSelect
       if (contacts.length > 0) {
@@ -2315,10 +2315,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           isManuallySettingContactIdRef.current = false; // Reset the flag
           return; // Don't override the manually set contact ID
         }
-        
+
         const currentContactId = selectedContactId;
         const isCurrentContactValid = currentContactId && contacts.some(c => c.id === currentContactId);
-        
+
         if (!isCurrentContactValid) {
           // Current contact ID is not valid, select the main contact or first one
           const mainContact = contacts.find(c => c.isMain) || contacts[0];
@@ -2361,21 +2361,21 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
             // Filter problematic images before processing
             const filteredContent = filterProblematicImages(rawContent);
-            
+
             // Extract body and ensure line breaks are preserved
             let cleanedHtml = sanitizeEmailHtml(extractHtmlBody(filteredContent));
-            
+
             // Ensure line breaks are preserved (convert \n to <br> if needed)
             if (cleanedHtml && !cleanedHtml.includes('<br>')) {
               cleanedHtml = cleanedHtml.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
             }
-            
+
             // Apply auto text direction (only if not already wrapped)
             if (cleanedHtml && !cleanedHtml.includes('dir=')) {
               cleanedHtml = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${cleanedHtml}</div>`;
               cleanedHtml = sanitizeEmailHtml(cleanedHtml);
             }
-            
+
             const previewHtml = cleanedHtml && cleanedHtml.trim() ? cleanedHtml : convertBodyToHtml(filteredContent);
 
             updates[message.id] = {
@@ -2432,11 +2432,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     isFetchingRef.current = true;
 
     console.log(`🔄 Fetching email thread for contact: ${selectedContact.name} (ID: ${selectedContact.id}), contactId: ${selectedContactId}`);
-    
+
     // Clear thread immediately to prevent showing old emails
     setEmailThread([]);
     setIsLoading(true);
-    
+
     try {
       const isLegacyContact =
         selectedContact.lead_type === 'legacy' ||
@@ -2462,10 +2462,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       // Get contact_id if we have a selected contact from the contact selector
       // Use selectedContactId if available, otherwise try to find it from leadContacts
       let contactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
-      
+
       // If we don't have a contactId but we have leadContacts, try to find the matching contact
       if (!contactId && leadContacts.length > 0) {
-        const matchingContact = leadContacts.find(c => 
+        const matchingContact = leadContacts.find(c =>
           (c.email && selectedContact.email && c.email === selectedContact.email) ||
           (c.phone && selectedContact.phone && c.phone === selectedContact.phone) ||
           (c.mobile && selectedContact.phone && c.mobile === selectedContact.phone) ||
@@ -2476,7 +2476,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           console.log(`📧 Found matching contact in leadContacts: ${matchingContact.name} (ID: ${contactId})`);
         }
       }
-      
+
       // Build a comprehensive query that matches emails in multiple ways
       // This ensures we catch all emails regardless of how they were saved
       let emailQuery = supabase
@@ -2488,10 +2488,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       // 1. client_id/legacy_id (main identifier)
       // 2. contact_id (if available)
       // 3. email address (fallback for emails without contact_id)
-      
+
       const contactEmail = sanitizeEmailForFilter(normalizeEmailForFilter(selectedContact.email));
       const queryConditions: string[] = [];
-      
+
       // Always include client_id/legacy_id match
       if (legacyId !== null) {
         queryConditions.push(`legacy_id.eq.${legacyId}`);
@@ -2501,13 +2501,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         queryConditions.push(`client_id.eq.${clientUuid}`);
         console.log(`📧 Querying emails with client_id=${clientUuid}`);
       }
-      
+
       // Also match by contact_id if we have it
       if (contactId) {
         queryConditions.push(`contact_id.eq.${contactId}`);
         console.log(`📧 Querying emails with contact_id=${contactId}`);
       }
-      
+
       // Also match by email address in recipient_list or sender_email
       // This catches emails that might not have contact_id set yet
       if (contactEmail) {
@@ -2515,7 +2515,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         queryConditions.push(`sender_email.ilike.${contactEmail}`);
         console.log(`📧 Querying emails with email=${contactEmail}`);
       }
-      
+
       if (queryConditions.length === 0) {
         console.warn('📧 No valid identifiers for email fetch', {
           selectedContact,
@@ -2528,73 +2528,73 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         setIsLoading(false);
         return;
       }
-      
+
       // Use OR to match any of these conditions
       // Then we'll filter in memory to ensure proper matching
       emailQuery = emailQuery.or(queryConditions.join(','));
 
-    let { data, error } = await emailQuery;
-    
-    if (error) {
-      console.error('📧 Error querying emails:', error);
-      throw error;
-    }
-    
-    // Filter results in memory to ensure proper matching
-    // Include emails that match by:
-    // 1. client_id/legacy_id match (required)
-    // 2. AND (contact_id match OR email address match OR no contact_id)
-    if (!error && data && data.length > 0) {
-      const normalizedContactEmail = contactEmail ? contactEmail.toLowerCase() : null;
-      const normalizedSenderEmail = selectedContact.email ? normalizeEmailForFilter(selectedContact.email).toLowerCase() : null;
-      
-      data = data.filter((email: any) => {
-        // First, must match by client_id or legacy_id
-        const clientIdMatch = clientUuid && email.client_id === clientUuid;
-        const legacyIdMatch = legacyId !== null && email.legacy_id === legacyId;
-        
-        if (!clientIdMatch && !legacyIdMatch) {
-          return false; // Must match main identifier
-        }
-        
-        // If we have a contactId, prefer emails with matching contact_id
-        if (contactId && email.contact_id === contactId) {
-          return true;
-        }
-        
-        // If email has no contact_id, include it if email address matches
-        if (!email.contact_id || email.contact_id === null) {
-          if (normalizedContactEmail) {
-            const recipientMatch = email.recipient_list && 
-                                  email.recipient_list.toLowerCase().includes(normalizedContactEmail);
-            const senderMatch = email.sender_email && 
-                               normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
-            if (recipientMatch || senderMatch) {
-              return true;
-            }
-          }
-          // If no contact_id and no email match, still include for main contact view
-          // This ensures emails sent without contact_id still appear
-          return true;
-        }
-        
-        // If email has a different contact_id, only include if it matches the main contact email
-        if (normalizedContactEmail) {
-          const recipientMatch = email.recipient_list && 
-                                email.recipient_list.toLowerCase().includes(normalizedContactEmail);
-          const senderMatch = email.sender_email && 
-                             normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
-          return recipientMatch || senderMatch;
-        }
-        
-        return false;
-      });
-      
-      console.log(`📧 Filtered to ${data.length} emails after in-memory filtering`);
-    }
+      let { data, error } = await emailQuery;
 
-    if (error) throw error;
-      
+      if (error) {
+        console.error('📧 Error querying emails:', error);
+        throw error;
+      }
+
+      // Filter results in memory to ensure proper matching
+      // Include emails that match by:
+      // 1. client_id/legacy_id match (required)
+      // 2. AND (contact_id match OR email address match OR no contact_id)
+      if (!error && data && data.length > 0) {
+        const normalizedContactEmail = contactEmail ? contactEmail.toLowerCase() : null;
+        const normalizedSenderEmail = selectedContact.email ? normalizeEmailForFilter(selectedContact.email).toLowerCase() : null;
+
+        data = data.filter((email: any) => {
+          // First, must match by client_id or legacy_id
+          const clientIdMatch = clientUuid && email.client_id === clientUuid;
+          const legacyIdMatch = legacyId !== null && email.legacy_id === legacyId;
+
+          if (!clientIdMatch && !legacyIdMatch) {
+            return false; // Must match main identifier
+          }
+
+          // If we have a contactId, prefer emails with matching contact_id
+          if (contactId && email.contact_id === contactId) {
+            return true;
+          }
+
+          // If email has no contact_id, include it if email address matches
+          if (!email.contact_id || email.contact_id === null) {
+            if (normalizedContactEmail) {
+              const recipientMatch = email.recipient_list &&
+                email.recipient_list.toLowerCase().includes(normalizedContactEmail);
+              const senderMatch = email.sender_email &&
+                normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
+              if (recipientMatch || senderMatch) {
+                return true;
+              }
+            }
+            // If no contact_id and no email match, still include for main contact view
+            // This ensures emails sent without contact_id still appear
+            return true;
+          }
+
+          // If email has a different contact_id, only include if it matches the main contact email
+          if (normalizedContactEmail) {
+            const recipientMatch = email.recipient_list &&
+              email.recipient_list.toLowerCase().includes(normalizedContactEmail);
+            const senderMatch = email.sender_email &&
+              normalizeEmailForFilter(email.sender_email).toLowerCase() === normalizedContactEmail;
+            return recipientMatch || senderMatch;
+          }
+
+          return false;
+        });
+
+        console.log(`📧 Filtered to ${data.length} emails after in-memory filtering`);
+      }
+
+      if (error) throw error;
+
       console.log(`📧 Found ${data?.length || 0} emails for contact ${selectedContact.name} (ID: ${selectedContact.id})`);
       if (data && data.length > 0) {
         console.log('📧 Sample email:', {
@@ -2607,14 +2607,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       } else {
         console.log('📧 No emails found for this contact');
       }
-      
+
       // Build employee email-to-name mapping once for all emails
       const employeeEmailMap = await buildEmployeeEmailToNameMap();
-      
+
       const formattedThread: EmailMessage[] = (data || []).map((row: any) => {
         let rawHtml = typeof row.body_html === 'string' ? row.body_html : null;
         let rawPreview = typeof row.body_preview === 'string' ? row.body_preview : null;
-        
+
         // Filter out problematic images BEFORE processing to prevent CORS errors
         if (rawHtml) {
           rawHtml = filterProblematicImages(rawHtml);
@@ -2622,7 +2622,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         if (rawPreview) {
           rawPreview = filterProblematicImages(rawPreview);
         }
-        
+
         // Preserve original Outlook HTML as much as possible
         // Only extract body if it's wrapped in <body> tags, but preserve all formatting
         let cleanedHtml = null;
@@ -2636,7 +2636,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             cleanedHtml = rawHtml;
           }
         }
-        
+
         const cleanedPreview = rawPreview ? extractHtmlBody(rawPreview) : null;
 
         // Ensure line breaks are preserved in cleaned HTML
@@ -2645,7 +2645,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           if (!cleanedHtml.includes('<br>') && !cleanedHtml.includes('<br/>') && !cleanedHtml.includes('<br />')) {
             cleanedHtml = cleanedHtml.replace(/\r\n/g, '\n').replace(/\r/g, '\n').replace(/\n/g, '<br>');
           }
-          
+
           // Apply auto text direction (only if not already wrapped)
           if (!cleanedHtml.includes('dir=')) {
             cleanedHtml = `<div dir="auto" style="font-family: 'Segoe UI', Arial, 'Helvetica Neue', sans-serif;">${cleanedHtml}</div>`;
@@ -2657,10 +2657,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         if (!resolvedHtml && fallbackText) {
           resolvedHtml = convertBodyToHtml(fallbackText);
         }
-        
+
         // Sanitize but preserve Outlook's direction and style attributes
         const sanitizedHtml = resolvedHtml ? sanitizeEmailHtml(resolvedHtml) : null;
-        
+
         // For preview, ensure line breaks and RTL
         let sanitizedPreview = cleanedPreview ? sanitizeEmailHtml(cleanedPreview) : null;
         if (!sanitizedPreview) {
@@ -2677,7 +2677,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             // If it's a string, parse it
             if (typeof row.attachments === 'string') {
               parsedAttachments = JSON.parse(row.attachments);
-            } 
+            }
             // If it's already an array, use it directly
             else if (Array.isArray(row.attachments)) {
               parsedAttachments = row.attachments;
@@ -2695,13 +2695,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             parsedAttachments = [];
           }
         }
-        
+
         // Filter out inline attachments that shouldn't be displayed as separate attachments
         parsedAttachments = parsedAttachments.filter((att: any) => {
           // Only show non-inline attachments or if isInline is false/undefined
           return att && !att.isInline && att.name;
         });
-        
+
         // Debug log for attachments
         if (parsedAttachments.length > 0) {
           console.log(`📎 Parsed ${parsedAttachments.length} attachments for email ${row.id}:`, parsedAttachments.map((a: any) => ({ name: a.name, size: a.size, hasId: !!a.id, hasContentBytes: !!a.contentBytes })));
@@ -2711,13 +2711,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Emails from @lawoffice.org.il are ALWAYS team/user, never client
         const senderEmail = row.sender_email || '';
         const isFromOffice = isOfficeEmail(senderEmail);
-        
+
         // Override direction field: if sender is from office domain, it's always outgoing (team/user)
         let correctedDirection = row.direction === 'outgoing' ? 'outgoing' : 'incoming';
         if (isFromOffice) {
           correctedDirection = 'outgoing';
         }
-        
+
         // Get sender display name - use employee display_name for office emails
         let senderDisplayName = row.sender_name || 'Team';
         if (isFromOffice) {
@@ -2751,38 +2751,38 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           }
           return acc;
         }, [] as typeof formattedThread);
-        
+
         setEmailThread(uniqueEmails);
         hydrateEmailThreadBodies(uniqueEmails);
-        
+
         // Mark incoming emails as read when viewing the conversation
         if (databaseUserId && data && data.length > 0) {
           // Get all incoming emails that are unread from the original data
-          const incomingUnreadEmails = (data || []).filter((email: any) => 
-            email.direction === 'incoming' && 
+          const incomingUnreadEmails = (data || []).filter((email: any) =>
+            email.direction === 'incoming' &&
             (email.is_read === null || email.is_read === false)
           );
-          
+
           if (incomingUnreadEmails.length > 0) {
             const emailIds = incomingUnreadEmails.map((e: any) => e.id).filter(Boolean) as string[];
-            
+
             if (emailIds.length > 0) {
               try {
                 // Update emails to mark as read - use databaseUserId (users.id) not auth userId
                 const { error: updateError } = await supabase
                   .from('emails')
-                  .update({ 
-                    is_read: true, 
+                  .update({
+                    is_read: true,
                     read_at: new Date().toISOString(),
-                    read_by: databaseUserId 
+                    read_by: databaseUserId
                   })
                   .in('id', emailIds);
-                
+
                 if (updateError) {
                   console.error('Error marking emails as read:', updateError);
                 } else {
                   console.log(`✅ Marked ${emailIds.length} incoming emails as read`);
-                  
+
                   // Update unread count for the contact in the contacts list
                   setContacts(prev => prev.map(contact => {
                     if (contact.id === selectedContact.id) {
@@ -2790,7 +2790,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     }
                     return contact;
                   }));
-                  
+
                   // Refresh unread count for all contacts to update Header
                   // This will be done in the next fetch cycle
                 }
@@ -2830,7 +2830,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   // Track last fetched key to prevent duplicate fetches
   const lastFetchedKeyRef = useRef<string | null>(null);
-  
+
   useEffect(() => {
     if (!selectedContact) {
       lastFetchedKeyRef.current = null;
@@ -2838,26 +2838,26 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       setSetupComplete(false);
       return;
     }
-    
+
     // If we're still setting up the contact (finding the contactId), don't fetch yet
     if (isSettingUpContactRef.current) {
       console.log(`⏸️ Waiting for contact setup to complete before fetching...`);
       return;
     }
-    
+
     // Create a unique key for this fetch request
     const fetchKey = `${selectedContact.id}-${selectedContactId || 'null'}`;
-    
+
     // Skip if we're already fetching the same contact/contactId combination
     if (isFetchingRef.current || lastFetchedKeyRef.current === fetchKey) {
       console.log(`⏭️ Skipping duplicate fetch: ${fetchKey}, isFetching: ${isFetchingRef.current}, lastKey: ${lastFetchedKeyRef.current}`);
       return;
     }
-    
+
     // Mark this as the last fetched key BEFORE fetching to prevent race conditions
     lastFetchedKeyRef.current = fetchKey;
     console.log(`🔄 Triggering fetch for key: ${fetchKey} (contact: ${selectedContact.name}, contactId: ${selectedContactId || 'null'})`);
-    
+
     // Fetch emails when selectedContact, selectedContactId, or setupComplete changes
     fetchEmailThread();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2960,12 +2960,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   const handleContactSelect = async (contact: Contact) => {
     console.log(`👤 Selecting contact: ${contact.name} (ID: ${contact.id})`);
-    
+
     // Set flag to prevent fetches while we're setting up the contact
     isSettingUpContactRef.current = true;
     setSetupComplete(false); // Reset setup completion state
     console.log(`🔄 Setup flag set to true for contact: ${contact.name}`);
-    
+
     // Clear previous contact's data immediately and set loading state FIRST
     // Set the current loading contact ID to prevent showing old emails
     currentLoadingContactIdRef.current = contact.id;
@@ -2981,7 +2981,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setShowCompose(false);
     setNewMessage('');
     setNewMessageIsRTL(false);
-    
+
     // Set default subject format: Lead number - client name - Category
     const category = contact.topic || 'General';
     setSubject(`${contact.lead_number} - ${contact.name} - ${category}`);
@@ -2999,7 +2999,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setShowLinkForm(false);
     setLinkLabel('');
     setLinkUrl('');
-    
+
     // Fetch contacts for this lead and find the matching contact to set selectedContactId
     // Set a safety timeout to always clear the setup flag even if something goes wrong
     const safetyTimeout = setTimeout(() => {
@@ -3009,36 +3009,36 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         lastFetchedKeyRef.current = null;
       }
     }, 15000); // 15 second safety timeout
-    
+
     try {
       const isLegacyLead = contact.lead_type === 'legacy' || contact.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof contact.id === 'string' ? contact.id.replace('legacy_', '') : String(contact.id))
         : (contact.client_uuid || contact.id);
-      
+
       console.log(`🔍 Fetching contacts for lead: ${leadId}, isLegacy: ${isLegacyLead}`);
-      
+
       // Add a timeout to prevent hanging forever
       const contactsPromise = fetchLeadContacts(leadId, isLegacyLead);
-      const timeoutPromise = new Promise<any>((_, reject) => 
+      const timeoutPromise = new Promise<any>((_, reject) =>
         setTimeout(() => reject(new Error('Contact fetch timeout after 10 seconds')), 10000)
       );
-      
+
       const fetchedContacts = await Promise.race([contactsPromise, timeoutPromise]);
       clearTimeout(safetyTimeout); // Clear safety timeout if we succeed
       console.log(`📋 Fetched ${fetchedContacts?.length || 0} contacts for lead`);
       setLeadContacts(fetchedContacts || []);
-      
+
       // Find the matching contact from the fetched contacts
-      const matchingContact = fetchedContacts.find((c: any) => 
+      const matchingContact = fetchedContacts.find((c: any) =>
         (c.email && contact.email && c.email === contact.email) ||
         (c.phone && contact.phone && c.phone === contact.phone) ||
         (c.mobile && contact.phone && c.mobile === contact.phone) ||
         (c.name && contact.name && c.name === contact.name)
       );
-      
+
       let finalContactId: number | null = null;
-      
+
       if (matchingContact) {
         console.log(`✅ Found matching contact: ${matchingContact.name} (ID: ${matchingContact.id})`);
         finalContactId = matchingContact.id;
@@ -3052,7 +3052,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         console.log(`⚠️ No contacts found for lead, will fetch all emails for this lead`);
         finalContactId = null;
       }
-      
+
       // Set the contactId if we found one
       if (finalContactId !== null) {
         isManuallySettingContactIdRef.current = true;
@@ -3060,21 +3060,21 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       } else {
         setSelectedContactId(null);
       }
-      
+
       // Always clear the setup flag - we're ready to fetch now (even if contactId is null)
       console.log(`✅ Contact setup complete, selectedContactId: ${finalContactId || 'null'}`);
-      
+
       // Clear all fetching flags and keys to allow fresh fetch BEFORE clearing setup flag
       isFetchingRef.current = false;
       lastFetchedKeyRef.current = null;
-      
+
       // Clear setup flag LAST - this will allow the useEffect to trigger
       isSettingUpContactRef.current = false;
       clearTimeout(safetyTimeout); // Make sure to clear safety timeout
-      
+
       // Set setup complete state to trigger useEffect
       setSetupComplete(true);
-      
+
       // The useEffect will automatically trigger now that:
       // 1. isSettingUpContactRef.current is false
       // 2. selectedContact is set
@@ -3087,19 +3087,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       clearTimeout(safetyTimeout); // Clear safety timeout on error
       // On error, clear everything and allow fetch with null contactId
       setSelectedContactId(null);
-      
+
       // Clear all fetching flags and keys BEFORE clearing setup flag
       isFetchingRef.current = false;
       lastFetchedKeyRef.current = null;
-      
+
       // CRITICAL: Always clear the setup flag even on error so we can still try to fetch
       isSettingUpContactRef.current = false;
       setSetupComplete(true); // Trigger useEffect even on error
       console.log(`⚠️ Setup flag cleared after error, useEffect will attempt to fetch emails`);
-      
+
       // The useEffect will automatically trigger now that the setup flag is cleared
     }
-    
+
     if (isMobile) {
       setShowChat(true);
     }
@@ -3107,14 +3107,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
   const handleContactSelectForNewEmail = (contact: Contact) => {
     console.log(`📧 Selecting contact for new email: ${contact.name} (ID: ${contact.id})`);
-    
+
     // Set the selected contact
     setSelectedContact(contact);
-    
+
     // Set default subject format: Lead number - client name - Category
     const category = contact.topic || 'General';
     setSubject(`${contact.lead_number} - ${contact.name} - ${category}`);
-    
+
     // Clear compose form
     setNewMessage('');
     setNewMessageIsRTL(false);
@@ -3132,11 +3132,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     setShowLinkForm(false);
     setLinkLabel('');
     setLinkUrl('');
-    
+
     // Close contact selector and open compose
     setShowContactSelector(false);
     setShowCompose(true);
-    
+
     if (isMobile) {
       setShowChat(true);
     }
@@ -3177,10 +3177,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
     setIsLoadingAI(true);
     setShowAISuggestions(true);
-    
+
     try {
       const requestType = newMessage.trim() ? 'improve' : 'suggest';
-      
+
       const response = await fetch(`${import.meta.env.VITE_SUPABASE_URL}/functions/v1/whatsapp-ai-suggestions`, {
         method: 'POST',
         headers: {
@@ -3206,7 +3206,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       }
 
       const result = await response.json();
-      
+
       if (result.success) {
         // Get the single suggestion and clean it
         const suggestion = result.suggestion.trim();
@@ -3238,19 +3238,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   // Handle opening contacts modal
   const handleOpenContactsModal = async () => {
     if (!selectedContact) return;
-    
+
     setShowContactsModal(true);
     setLoadingContacts(true);
     setSelectedContactIds(new Set());
-    
+
     try {
       const isLegacyLead = selectedContact.lead_type === 'legacy' || selectedContact.id.toString().startsWith('legacy_');
-      const leadId = isLegacyLead 
+      const leadId = isLegacyLead
         ? (typeof selectedContact.id === 'string' ? selectedContact.id.replace('legacy_', '') : String(selectedContact.id))
         : (selectedContact.client_uuid || selectedContact.id);
-      
+
       const contacts = await fetchLeadContacts(leadId, isLegacyLead);
-      
+
       // Filter only contacts with valid emails
       const contactsWithEmail = contacts.filter(c => c.email && c.email.trim());
       setModalLeadContacts(contactsWithEmail);
@@ -3262,7 +3262,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       setLoadingContacts(false);
     }
   };
-  
+
   // Toggle contact selection
   const toggleContactSelection = (contactId: number) => {
     setSelectedContactIds(prev => {
@@ -3275,19 +3275,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       return newSet;
     });
   };
-  
+
   // Add selected contacts to recipients
   const handleAddSelectedContacts = () => {
     const selectedContacts = modalLeadContacts.filter(c => selectedContactIds.has(c.id));
     const newRecipients = selectedContacts
       .map(c => c.email!)
       .filter(email => email && !toRecipients.includes(email));
-    
+
     if (newRecipients.length > 0) {
       setToRecipients(prev => [...prev, ...newRecipients]);
       toast.success(`Added ${newRecipients.length} contact(s) to recipients`);
     }
-    
+
     setShowContactsModal(false);
     setSelectedContactIds(new Set());
   };
@@ -3407,9 +3407,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           selectedContact.id.toString().startsWith('legacy_');
         const legacyId = isLegacyLead
           ? (() => {
-              const numeric = parseInt(selectedContact.id.toString().replace('legacy_', ''), 10);
-              return Number.isNaN(numeric) ? null : numeric;
-            })()
+            const numeric = parseInt(selectedContact.id.toString().replace('legacy_', ''), 10);
+            return Number.isNaN(numeric) ? null : numeric;
+          })()
           : null;
 
         // Find the contact_id from the selected contact or the first recipient
@@ -3424,13 +3424,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
         // Get contact_id from selectedContactId or propSelectedContact
         const emailContactId = selectedContactId || (propSelectedContact?.contact.id ?? null);
-        
+
         // Determine client_id - use the same logic as fetchEmailThread to ensure consistency
         const clientUuidForSend = selectedContact.client_uuid
           ?? selectedContact.idstring
           ?? (typeof selectedContact.id === 'string' && selectedContact.id.includes('-') ? selectedContact.id : null)
           ?? (!isLegacyLead ? selectedContact.id : null);
-        
+
         console.log('📧 Sending email with context:', {
           clientId: !isLegacyLead ? clientUuidForSend : null,
           legacyLeadId: isLegacyLead ? legacyId : null,
@@ -3438,7 +3438,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           contactEmail: selectedContact.email,
           leadType: selectedContact.lead_type || (isLegacyLead ? 'legacy' : 'new'),
         });
-        
+
         await sendEmailViaBackend({
           userId,
           subject: derivedSubject,
@@ -3458,7 +3458,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
             userInternalId: selectedContact.user_internal_id || undefined,
           },
         });
-        
+
         console.log('📧 Email sent successfully, waiting before refresh...');
 
         // Update contact's last_message_time optimistically in contacts list
@@ -3473,7 +3473,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
         // Force refresh the thread by clearing fetch flags
         isFetchingRef.current = false;
         lastFetchedKeyRef.current = null;
-        
+
         // Remove optimistic email first to avoid duplicates, then fetch fresh emails
         setEmailThread((prev) => {
           // Remove optimistic emails by filtering out temp IDs
@@ -3483,18 +3483,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           });
           return filtered;
         });
-        
+
         // Add a delay to ensure the email is saved in the database
         // Increase delay to 2 seconds to allow backend processing
         console.log('📧 Waiting 2 seconds for email to be saved...');
         await new Promise(resolve => setTimeout(resolve, 2000));
-        
+
         console.log('📧 Refreshing email thread...');
         // Refresh the thread in the background to replace any optimistic
         // messages with the final stored versions.
         await fetchEmailThread();
         console.log('📧 Email thread refresh completed');
-        
+
         // Also refresh contacts list to ensure it's sorted correctly
         // This will update last_message_time from the database
         if (isOpen) {
@@ -3511,7 +3511,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
 
               const uniqueClientIds = new Set<string>();
               const uniqueLegacyIds = new Set<number>();
-              
+
               emailsData.forEach((email: any) => {
                 if (email.client_id) uniqueClientIds.add(String(email.client_id));
                 if (email.legacy_id) uniqueLegacyIds.add(Number(email.legacy_id));
@@ -3523,16 +3523,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   if (contact.id === selectedContact.id) {
                     // Get the latest email for this contact
                     const isLegacyContact = contact.lead_type === 'legacy';
-                    const legacyId = isLegacyContact 
+                    const legacyId = isLegacyContact
                       ? parseInt(String(contact.lead_number || contact.id).replace(/[^0-9]/g, ''), 10)
                       : null;
-                    
+
                     // We'll update this properly in a moment, for now just return the contact
                     return contact;
                   }
                   return contact;
                 });
-                
+
                 // Sort by last_message_time
                 return updated.sort((a, b) => {
                   if (a.last_message_time && b.last_message_time) {
@@ -3547,7 +3547,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               console.error('Error refreshing contacts list:', error);
             }
           };
-          
+
           // Refresh contacts list in background
           fetchContactsAsync();
         }
@@ -3581,7 +3581,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const formatTime = (timestamp: string) => {
     const date = new Date(timestamp);
     const now = new Date();
-    
+
     // Compare dates by calendar day (ignore time) to properly detect today/yesterday
     const dateStartOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate());
     const nowStartOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
@@ -3622,7 +3622,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     }
     const diffTime = today.getTime() - date.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays <= 7) {
       return date.toLocaleDateString('en-US', { weekday: 'long' });
     }
@@ -3658,15 +3658,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
   const getDominantLanguage = (text?: string | null): 'hebrew' | 'english' => {
     if (!text) return 'english';
     const visibleText = extractVisibleText(text);
-    
+
     // Count Hebrew characters
     const hebrewMatches = visibleText.match(/[\u0590-\u05FF]/g);
     const hebrewCount = hebrewMatches ? hebrewMatches.length : 0;
-    
+
     // Count English/Latin characters (letters only, not spaces/punctuation)
     const englishMatches = visibleText.match(/[a-zA-Z]/g);
     const englishCount = englishMatches ? englishMatches.length : 0;
-    
+
     // If more Hebrew characters, return 'hebrew', otherwise 'english'
     return hebrewCount > englishCount ? 'hebrew' : 'english';
   };
@@ -3693,7 +3693,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
       message.body_html ? extractVisibleText(message.body_html) : '',
       message.body_preview ? extractVisibleText(message.body_preview) : ''
     ].join(' ');
-    
+
     // Determine dominant language based on character count
     const dominant = getDominantLanguage(allText);
     return dominant === 'hebrew' ? 'rtl' : 'ltr';
@@ -3703,7 +3703,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
     const now = new Date();
     const messageDate = new Date(dateString);
     const diffInHours = (now.getTime() - messageDate.getTime()) / (1000 * 60 * 60);
-    
+
     if (diffInHours < 24) {
       // Today - show time
       return messageDate.toLocaleTimeString('en-US', {
@@ -3849,7 +3849,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               {selectedContact && !isMobile && (
                 <div className="flex items-center gap-2">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                  <span 
+                  <span
                     className="text-gray-600"
                     dir="auto"
                   >
@@ -3864,9 +3864,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   onClick={() => {
                     // Get the correct lead identifier based on lead type
                     const isLegacy = selectedContact.lead_type === 'legacy' || selectedContact.id?.toString().startsWith('legacy_');
-                    
+
                     let leadIdentifier: string | null = null;
-                    
+
                     if (isLegacy) {
                       // For legacy leads, extract the numeric ID
                       const contactId = selectedContact.id?.toString();
@@ -3883,19 +3883,19 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       // For new leads, use lead_number
                       leadIdentifier = selectedContact.lead_number || selectedContact.client_uuid || null;
                     }
-                    
+
                     if (!leadIdentifier) {
                       console.error('Cannot navigate: No valid lead identifier found', selectedContact);
                       return;
                     }
-                    
+
                     // Encode the identifier to handle sub-leads with '/' characters
                     const encodedIdentifier = encodeURIComponent(leadIdentifier);
                     console.log('Navigating to client:', leadIdentifier, 'encoded:', encodedIdentifier);
-                    
+
                     // Close email modal first, then navigate
                     onClose();
-                    
+
                     // Small delay to ensure modal closes before navigation
                     setTimeout(() => {
                       navigate(`/clients/${encodedIdentifier}`, { replace: true });
@@ -3916,7 +3916,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               </button>
             </div>
           </div>
-          
+
         </div>
 
         <div className="flex-1 flex overflow-hidden">
@@ -3940,7 +3940,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 )}
               </div>
             )}
-            
+
             {/* Toggle Tabs and Search Bar */}
             <div className="p-3 border-b border-gray-200 bg-white">
               {/* Toggle Tabs - Only show for superusers */}
@@ -3949,11 +3949,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   <button
                     type="button"
                     onClick={() => setShowMyContactsOnly(false)}
-                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                      !showMyContactsOnly
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${!showMyContactsOnly
                         ? 'text-white shadow-sm'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
+                      }`}
                     style={!showMyContactsOnly ? { backgroundColor: '#3A1CC1' } : {}}
                   >
                     All Contacts
@@ -3961,18 +3960,17 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   <button
                     type="button"
                     onClick={() => setShowMyContactsOnly(true)}
-                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${
-                      showMyContactsOnly
+                    className={`flex-1 px-3 py-2 rounded-lg text-sm font-medium transition-all ${showMyContactsOnly
                         ? 'text-white shadow-sm'
                         : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                    }`}
+                      }`}
                     style={showMyContactsOnly ? { backgroundColor: '#3A1CC1' } : {}}
                   >
                     My Contacts
                   </button>
                 </div>
               )}
-              
+
               {/* Search Bar */}
               <div className="relative">
                 <MagnifyingGlassIcon className="absolute left-3 top-1/2 transform -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -3996,24 +3994,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   const email = String(contact.email || '').toLowerCase().trim();
                   return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
                 });
-                
+
                 // Debug: log any contacts that still have @lawoffice.org.il
                 const remainingLawOffice = safeContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
                 if (remainingLawOffice.length > 0) {
                   console.error('❌ [EmailThreadModal] CRITICAL: Found contacts with @lawoffice.org.il after filtering:', remainingLawOffice);
                   safeContacts = safeContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
                 }
-                
+
                 // Log what we're about to render
                 console.log(`🎨 [EmailThreadModal] Rendering ${safeContacts.length} contacts in main list (from ${filteredContacts.length} filteredContacts)`);
-                
+
                 // Final check - log ALL emails being rendered and check for @lawoffice.org.il
                 const emailsBeingRendered = safeContacts.map(c => c.email).filter(Boolean);
                 const lawOfficeInRender = emailsBeingRendered.filter(e => shouldExcludeLawOfficeEmail(e));
                 if (lawOfficeInRender.length > 0) {
                   console.error('❌ [EmailThreadModal] CRITICAL: About to render contacts with @lawoffice.org.il emails!', lawOfficeInRender);
                 }
-                
+
                 // Also check the actual contact objects
                 const lawOfficeContacts = safeContacts.filter(c => {
                   const email = String(c.email || '').toLowerCase().trim();
@@ -4032,10 +4030,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     return !email.includes('@lawoffice.org.il') && !shouldExcludeLawOfficeEmail(c.email);
                   });
                 }
-                
+
                 // Log sample of emails being rendered (first 10)
                 console.log(`📋 [EmailThreadModal] Sample emails being rendered:`, safeContacts.slice(0, 10).map(c => c.email));
-                
+
                 return safeContacts;
               })().filter(contact => {
                 // Final check right before rendering each contact
@@ -4051,58 +4049,57 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   return null; // Don't render
                 }
                 return (
-                                                  <div
-                   key={contact.id}
-                   onClick={() => handleContactSelect(contact)}
-                   className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer transition-colors hover:bg-gray-50 ${
-                     selectedContact?.id === contact.id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
-                   }`}
-                 >
-                   <div className="flex items-center gap-2 md:gap-3">
-                     <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm md:text-base">
-                       {contact.name.charAt(0).toUpperCase()}
-                     </div>
-                                        <div className="flex-1 min-w-0">
-                      <div 
-                        className="font-semibold text-gray-900 truncate text-sm md:text-base"
-                        dir="auto"
-                      >
-                        {contact.name}
+                  <div
+                    key={contact.id}
+                    onClick={() => handleContactSelect(contact)}
+                    className={`p-3 md:p-4 border-b border-gray-100 cursor-pointer transition-colors hover:bg-gray-50 ${selectedContact?.id === contact.id ? 'bg-blue-50 border-l-4 border-l-blue-500' : ''
+                      }`}
+                  >
+                    <div className="flex items-center gap-2 md:gap-3">
+                      <div className="w-8 h-8 md:w-10 md:h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full flex items-center justify-center text-white font-semibold text-sm md:text-base">
+                        {contact.name.charAt(0).toUpperCase()}
                       </div>
-                       <div className="text-xs md:text-sm text-gray-500 truncate" dir="ltr">
-                         {(() => {
-                           // Debug: log if this contact has @lawoffice.org.il email
-                           if (shouldExcludeLawOfficeEmail(contact.email)) {
-                             console.error('❌ [EmailThreadModal] RENDERING CONTACT WITH @lawoffice.org.il:', {
-                               name: contact.name,
-                               email: contact.email,
-                               id: contact.id,
-                               lead_number: contact.lead_number
-                             });
-                           }
-                           return contact.email;
-                         })()}
-                       </div>
-                                                <div className="flex items-center justify-between">
-                           <div className="text-xs text-gray-400">
-                             #{contact.lead_number}
-                           </div>
-                           <div className="flex items-center gap-1 md:gap-2">
-                             {contact.unread_count && contact.unread_count > 0 && (
-                               <div className="w-4 h-4 md:w-5 md:h-5 bg-white rounded-full border-2 border-[#3e28cd] flex items-center justify-center">
-                                 <span className="text-xs text-[#3e28cd] font-bold">{contact.unread_count}</span>
-                               </div>
-                             )}
-                             {contact.last_message_time && (
-                               <div className="text-xs text-gray-400">
-                                 {formatLastMessageTime(contact.last_message_time)}
-                               </div>
-                             )}
-                           </div>
-                         </div>
-                     </div>
+                      <div className="flex-1 min-w-0">
+                        <div
+                          className="font-semibold text-gray-900 truncate text-sm md:text-base"
+                          dir="auto"
+                        >
+                          {contact.name}
+                        </div>
+                        <div className="text-xs md:text-sm text-gray-500 truncate" dir="ltr">
+                          {(() => {
+                            // Debug: log if this contact has @lawoffice.org.il email
+                            if (shouldExcludeLawOfficeEmail(contact.email)) {
+                              console.error('❌ [EmailThreadModal] RENDERING CONTACT WITH @lawoffice.org.il:', {
+                                name: contact.name,
+                                email: contact.email,
+                                id: contact.id,
+                                lead_number: contact.lead_number
+                              });
+                            }
+                            return contact.email;
+                          })()}
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <div className="text-xs text-gray-400">
+                            #{contact.lead_number}
+                          </div>
+                          <div className="flex items-center gap-1 md:gap-2">
+                            {contact.unread_count && contact.unread_count > 0 && (
+                              <div className="w-4 h-4 md:w-5 md:h-5 bg-white rounded-full border-2 border-[#3e28cd] flex items-center justify-center">
+                                <span className="text-xs text-[#3e28cd] font-bold">{contact.unread_count}</span>
+                              </div>
+                            )}
+                            {contact.last_message_time && (
+                              <div className="text-xs text-gray-400">
+                                {formatLastMessageTime(contact.last_message_time)}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
                 );
               })}
             </div>
@@ -4141,7 +4138,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           {selectedContact.name.charAt(0).toUpperCase()}
                         </div>
                         <div>
-                          <h3 
+                          <h3
                             className="font-semibold text-gray-900 text-sm"
                             dir="auto"
                           >
@@ -4164,7 +4161,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                         {selectedContact.name.charAt(0).toUpperCase()}
                       </div>
                       <div>
-                        <h3 
+                        <h3
                           className="font-semibold text-gray-900"
                           dir="auto"
                         >
@@ -4205,24 +4202,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   ) : (
                     <div className="space-y-4">
                       {emailThread.map((message, index) => {
-                        const showDateSeparator = index === 0 || 
+                        const showDateSeparator = index === 0 ||
                           new Date(message.sent_at).toDateString() !== new Date(emailThread[index - 1].sent_at).toDateString();
-                        
+
                         // Determine if email is from team/user based on sender email domain
                         // Emails from @lawoffice.org.il are ALWAYS team/user, never client
                         const senderEmail = message.sender_email || '';
                         const isFromOffice = isOfficeEmail(senderEmail);
                         // If sender is from office domain, it's ALWAYS team/user, regardless of direction field
                         const isOutgoing = isFromOffice ? true : (message.direction === 'outgoing');
-                        
+
                         // Get sender display name - use employee display_name for office emails
                         let senderDisplayName: string;
                         if (isOutgoing) {
                           // For team/user emails: use employee display_name from cache if available, otherwise fallback
-                          senderDisplayName = (message as any).sender_display_name 
-                            || message.sender_name 
-                            || currentUserFullName 
-                            || userEmail 
+                          senderDisplayName = (message as any).sender_display_name
+                            || message.sender_name
+                            || currentUserFullName
+                            || userEmail
                             || 'You';
                         } else {
                           // For client emails
@@ -4230,7 +4227,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                         }
                         const messageDirection = getMessageDirection(message);
                         const isRTLMessage = messageDirection === 'rtl';
-                        
+
                         return (
                           <React.Fragment key={message.id || index}>
                             {showDateSeparator && (
@@ -4240,20 +4237,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                 </div>
                               </div>
                             )}
-                            
+
                             <div className={`flex flex-col ${isOutgoing ? 'items-end' : 'items-start'}`}>
                               <div className="flex items-center gap-2 mb-1">
-                                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${
-                                  isOutgoing
+                                <div className={`px-3 py-1 rounded-full text-xs font-semibold ${isOutgoing
                                     ? 'bg-blue-100 text-blue-700 border border-blue-200'
                                     : 'bg-pink-100 text-pink-700 border border-pink-200'
-                                }`}>
+                                  }`}>
                                   {isOutgoing ? 'Team' : 'Client'}
                                 </div>
                                 <div
-                                  className={`text-xs font-semibold ${
-                                    isOutgoing ? 'text-blue-600' : 'text-gray-600'
-                                  }`}
+                                  className={`text-xs font-semibold ${isOutgoing ? 'text-blue-600' : 'text-gray-600'
+                                    }`}
                                   dir="auto"
                                 >
                                   {senderDisplayName}
@@ -4261,14 +4256,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                               </div>
                               <div
                                 className="max-w-full md:max-w-[70%] rounded-2xl px-4 py-2 shadow-sm border border-gray-200 bg-white text-gray-900"
-                                style={{ 
-                                  wordBreak: 'break-word', 
+                                style={{
+                                  wordBreak: 'break-word',
                                   overflowWrap: 'anywhere'
                                 }}
                               >
                                 <div className="mb-2">
-                                  <div 
-                                    className="text-sm font-semibold text-gray-900" 
+                                  <div
+                                    className="text-sm font-semibold text-gray-900"
                                     dir="auto"
                                   >
                                     {message.subject}
@@ -4295,13 +4290,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                     <div className="text-gray-400">{formatTime(message.sent_at)}</div>
                                   </div>
                                 </div>
-                                
+
                                 {message.body_html ? (
                                   <div
                                     dangerouslySetInnerHTML={{ __html: message.body_html }}
                                     className="prose prose-sm max-w-none text-gray-700 break-words email-content"
-                                    style={{ 
-                                      wordBreak: 'break-word', 
+                                    style={{
+                                      wordBreak: 'break-word',
                                       overflowWrap: 'anywhere',
                                       whiteSpace: 'pre-wrap' // Preserve line breaks and whitespace
                                     }}
@@ -4310,8 +4305,8 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                 ) : message.body_preview ? (
                                   <div
                                     className="text-gray-700 whitespace-pre-wrap break-words"
-                                    style={{ 
-                                      wordBreak: 'break-word', 
+                                    style={{
+                                      wordBreak: 'break-word',
                                       overflowWrap: 'anywhere'
                                     }}
                                     dir="auto"
@@ -4332,12 +4327,12 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                                         if (!attachment || (!attachment.id && !attachment.name)) {
                                           return null; // Skip invalid attachments
                                         }
-                                        
+
                                         const attachmentKey = attachment.id || attachment.name || `${message.id}-${idx}`;
                                         const attachmentName = attachment.name || `Attachment ${idx + 1}`;
                                         const isDownloading =
                                           attachment.id && downloadingAttachments[attachment.id];
-                                        
+
                                         return (
                                           <button
                                             key={attachmentKey}
@@ -4535,7 +4530,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       <XMarkIcon className="w-4 h-4" />
                     </button>
                   </div>
-                  
+
                   <div className="space-y-2">
                     {isLoadingAI ? (
                       <div className="text-center text-gray-500 py-4">
@@ -4543,7 +4538,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                         <span className="ml-2">Getting AI suggestions...</span>
                       </div>
                     ) : (
-                      <div 
+                      <div
                         className="w-full p-4 rounded-lg border border-gray-200 bg-white cursor-pointer hover:bg-gray-100 transition-colors"
                         onClick={() => applyAISuggestion(aiSuggestions[0])}
                       >
@@ -4596,9 +4591,9 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   <button
                     type="button"
                     className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
+                    style={{
+                      backgroundColor: '#4218CC',
+                      width: '44px',
                       height: '44px'
                     }}
                     onClick={() => fileInputRef.current?.click()}
@@ -4614,16 +4609,16 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     onChange={handleFileUpload}
                     className="hidden"
                   />
-                  
+
                   {/* AI Suggestions Button */}
                   <button
                     type="button"
                     onClick={handleAISuggestions}
                     disabled={isLoadingAI || !selectedContact}
                     className="btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105"
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
+                    style={{
+                      backgroundColor: '#4218CC',
+                      width: '44px',
                       height: '44px'
                     }}
                     title={newMessage.trim() ? "Improve message with AI" : "Get AI suggestions"}
@@ -4634,16 +4629,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       <SparklesIcon className="w-6 h-6" />
                     )}
                   </button>
-                  
+
                   {/* Add Link Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
-                      showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
-                    }`}
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
+                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${showLinkForm ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                      }`}
+                    style={{
+                      backgroundColor: '#4218CC',
+                      width: '44px',
                       height: '44px'
                     }}
                     onClick={() => setShowLinkForm(prev => !prev)}
@@ -4652,16 +4646,15 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   >
                     <LinkIcon className="w-6 h-6" />
                   </button>
-                  
+
                   {/* Add Contacts from Lead Button */}
                   <button
                     type="button"
-                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${
-                      showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
-                    }`}
-                    style={{ 
-                      backgroundColor: '#4218CC', 
-                      width: '44px', 
+                    className={`btn btn-circle border-0 text-white hover:opacity-90 transition-all hover:scale-105 ${showContactsModal ? 'ring-2 ring-offset-2 ring-[#4218CC]' : ''
+                      }`}
+                    style={{
+                      backgroundColor: '#4218CC',
+                      width: '44px',
                       height: '44px'
                     }}
                     onClick={handleOpenContactsModal}
@@ -4671,10 +4664,10 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                     <UserPlusIcon className="w-6 h-6" />
                   </button>
                 </div>
-                
+
                 {/* Divider */}
                 <div className="w-px h-8 bg-base-300 hidden sm:block" />
-                
+
                 {/* Template filters */}
                 <div className="flex items-center gap-2 flex-wrap">
                   {/* Language Filter */}
@@ -4695,7 +4688,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       </option>
                     ))}
                   </select>
-                  
+
                   {/* Placement Filter */}
                   <select
                     className="select select-bordered select-sm w-36 text-sm"
@@ -4714,7 +4707,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       </option>
                     ))}
                   </select>
-                  
+
                   {/* Template Search */}
                   <div className="relative w-40" ref={templateDropdownRef}>
                     <input
@@ -4762,7 +4755,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       </div>
                     )}
                   </div>
-                  
+
                   {/* Clear Filters Button */}
                   {(selectedTemplateId !== null || templateLanguageFilter || templatePlacementFilter !== null) && (
                     <button
@@ -4785,7 +4778,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   )}
                 </div>
               </div>
-              
+
               {/* Right side - Send button only */}
               <button
                 onClick={handleSendEmail}
@@ -4857,18 +4850,18 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                       const email = String(contact.email || '').toLowerCase().trim();
                       return !email.includes('@lawoffice.org.il') && !email.endsWith('@lawoffice.org.il');
                     });
-                    
+
                     // Final verification
                     const lawOfficeInRender = safeContacts.filter(c => shouldExcludeLawOfficeEmail(c.email));
                     if (lawOfficeInRender.length > 0) {
                       console.error('❌ [EmailThreadModal] CRITICAL: Found @lawoffice.org.il in safeContacts before render!', lawOfficeInRender);
                       safeContacts = safeContacts.filter(c => !shouldExcludeLawOfficeEmail(c.email));
                     }
-                    
+
                     if (safeContacts.length !== filteredAllContacts.length) {
                       console.error(`❌ [EmailThreadModal] CRITICAL: Had to filter ${filteredAllContacts.length - safeContacts.length} @lawoffice.org.il contacts at render time!`);
                     }
-                    
+
                     return safeContacts;
                   })().filter(contact => {
                     // Final check right before rendering each contact
@@ -4894,7 +4887,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                             {contact.name?.charAt(0).toUpperCase()}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div 
+                            <div
                               className="font-semibold text-gray-900 truncate"
                               dir="auto"
                             >
@@ -4998,14 +4991,14 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
               ) : newEmailSearchResults.length > 0 ? (
                 <div className="space-y-2">
                   {newEmailSearchResults.map((result, index) => {
-                    const uniqueKey = result.lead_type === 'legacy' 
+                    const uniqueKey = result.lead_type === 'legacy'
                       ? `legacy_${result.id}_${result.contactName || result.name}_${index}`
                       : `${result.id}_${result.contactName || result.name}_${index}`;
-                    
+
                     const displayName = result.contactName || result.name || '';
                     const displayEmail = result.email || '';
                     const displayPhone = result.phone || result.mobile || '';
-                    
+
                     return (
                       <button
                         key={uniqueKey}
@@ -5020,7 +5013,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                           </div>
                           <div className="flex-1 min-w-0">
                             <div className="flex items-center gap-2">
-                              <p 
+                              <p
                                 className="font-semibold text-gray-900 truncate"
                                 dir="auto"
                               >
@@ -5052,13 +5045,13 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
           </div>
         </div>
       )}
-      
+
       {/* Lead Contacts Modal */}
       {showContactsModal && createPortal(
         <div className="fixed inset-0 z-[10002] flex items-center justify-center">
-          <div 
-            className="absolute inset-0 bg-black/50" 
-            onClick={() => setShowContactsModal(false)} 
+          <div
+            className="absolute inset-0 bg-black/50"
+            onClick={() => setShowContactsModal(false)}
           />
           <div className="relative z-10 bg-white rounded-xl shadow-2xl w-full max-w-md mx-4 overflow-hidden">
             {/* Modal Header */}
@@ -5074,7 +5067,7 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 <XMarkIcon className="w-5 h-5" />
               </button>
             </div>
-            
+
             {/* Modal Body */}
             <div className="px-5 py-4 max-h-[320px] overflow-y-auto">
               {loadingContacts ? (
@@ -5092,26 +5085,24 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                   {modalLeadContacts.map(contact => {
                     const isSelected = selectedContactIds.has(contact.id);
                     const alreadyAdded = toRecipients.includes(contact.email!);
-                    
+
                     return (
                       <div
                         key={contact.id}
-                        className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${
-                          alreadyAdded 
+                        className={`flex items-center gap-3 p-3 rounded-lg border cursor-pointer transition-all ${alreadyAdded
                             ? 'bg-gray-50 border-gray-200 opacity-60 cursor-not-allowed'
-                            : isSelected 
-                              ? 'bg-purple-50 border-purple-300' 
+                            : isSelected
+                              ? 'bg-purple-50 border-purple-300'
                               : 'bg-white border-gray-200 hover:bg-gray-50'
-                        }`}
+                          }`}
                         onClick={() => !alreadyAdded && toggleContactSelection(contact.id)}
                       >
-                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${
-                          alreadyAdded
+                        <div className={`w-5 h-5 rounded border-2 flex items-center justify-center flex-shrink-0 ${alreadyAdded
                             ? 'bg-gray-300 border-gray-300'
-                            : isSelected 
-                              ? 'bg-[#4218CC] border-[#4218CC]' 
+                            : isSelected
+                              ? 'bg-[#4218CC] border-[#4218CC]'
                               : 'border-gray-300'
-                        }`}>
+                          }`}>
                           {(isSelected || alreadyAdded) && <CheckIcon className="w-3 h-3 text-white" />}
                         </div>
                         <div className="flex-1 min-w-0">
@@ -5132,11 +5123,11 @@ const EmailThreadModal: React.FC<EmailThreadModalProps> = ({ isOpen, onClose, se
                 </div>
               )}
             </div>
-            
+
             {/* Modal Footer */}
             <div className="px-5 py-4 border-t border-gray-200 flex items-center justify-between bg-gray-50">
               <span className="text-sm text-gray-500">
-                {selectedContactIds.size > 0 
+                {selectedContactIds.size > 0
                   ? `${selectedContactIds.size} contact(s) selected`
                   : 'Select contacts to add'}
               </span>

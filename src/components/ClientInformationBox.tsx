@@ -442,11 +442,33 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
                 // Prefer the formatted lead number (e.g. "L18/2"), fall back to manual_id and finally to id
                 let displayNumber = selectedClient.lead_number || selectedClient.manual_id || selectedClient.id || '---';
 
+                // Check if it has an existing suffix (for subleads)
+                const displayStr = displayNumber.toString();
+                const hasExistingSuffix = displayStr.includes('/');
+                let baseNumber = hasExistingSuffix ? displayStr.split('/')[0] : displayStr;
+                const existingSuffix = hasExistingSuffix ? displayStr.split('/').slice(1).join('/') : null;
+
                 // Show "C" prefix in UI for both new and legacy leads when stage is Success (100)
                 const isSuccessStage = selectedClient.stage === '100' || selectedClient.stage === 100;
-                if (isSuccessStage && displayNumber && !displayNumber.toString().startsWith('C')) {
+                if (isSuccessStage && baseNumber && !baseNumber.toString().startsWith('C')) {
                   // Replace "L" prefix with "C" for display only
-                  displayNumber = displayNumber.toString().replace(/^L/, 'C');
+                  baseNumber = baseNumber.toString().replace(/^L/, 'C');
+                }
+
+                // Add /1 suffix to master leads (frontend only)
+                // A lead is a master if: it has no master_id AND it has subleads
+                const hasNoMasterId = !selectedClient.master_id || String(selectedClient.master_id).trim() === '';
+                const isMasterWithSubLeads = hasNoMasterId && (isMasterLead || isMasterLeadProp);
+
+                if (isMasterWithSubLeads && !hasExistingSuffix) {
+                  // Master lead with subleads - add /1
+                  displayNumber = `${baseNumber}/1`;
+                } else if (hasExistingSuffix) {
+                  // Sublead - preserve the existing suffix
+                  displayNumber = `${baseNumber}/${existingSuffix}`;
+                } else {
+                  // Regular lead without suffix
+                  displayNumber = baseNumber;
                 }
 
                 return displayNumber;
@@ -472,15 +494,132 @@ const ClientInformationBox: React.FC<ClientInformationBoxProps> = ({ selectedCli
               ) : null;
             })()}
             {/* Master Lead button - next to language badge for sub-leads */}
-            {isSubLead && masterLeadNumber && (
-              <a
-                href={`/clients/${masterLeadNumber}/master`}
-                className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
-              >
-                <ArrowRightIcon className="w-4 h-4" />
-                Master Lead
-              </a>
-            )}
+            {(() => {
+              if (!isSubLead) return null;
+
+              const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+
+              // For legacy leads: require masterLeadNumber
+              // For new leads: show button if master_id exists (masterLeadNumber will be fetched async by Clients.tsx)
+              if (isLegacyLead) {
+                // Legacy leads: need masterLeadNumber from lead_number pattern or fetched
+                if (!masterLeadNumber) return null;
+                return (
+                  <a
+                    href={`/clients/${masterLeadNumber}/master`}
+                    className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
+                  >
+                    <ArrowRightIcon className="w-4 h-4" />
+                    Master Lead
+                  </a>
+                );
+              } else {
+                // New leads: show button if master_id exists
+                // The masterLeadNumber will be fetched async, so show button even if it's not yet available
+                if (!selectedClient?.master_id) return null;
+
+                // If masterLeadNumber is available, use it for the link
+                // Otherwise, the button will appear but the link will be set once masterLeadNumber is fetched
+                const handleClick = async (e: React.MouseEvent) => {
+                  if (!masterLeadNumber && selectedClient?.master_id) {
+                    // If masterLeadNumber is not yet available, fetch it on click
+                    e.preventDefault();
+                    try {
+                      const masterId = selectedClient.master_id;
+                      console.log('🔍 Click handler - Fetching master lead number:', {
+                        masterId,
+                        masterIdType: typeof masterId
+                      });
+
+                      // Check if master_id is UUID or numeric
+                      const isUUID = typeof masterId === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(masterId);
+
+                      let leadNumber: string | null = null;
+
+                      if (isUUID) {
+                        // Query leads table with UUID
+                        const { data, error } = await supabase
+                          .from('leads')
+                          .select('lead_number')
+                          .eq('id', masterId)
+                          .maybeSingle();
+
+                        if (error) {
+                          console.error('Error fetching master lead number from leads table:', error);
+                          throw error;
+                        }
+                        leadNumber = data?.lead_number || null;
+                        console.log('🔍 Click handler - Result from leads table:', { leadNumber });
+                      } else {
+                        // master_id is numeric, so it's a legacy lead ID
+                        // Query leads_lead table and use the ID as lead_number
+                        const numericId = parseInt(String(masterId), 10);
+                        if (!isNaN(numericId)) {
+                          try {
+                            const { data: legacyData, error: legacyError } = await supabase
+                              .from('leads_lead')
+                              .select('id')
+                              .eq('id', numericId)
+                              .single();
+
+                            if (legacyError) {
+                              console.error('Error fetching master lead number from leads_lead table:', legacyError);
+                              // If not found, still try to navigate using the numeric ID as lead_number
+                              // For legacy leads, the lead_number is often just the ID
+                              console.log('🔍 Master lead not found in leads_lead, using master_id as lead_number:', numericId);
+                              leadNumber = String(numericId);
+                            } else if (legacyData?.id) {
+                              // Found in leads_lead table - use the numeric ID as lead_number
+                              leadNumber = String(legacyData.id);
+                              console.log('🔍 Click handler - Found in leads_lead table:', { leadNumber });
+                            }
+                          } catch (err) {
+                            // If query fails, still use the numeric ID as lead_number for navigation
+                            console.log('🔍 Error querying leads_lead, using master_id as lead_number:', numericId);
+                            leadNumber = String(numericId);
+                          }
+                        } else {
+                          // master_id is not a valid numeric ID
+                          console.error('Invalid master_id format:', masterId);
+                          toast.error('Invalid master lead ID');
+                          return;
+                        }
+                      }
+
+                      if (leadNumber) {
+                        // For legacy leads (numeric IDs), add "L" prefix
+                        const isLegacyMaster = !isUUID && !isNaN(parseInt(String(masterId), 10));
+                        const navigationPath = isLegacyMaster ? `/clients/L${leadNumber}/master` : `/clients/${leadNumber}/master`;
+                        navigate(navigationPath);
+                      } else {
+                        console.error('Master lead number is null after all attempts');
+                        toast.error('Master lead not found');
+                      }
+                    } catch (error) {
+                      console.error('Error fetching master lead number on click:', error);
+                      toast.error('Failed to load master lead');
+                    }
+                  }
+                };
+
+                // Determine if master is legacy (numeric) to add "L" prefix
+                const isLegacyMaster = masterLeadNumber && /^\d+$/.test(String(masterLeadNumber));
+                const masterHref = masterLeadNumber
+                  ? (isLegacyMaster ? `/clients/L${masterLeadNumber}/master` : `/clients/${masterLeadNumber}/master`)
+                  : '#';
+
+                return (
+                  <a
+                    href={masterHref}
+                    onClick={handleClick}
+                    className="px-3 py-1 text-sm font-semibold text-white bg-gradient-to-r from-purple-600 to-blue-600 rounded-full flex items-center gap-1.5 flex-shrink-0 w-fit hover:from-purple-700 hover:to-blue-700 transition-all"
+                  >
+                    <ArrowRightIcon className="w-4 h-4" />
+                    Master Lead
+                  </a>
+                );
+              }
+            })()}
             {/* View Sub-Leads button - next to language badge for master leads */}
             {(() => {
               const shouldShow = isMasterLeadProp && subLeadsCountProp && subLeadsCountProp > 0 && !(selectedClient?.master_id && String(selectedClient.master_id).trim() !== '');
