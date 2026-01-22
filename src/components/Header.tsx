@@ -570,6 +570,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
     const trimmed = query.trim();
     if (!trimmed || trimmed.length < 1) return [];
 
+    // Set current search query to prevent race conditions
+    // This ensures we only use results that match the current query
+    currentSearchQueryRef.current = trimmed;
+
     const lower = trimmed.toLowerCase();
     const digits = trimmed.replace(/\D/g, '');
     const isEmail = trimmed.includes('@');
@@ -640,6 +644,15 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             const cleanPrefix = emailPrefix.replace(/[,\\]/g, '');
             if (cleanPrefix) {
               emailPrefixConditions.push(`email.ilike.${cleanPrefix}%`);
+            }
+          }
+          // Also include the full query (with @) as a prefix match for partial emails
+          // This helps match "asaf@mont" to "asaf@montanacapital.com"
+          const domainPart = lower.split('@')[1] || '';
+          if (domainPart && domainPart.length > 0) {
+            const cleanQuery = lower.replace(/[,\\]/g, '');
+            if (cleanQuery) {
+              emailPrefixConditions.push(`email.ilike.${cleanQuery}%`);
             }
           }
         } else {
@@ -1268,10 +1281,17 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // For emails, also try exact match first
         const contactSearchPromises: any[] = [];
 
-        // For emails with domain, try exact match for contacts
+        // For emails with domain, try exact match for contacts (only if complete email)
+        // For partial emails, use prefix matching
         if (hasAtSymbol && lower.includes('@')) {
           const domainPart = lower.split('@')[1] || '';
-          if (domainPart && domainPart.length > 0) {
+          const emailPrefix = lower.split('@')[0] || '';
+
+          // Check if email looks complete (has domain with at least one dot)
+          const isCompleteEmail = domainPart.includes('.') && domainPart.length > 3;
+
+          if (isCompleteEmail) {
+            // Complete email - try exact match first
             const exactEmail = lower.trim();
             console.log('🔍 [Header Contact Email Exact Search] Searching for exact email:', exactEmail);
             contactSearchPromises.push(
@@ -1309,6 +1329,50 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 `)
                 .ilike('email', exactEmail)
                 .limit(1)
+            );
+          } else if (domainPart && domainPart.length > 0) {
+            // Partial email (e.g., "asaf@mont") - use prefix matching
+            const emailPrefixPattern = `${lower.trim()}%`;
+            console.log('🔍 [Header Contact Email Prefix Search] Searching for prefix:', emailPrefixPattern);
+            contactSearchPromises.push(
+              supabase
+                .from('leads_contact')
+                .select(`
+                  id,
+                  name,
+                  email,
+                  phone,
+                  mobile,
+                  newlead_id,
+                  lead_leadcontact (
+                    lead_id,
+                    newlead_id
+                  )
+                `)
+                .ilike('email', emailPrefixPattern)
+                .limit(5)
+            );
+          } else if (emailPrefix && emailPrefix.length > 0) {
+            // Just email prefix before @ - use prefix matching
+            const emailPrefixPattern = `${emailPrefix}%`;
+            console.log('🔍 [Header Contact Email Prefix Search] Searching for prefix:', emailPrefixPattern);
+            contactSearchPromises.push(
+              supabase
+                .from('leads_contact')
+                .select(`
+                  id,
+                  name,
+                  email,
+                  phone,
+                  mobile,
+                  newlead_id,
+                  lead_leadcontact (
+                    lead_id,
+                    newlead_id
+                  )
+                `)
+                .ilike('email', emailPrefixPattern)
+                .limit(5)
             );
           }
         }
@@ -2004,7 +2068,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             // 1. Direct match (no formatting): "0507825939"
             phoneConditions.push(`phone.ilike.${variant}%`);
             mobileConditions.push(`mobile.ilike.${variant}%`);
-            
+
             // 2. Match with separators - create patterns for common formatting
             // For "0507825939", try "050-782", "050 782", "050.782", etc.
             if (variant.length >= 6) {
@@ -2018,7 +2082,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               mobileConditions.push(`mobile.ilike.${first3} ${rest}%`);
               mobileConditions.push(`mobile.ilike.${first3}.${rest}%`);
             }
-            
+
             // 3. Match with country code prefix (+972, 00972, etc.)
             if (variant.startsWith('0') && variant.length >= 6) {
               const withoutLeadingZero = variant.substring(1);
@@ -2040,7 +2104,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 mobileConditions.push(`mobile.ilike.972${first2}${rest}%`);
               }
             }
-            
+
             // 4. Suffix match for longer queries (7+ digits) to catch numbers with country codes
             if (variant.length >= 7) {
               phoneConditions.push(`phone.ilike.%${variant}`);
@@ -2149,6 +2213,35 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               const phoneDigits = (lead.phone || '').replace(/\D/g, '');
               const mobileDigits = (lead.mobile || '').replace(/\D/g, '');
 
+              // Normalize phone digits for better matching (same as contact matching)
+              const normalizePhoneDigitsForMatching = (digits: string): string[] => {
+                if (!digits) return [];
+                const variants: string[] = [digits]; // Keep original
+
+                // Remove 00972 prefix
+                if (digits.startsWith('00972')) {
+                  variants.push(digits.substring(5));
+                }
+                // Remove 972 prefix
+                if (digits.startsWith('972')) {
+                  const withoutCountry = digits.substring(3);
+                  variants.push(withoutCountry);
+                  // Also add with leading 0
+                  if (!withoutCountry.startsWith('0') && withoutCountry.length >= 3) {
+                    variants.push('0' + withoutCountry);
+                  }
+                }
+                // Remove leading 0 for comparison
+                if (digits.startsWith('0')) {
+                  variants.push(digits.substring(1));
+                }
+
+                return [...new Set(variants)]; // Remove duplicates
+              };
+
+              const phoneVariants = normalizePhoneDigitsForMatching(phoneDigits);
+              const mobileVariants = normalizePhoneDigitsForMatching(mobileDigits);
+
               // Check all variants for exact matches first, then prefix/suffix matches (NOT middle matches)
               // Validate that matches are meaningful (similar length, significant overlap)
               let isExactMatch = false;
@@ -2156,28 +2249,82 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               let isSuffixMatch = false;
 
               for (const variant of searchVariants) {
-                // Check for exact match
-                if (phoneDigits === variant || mobileDigits === variant) {
-                  isExactMatch = true;
-                  break;
+                // Check all normalized variants for exact match
+                for (const phoneVariant of phoneVariants) {
+                  if (phoneVariant === variant) {
+                    isExactMatch = true;
+                    break;
+                  }
+                  // If phone starts with variant and lengths are close, treat as exact match
+                  if (phoneVariant.startsWith(variant) && variant.length >= 7 && phoneVariant.length <= variant.length + 3) {
+                    const isValid = isValidPhoneMatch(variant, phoneVariant, 'prefix');
+                    if (isValid) {
+                      isExactMatch = (phoneVariant.length === variant.length) || (phoneVariant.length <= variant.length + 1);
+                      if (isExactMatch) break;
+                      isPrefixMatch = true;
+                      break;
+                    }
+                  }
                 }
-                // Check for prefix match with validation
-                if (phoneDigits.startsWith(variant) && isValidPhoneMatch(variant, phoneDigits, 'prefix')) {
-                  isPrefixMatch = true;
-                  break;
+                if (isExactMatch) break;
+
+                for (const mobileVariant of mobileVariants) {
+                  if (mobileVariant === variant) {
+                    isExactMatch = true;
+                    break;
+                  }
+                  if (mobileVariant.startsWith(variant) && variant.length >= 7 && mobileVariant.length <= variant.length + 3) {
+                    const isValid = isValidPhoneMatch(variant, mobileVariant, 'prefix');
+                    if (isValid) {
+                      isExactMatch = (mobileVariant.length === variant.length) || (mobileVariant.length <= variant.length + 1);
+                      if (isExactMatch) break;
+                      isPrefixMatch = true;
+                      break;
+                    }
+                  }
                 }
-                if (mobileDigits.startsWith(variant) && isValidPhoneMatch(variant, mobileDigits, 'prefix')) {
-                  isPrefixMatch = true;
-                  break;
+                if (isExactMatch) break;
+
+                // Check for prefix match with validation (only if not already exact match)
+                if (!isExactMatch) {
+                  for (const phoneVariant of phoneVariants) {
+                    if (phoneVariant.startsWith(variant) && isValidPhoneMatch(variant, phoneVariant, 'prefix')) {
+                      isPrefixMatch = true;
+                      break;
+                    }
+                  }
+                  if (isPrefixMatch) break;
+
+                  for (const mobileVariant of mobileVariants) {
+                    if (mobileVariant.startsWith(variant) && isValidPhoneMatch(variant, mobileVariant, 'prefix')) {
+                      isPrefixMatch = true;
+                      break;
+                    }
+                  }
+                  if (isPrefixMatch) break;
                 }
+
                 // Check for suffix match with validation (only if variant is at least 7 digits)
-                if (variant.length >= 7 && phoneDigits.endsWith(variant) && isValidPhoneMatch(variant, phoneDigits, 'suffix')) {
-                  isSuffixMatch = true;
-                  break;
-                }
-                if (variant.length >= 7 && mobileDigits.endsWith(variant) && isValidPhoneMatch(variant, mobileDigits, 'suffix')) {
-                  isSuffixMatch = true;
-                  break;
+                if (!isExactMatch && !isPrefixMatch && variant.length >= 7) {
+                  for (const phoneVariant of phoneVariants) {
+                    if (phoneVariant.endsWith(variant) && isValidPhoneMatch(variant, phoneVariant, 'suffix')) {
+                      isExactMatch = (phoneVariant.length === variant.length) || (phoneVariant.length <= variant.length + 4);
+                      if (isExactMatch) break;
+                      isSuffixMatch = true;
+                      break;
+                    }
+                  }
+                  if (isExactMatch || isSuffixMatch) break;
+
+                  for (const mobileVariant of mobileVariants) {
+                    if (mobileVariant.endsWith(variant) && isValidPhoneMatch(variant, mobileVariant, 'suffix')) {
+                      isExactMatch = (mobileVariant.length === variant.length) || (mobileVariant.length <= variant.length + 4);
+                      if (isExactMatch) break;
+                      isSuffixMatch = true;
+                      break;
+                    }
+                  }
+                  if (isExactMatch || isSuffixMatch) break;
                 }
               }
 
@@ -2262,7 +2409,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             // 1. Direct match (no formatting)
             contactPhoneConditions.push(`phone.ilike.${variant}%`);
             contactMobileConditions.push(`mobile.ilike.${variant}%`);
-            
+
             // 2. Match with separators (for 6+ digits)
             if (variant.length >= 6) {
               const first3 = variant.substring(0, 3);
@@ -2274,7 +2421,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
               contactMobileConditions.push(`mobile.ilike.${first3} ${rest}%`);
               contactMobileConditions.push(`mobile.ilike.${first3}.${rest}%`);
             }
-            
+
             // 3. Match with country code prefix (for numbers starting with 0)
             if (variant.startsWith('0') && variant.length >= 6) {
               const withoutLeadingZero = variant.substring(1);
@@ -2295,7 +2442,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 contactMobileConditions.push(`mobile.ilike.972${first2}${rest}%`);
               }
             }
-            
+
             // 4. Suffix match for longer queries (7+ digits)
             if (variant.length >= 7) {
               contactPhoneConditions.push(`phone.ilike.%${variant}`);
@@ -2341,92 +2488,151 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           // Collect all unique lead IDs from contacts
           const uniqueLeadIds = new Set<string>();
           const uniqueLegacyIds = new Set<number>();
+          // Track which contacts had exact matches (for proper fuzzy flag setting)
+          const contactExactMatchMap = new Map<number, boolean>();
 
           contacts.forEach((contact: any) => {
             // Check if contact phone/mobile matches any variant
-            const contactPhoneDigits = (contact.phone || '').replace(/\D/g, '');
-            const contactMobileDigits = (contact.mobile || '').replace(/\D/g, '');
+            // Normalize contact phone digits by removing country code for better matching
+            const contactPhoneRaw = (contact.phone || '').replace(/\D/g, '');
+            const contactMobileRaw = (contact.mobile || '').replace(/\D/g, '');
+
+            // Normalize by removing country code prefixes (972, 00972, etc.)
+            const normalizePhoneDigits = (digits: string): string[] => {
+              if (!digits) return [];
+              const variants: string[] = [digits]; // Keep original
+
+              // Remove 00972 prefix
+              if (digits.startsWith('00972')) {
+                variants.push(digits.substring(5));
+              }
+              // Remove 972 prefix
+              if (digits.startsWith('972')) {
+                const withoutCountry = digits.substring(3);
+                variants.push(withoutCountry);
+                // Also add with leading 0
+                if (!withoutCountry.startsWith('0') && withoutCountry.length >= 3) {
+                  variants.push('0' + withoutCountry);
+                }
+              }
+              // Remove leading 0 for comparison
+              if (digits.startsWith('0')) {
+                variants.push(digits.substring(1));
+              }
+
+              return [...new Set(variants)]; // Remove duplicates
+            };
+
+            const contactPhoneVariants = normalizePhoneDigits(contactPhoneRaw);
+            const contactMobileVariants = normalizePhoneDigits(contactMobileRaw);
 
             console.log('🔍 [Header Phone Search] Checking contact match:', {
               contactId: contact.id,
               contactPhone: contact.phone,
-              contactPhoneDigits,
+              contactPhoneRaw,
+              contactPhoneVariants,
               contactMobile: contact.mobile,
-              contactMobileDigits,
+              contactMobileRaw,
+              contactMobileVariants,
               searchVariants
             });
 
             let contactMatches = false;
+            let isExactMatch = false;
             let matchReason = '';
             for (const variant of searchVariants) {
-              // Exact match: always accept
-              if (contactPhoneDigits === variant || contactMobileDigits === variant) {
-                contactMatches = true;
-                matchReason = `exact match: ${contactPhoneDigits === variant ? 'phone' : 'mobile'} === ${variant}`;
-                break;
-              }
-              // Prefix match: phone starts with variant AND passes validation
-              if (contactPhoneDigits.startsWith(variant)) {
-                const isValid = isValidPhoneMatch(variant, contactPhoneDigits, 'prefix');
-                console.log('🔍 [Header Phone Search] Prefix check:', {
-                  variant,
-                  contactPhoneDigits,
-                  startsWith: true,
-                  isValid,
-                  reason: isValid ? 'prefix match passed' : 'prefix match failed validation'
-                });
-                if (isValid) {
+              // Check all normalized variants of contact phone/mobile
+              for (const phoneVariant of contactPhoneVariants) {
+                // Exact match: phone variant exactly equals search variant
+                if (phoneVariant === variant) {
                   contactMatches = true;
-                  matchReason = `prefix match: phone starts with ${variant}`;
+                  isExactMatch = true;
+                  matchReason = `exact match: phone variant ${phoneVariant} === ${variant}`;
                   break;
                 }
-              }
-              if (contactMobileDigits.startsWith(variant)) {
-                const isValid = isValidPhoneMatch(variant, contactMobileDigits, 'prefix');
-                console.log('🔍 [Header Phone Search] Prefix check (mobile):', {
-                  variant,
-                  contactMobileDigits,
-                  startsWith: true,
-                  isValid,
-                  reason: isValid ? 'prefix match passed' : 'prefix match failed validation'
-                });
-                if (isValid) {
-                  contactMatches = true;
-                  matchReason = `prefix match: mobile starts with ${variant}`;
-                  break;
+                // Also check if search variant exactly matches phone (for partial numbers)
+                // If phone starts with variant and variant is long enough (7+ digits), treat as exact match
+                if (phoneVariant.startsWith(variant) && variant.length >= 7 && phoneVariant.length <= variant.length + 3) {
+                  const isValid = isValidPhoneMatch(variant, phoneVariant, 'prefix');
+                  if (isValid) {
+                    contactMatches = true;
+                    // If phone is same length or very close, it's an exact match
+                    isExactMatch = (phoneVariant.length === variant.length) || (phoneVariant.length <= variant.length + 1);
+                    matchReason = isExactMatch
+                      ? `exact match: phone variant ${phoneVariant} matches ${variant}`
+                      : `prefix match: phone variant ${phoneVariant} starts with ${variant}`;
+                    break;
+                  }
+                }
+                // Prefix match: phone starts with variant AND passes validation
+                if (!contactMatches && phoneVariant.startsWith(variant)) {
+                  const isValid = isValidPhoneMatch(variant, phoneVariant, 'prefix');
+                  if (isValid) {
+                    contactMatches = true;
+                    matchReason = `prefix match: phone variant ${phoneVariant} starts with ${variant}`;
+                    break;
+                  }
+                }
+                // Suffix match: phone ends with variant AND passes validation (only if variant is at least 7 digits)
+                if (!contactMatches && variant.length >= 7 && phoneVariant.endsWith(variant)) {
+                  const isValid = isValidPhoneMatch(variant, phoneVariant, 'suffix');
+                  if (isValid) {
+                    contactMatches = true;
+                    // If phone ends with variant and lengths are close, it's an exact match
+                    isExactMatch = (phoneVariant.length === variant.length) || (phoneVariant.length <= variant.length + 4);
+                    matchReason = isExactMatch
+                      ? `exact match: phone variant ${phoneVariant} ends with ${variant}`
+                      : `suffix match: phone variant ${phoneVariant} ends with ${variant}`;
+                    break;
+                  }
                 }
               }
-              // Suffix match: phone ends with variant AND passes validation (only if variant is at least 7 digits)
-              if (variant.length >= 7 && contactPhoneDigits.endsWith(variant)) {
-                const isValid = isValidPhoneMatch(variant, contactPhoneDigits, 'suffix');
-                console.log('🔍 [Header Phone Search] Suffix check:', {
-                  variant,
-                  contactPhoneDigits,
-                  endsWith: true,
-                  isValid,
-                  reason: isValid ? 'suffix match passed' : 'suffix match failed validation'
-                });
-                if (isValid) {
+              if (contactMatches) break;
+
+              // Check mobile variants
+              for (const mobileVariant of contactMobileVariants) {
+                // Exact match: mobile variant exactly equals search variant
+                if (mobileVariant === variant) {
                   contactMatches = true;
-                  matchReason = `suffix match: phone ends with ${variant}`;
+                  isExactMatch = true;
+                  matchReason = `exact match: mobile variant ${mobileVariant} === ${variant}`;
                   break;
                 }
-              }
-              if (variant.length >= 7 && contactMobileDigits.endsWith(variant)) {
-                const isValid = isValidPhoneMatch(variant, contactMobileDigits, 'suffix');
-                console.log('🔍 [Header Phone Search] Suffix check (mobile):', {
-                  variant,
-                  contactMobileDigits,
-                  endsWith: true,
-                  isValid,
-                  reason: isValid ? 'suffix match passed' : 'suffix match failed validation'
-                });
-                if (isValid) {
-                  contactMatches = true;
-                  matchReason = `suffix match: mobile ends with ${variant}`;
-                  break;
+                // Also check if search variant exactly matches mobile (for partial numbers)
+                if (mobileVariant.startsWith(variant) && variant.length >= 7 && mobileVariant.length <= variant.length + 3) {
+                  const isValid = isValidPhoneMatch(variant, mobileVariant, 'prefix');
+                  if (isValid) {
+                    contactMatches = true;
+                    isExactMatch = (mobileVariant.length === variant.length) || (mobileVariant.length <= variant.length + 1);
+                    matchReason = isExactMatch
+                      ? `exact match: mobile variant ${mobileVariant} matches ${variant}`
+                      : `prefix match: mobile variant ${mobileVariant} starts with ${variant}`;
+                    break;
+                  }
+                }
+                // Prefix match: mobile starts with variant AND passes validation
+                if (!contactMatches && mobileVariant.startsWith(variant)) {
+                  const isValid = isValidPhoneMatch(variant, mobileVariant, 'prefix');
+                  if (isValid) {
+                    contactMatches = true;
+                    matchReason = `prefix match: mobile variant ${mobileVariant} starts with ${variant}`;
+                    break;
+                  }
+                }
+                // Suffix match: mobile ends with variant AND passes validation (only if variant is at least 7 digits)
+                if (!contactMatches && variant.length >= 7 && mobileVariant.endsWith(variant)) {
+                  const isValid = isValidPhoneMatch(variant, mobileVariant, 'suffix');
+                  if (isValid) {
+                    contactMatches = true;
+                    isExactMatch = (mobileVariant.length === variant.length) || (mobileVariant.length <= variant.length + 4);
+                    matchReason = isExactMatch
+                      ? `exact match: mobile variant ${mobileVariant} ends with ${variant}`
+                      : `suffix match: mobile variant ${mobileVariant} ends with ${variant}`;
+                    break;
+                  }
                 }
               }
+              if (contactMatches) break;
             }
 
             console.log('🔍 [Header Phone Search] Contact match result:', {
@@ -2538,12 +2744,16 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           contactsWithoutLeads.forEach((contact: any) => {
             const key = `contact:${contact.id}`;
             if (!seen.has(key)) {
+              // Check if this contact had an exact match
+              const contactHadExactMatch = contactExactMatchMap.get(contact.id) || false;
+
               seen.add(key);
               console.log('🔍 [Header Phone Search] Adding standalone contact:', {
                 id: contact.id,
                 name: contact.name,
                 phone: contact.phone,
-                mobile: contact.mobile
+                mobile: contact.mobile,
+                isExactMatch: contactHadExactMatch
               });
               results.push({
                 id: `contact_${contact.id}`,
@@ -2567,7 +2777,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                 lead_type: 'contact',
                 unactivation_reason: null,
                 deactivate_note: null,
-                isFuzzyMatch: false,
+                isFuzzyMatch: !contactHadExactMatch, // Use exact match flag
                 isContact: true,
                 contactName: contact.name || '',
                 isMainContact: false,
@@ -2599,6 +2809,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     return rels.some((r: any) => r.newlead_id === lead.id) || c.newlead_id === lead.id;
                   });
 
+                  // Check if the matching contact had an exact match
+                  const contactHadExactMatch = matchingContact ? contactExactMatchMap.get(matchingContact.id) || false : false;
+
                   seen.add(key);
                   results.push({
                     id: lead.id,
@@ -2622,7 +2835,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     lead_type: 'new',
                     unactivation_reason: null,
                     deactivate_note: null,
-                    isFuzzyMatch: false, // Contact matches are considered exact
+                    isFuzzyMatch: !contactHadExactMatch, // Use exact match flag from contact
                     isContact: true,
                     contactName: matchingContact?.name || '',
                     isMainContact: false,
@@ -2656,6 +2869,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     return rels.some((r: any) => r.lead_id === lead.id);
                   });
 
+                  // Check if the matching contact had an exact match
+                  const contactHadExactMatch = matchingContact ? contactExactMatchMap.get(matchingContact.id) || false : false;
+
                   seen.add(key);
                   results.push({
                     id: `legacy_${lead.id}`,
@@ -2680,7 +2896,7 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
                     lead_type: 'legacy',
                     unactivation_reason: null,
                     deactivate_note: null,
-                    isFuzzyMatch: false, // Contact matches are considered exact
+                    isFuzzyMatch: !contactHadExactMatch, // Use exact match flag from contact
                     isContact: true,
                     contactName: matchingContact?.name || '',
                     isMainContact: false,
@@ -2977,11 +3193,21 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
       (currentIsPhoneSearch && !previousWasPhoneSearch && previousQuery.length > 0);
 
     // Email extension: when query has @, treat as email extension (for email searches)
+    // BUT: Only use client-side filtering if the domain part looks complete (has a dot)
+    // For incomplete domains (e.g., "asaf@mont"), always do a new search to find matching contacts
     const previousHasAt = previousQuery.includes('@');
     const currentHasAt = trimmedQuery.includes('@');
+    const currentDomainPart = currentHasAt ? trimmedQuery.split('@')[1] || '' : '';
+    const previousDomainPart = previousHasAt ? previousQuery.split('@')[1] || '' : '';
+    const currentDomainComplete = currentDomainPart.includes('.') && currentDomainPart.length > 3;
+    const previousDomainComplete = previousDomainPart.includes('.') && previousDomainPart.length > 3;
+
+    // Only treat as email extension if domain is complete (has dot) or if we're extending a complete domain
+    // For incomplete domains, always do a new search to ensure we find all matching contacts
     const isEmailExtension = previousHasAt && currentHasAt &&
       trimmedQuery.length > previousQuery.length &&
-      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase());
+      trimmedQuery.toLowerCase().startsWith(previousQuery.toLowerCase()) &&
+      (previousDomainComplete || currentDomainComplete); // Only if domain is/was complete
 
     // Lead number extension: current digits extend previous lead number (e.g., "343" → "3436")
     // Only if both are lead numbers (1-6 digits, no leading zero)
@@ -2991,7 +3217,9 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
     // Phone extension: current digits start with previous digits (for phone number searches)
     // Allow phone extensions even when digits length changes (e.g., 6 digits -> 7+ digits)
-    const isPhoneExtension = !currentHasAt && previousDigits.length >= 3 &&
+    // BUT: Only use client-side filtering if we have enough digits (at least 6) to ensure stable results
+    // For shorter queries, always do a new search to get accurate results
+    const isPhoneExtension = !currentHasAt && previousDigits.length >= 6 &&
       currentDigits.length > previousDigits.length &&
       currentDigits.startsWith(previousDigits) &&
       !isSearchTypeIncompatible && // Don't use if search types are incompatible
@@ -3064,9 +3292,38 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         // Pre-normalize result fields once
         const name = (result.contactName || result.name || '').toLowerCase();
         const email = (result.email || '').toLowerCase();
-        const phone = (result.phone || '').replace(/\D/g, '');
-        const mobile = (result.mobile || '').replace(/\D/g, '');
+        const phoneRaw = (result.phone || '').replace(/\D/g, '');
+        const mobileRaw = (result.mobile || '').replace(/\D/g, '');
         const leadNumber = (result.lead_number || '').toLowerCase();
+
+        // Normalize phone numbers for matching (remove country codes, create variants)
+        const normalizePhoneForMatching = (digits: string): string[] => {
+          if (!digits) return [];
+          const variants: string[] = [digits]; // Keep original
+
+          // Remove 00972 prefix
+          if (digits.startsWith('00972')) {
+            variants.push(digits.substring(5));
+          }
+          // Remove 972 prefix
+          if (digits.startsWith('972')) {
+            const withoutCountry = digits.substring(3);
+            variants.push(withoutCountry);
+            // Also add with leading 0
+            if (!withoutCountry.startsWith('0') && withoutCountry.length >= 3) {
+              variants.push('0' + withoutCountry);
+            }
+          }
+          // Remove leading 0 for comparison
+          if (digits.startsWith('0')) {
+            variants.push(digits.substring(1));
+          }
+
+          return [...new Set(variants)]; // Remove duplicates
+        };
+
+        const phoneVariants = normalizePhoneForMatching(phoneRaw);
+        const mobileVariants = normalizePhoneForMatching(mobileRaw);
 
         // Quick filter check - early return if no match
         let matches = false;
@@ -3078,21 +3335,40 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (isEmail) {
           matches = email.startsWith(queryLower);
         } else if (isPhoneLike) {
-          // Phone prefix matching: check if phone/mobile starts with query digits
-          // Also handle variants (with/without country code, with/without leading 0, with formatting)
-          const phoneNormalized = phone.replace(/^\+?972|^00/, ''); // Remove country code variants
-          const mobileNormalized = mobile.replace(/^\+?972|^00/, ''); // Remove country code variants
-          
-          // Primary: prefix match (phone starts with query digits)
-          matches = phone.startsWith(queryDigits) || mobile.startsWith(queryDigits) ||
-            phoneNormalized.startsWith(queryDigits) || mobileNormalized.startsWith(queryDigits) ||
-            phone === queryDigits || mobile === queryDigits; // Also check exact match
-          
+          // Phone prefix matching: check all normalized variants
+          // Check if any phone/mobile variant starts with or equals query digits
+          for (const phoneVariant of phoneVariants) {
+            if (phoneVariant.startsWith(queryDigits) || phoneVariant === queryDigits) {
+              matches = true;
+              break;
+            }
+          }
+          if (!matches) {
+            for (const mobileVariant of mobileVariants) {
+              if (mobileVariant.startsWith(queryDigits) || mobileVariant === queryDigits) {
+                matches = true;
+                break;
+              }
+            }
+          }
+
           // Secondary: suffix match for longer queries (7+ digits) to catch numbers with country codes
           // Example: user types "507825939" should match "+972507825939"
           if (!matches && queryDigits.length >= 7) {
-            matches = phone.endsWith(queryDigits) || mobile.endsWith(queryDigits) ||
-              phoneNormalized.endsWith(queryDigits) || mobileNormalized.endsWith(queryDigits);
+            for (const phoneVariant of phoneVariants) {
+              if (phoneVariant.endsWith(queryDigits)) {
+                matches = true;
+                break;
+              }
+            }
+            if (!matches) {
+              for (const mobileVariant of mobileVariants) {
+                if (mobileVariant.endsWith(queryDigits)) {
+                  matches = true;
+                  break;
+                }
+              }
+            }
           }
         } else if (queryIsLeadNumber || isLeadNumber) {
           // Lead number filtering: check if lead_number starts with or includes the query
@@ -3106,16 +3382,48 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
         if (!matches) continue; // Skip non-matching results early
 
         // Check for exact match (only if it passes filter)
-        let isExactMatch = false;
+        // IMPORTANT: If result already has isFuzzyMatch: false (from phone search), preserve it as exact match
+        let isExactMatch = !result.isFuzzyMatch; // Preserve existing exact match status
 
-        if (hasDomainCheck && email === queryLower) {
-          isExactMatch = true;
-        } else if (isPhoneLike && (phone === queryDigits || mobile === queryDigits)) {
-          isExactMatch = true;
-        } else if (isLeadNumber && result.lead_number) {
-          const resultLeadNumNoPrefix = leadNumber.replace(/^[lc]/i, '');
-          if (resultLeadNumNoPrefix === leadNumNumeric && !result.isContact) {
+        if (!isExactMatch) {
+          // Only re-evaluate if not already an exact match
+          if (hasDomainCheck && email === queryLower) {
             isExactMatch = true;
+          } else if (isPhoneLike) {
+            // Check if any phone/mobile variant exactly matches query digits
+            const phoneExactMatch = phoneVariants.some(v => v === queryDigits);
+            const mobileExactMatch = mobileVariants.some(v => v === queryDigits);
+            if (phoneExactMatch || mobileExactMatch) {
+              isExactMatch = true;
+            } else if (queryDigits.length >= 7) {
+              // For longer queries (7+ digits), check if phone/mobile starts with query and lengths are close
+              // This treats "0507825939" matching "0507825939" as exact, even if there are slight variations
+              for (const phoneVariant of phoneVariants) {
+                if (phoneVariant.startsWith(queryDigits) && phoneVariant.length <= queryDigits.length + 1) {
+                  isExactMatch = true;
+                  break;
+                }
+              }
+              if (!isExactMatch) {
+                for (const mobileVariant of mobileVariants) {
+                  if (mobileVariant.startsWith(queryDigits) && mobileVariant.length <= queryDigits.length + 1) {
+                    isExactMatch = true;
+                    break;
+                  }
+                }
+              }
+            }
+          } else if (isLeadNumber && result.lead_number) {
+            const resultLeadNumNoPrefix = leadNumber.replace(/^[lc]/i, '');
+            if (resultLeadNumNoPrefix === leadNumNumeric && !result.isContact) {
+              isExactMatch = true;
+            }
+          } else if (!isPhoneLike && !isLeadNumber) {
+            // For name searches, check if name exactly matches
+            const nameExactMatch = name === queryLower;
+            if (nameExactMatch) {
+              isExactMatch = true;
+            }
           }
         }
 
@@ -3219,8 +3527,10 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
 
           // Ensure exact matches are correctly marked (re-evaluate to fix any missed matches)
           // This is CRITICAL: We must re-check ALL results to ensure exact matches are properly identified
+          // IMPORTANT: Phone search results already have correct isFuzzyMatch flags, preserve them
           const resultsWithExactFlags = immediateResults.map(result => {
-            let isExactMatch = false;
+            // Preserve exact match status from phone search (if already set)
+            let isExactMatch = !result.isFuzzyMatch;
 
             // Email exact match - check email field (for both leads and contacts)
             if (hasDomainCheck && result.email) {
@@ -3231,11 +3541,61 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
             }
 
             // Phone exact match (check if phone or mobile exactly matches)
+            // IMPORTANT: Preserve exact match status from phone search, and use same normalization logic
             if (!isExactMatch && isPhoneQuery) {
-              const resultPhone = (result.phone || '').replace(/\D/g, '');
-              const resultMobile = (result.mobile || '').replace(/\D/g, '');
-              if (resultPhone === trimmedDigits || resultMobile === trimmedDigits) {
+              // If result already has isFuzzyMatch: false from phone search, preserve it
+              if (!result.isFuzzyMatch) {
                 isExactMatch = true;
+              } else {
+                // Otherwise, check using normalized phone variants (same logic as phone search)
+                const resultPhoneRaw = (result.phone || '').replace(/\D/g, '');
+                const resultMobileRaw = (result.mobile || '').replace(/\D/g, '');
+
+                // Normalize phone digits (same as phone search)
+                const normalizePhoneDigits = (digits: string): string[] => {
+                  if (!digits) return [];
+                  const variants: string[] = [digits];
+                  if (digits.startsWith('00972')) {
+                    variants.push(digits.substring(5));
+                  }
+                  if (digits.startsWith('972')) {
+                    const withoutCountry = digits.substring(3);
+                    variants.push(withoutCountry);
+                    if (!withoutCountry.startsWith('0') && withoutCountry.length >= 3) {
+                      variants.push('0' + withoutCountry);
+                    }
+                  }
+                  if (digits.startsWith('0')) {
+                    variants.push(digits.substring(1));
+                  }
+                  return [...new Set(variants)];
+                };
+
+                const phoneVariants = normalizePhoneDigits(resultPhoneRaw);
+                const mobileVariants = normalizePhoneDigits(resultMobileRaw);
+
+                // Check if any variant exactly matches query digits
+                const phoneExactMatch = phoneVariants.some(v => v === trimmedDigits);
+                const mobileExactMatch = mobileVariants.some(v => v === trimmedDigits);
+                if (phoneExactMatch || mobileExactMatch) {
+                  isExactMatch = true;
+                } else if (trimmedDigits.length >= 7) {
+                  // For longer queries, check if phone starts with query and lengths are close
+                  for (const phoneVariant of phoneVariants) {
+                    if (phoneVariant.startsWith(trimmedDigits) && phoneVariant.length <= trimmedDigits.length + 1) {
+                      isExactMatch = true;
+                      break;
+                    }
+                  }
+                  if (!isExactMatch) {
+                    for (const mobileVariant of mobileVariants) {
+                      if (mobileVariant.startsWith(trimmedDigits) && mobileVariant.length <= trimmedDigits.length + 1) {
+                        isExactMatch = true;
+                        break;
+                      }
+                    }
+                  }
+                }
               }
             }
 
@@ -3272,11 +3632,27 @@ const Header: React.FC<HeaderProps> = ({ onMenuClick, onSearchClick, isSearchOpe
           });
 
           // Sort immediate results: exact matches first, then fuzzy matches
+          // IMPORTANT: Phone search results are already sorted, but we need to ensure exact matches are at the top
           const sortedResults = [...resultsWithExactFlags].sort((a, b) => {
+            // Exact matches (isFuzzyMatch: false) always come first
             if (a.isFuzzyMatch !== b.isFuzzyMatch) {
-              return a.isFuzzyMatch ? 1 : -1; // Exact matches (isFuzzyMatch: false) come first
+              return a.isFuzzyMatch ? 1 : -1;
             }
+            // Within same type, maintain original order (phone search already sorted them)
             return 0;
+          });
+
+          // Debug: Log the sorted results to verify exact matches are first
+          console.log('🔍 [Header Immediate Search] Sorted results:', {
+            total: sortedResults.length,
+            exactMatches: sortedResults.filter(r => !r.isFuzzyMatch).length,
+            fuzzyMatches: sortedResults.filter(r => r.isFuzzyMatch).length,
+            firstFew: sortedResults.slice(0, 3).map(r => ({
+              id: r.id,
+              name: r.name,
+              isFuzzyMatch: r.isFuzzyMatch,
+              phone: r.phone
+            }))
           });
 
           // We have immediate results - show them right away (sorted)

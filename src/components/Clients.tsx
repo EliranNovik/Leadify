@@ -9804,29 +9804,7 @@ const Clients: React.FC<ClientsProps> = ({
     }
   }, [selectedClient?.id, fetchNextDuePayment]);
 
-  if (!localLoading && !selectedClient) {
-    return (
-      <div className="p-6">
-        <h1 className="text-2xl font-bold mb-4">Clients</h1>
-        <div className="alert">
-          <span>Please select a client from search or create a new one.</span>
-        </div>
-      </div>
-    );
-  }
-  const interactionsCacheForLead =
-    selectedClient?.id && interactionsCache?.leadId === selectedClient.id
-      ? interactionsCache
-      : null;
-
-  const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
-  const financeProps =
-    activeTab === 'finances'
-      ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
-      : {};
-  // Before the return statement, add:
-  let dropdownItems = null;
-  // Get the stage name for comparison
+  // Get the stage name for comparison (needed for useCallback)
   const currentStageName = selectedClient ? getStageName(selectedClient.stage) : '';
   const stageNumeric =
     selectedClient?.stage !== null && selectedClient?.stage !== undefined
@@ -9836,6 +9814,7 @@ const Clients: React.FC<ClientsProps> = ({
   const scheduleMenuLabel =
     isStageNumeric && stageNumeric >= 40 && stageNumeric !== 60 && stageNumeric !== 70 ? 'Another meeting' : 'Schedule Meeting';
 
+  // Move useCallback BEFORE early returns to ensure hooks are always called in the same order
   const handleScheduleMenuClick = useCallback(
     (event?: React.MouseEvent<HTMLAnchorElement>) => {
       if (event) {
@@ -9861,6 +9840,279 @@ const Clients: React.FC<ClientsProps> = ({
     },
     [selectedClient?.stage]
   );
+
+  // Move ALL hooks before early returns to ensure hooks are always called in the same order
+  // Sub-lead drawer state - must be before early returns
+  const [showSubLeadDrawer, setShowSubLeadDrawer] = useState(false);
+  const [subLeadStep, setSubLeadStep] = useState<'initial' | 'newContact' | 'newContactDetails' | 'newProcedure' | 'details' | 'sameContract'>('initial');
+  // State for contracts and contacts with contracts (for "Same Contract" feature)
+  const [contactContracts, setContactContracts] = useState<{
+    [contactId: number]: {
+      contactId: number;
+      contactName: string;
+      contractId: string;
+      contractName: string;
+      contactEmail?: string | null;
+      contactPhone?: string | null;
+      contactMobile?: string | null;
+      contactCountryId?: number | null;
+    };
+  }>({});
+  const [selectedContractContactId, setSelectedContractContactId] = useState<number | null>(null);
+  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
+  const [contactsWithContracts, setContactsWithContracts] = useState<Array<{
+    contactId: number;
+    contactName: string;
+    contractId: string;
+    contractName: string;
+    contactEmail?: string | null;
+    contactPhone?: string | null;
+    contactMobile?: string | null;
+    contactCountryId?: number | null;
+  }>>([]);
+
+  // Fetch contracts and contacts when drawer opens
+  useEffect(() => {
+    if (!showSubLeadDrawer || !selectedClient) return;
+
+    const fetchContractsAndContacts = async () => {
+      try {
+        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
+        const contactsMap: { [contactId: number]: { contactName: string; contractId: string; contractName: string } } = {};
+
+        if (!isLegacyLead && selectedClient?.id) {
+          // For new leads, fetch contracts from contracts table
+          const { data: contracts, error: contractsError } = await supabase
+            .from('contracts')
+            .select('id, template_id, contact_id, contact_name, status')
+            .eq('client_id', selectedClient.id)
+            .order('created_at', { ascending: false });
+
+          if (contractsError) {
+            console.error('Error fetching contracts:', contractsError);
+            return;
+          }
+
+          if (contracts && contracts.length > 0) {
+            // Fetch contract templates to get contract names
+            const { data: templates } = await supabase
+              .from('contract_templates')
+              .select('id, name');
+
+            const templateMap = new Map((templates || []).map(t => [t.id, t.name]));
+
+            // Fetch contacts to get contact names
+            const { data: leadContacts } = await supabase
+              .from('lead_leadcontact')
+              .select('contact_id, newlead_id')
+              .eq('newlead_id', selectedClient.id);
+
+            if (leadContacts && leadContacts.length > 0) {
+              const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
+
+              const { data: contacts } = await supabase
+                .from('leads_contact')
+                .select('id, name, email, phone, mobile, country_id')
+                .in('id', contactIds);
+
+              const contactMap = new Map((contacts || []).map(c => [c.id, c]));
+
+              // Process contracts and map them to contacts
+              contracts.forEach(contract => {
+                const contactId = contract.contact_id;
+                if (contactId) {
+                  const contactRecord: any = contactMap.get(contactId);
+                  const contactName = contract.contact_name || contactRecord?.name || 'Unknown Contact';
+                  const contactEmail = contactRecord?.email || null;
+                  const contactPhone = contactRecord?.phone || null;
+                  const contactMobile = contactRecord?.mobile || null;
+                  const contactCountryId = contactRecord?.country_id ?? null;
+                  const contractName = templateMap.get(contract.template_id) || 'Contract';
+
+                  if (!contactsMap[contactId] || contracts.indexOf(contract) === 0) {
+                    // Only store the most recent contract per contact
+                    contactsMap[contactId] = {
+                      contactId,
+                      contactName,
+                      contractId: contract.id,
+                      contractName,
+                      contactEmail,
+                      contactPhone,
+                      contactMobile,
+                      contactCountryId
+                    };
+                  }
+                }
+              });
+            }
+          }
+        }
+
+        const contactsList = Object.values(contactsMap);
+        setContactsWithContracts(contactsList);
+        setContactContracts(contactsMap);
+      } catch (error) {
+        console.error('Error fetching contracts and contacts:', error);
+      }
+    };
+
+    fetchContractsAndContacts();
+  }, [showSubLeadDrawer, selectedClient]);
+  const [subLeadForm, setSubLeadForm] = useState({
+    name: '',
+    email: '',
+    phone: '',
+    mobile: '', // For new contact details
+    country: '', // For new contact details (country name)
+    countryId: '', // For new contact details (country ID)
+    category: '',
+    categoryId: '',
+    topic: '',
+    special_notes: '',
+    source: '',
+    language: '',
+    tags: '',
+    facts: '',
+    // Details step fields
+    handler: '',
+    handlerId: '',
+    currency: 'NIS',
+    numApplicants: '',
+    proposal: '',
+    potentialValue: '',
+  });
+  const [isSavingSubLead, setIsSavingSubLead] = useState(false);
+
+  const normalizeCurrencyForForm = useCallback((value: string | null | undefined) => {
+    if (!value) return 'NIS';
+    const normalized = value.trim();
+    if (normalized === '') return 'NIS';
+    switch (normalized) {
+      case '₪':
+      case 'ILS':
+      case 'NIS':
+        return 'NIS';
+      case '$':
+      case 'USD':
+        return 'USD';
+      case '€':
+      case 'EUR':
+        return 'EUR';
+      default:
+        return normalized;
+    }
+  }, []);
+
+  const convertCurrencyForInsert = useCallback((value: string | null | undefined) => {
+    if (!value) return '₪';
+    switch (value.trim()) {
+      case 'NIS':
+      case 'ILS':
+        return '₪';
+      case 'USD':
+        return 'USD';
+      case 'EUR':
+        return 'EUR';
+      default:
+        return value;
+    }
+  }, []);
+
+  // Move prefillSubLeadFormFromClient BEFORE early returns to ensure hooks are always called in the same order
+  // Note: This hook depends on categoryOptionsMap, handlerOptions, handlerOptionsMap which are defined earlier
+  const prefillSubLeadFormFromClient = useCallback(() => {
+    if (!selectedClient) return;
+
+    const baseCategoryId = selectedClient.category_id != null ? String(selectedClient.category_id) : '';
+    const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
+
+    const rawHandlerId =
+      selectedClient.case_handler_id != null
+        ? String(selectedClient.case_handler_id)
+        : (() => {
+          if (!selectedClient.handler) return '';
+          const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
+          return found?.id || '';
+        })();
+
+    const handlerLabel = rawHandlerId
+      ? handlerOptionsMap.get(rawHandlerId) || selectedClient.handler || ''
+      : selectedClient.handler || '';
+
+    const resolvedCurrency =
+      selectedClient.balance_currency ||
+      selectedClient.meeting_total_currency ||
+      selectedClient.proposal_currency ||
+      selectedClient.currency ||
+      subLeadForm.currency ||
+      '₪';
+
+    const resolvedApplicants =
+      selectedClient.number_of_applicants_meeting != null
+        ? String(selectedClient.number_of_applicants_meeting)
+        : selectedClient.number_of_applicants != null
+          ? String(selectedClient.number_of_applicants)
+          : '';
+
+    setSubLeadForm(prev => ({
+      ...prev,
+      name: selectedClient.name || '',
+      email: selectedClient.email || '',
+      phone: selectedClient.phone || '',
+      category: categoryOption?.label || selectedClient.category || '',
+      categoryId: baseCategoryId || '',
+      topic: selectedClient.topic || '',
+      special_notes: selectedClient.special_notes || '',
+      source: selectedClient.source || '',
+      language: selectedClient.language || '',
+      facts: selectedClient.facts || '',
+      tags: (() => {
+        if (Array.isArray(selectedClient.tags)) {
+          return selectedClient.tags.join(', ');
+        }
+        if (typeof selectedClient.tags === 'string') {
+          return selectedClient.tags;
+        }
+        return prev.tags;
+      })(),
+      handler: handlerLabel || '',
+      handlerId: rawHandlerId || '',
+      currency: normalizeCurrencyForForm(resolvedCurrency),
+      numApplicants: resolvedApplicants,
+      proposal: '',
+      potentialValue: '',
+    }));
+  }, [
+    categoryOptionsMap,
+    handlerOptions,
+    handlerOptionsMap,
+    selectedClient,
+    subLeadForm.currency,
+    normalizeCurrencyForForm,
+  ]);
+
+  if (!localLoading && !selectedClient) {
+    return (
+      <div className="p-6">
+        <h1 className="text-2xl font-bold mb-4">Clients</h1>
+        <div className="alert">
+          <span>Please select a client from search or create a new one.</span>
+        </div>
+      </div>
+    );
+  }
+  const interactionsCacheForLead =
+    selectedClient?.id && interactionsCache?.leadId === selectedClient.id
+      ? interactionsCache
+      : null;
+
+  const ActiveComponent = tabs.find(tab => tab.id === activeTab)?.component;
+  const financeProps =
+    activeTab === 'finances'
+      ? { onCreateFinancePlan: () => setShowPaymentsPlanDrawer(true) }
+      : {};
+  // Before the return statement, add:
+  let dropdownItems = null;
 
   if (selectedClient && areStagesEquivalent(currentStageName, 'Created')) {
     dropdownItems = (
@@ -10125,182 +10377,6 @@ const Clients: React.FC<ClientsProps> = ({
       </>
     );
   }
-
-  // Sub-lead drawer state
-  const [showSubLeadDrawer, setShowSubLeadDrawer] = useState(false);
-  const [subLeadStep, setSubLeadStep] = useState<'initial' | 'newContact' | 'newContactDetails' | 'newProcedure' | 'details' | 'sameContract'>('initial');
-  // State for contracts and contacts with contracts (for "Same Contract" feature)
-  const [contactContracts, setContactContracts] = useState<{
-    [contactId: number]: {
-      contactId: number;
-      contactName: string;
-      contractId: string;
-      contractName: string;
-      contactEmail?: string | null;
-      contactPhone?: string | null;
-      contactMobile?: string | null;
-      contactCountryId?: number | null;
-    };
-  }>({});
-  const [selectedContractContactId, setSelectedContractContactId] = useState<number | null>(null);
-  const [selectedContractId, setSelectedContractId] = useState<string | null>(null);
-  const [contactsWithContracts, setContactsWithContracts] = useState<Array<{
-    contactId: number;
-    contactName: string;
-    contractId: string;
-    contractName: string;
-    contactEmail?: string | null;
-    contactPhone?: string | null;
-    contactMobile?: string | null;
-    contactCountryId?: number | null;
-  }>>([]);
-
-  // Fetch contracts and contacts when drawer opens
-  useEffect(() => {
-    if (!showSubLeadDrawer || !selectedClient) return;
-
-    const fetchContractsAndContacts = async () => {
-      try {
-        const isLegacyLead = selectedClient?.lead_type === 'legacy' || selectedClient?.id?.toString().startsWith('legacy_');
-        const contactsMap: { [contactId: number]: { contactName: string; contractId: string; contractName: string } } = {};
-
-        if (!isLegacyLead && selectedClient?.id) {
-          // For new leads, fetch contracts from contracts table
-          const { data: contracts, error: contractsError } = await supabase
-            .from('contracts')
-            .select('id, template_id, contact_id, contact_name, status')
-            .eq('client_id', selectedClient.id)
-            .order('created_at', { ascending: false });
-
-          if (contractsError) {
-            console.error('Error fetching contracts:', contractsError);
-            return;
-          }
-
-          if (contracts && contracts.length > 0) {
-            // Fetch contract templates to get contract names
-            const { data: templates } = await supabase
-              .from('contract_templates')
-              .select('id, name');
-
-            const templateMap = new Map((templates || []).map(t => [t.id, t.name]));
-
-            // Fetch contacts to get contact names
-            const { data: leadContacts } = await supabase
-              .from('lead_leadcontact')
-              .select('contact_id, newlead_id')
-              .eq('newlead_id', selectedClient.id);
-
-            if (leadContacts && leadContacts.length > 0) {
-              const contactIds = leadContacts.map(lc => lc.contact_id).filter(Boolean);
-
-              const { data: contacts } = await supabase
-                .from('leads_contact')
-                .select('id, name, email, phone, mobile, country_id')
-                .in('id', contactIds);
-
-              const contactMap = new Map((contacts || []).map(c => [c.id, c]));
-
-              // Process contracts and map them to contacts
-              contracts.forEach(contract => {
-                const contactId = contract.contact_id;
-                if (contactId) {
-                  const contactRecord: any = contactMap.get(contactId);
-                  const contactName = contract.contact_name || contactRecord?.name || 'Unknown Contact';
-                  const contactEmail = contactRecord?.email || null;
-                  const contactPhone = contactRecord?.phone || null;
-                  const contactMobile = contactRecord?.mobile || null;
-                  const contactCountryId = contactRecord?.country_id ?? null;
-                  const contractName = templateMap.get(contract.template_id) || 'Contract';
-
-                  if (!contactsMap[contactId] || contracts.indexOf(contract) === 0) {
-                    // Only store the most recent contract per contact
-                    contactsMap[contactId] = {
-                      contactId,
-                      contactName,
-                      contractId: contract.id,
-                      contractName,
-                      contactEmail,
-                      contactPhone,
-                      contactMobile,
-                      contactCountryId
-                    };
-                  }
-                }
-              });
-            }
-          }
-        }
-
-        const contactsList = Object.values(contactsMap);
-        setContactsWithContracts(contactsList);
-        setContactContracts(contactsMap);
-      } catch (error) {
-        console.error('Error fetching contracts and contacts:', error);
-      }
-    };
-
-    fetchContractsAndContacts();
-  }, [showSubLeadDrawer, selectedClient]);
-  const [subLeadForm, setSubLeadForm] = useState({
-    name: '',
-    email: '',
-    phone: '',
-    mobile: '', // For new contact details
-    country: '', // For new contact details (country name)
-    countryId: '', // For new contact details (country ID)
-    category: '',
-    categoryId: '',
-    topic: '',
-    special_notes: '',
-    source: '',
-    language: '',
-    tags: '',
-    facts: '',
-    // Details step fields
-    handler: '',
-    handlerId: '',
-    currency: 'NIS',
-    numApplicants: '',
-    proposal: '',
-    potentialValue: '',
-  });
-  const [isSavingSubLead, setIsSavingSubLead] = useState(false);
-
-  const normalizeCurrencyForForm = useCallback((value: string | null | undefined) => {
-    if (!value) return 'NIS';
-    const normalized = value.trim();
-    if (normalized === '') return 'NIS';
-    switch (normalized) {
-      case '₪':
-      case 'ILS':
-      case 'NIS':
-        return 'NIS';
-      case '$':
-      case 'USD':
-        return 'USD';
-      case '€':
-      case 'EUR':
-        return 'EUR';
-      default:
-        return normalized;
-    }
-  }, []);
-
-  const convertCurrencyForInsert = useCallback((value: string | null | undefined) => {
-    if (!value) return '₪';
-    switch (value.trim()) {
-      case 'NIS':
-      case 'ILS':
-        return '₪';
-      case 'USD':
-        return 'USD';
-      case 'EUR':
-        return 'EUR';
-      default:
-        return value;
-    }
-  }, []);
   const toBigIntSafe = (value: any): bigint | null => {
     if (value === null || value === undefined || value === '') return null;
     try {
@@ -10550,76 +10626,6 @@ const Clients: React.FC<ClientsProps> = ({
     const calculatedSuffix = suffixes.length > 0 ? Math.max(...suffixes) + 1 : 2;
     return Math.max(calculatedSuffix, 2);
   };
-  const prefillSubLeadFormFromClient = useCallback(() => {
-    if (!selectedClient) return;
-
-    const baseCategoryId = selectedClient.category_id != null ? String(selectedClient.category_id) : '';
-    const categoryOption = baseCategoryId ? categoryOptionsMap.get(baseCategoryId) : undefined;
-
-    const rawHandlerId =
-      selectedClient.case_handler_id != null
-        ? String(selectedClient.case_handler_id)
-        : (() => {
-          if (!selectedClient.handler) return '';
-          const found = handlerOptions.find(opt => opt.label === selectedClient.handler);
-          return found?.id || '';
-        })();
-
-    const handlerLabel = rawHandlerId
-      ? handlerOptionsMap.get(rawHandlerId) || selectedClient.handler || ''
-      : selectedClient.handler || '';
-
-    const resolvedCurrency =
-      selectedClient.balance_currency ||
-      selectedClient.meeting_total_currency ||
-      selectedClient.proposal_currency ||
-      selectedClient.currency ||
-      subLeadForm.currency ||
-      '₪';
-
-    const resolvedApplicants =
-      selectedClient.number_of_applicants_meeting != null
-        ? String(selectedClient.number_of_applicants_meeting)
-        : selectedClient.number_of_applicants != null
-          ? String(selectedClient.number_of_applicants)
-          : '';
-
-    setSubLeadForm(prev => ({
-      ...prev,
-      name: selectedClient.name || '',
-      email: selectedClient.email || '',
-      phone: selectedClient.phone || '',
-      category: categoryOption?.label || selectedClient.category || '',
-      categoryId: baseCategoryId || '',
-      topic: selectedClient.topic || '',
-      special_notes: selectedClient.special_notes || '',
-      source: selectedClient.source || '',
-      language: selectedClient.language || '',
-      facts: selectedClient.facts || '',
-      tags: (() => {
-        if (Array.isArray(selectedClient.tags)) {
-          return selectedClient.tags.join(', ');
-        }
-        if (typeof selectedClient.tags === 'string') {
-          return selectedClient.tags;
-        }
-        return prev.tags;
-      })(),
-      handler: handlerLabel || '',
-      handlerId: rawHandlerId || '',
-      currency: normalizeCurrencyForForm(resolvedCurrency),
-      numApplicants: resolvedApplicants,
-      proposal: '',
-      potentialValue: '',
-    }));
-  }, [
-    categoryOptionsMap,
-    handlerOptions,
-    handlerOptionsMap,
-    selectedClient,
-    subLeadForm.currency,
-    normalizeCurrencyForForm,
-  ]);
 
   // Handler to save sub-lead
   const handleSaveSubLead = async () => {

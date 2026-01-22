@@ -44,9 +44,9 @@ const StageSearchReport = () => {
 
   // Dropdown options
   const stageOptions = [
-    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated", 
-    "communication_started", "another_meeting", "revised_offer", "offer_sent", 
-    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary", 
+    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated",
+    "communication_started", "another_meeting", "revised_offer", "offer_sent",
+    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary",
     "meeting_rescheduled", "meeting_ended"
   ];
   const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Immigration to Israel"];
@@ -83,7 +83,7 @@ const StageSearchReport = () => {
   const getStageBadge = (stage: string) => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
@@ -93,8 +93,8 @@ const StageSearchReport = () => {
   };
 
   const renderResultCard = (lead: any) => (
-    <div 
-      key={lead.id} 
+    <div
+      key={lead.id}
       className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group"
     >
       <div className="card-body p-5">
@@ -104,7 +104,7 @@ const StageSearchReport = () => {
           </h2>
           {getStageBadge(lead.stage)}
         </div>
-        
+
         <p className="text-sm text-base-content/600 font-mono mb-4">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
@@ -142,24 +142,24 @@ const StageSearchReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">From Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">To Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Stage</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('stage', e.target.value)}
             >
               <option value="">All Stages</option>
@@ -172,8 +172,8 @@ const StageSearchReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('category', e.target.value)}
             >
               <option value="">All Categories</option>
@@ -183,8 +183,8 @@ const StageSearchReport = () => {
             </select>
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -266,7 +266,7 @@ const AnchorSearchReport = () => {
   const getStageBadge = (stage: string) => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
@@ -276,8 +276,8 @@ const AnchorSearchReport = () => {
   };
 
   const renderResultCard = (lead: any) => (
-    <div 
-      key={lead.id} 
+    <div
+      key={lead.id}
       className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group"
     >
       <div className="card-body p-5">
@@ -287,7 +287,7 @@ const AnchorSearchReport = () => {
           </h2>
           {getStageBadge(lead.stage)}
         </div>
-        
+
         <p className="text-sm text-base-content/600 font-mono mb-4">#{lead.lead_number}</p>
 
         <div className="divider my-0"></div>
@@ -298,7 +298,7 @@ const AnchorSearchReport = () => {
             <span className="font-medium">{lead.date_of_birth ? new Date(lead.date_of_birth).toLocaleDateString() : 'N/A'}</span>
           </div>
           <div className="flex items-center gap-2" title="Place of Birth">
-            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+            <svg xmlns="http://www.w3.org/2000/svg" className="h-4 w-4 text-base-content/50" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z" /><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 11a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
             <span>{lead.place_of_birth || 'N/A'}</span>
           </div>
           <div className="flex items-center gap-2" title="Category">
@@ -325,33 +325,33 @@ const AnchorSearchReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Name</span></label>
-            <input 
-              type="text" 
-              className="input input-bordered" 
+            <input
+              type="text"
+              className="input input-bordered"
               placeholder="Search by name..."
-              onChange={e => handleFilterChange('name', e.target.value)} 
+              onChange={e => handleFilterChange('name', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Date of Birth</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('dateOfBirth', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('dateOfBirth', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Place of Birth</span></label>
-            <input 
-              type="text" 
-              className="input input-bordered" 
+            <input
+              type="text"
+              className="input input-bordered"
               placeholder="Search by place of birth..."
-              onChange={e => handleFilterChange('placeOfBirth', e.target.value)} 
+              onChange={e => handleFilterChange('placeOfBirth', e.target.value)}
             />
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -403,9 +403,9 @@ const DuplicateSearchReport = () => {
   // Dropdown options
   const statusOptions = ["active", "non active"];
   const stageOptions = [
-    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated", 
-    "communication_started", "another_meeting", "revised_offer", "offer_sent", 
-    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary", 
+    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated",
+    "communication_started", "another_meeting", "revised_offer", "offer_sent",
+    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary",
     "meeting_rescheduled", "meeting_ended"
   ];
   const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Immigration to Israel"];
@@ -522,7 +522,7 @@ const DuplicateSearchReport = () => {
   const getStageBadge = (stage: string) => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
@@ -533,7 +533,7 @@ const DuplicateSearchReport = () => {
 
   const getDuplicateBadge = (type: string) => {
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#dc2626', minWidth: 'fit-content' }}
       >
@@ -543,8 +543,8 @@ const DuplicateSearchReport = () => {
   };
 
   const renderResultCard = (lead: any) => (
-    <div 
-      key={lead.id} 
+    <div
+      key={lead.id}
       className="card bg-base-100 shadow-lg hover:shadow-2xl transition-all duration-300 ease-in-out transform hover:-translate-y-1 cursor-pointer group border-l-4 border-red-500"
     >
       <div className="card-body p-5">
@@ -557,7 +557,7 @@ const DuplicateSearchReport = () => {
             {getDuplicateBadge(lead.duplicateType)}
           </div>
         </div>
-        
+
         <p className="text-sm text-base-content/600 font-mono mb-2">#{lead.lead_number}</p>
         <p className="text-sm text-red-600 font-medium mb-4">
           Duplicate {lead.duplicateType}: {lead.duplicateValue}
@@ -603,24 +603,24 @@ const DuplicateSearchReport = () => {
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-8 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">From Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">To Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Status</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('status', e.target.value)}
             >
               <option value="">All Status</option>
@@ -631,8 +631,8 @@ const DuplicateSearchReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Stage</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('stage', e.target.value)}
             >
               <option value="">All Stages</option>
@@ -645,8 +645,8 @@ const DuplicateSearchReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('category', e.target.value)}
             >
               <option value="">All Categories</option>
@@ -657,8 +657,8 @@ const DuplicateSearchReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Language</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('language', e.target.value)}
             >
               <option value="">All Languages</option>
@@ -669,8 +669,8 @@ const DuplicateSearchReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Source</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('source', e.target.value)}
             >
               <option value="">All Sources</option>
@@ -680,8 +680,8 @@ const DuplicateSearchReport = () => {
             </select>
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -733,9 +733,9 @@ const SourcesPieReport = () => {
   // Dropdown options
   const statusOptions = ["active", "non active"];
   const stageOptions = [
-    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated", 
-    "communication_started", "another_meeting", "revised_offer", "offer_sent", 
-    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary", 
+    "created", "scheduler_assigned", "meeting_scheduled", "meeting_paid", "unactivated",
+    "communication_started", "another_meeting", "revised_offer", "offer_sent",
+    "waiting_for_mtng_sum", "client_signed", "client_declined", "lead_summary",
     "meeting_rescheduled", "meeting_ended"
   ];
   const categoryOptions = ["German Citizenship", "Austrian Citizenship", "Immigration to Israel"];
@@ -787,7 +787,7 @@ const SourcesPieReport = () => {
       }, {});
 
       const total = Object.values(sourceCounts).reduce((sum: number, count: any) => sum + count, 0);
-      
+
       const processedSourceDataArray = Object.entries(sourceCounts).map(([source, count]) => ({
         source,
         count,
@@ -814,10 +814,10 @@ const SourcesPieReport = () => {
     const [mousePosition, setMousePosition] = useState({ x: 0, y: 0 });
 
     const colors = [
-      '#3b28c7', '#dc2626', '#059669', '#d97706', '#7c3aed', 
+      '#3b28c7', '#dc2626', '#059669', '#d97706', '#7c3aed',
       '#db2777', '#0891b2', '#65a30d', '#f59e0b', '#6366f1'
     ];
-    
+
     let currentAngle = 0;
     const radius = 180;
     const hoverRadius = 190;
@@ -835,9 +835,9 @@ const SourcesPieReport = () => {
     return (
       <div className="flex flex-col items-center">
         <div className="relative">
-          <svg 
-            width="500" 
-            height="500" 
+          <svg
+            width="500"
+            height="500"
             className="mb-6 drop-shadow-lg"
             onMouseMove={handleMouseMove}
             onMouseLeave={() => setHoveredIndex(null)}
@@ -850,10 +850,10 @@ const SourcesPieReport = () => {
                   <stop offset="100%" stopColor={color} stopOpacity="1" />
                 </radialGradient>
               ))}
-              
+
               {/* Drop shadow filter */}
               <filter id="dropshadow" x="-50%" y="-50%" width="200%" height="200%">
-                <feDropShadow dx="2" dy="4" stdDeviation="3" floodOpacity="0.3"/>
+                <feDropShadow dx="2" dy="4" stdDeviation="3" floodOpacity="0.3" />
               </filter>
             </defs>
 
@@ -863,23 +863,23 @@ const SourcesPieReport = () => {
               const endAngle = currentAngle + angle;
               const isHovered = hoveredIndex === index;
               const currentRadius = isHovered ? hoverRadius : radius;
-              
+
               const x1 = centerX + currentRadius * Math.cos((startAngle * Math.PI) / 180);
               const y1 = centerY + currentRadius * Math.sin((startAngle * Math.PI) / 180);
               const x2 = centerX + currentRadius * Math.cos((endAngle * Math.PI) / 180);
               const y2 = centerY + currentRadius * Math.sin((endAngle * Math.PI) / 180);
-              
+
               const largeArcFlag = angle > 180 ? 1 : 0;
-              
+
               const pathData = [
                 `M ${centerX} ${centerY}`,
                 `L ${x1} ${y1}`,
                 `A ${currentRadius} ${currentRadius} 0 ${largeArcFlag} 1 ${x2} ${y2}`,
                 'Z'
               ].join(' ');
-              
+
               currentAngle += angle;
-              
+
               return (
                 <g key={index}>
                   <path
@@ -895,7 +895,7 @@ const SourcesPieReport = () => {
                     }}
                     onMouseEnter={() => setHoveredIndex(index)}
                   />
-                  
+
                   {/* Label on slice for larger percentages */}
                   {parseFloat(item.percentage) > 8 && (
                     <text
@@ -904,7 +904,7 @@ const SourcesPieReport = () => {
                       textAnchor="middle"
                       dominantBaseline="middle"
                       className="pointer-events-none"
-                      style={{ 
+                      style={{
                         fill: 'white',
                         fontSize: isHovered ? '16px' : '14px',
                         fontWeight: 'bold',
@@ -919,7 +919,7 @@ const SourcesPieReport = () => {
                 </g>
               );
             })}
-            
+
             {/* Enhanced center circle */}
             <circle
               cx={centerX}
@@ -950,7 +950,7 @@ const SourcesPieReport = () => {
 
           {/* Hover tooltip */}
           {hoveredIndex !== null && (
-            <div 
+            <div
               className="absolute bg-gray-900 text-white px-4 py-3 rounded-lg shadow-xl z-10 pointer-events-none transition-all duration-200"
               style={{
                 left: mousePosition.x + 10,
@@ -968,19 +968,18 @@ const SourcesPieReport = () => {
             </div>
           )}
         </div>
-        
+
         {/* Enhanced Legend */}
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-w-4xl">
           {data.map((item, index) => (
-            <div 
-              key={index} 
-              className={`flex items-center gap-3 p-2 rounded-lg transition-all duration-200 cursor-pointer ${
-                hoveredIndex === index ? 'bg-gray-100 shadow-md transform scale-105' : 'hover:bg-gray-50'
-              }`}
+            <div
+              key={index}
+              className={`flex items-center gap-3 p-2 rounded-lg transition-all duration-200 cursor-pointer ${hoveredIndex === index ? 'bg-gray-100 shadow-md transform scale-105' : 'hover:bg-gray-50'
+                }`}
               onMouseEnter={() => setHoveredIndex(index)}
               onMouseLeave={() => setHoveredIndex(null)}
             >
-              <div 
+              <div
                 className="w-5 h-5 rounded-full shadow-sm border-2 border-white"
                 style={{ backgroundColor: colors[index % colors.length] }}
               />
@@ -1002,24 +1001,24 @@ const SourcesPieReport = () => {
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-7 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">From Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">To Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Status</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('status', e.target.value)}
             >
               <option value="">All Status</option>
@@ -1030,8 +1029,8 @@ const SourcesPieReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Stage</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('stage', e.target.value)}
             >
               <option value="">All Stages</option>
@@ -1044,8 +1043,8 @@ const SourcesPieReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('category', e.target.value)}
             >
               <option value="">All Categories</option>
@@ -1056,8 +1055,8 @@ const SourcesPieReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Language</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('language', e.target.value)}
             >
               <option value="">All Languages</option>
@@ -1067,8 +1066,8 @@ const SourcesPieReport = () => {
             </select>
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -1084,7 +1083,7 @@ const SourcesPieReport = () => {
           <h2 className="text-2xl font-bold mb-6">
             Source Analysis - {results.length} leads analyzed
           </h2>
-          
+
           {isSearching ? (
             <div className="flex justify-center p-8">
               <span className="loading loading-spinner loading-lg"></span>
@@ -1098,7 +1097,7 @@ const SourcesPieReport = () => {
                   <PieChart data={sourceData} />
                 </div>
               </div>
-              
+
               {/* Source Table */}
               <div className="bg-white rounded-xl shadow-lg p-8 border border-base-200">
                 <h3 className="text-xl font-bold mb-6">Detailed Source Breakdown</h3>
@@ -1117,7 +1116,7 @@ const SourcesPieReport = () => {
                         <tr key={index} className="hover:bg-base-50">
                           <td>
                             <div className="flex items-center gap-3">
-                              <div 
+                              <div
                                 className="w-4 h-4 rounded"
                                 style={{ backgroundColor: ['#3b28c7', '#dc2626', '#059669', '#d97706', '#7c3aed', '#db2777', '#0891b2', '#65a30d', '#dc2626', '#6366f1'][index % 10] }}
                               />
@@ -1131,9 +1130,9 @@ const SourcesPieReport = () => {
                             <span className="font-bold text-lg">{item.percentage}%</span>
                           </td>
                           <td>
-                            <a 
-                              href={item.link} 
-                              target="_blank" 
+                            <a
+                              href={item.link}
+                              target="_blank"
                               rel="noopener noreferrer"
                               className="link link-primary text-sm hover:underline"
                             >
@@ -1253,7 +1252,7 @@ const CategorySourceReport = () => {
 
   const getStageBadge = (stage: string) => {
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
@@ -1269,24 +1268,24 @@ const CategorySourceReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">From Meeting Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">To Meeting Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Source</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('source', e.target.value)}
             >
               <option value="">All Sources</option>
@@ -1296,8 +1295,8 @@ const CategorySourceReport = () => {
             </select>
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -1313,7 +1312,7 @@ const CategorySourceReport = () => {
           <h2 className="text-2xl font-bold mb-6">
             Stage Analysis - {results.length} leads analyzed
           </h2>
-          
+
           {isSearching ? (
             <div className="flex justify-center p-8">
               <span className="loading loading-spinner loading-lg"></span>
@@ -1377,9 +1376,9 @@ const CategorySourceReport = () => {
                             <td className="text-center">
                               <div className="w-full max-w-xs mx-auto">
                                 <div className="w-full bg-gray-200 rounded-full h-3">
-                                  <div 
+                                  <div
                                     className="h-3 rounded-full transition-all duration-500"
-                                    style={{ 
+                                    style={{
                                       width: `${percentage}%`,
                                       backgroundColor: '#3b28c7'
                                     }}
@@ -1488,22 +1487,22 @@ const ConvertionReport = () => {
             success: 0
           };
         }
-        
+
         acc[category].leads += 1;
-        
+
         // Count meetings (stages that indicate a meeting happened)
         if (['meeting_scheduled', 'meeting_paid', 'meeting_ended', 'another_meeting'].includes(lead.stage)) {
           acc[category].meetings += 1;
         }
-        
+
         // Count price offers (stages that indicate offer was sent)
         if (['offer_sent', 'revised_offer', 'waiting_for_mtng_sum', 'client_signed', 'Client signed agreement'].includes(lead.stage)) {
           acc[category].priceOffers += 1;
         }
-        
+
         // Count success (will be 0 as requested since not implemented yet)
         acc[category].success = 0;
-        
+
         return acc;
       }, {});
 
@@ -1512,7 +1511,7 @@ const ConvertionReport = () => {
         const total = expenses.marketing + expenses.salesTeam;
         const meetingRate = stats.leads > 0 ? ((stats.meetings / stats.leads) * 100).toFixed(1) : '0.0';
         const conversionRate = stats.leads > 0 ? ((stats.success / stats.leads) * 100).toFixed(1) : '0.0';
-        
+
         return {
           category,
           marketingExpenses: expenses.marketing,
@@ -1554,24 +1553,24 @@ const ConvertionReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4 items-end">
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">From Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">To Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+            <input
+              type="date"
+              className="input input-bordered"
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Source</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('source', e.target.value)}
             >
               <option value="">All Sources</option>
@@ -1582,8 +1581,8 @@ const ConvertionReport = () => {
           </div>
           <div className="form-control">
             <label className="label mb-2"><span className="label-text">Category</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               onChange={e => handleFilterChange('category', e.target.value)}
             >
               <option value="">All Categories</option>
@@ -1593,8 +1592,8 @@ const ConvertionReport = () => {
             </select>
           </div>
           <div className="form-control">
-            <button 
-              className="btn btn-primary w-full" 
+            <button
+              className="btn btn-primary w-full"
               onClick={handleSearch}
               disabled={isSearching}
             >
@@ -1610,7 +1609,7 @@ const ConvertionReport = () => {
           <h2 className="text-2xl font-bold mb-6">
             Marketing Conversion Analysis - {results.length} leads analyzed
           </h2>
-          
+
           {isSearching ? (
             <div className="flex justify-center p-8">
               <span className="loading loading-spinner loading-lg"></span>
@@ -1710,7 +1709,7 @@ const ConvertionReport = () => {
                             </span>
                           </td>
                           <td className="text-center text-indigo-600 font-semibold">
-                              {item.rate}
+                            {item.rate}
                           </td>
                         </tr>
                       ))}
@@ -1731,9 +1730,9 @@ const ConvertionReport = () => {
                           {conversionData.reduce((sum, item) => sum + item.meetings, 0)}
                         </td>
                         <td className="text-center text-blue-600 font-semibold">
-                            {results.length > 0 ? 
-                              ((conversionData.reduce((sum, item) => sum + item.meetings, 0) / results.length) * 100).toFixed(1) 
-                              : '0.0'}%
+                          {results.length > 0 ?
+                            ((conversionData.reduce((sum, item) => sum + item.meetings, 0) / results.length) * 100).toFixed(1)
+                            : '0.0'}%
                         </td>
                         <td className="text-center text-orange-600">
                           {conversionData.reduce((sum, item) => sum + item.priceOffers, 0)}
@@ -1763,7 +1762,7 @@ const ConvertionReport = () => {
                     <div>
                       <span className="font-medium text-gray-600">Average Cost per Lead:</span>
                       <span className="ml-2 font-semibold">
-                        {results.length > 0 ? 
+                        {results.length > 0 ?
                           formatCurrency(conversionData.reduce((sum, item) => sum + item.total, 0) / results.length)
                           : '$0'}
                       </span>
@@ -1771,7 +1770,7 @@ const ConvertionReport = () => {
                     <div>
                       <span className="font-medium text-gray-600">Overall Meeting Rate:</span>
                       <span className="ml-2 font-semibold">
-                        {results.length > 0 ? 
+                        {results.length > 0 ?
                           ((conversionData.reduce((sum, item) => sum + item.meetings, 0) / results.length) * 100).toFixed(1)
                           : '0.0'}%
                       </span>
@@ -1827,7 +1826,7 @@ const ConvertionStepsReport = () => {
       // Process data for conversion steps
       const stageOrder = [
         'created',
-        'scheduler_assigned', 
+        'scheduler_assigned',
         'meeting_scheduled',
         'meeting_paid',
         'communication_started',
@@ -1842,13 +1841,13 @@ const ConvertionStepsReport = () => {
           return leadStageIndex >= index;
         }) || [];
 
-        const previousStageLeads = index === 0 ? data : 
+        const previousStageLeads = index === 0 ? data :
           data?.filter(lead => {
             const leadStageIndex = stageOrder.indexOf(lead.stage);
             return leadStageIndex >= (index - 1);
           }) || [];
 
-        const conversionRate = previousStageLeads.length > 0 
+        const conversionRate = previousStageLeads.length > 0
           ? ((stageLeads.length / previousStageLeads.length) * 100).toFixed(1)
           : '0.0';
 
@@ -1864,7 +1863,7 @@ const ConvertionStepsReport = () => {
       setResults({
         totalLeads: data?.length || 0,
         conversionSteps,
-        overallConversionRate: data?.length > 0 
+        overallConversionRate: data?.length > 0
           ? ((data.filter(lead => lead.stage === 'client_signed').length / data.length) * 100).toFixed(1)
           : '0.0'
       });
@@ -1884,26 +1883,26 @@ const ConvertionStepsReport = () => {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
           <div className="form-control">
             <label className="label"><span className="label-text">From Meeting Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.fromDate}
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label"><span className="label-text">To Meeting Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.toDate}
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label"><span className="label-text">Source</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               value={filters.source}
               onChange={e => handleFilterChange('source', e.target.value)}
             >
@@ -1913,8 +1912,8 @@ const ConvertionStepsReport = () => {
           </div>
           <div className="form-control">
             <label className="label"><span className="label-text">Category</span></label>
-            <select 
-              className="select select-bordered" 
+            <select
+              className="select select-bordered"
               value={filters.category}
               onChange={e => handleFilterChange('category', e.target.value)}
             >
@@ -1924,8 +1923,8 @@ const ConvertionStepsReport = () => {
           </div>
         </div>
         <div className="mt-6">
-          <button 
-            className="btn btn-primary" 
+          <button
+            className="btn btn-primary"
             onClick={handleSearch}
             disabled={isSearching}
           >
@@ -1988,8 +1987,8 @@ const ConvertionStepsReport = () => {
                               <div className="flex items-center gap-2">
                                 <span className="text-lg font-bold">{step.count}</span>
                                 <div className="w-24 h-2 bg-gray-200 rounded-full">
-                                  <div 
-                                    className="h-2 bg-blue-500 rounded-full" 
+                                  <div
+                                    className="h-2 bg-blue-500 rounded-full"
                                     style={{ width: `${(step.count / results.totalLeads) * 100}%` }}
                                   ></div>
                                 </div>
@@ -2032,10 +2031,10 @@ const ConvertionStepsReport = () => {
                           <div className="w-32 text-sm font-medium text-right pr-4">
                             {step.stage}
                           </div>
-                          <div 
+                          <div
                             className="bg-gradient-to-r from-blue-500 to-blue-600 text-white rounded-lg flex items-center justify-center font-bold transition-all duration-300 hover:shadow-lg"
-                            style={{ 
-                              width: `${width}%`, 
+                            style={{
+                              width: `${width}%`,
                               height: '48px',
                               minWidth: '120px'
                             }}
@@ -2312,7 +2311,7 @@ const ScheduledReport = () => {
             )
           )
         `);
-      
+
       if (filters.fromDate) meetingsQuery = meetingsQuery.gte('meeting_date', filters.fromDate);
       if (filters.toDate) meetingsQuery = meetingsQuery.lte('meeting_date', filters.toDate);
 
@@ -2422,35 +2421,35 @@ const ScheduledReport = () => {
           }
         });
       }
-    console.log('🔍 Scheduled Report - stage history count:', stageHistoryData.length);
-    console.log('🔍 Scheduled Report - stage history sample:', stageHistoryData.slice(0, 10));
+      console.log('🔍 Scheduled Report - stage history count:', stageHistoryData.length);
+      console.log('🔍 Scheduled Report - stage history sample:', stageHistoryData.slice(0, 10));
       console.log(
         '🔍 Scheduled Report - stage history distinct stages:',
         Array.from(new Set(stageHistoryData.map((entry: any) => entry.stage)))
       );
-    const stageBucketSummary = stageHistoryData.reduce(
-      (acc: Record<string, { count: number; creators: Set<string> }>, entry: any) => {
-        const key = String(entry.stage ?? 'null');
-        if (!acc[key]) {
-          acc[key] = { count: 0, creators: new Set<string>() };
-        }
-        acc[key].count += 1;
-        if (entry.creator_id !== null && entry.creator_id !== undefined) {
-          acc[key].creators.add(String(entry.creator_id));
-        }
-        return acc;
-      },
-      {}
-    );
-    console.log(
-      '🔍 Scheduled Report - stage bucket summary:',
-      Object.fromEntries(
-        Object.entries(stageBucketSummary).map(([stage, info]) => [
-          stage,
-          { count: info.count, creators: Array.from(info.creators).slice(0, 10) },
-        ])
-      )
-    );
+      const stageBucketSummary = stageHistoryData.reduce(
+        (acc: Record<string, { count: number; creators: Set<string> }>, entry: any) => {
+          const key = String(entry.stage ?? 'null');
+          if (!acc[key]) {
+            acc[key] = { count: 0, creators: new Set<string>() };
+          }
+          acc[key].count += 1;
+          if (entry.creator_id !== null && entry.creator_id !== undefined) {
+            acc[key].creators.add(String(entry.creator_id));
+          }
+          return acc;
+        },
+        {}
+      );
+      console.log(
+        '🔍 Scheduled Report - stage bucket summary:',
+        Object.fromEntries(
+          Object.entries(stageBucketSummary).map(([stage, info]) => [
+            stage,
+            { count: info.count, creators: Array.from(info.creators).slice(0, 10) },
+          ])
+        )
+      );
       const precommunicationSamples = stageHistoryData
         .filter((entry: any) => Number(entry.stage) === 0 || Number(entry.stage) === 11)
         .slice(0, 5);
@@ -2892,23 +2891,23 @@ const ScheduledReport = () => {
         }
         meetingStageEntriesByLead.get(leadKey)!.push({ fallbackIdentifier, cdate });
       });
-      
+
       // Sort entries by date for each lead (oldest first for chronological processing)
       meetingStageEntriesByLead.forEach((entries, leadKey) => {
         entries.sort((a, b) => new Date(a.cdate).getTime() - new Date(b.cdate).getTime());
       });
-      
+
       // Process ALL meeting stage entries (count each stage change)
       // This ensures that multiple "meeting scheduled" stage changes for the same lead are all counted
       meetingStageEntries.forEach(({ leadKey, fallbackIdentifier, cdate }) => {
         // Use the creator_id from THIS specific stage entry (not the lead's scheduler field)
         const schedulerInfo = normalizeIdentifier(fallbackIdentifier);
-        
+
         if (!schedulerInfo) {
           // If we can't normalize the creator_id, try fallback resolution
           const fallbackSchedulerInfo = resolveSchedulerForLead(leadKey, fallbackIdentifier);
           if (!fallbackSchedulerInfo) return;
-          
+
           recordMeetingForScheduler(fallbackSchedulerInfo.key, leadKey);
           ensureStageLeadSets(fallbackSchedulerInfo.key);
           stageLeadSets[fallbackSchedulerInfo.key].meetingScheduled.add(leadKey);
@@ -3048,8 +3047,8 @@ const ScheduledReport = () => {
         const leadNumber = typeof leadNumberValue === 'string'
           ? leadNumberValue
           : leadNumberValue !== undefined && leadNumberValue !== null
-          ? String(leadNumberValue)
-          : parsed.id;
+            ? String(leadNumberValue)
+            : parsed.id;
         const clientName =
           record?.name ||
           record?.full_name ||
@@ -3122,8 +3121,8 @@ const ScheduledReport = () => {
         .filter(emp => emp.meetingsScheduled > 0)
         .map(emp => ({
           name: emp.fullName,
-        meetings: emp.meetingsScheduled
-      }));
+          meetings: emp.meetingsScheduled
+        }));
 
       console.log('Chart data:', chartData);
       console.log(
@@ -3204,17 +3203,17 @@ const ScheduledReport = () => {
     const stageSegments =
       metric === 'total'
         ? [
-            { keys: bucket.meetingScheduled, label: metricLabels.meetingScheduled },
-            { keys: bucket.precommunication, label: metricLabels.precommunication },
-            { keys: bucket.communicationStarted, label: metricLabels.communicationStarted },
-            { keys: bucket.setAsUnactive, label: metricLabels.setAsUnactive },
-          ]
+          { keys: bucket.meetingScheduled, label: metricLabels.meetingScheduled },
+          { keys: bucket.precommunication, label: metricLabels.precommunication },
+          { keys: bucket.communicationStarted, label: metricLabels.communicationStarted },
+          { keys: bucket.setAsUnactive, label: metricLabels.setAsUnactive },
+        ]
         : [
-            {
-              keys: bucket[metric as Exclude<EmployeeMetricKey, 'total'>],
-              label: metricLabels[metric],
-            },
-          ];
+          {
+            keys: bucket[metric as Exclude<EmployeeMetricKey, 'total'>],
+            label: metricLabels[metric],
+          },
+        ];
 
     const drawerLeads: EmployeeLeadDrawerItem[] = [];
     stageSegments.forEach(segment => {
@@ -3253,11 +3252,10 @@ const ScheduledReport = () => {
         type="button"
         onClick={handleClick}
         disabled={disabled}
-        className={`w-full text-center font-semibold focus:outline-none ${
-          disabled
+        className={`w-full text-center font-semibold focus:outline-none ${disabled
             ? 'text-gray-400 cursor-not-allowed'
             : 'text-gray-800 hover:text-primary underline decoration-dotted'
-        }`}
+          }`}
       >
         {value}
       </button>
@@ -3271,30 +3269,30 @@ const ScheduledReport = () => {
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 items-end">
           <div className="form-control">
             <label className="label"><span className="label-text">From Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.fromDate}
-              onChange={e => handleFilterChange('fromDate', e.target.value)} 
+              onChange={e => handleFilterChange('fromDate', e.target.value)}
             />
           </div>
           <div className="form-control">
             <label className="label"><span className="label-text">To Date</span></label>
-            <input 
-              type="date" 
-              className="input input-bordered" 
+            <input
+              type="date"
+              className="input input-bordered"
               value={filters.toDate}
-              onChange={e => handleFilterChange('toDate', e.target.value)} 
+              onChange={e => handleFilterChange('toDate', e.target.value)}
             />
           </div>
           <div className="form-control md:flex md:items-end">
-          <button 
-              className="btn btn-primary w-full md:w-auto" 
-            onClick={handleSearch}
-            disabled={isSearching}
-          >
+            <button
+              className="btn btn-primary w-full md:w-auto"
+              onClick={handleSearch}
+              disabled={isSearching}
+            >
               {isSearching ? 'Analyzing...' : 'Show'}
-          </button>
+            </button>
           </div>
         </div>
       </div>
@@ -3355,10 +3353,10 @@ const ScheduledReport = () => {
                               </div>
                               <div className="flex-1 flex items-center gap-2">
                                 <div className="flex-1 bg-gray-200 rounded-full h-6 relative">
-                                  <div 
+                                  <div
                                     className="bg-gradient-to-r from-blue-500 to-blue-600 h-6 rounded-full flex items-center justify-center text-white text-xs font-bold transition-all duration-300"
-                                    style={{ 
-                                      width: `${Math.max(15, (item.meetings / Math.max(...results.chartData.map((d: any) => d.meetings))) * 100)}%` 
+                                    style={{
+                                      width: `${Math.max(15, (item.meetings / Math.max(...results.chartData.map((d: any) => d.meetings))) * 100)}%`
                                     }}
                                   >
                                     {item.meetings}
@@ -3424,7 +3422,7 @@ const ScheduledReport = () => {
                           ))}
                         </tbody>
                       </table>
-                                </div>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -3548,14 +3546,14 @@ const BonusesV4Report = () => {
           .from('users')
           .select('id, full_name, role')
           .order('full_name');
-        
+
         if (error) throw error;
         setUsers(data || []);
       } catch (error) {
         console.error('Error loading users:', error);
       }
     };
-    
+
     loadUsers();
   }, []);
 
@@ -3646,16 +3644,16 @@ const BonusesV4Report = () => {
         console.error('Supabase error:', error);
         throw error;
       }
-      
+
       console.log('Raw data from Supabase:', data);
-      
+
       // Process currency data from joined table (same as CalendarPage.tsx)
       const processedData = (data || []).map((lead: any) => {
         // Extract currency data from joined table
         const currencyRecord = lead.accounting_currencies
           ? (Array.isArray(lead.accounting_currencies) ? lead.accounting_currencies[0] : lead.accounting_currencies)
           : null;
-        
+
         // Convert currency_id to symbol (same logic as CalendarPage.tsx)
         if (currencyRecord) {
           // Convert iso_code to symbol
@@ -3700,10 +3698,10 @@ const BonusesV4Report = () => {
           // Default to NIS if no currency_id
           lead.balance_currency = lead.balance_currency || '₪';
         }
-        
+
         return lead;
       });
-      
+
       // Calculate results with bonus information
       const processedResults = processedData.map(lead => {
         const leadValue = lead.balance || 0;
@@ -3717,23 +3715,23 @@ const BonusesV4Report = () => {
         } else if (currency === '£' || currency === 'GBP') {
           leadValueInNIS = leadValue * 4.7;
         }
-        
+
         // Get roles for this lead
         const roles = [];
         if (lead.scheduler) roles.push({ role: 'scheduler', name: lead.scheduler });
         if (lead.manager) roles.push({ role: 'manager', name: lead.manager });
         if (lead.expert) roles.push({ role: 'expert', name: lead.expert });
         if (lead.closer) roles.push({ role: 'closer', name: lead.closer });
-        
+
         const roleCount = roles.length;
-        
+
         // Calculate total value of all leads for proportion calculation
         const totalValue = data.reduce((sum, l) => sum + (l.balance || 0), 0);
-        
+
         // Calculate bonus as a percentage of the lead value itself
         const totalBonus = leadValue * 0.17; // 17% of lead value as bonus
         const bonusPerRole = roleCount > 0 ? totalBonus / roleCount : 0;
-        
+
         return {
           ...lead,
           leadValueInNIS,
@@ -3760,11 +3758,11 @@ const BonusesV4Report = () => {
 
   const getEmployeeBonus = (lead: any, selectedEmployee: string) => {
     if (!selectedEmployee || !lead.roles) return 0;
-    
+
     // Count how many roles this employee has in this lead
     const employeeRoles = lead.roles.filter((role: any) => role.name === selectedEmployee);
     const roleCount = employeeRoles.length;
-    
+
     // Employee gets bonusPerRole for each role they have
     return roleCount * (lead.bonusPerRole || 0);
   };
@@ -3776,20 +3774,20 @@ const BonusesV4Report = () => {
       const leadValue = lead.balance || 0;
       return sum + leadValue;
     }, 0);
-    
+
     // Calculate total lead values in NIS
     const totalLeadValuesNIS = results.reduce((sum, lead) => {
       const leadValueInNIS = lead.leadValueInNIS || 0;
       return sum + leadValueInNIS;
     }, 0);
-    
+
     // Calculate total bonuses by summing the actual values displayed in the Total Bonus column
     const totalBonuses = results.reduce((sum, lead) => {
       // Use the actual totalBonus value that's displayed in the table
       const bonus = lead.totalBonus || 0;
       return sum + bonus;
     }, 0);
-    
+
     // Calculate total employee bonuses by summing the actual values displayed in the Employee Bonus column
     let totalEmployeeBonuses = 0;
     if (filters.employee) {
@@ -3808,14 +3806,14 @@ const BonusesV4Report = () => {
         return sum + leadEmployeeBonuses;
       }, 0);
     }
-    
+
     return { totalLeadValues, totalLeadValuesNIS, totalBonuses, totalEmployeeBonuses };
   };
 
   const getStageBadge = (stage: string) => {
     const stageText = stage.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
     return (
-      <span 
+      <span
         className="badge text-white text-xs px-2 py-1 rounded-full font-medium whitespace-nowrap"
         style={{ backgroundColor: '#3b28c7', minWidth: 'fit-content' }}
       >
@@ -3832,7 +3830,7 @@ const BonusesV4Report = () => {
       <div className="bg-white shadow-none">
         <div className="card-body">
           <h3 className="card-title text-lg font-semibold mb-4">Filters</h3>
-          
+
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-4">
             <div>
               <label className="label">
@@ -3974,7 +3972,7 @@ const BonusesV4Report = () => {
                             // Same logic as CalendarPage.tsx balance badge
                             const isLegacy = lead.lead_type === 'legacy' || lead.id?.toString().startsWith('legacy_');
                             let balanceValue: any;
-                            
+
                             if (isLegacy) {
                               // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
                               const currencyId = (lead as any).currency_id;
@@ -3990,7 +3988,7 @@ const BonusesV4Report = () => {
                             } else {
                               balanceValue = lead.balance || (lead as any).proposal_total;
                             }
-                            
+
                             // Get currency symbol - balance_currency should already be set from joined data
                             // But handle fallback if not set
                             let balanceCurrency = lead.balance_currency;
@@ -3999,62 +3997,62 @@ const BonusesV4Report = () => {
                               if (currencyId) {
                                 const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
                                 // Fallback to hardcoded mapping if currency not found in map
-                                balanceCurrency = numericCurrencyId === 1 ? 'NIS' : 
-                                               numericCurrencyId === 2 ? 'USD' : 
-                                               numericCurrencyId === 3 ? 'EUR' : 
-                                               numericCurrencyId === 4 ? 'GBP' : 'NIS';
+                                balanceCurrency = numericCurrencyId === 1 ? 'NIS' :
+                                  numericCurrencyId === 2 ? 'USD' :
+                                    numericCurrencyId === 3 ? 'EUR' :
+                                      numericCurrencyId === 4 ? 'GBP' : 'NIS';
                               } else {
                                 balanceCurrency = 'NIS';
                               }
                             }
-                            
+
                             // Convert currency symbol to code for getCurrencySymbol function
                             // getCurrencySymbol expects codes like 'USD', 'EUR', 'NIS', not symbols
                             if (balanceCurrency === '₪') balanceCurrency = 'NIS';
                             else if (balanceCurrency === '$') balanceCurrency = 'USD';
                             else if (balanceCurrency === '€') balanceCurrency = 'EUR';
                             else if (balanceCurrency === '£') balanceCurrency = 'GBP';
-                            
+
                             if (balanceValue === '--') {
                               return '--';
                             }
-                            
+
                             // Ensure we have a currency (default to NIS)
                             if (!balanceCurrency) {
                               balanceCurrency = 'NIS';
                             }
-                            
+
                             // Handle 0 values - show currency symbol
                             if (balanceValue === 0 || balanceValue === '0' || Number(balanceValue) === 0) {
                               return `${getCurrencySymbol(balanceCurrency)}0`;
                             }
-                            
+
                             if (balanceValue && (Number(balanceValue) > 0 || balanceValue !== '0')) {
-                              const formattedValue = typeof balanceValue === 'number' 
+                              const formattedValue = typeof balanceValue === 'number'
                                 ? balanceValue.toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 })
                                 : Number(balanceValue).toLocaleString('en-US', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
                               return `${getCurrencySymbol(balanceCurrency)}${formattedValue}`;
                             }
-                            
+
                             // Default: show 0 with NIS symbol
                             return `${getCurrencySymbol(balanceCurrency)}0`;
                           })()}
                         </td>
                         <td>
-                          {lead.leadValueInNIS ? 
-                            `${lead.leadValueInNIS.toLocaleString()} NIS` : 
+                          {lead.leadValueInNIS ?
+                            `${lead.leadValueInNIS.toLocaleString()} NIS` :
                             'N/A'
                           }
                         </td>
                         <td>
-                          {lead.totalBonus ? 
-                            `${lead.totalBonus.toFixed(2)} NIS` : 
+                          {lead.totalBonus ?
+                            `${lead.totalBonus.toFixed(2)} NIS` :
                             '0.00 NIS'
                           }
                         </td>
                         <td>
-                          {filters.employee ? 
-                            `${getEmployeeBonus(lead, filters.employee).toFixed(2)} NIS` : 
+                          {filters.employee ?
+                            `${getEmployeeBonus(lead, filters.employee).toFixed(2)} NIS` :
                             'Select Employee'
                           }
                         </td>
@@ -4071,8 +4069,8 @@ const BonusesV4Report = () => {
                       <td></td>
                       <td></td>
                       <td className="text-lg font-semibold text-gray-800 text-center">
-                        {totalLeadValuesNIS ? 
-                          `${totalLeadValuesNIS.toLocaleString()} NIS` : 
+                        {totalLeadValuesNIS ?
+                          `${totalLeadValuesNIS.toLocaleString()} NIS` :
                           '0 NIS'
                         }
                       </td>
@@ -4152,7 +4150,7 @@ const ExpertPipelineReport = () => {
     if (!categoryId || categoryId === '---' || categoryId === '--') {
       return '---';
     }
-    
+
     if (miscCategory) {
       const cat = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
       const mainCategory = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
@@ -4166,15 +4164,15 @@ const ExpertPipelineReport = () => {
 
     const foundCategory = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (foundCategory) {
-      const mainCategory = Array.isArray(foundCategory.misc_maincategory) 
-        ? foundCategory.misc_maincategory[0] 
+      const mainCategory = Array.isArray(foundCategory.misc_maincategory)
+        ? foundCategory.misc_maincategory[0]
         : foundCategory.misc_maincategory;
       if (mainCategory?.name) {
         return `${foundCategory.name} (${mainCategory.name})`;
       }
       return foundCategory.name;
     }
-    
+
     return String(categoryId);
   };
 
@@ -4194,21 +4192,21 @@ const ExpertPipelineReport = () => {
   // Helper function to get meeting color based on date (same as ExpertPage.tsx)
   const getMeetingColor = (meetingDateStr: string | null | undefined): string => {
     if (!meetingDateStr) return 'bg-gray-100 text-gray-600';
-    
+
     // Extract date part
     const dateOnly = meetingDateStr.split(' ')[0];
     const meetingDate = new Date(dateOnly);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    
+
     // Set meeting date to start of day for comparison
     const meetingDateStart = new Date(meetingDate);
     meetingDateStart.setHours(0, 0, 0, 0);
-    
+
     // Calculate difference in days
     const diffTime = meetingDateStart.getTime() - today.getTime();
     const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
-    
+
     if (diffDays < 0) {
       // Past meeting - red
       return 'bg-red-500 text-white';
@@ -4382,10 +4380,10 @@ const ExpertPipelineReport = () => {
       const { data: allEmployeesData } = await supabase
         .from('tenants_employee')
         .select('id, display_name');
-      
+
       const employeeNameMap: Record<number, string> = {};
       const employeeNameToIdMap: Record<string, number> = {};
-      
+
       if (allEmployeesData) {
         allEmployeesData.forEach(emp => {
           if (emp.id && emp.display_name) {
@@ -4398,25 +4396,25 @@ const ExpertPipelineReport = () => {
       // Helper function to resolve employee name from ID or name
       const resolveEmployeeName = (value: any): string => {
         if (!value) return '---';
-        
+
         // If it's already a number (employee ID)
         if (typeof value === 'number') {
           return employeeNameMap[value] || `Employee ${value}`;
         }
-        
+
         // If it's a string that's a number (employee ID as string)
         const numericValue = parseInt(String(value));
         if (!isNaN(numericValue) && String(numericValue) === String(value).trim()) {
           return employeeNameMap[numericValue] || `Employee ${numericValue}`;
         }
-        
+
         // If it's already a name, check if we can find the ID and get the display_name
         const nameLower = String(value).toLowerCase().trim();
         const foundId = employeeNameToIdMap[nameLower];
         if (foundId && employeeNameMap[foundId]) {
           return employeeNameMap[foundId];
         }
-        
+
         // If it's already a display name, return it as is
         return String(value);
       };
@@ -4431,8 +4429,8 @@ const ExpertPipelineReport = () => {
 
         if (!hasMeetingIn2025OrLater) return null;
 
-        const meetingDate = lead.meetings && lead.meetings.length > 0 
-          ? lead.meetings[0].meeting_date 
+        const meetingDate = lead.meetings && lead.meetings.length > 0
+          ? lead.meetings[0].meeting_date
           : null;
 
         return {
@@ -4451,7 +4449,7 @@ const ExpertPipelineReport = () => {
 
       // Process legacy leads
       const processedLegacyLeads = (legacyLeadsData || []).map(lead => {
-        const meetingDate = lead.meeting_date 
+        const meetingDate = lead.meeting_date
           ? (lead.meeting_time ? `${lead.meeting_date} ${lead.meeting_time}` : lead.meeting_date)
           : null;
 
@@ -4489,7 +4487,7 @@ const ExpertPipelineReport = () => {
   };
 
   // Filter employees based on search
-  const filteredEmployees = employees.filter((emp: any) => 
+  const filteredEmployees = employees.filter((emp: any) =>
     emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
   );
 
@@ -4503,7 +4501,7 @@ const ExpertPipelineReport = () => {
           </span>
         )}
       </h2>
-      
+
       {/* Filters */}
       <div className="mb-6 px-4">
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -4789,7 +4787,7 @@ const SchedulerSuperPipelineReport = () => {
     try {
       const userName = await fetchCurrentUserName();
       const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
-      const clientId = lead.lead_type === 'legacy' 
+      const clientId = lead.lead_type === 'legacy'
         ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
         : leadId;
 
@@ -4808,8 +4806,8 @@ const SchedulerSuperPipelineReport = () => {
       if (error) throw error;
 
       // Update local state
-      setResults(prev => prev.map(l => 
-        l.id === lead.id 
+      setResults(prev => prev.map(l =>
+        l.id === lead.id
           ? { ...l, manager_notes: formatNoteText(notesText) }
           : l
       ));
@@ -4894,7 +4892,7 @@ const SchedulerSuperPipelineReport = () => {
           .from('misc_category')
           .select('id')
           .eq('parent_id', filters.category);
-        
+
         if (subCategories && subCategories.length > 0) {
           const subCategoryIds = subCategories.map(sc => sc.id.toString());
           newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
@@ -4923,7 +4921,7 @@ const SchedulerSuperPipelineReport = () => {
         console.error('Error fetching new leads:', newLeadsError);
         // Continue with empty array - will still try to fetch legacy leads
       }
-      
+
       if (newLeads) {
         newLeads.forEach((lead: any) => {
           // Convert expert_notes array to string
@@ -4969,7 +4967,7 @@ const SchedulerSuperPipelineReport = () => {
       // Fetch legacy leads
       // Scheduler pipeline allowed legacy stages: up to stage 40 (Waiting for Mtng sum)
       const allowedLegacyStageIds = [10, 11, 15, 20, 21, 30, 40];
-      
+
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
@@ -5015,7 +5013,7 @@ const SchedulerSuperPipelineReport = () => {
           .from('misc_category')
           .select('id')
           .eq('parent_id', filters.category);
-        
+
         if (subCategories && subCategories.length > 0) {
           const subCategoryIds = subCategories.map(sc => sc.id);
           legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
@@ -5044,18 +5042,18 @@ const SchedulerSuperPipelineReport = () => {
         setIsSearching(false);
         return;
       }
-      
+
       if (legacyLeads) {
         // Fetch scheduler names for legacy leads
         const schedulerIds = [...new Set(legacyLeads.map((l: any) => l.meeting_scheduler_id).filter(Boolean))];
         const schedulerMap: Record<number, string> = {};
-        
+
         if (schedulerIds.length > 0) {
           const { data: schedulerData } = await supabase
             .from('tenants_employee')
             .select('id, display_name')
             .in('id', schedulerIds);
-          
+
           if (schedulerData) {
             schedulerData.forEach((emp: any) => {
               schedulerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
@@ -5066,13 +5064,13 @@ const SchedulerSuperPipelineReport = () => {
         // Fetch currency codes
         const currencyIds = [...new Set(legacyLeads.map((l: any) => l.currency_id).filter(Boolean))];
         const currencyMap: Record<number, string> = {};
-        
+
         if (currencyIds.length > 0) {
           const { data: currencyData } = await supabase
             .from('accounting_currencies')
             .select('id, iso_code')
             .in('id', currencyIds);
-          
+
           if (currencyData) {
             currencyData.forEach((curr: any) => {
               currencyMap[curr.id] = curr.iso_code || '';
@@ -5083,13 +5081,13 @@ const SchedulerSuperPipelineReport = () => {
         // Fetch language names for legacy leads
         const languageIds = [...new Set(legacyLeads.map((l: any) => l.language_id).filter(Boolean))];
         const languageMap: Record<number, string> = {};
-        
+
         if (languageIds.length > 0) {
           const { data: languageData } = await supabase
             .from('misc_language')
             .select('id, name')
             .in('id', languageIds);
-          
+
           if (languageData) {
             languageData.forEach((lang: any) => {
               languageMap[lang.id] = lang.name || '';
@@ -5164,7 +5162,7 @@ const SchedulerSuperPipelineReport = () => {
         const dateB = new Date(b.created_at || 0).getTime();
         return dateB - dateA;
       });
-      
+
       setResults(sortedLeads);
     } catch (error: any) {
       console.error('Error in SchedulerSuperPipelineReport:', error);
@@ -5217,326 +5215,326 @@ const SchedulerSuperPipelineReport = () => {
     return catName.includes(searchTerm);
   });
 
-  const filteredEmployees = employees.filter((emp: any) => 
+  const filteredEmployees = employees.filter((emp: any) =>
     emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
   );
 
-  const filteredLanguages = languages.filter((lang: any) => 
+  const filteredLanguages = languages.filter((lang: any) =>
     lang.name.toLowerCase().includes(languageSearch.toLowerCase())
   );
 
   return (
     <div className="px-2 py-6">
       <h2 className="text-2xl font-bold mb-6 px-4">Scheduler Super Pipeline</h2>
-      
+
       {/* Filters */}
       <div className="mb-6 px-4">
-          <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
-              <input
-                type="date"
-                value={filters.fromDate}
-                onChange={(e) => handleFilterChange('fromDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
-              <input
-                type="date"
-                value={filters.toDate}
-                onChange={(e) => handleFilterChange('toDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search category..."
-                value={categorySearch}
-                onChange={(e) => {
-                  setCategorySearch(e.target.value);
-                  setShowCategoryDropdown(true);
-                  if (!e.target.value) {
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">From Date</label>
+            <input
+              type="date"
+              value={filters.fromDate}
+              onChange={(e) => handleFilterChange('fromDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+            <input
+              type="date"
+              value={filters.toDate}
+              onChange={(e) => handleFilterChange('toDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search category..."
+              value={categorySearch}
+              onChange={(e) => {
+                setCategorySearch(e.target.value);
+                setShowCategoryDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('category', '');
+                }
+              }}
+              onFocus={() => setShowCategoryDropdown(true)}
+              onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+            />
+            {showCategoryDropdown && filteredCategories.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
                     handleFilterChange('category', '');
-                  }
-                }}
-                onFocus={() => setShowCategoryDropdown(true)}
-                onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
-              />
-              {showCategoryDropdown && filteredCategories.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('category', '');
-                      setCategorySearch('');
-                      setShowCategoryDropdown(false);
-                    }}
-                  >
-                    All Categories
-                  </div>
-                  {filteredCategories.map((cat) => {
-                    return (
-                      <div
-                        key={cat.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                        onClick={() => {
-                          handleFilterChange('category', cat.id.toString());
-                          setCategorySearch(cat.name);
-                          setShowCategoryDropdown(false);
-                        }}
-                      >
-                        {cat.name}
-                      </div>
-                    );
-                  })}
+                    setCategorySearch('');
+                    setShowCategoryDropdown(false);
+                  }}
+                >
+                  All Categories
                 </div>
-              )}
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search employee..."
-                value={employeeSearch}
-                onChange={(e) => {
-                  setEmployeeSearch(e.target.value);
-                  setShowEmployeeDropdown(true);
-                  if (!e.target.value) {
-                    handleFilterChange('employee', '');
-                  }
-                }}
-                onFocus={() => setShowEmployeeDropdown(true)}
-                onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
-              />
-              {showEmployeeDropdown && filteredEmployees.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('employee', '');
-                      setEmployeeSearch('');
-                      setShowEmployeeDropdown(false);
-                    }}
-                  >
-                    All Employees
-                  </div>
-                  {filteredEmployees.map((emp) => (
+                {filteredCategories.map((cat) => {
+                  return (
                     <div
-                      key={emp.id}
+                      key={cat.id}
                       className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                       onClick={() => {
-                        handleFilterChange('employee', emp.id.toString());
-                        setEmployeeSearch(emp.name);
-                        setShowEmployeeDropdown(false);
+                        handleFilterChange('category', cat.id.toString());
+                        setCategorySearch(cat.name);
+                        setShowCategoryDropdown(false);
                       }}
                     >
-                      {emp.name}
+                      {cat.name}
                     </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search language..."
-                value={languageSearch}
-                onChange={(e) => {
-                  setLanguageSearch(e.target.value);
-                  setShowLanguageDropdown(true);
-                  if (!e.target.value) {
-                    handleFilterChange('language', '');
-                  }
-                }}
-                onFocus={() => setShowLanguageDropdown(true)}
-                onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
-              />
-              {showLanguageDropdown && filteredLanguages.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('language', '');
-                      setLanguageSearch('');
-                      setShowLanguageDropdown(false);
-                    }}
-                  >
-                    All Languages
-                  </div>
-                  {filteredLanguages.map((lang) => (
-                    <div
-                      key={lang.id}
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={() => {
-                        handleFilterChange('language', lang.id);
-                        setLanguageSearch(lang.name);
-                        setShowLanguageDropdown(false);
-                      }}
-                    >
-                      {lang.name}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mt-4">
-            <button
-              onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
-              disabled={isSearching}
-              className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              style={{ backgroundColor: '#411CCF' }}
-            >
-              {isSearching ? 'Searching...' : 'Show'}
-            </button>
-          </div>
-        </div>
-
-        {/* Results Table - Inside same white box */}
-        {searchPerformed && (
-          <div className="border-t border-gray-200 pt-6 -mx-2">
-            <div className="mb-4 px-4">
-              <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
-            </div>
-            {results.length === 0 ? (
-              <div className="p-6 text-center text-gray-500">No leads found</div>
-            ) : (
-              <div className="overflow-x-auto px-4">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
-                      <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Manager Notes</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
-                    </tr>
-                  </thead>
-                  <tbody className="bg-white divide-y divide-gray-200">
-                    {results.map((lead, index) => (
-                      <tr key={lead.id || index} className="hover:bg-gray-50">
-                        <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
-                          <div 
-                            className="text-sm font-medium text-blue-600 cursor-pointer hover:underline break-words"
-                            onClick={() => navigate(`/clients/${lead.lead_number}`)}
-                          >
-                            #{lead.lead_number}
-                          </div>
-                          <div className="text-sm text-gray-900 break-words" style={{ 
-                            display: '-webkit-box',
-                            WebkitLineClamp: 3,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                            wordBreak: 'break-word'
-                          }}>{lead.name || '---'}</div>
-                        </td>
-                        <td className="px-2 py-4 text-sm text-gray-900">
-                          <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
-                          {lead.stage || '---'}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {lead.probability ? `${lead.probability}%` : '---'}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {lead.scheduler || '---'}
-                        </td>
-                        <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
-                          <div 
-                            className="line-clamp-3 break-words cursor-help"
-                            title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
-                          >
-                          {lead.expert_opinion || '---'}
-                          </div>
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {lead.number_of_applicants_meeting ?? '---'}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {lead.potential_applicants_meeting ?? '---'}
-                        </td>
-                        <td className="px-6 py-4 text-sm text-gray-900 max-w-xs">
-                          {editingManagerNotes[lead.id || index] ? (
-                            <div className="flex flex-col gap-2">
-                              <textarea
-                                value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
-                                onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
-                                className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
-                                placeholder="Enter manager notes..."
-                              />
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleSaveManagerNotes(lead)}
-                                  disabled={savingManagerNotes[lead.id || index]}
-                                  className="btn btn-xs btn-primary"
-                                >
-                                  {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditingManagerNotes(prev => {
-                                      const newState = { ...prev };
-                                      delete newState[lead.id || index];
-                                      return newState;
-                                    });
-                                    setManagerNotesValues(prev => {
-                                      const newState = { ...prev };
-                                      delete newState[lead.id || index];
-                                      return newState;
-                                    });
-                                  }}
-                                  className="btn btn-xs btn-ghost"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-start gap-2 group">
-                              <div 
-                                className="line-clamp-3 break-words flex-1 cursor-help"
-                                title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
-                              >
-                                {lead.manager_notes || '---'}
-                              </div>
-                              <button
-                                onClick={() => {
-                                  setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
-                                  setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
-                                }}
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                                title="Edit manager notes"
-                              >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                </svg>
-                              </button>
-                            </div>
-                          )}
-                        </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {formatCurrency(lead.balance, lead.balance_currency)}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                  );
+                })}
               </div>
             )}
           </div>
-        )}
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search employee..."
+              value={employeeSearch}
+              onChange={(e) => {
+                setEmployeeSearch(e.target.value);
+                setShowEmployeeDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('employee', '');
+                }
+              }}
+              onFocus={() => setShowEmployeeDropdown(true)}
+              onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
+            />
+            {showEmployeeDropdown && filteredEmployees.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
+                    handleFilterChange('employee', '');
+                    setEmployeeSearch('');
+                    setShowEmployeeDropdown(false);
+                  }}
+                >
+                  All Employees
+                </div>
+                {filteredEmployees.map((emp) => (
+                  <div
+                    key={emp.id}
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('employee', emp.id.toString());
+                      setEmployeeSearch(emp.name);
+                      setShowEmployeeDropdown(false);
+                    }}
+                  >
+                    {emp.name}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search language..."
+              value={languageSearch}
+              onChange={(e) => {
+                setLanguageSearch(e.target.value);
+                setShowLanguageDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('language', '');
+                }
+              }}
+              onFocus={() => setShowLanguageDropdown(true)}
+              onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
+            />
+            {showLanguageDropdown && filteredLanguages.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
+                    handleFilterChange('language', '');
+                    setLanguageSearch('');
+                    setShowLanguageDropdown(false);
+                  }}
+                >
+                  All Languages
+                </div>
+                {filteredLanguages.map((lang) => (
+                  <div
+                    key={lang.id}
+                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                    onClick={() => {
+                      handleFilterChange('language', lang.id);
+                      setLanguageSearch(lang.name);
+                      setShowLanguageDropdown(false);
+                    }}
+                  >
+                    {lang.name}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="mt-4">
+          <button
+            onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
+            disabled={isSearching}
+            className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            style={{ backgroundColor: '#411CCF' }}
+          >
+            {isSearching ? 'Searching...' : 'Show'}
+          </button>
+        </div>
+      </div>
+
+      {/* Results Table - Inside same white box */}
+      {searchPerformed && (
+        <div className="border-t border-gray-200 pt-6 -mx-2">
+          <div className="mb-4 px-4">
+            <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
+          </div>
+          {results.length === 0 ? (
+            <div className="p-6 text-center text-gray-500">No leads found</div>
+          ) : (
+            <div className="overflow-x-auto px-4">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
+                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
+                    <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Manager Notes</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total</th>
+                  </tr>
+                </thead>
+                <tbody className="bg-white divide-y divide-gray-200">
+                  {results.map((lead, index) => (
+                    <tr key={lead.id || index} className="hover:bg-gray-50">
+                      <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
+                        <div
+                          className="text-sm font-medium text-blue-600 cursor-pointer hover:underline break-words"
+                          onClick={() => navigate(`/clients/${lead.lead_number}`)}
+                        >
+                          #{lead.lead_number}
+                        </div>
+                        <div className="text-sm text-gray-900 break-words" style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                          wordBreak: 'break-word'
+                        }}>{lead.name || '---'}</div>
+                      </td>
+                      <td className="px-2 py-4 text-sm text-gray-900">
+                        <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
+                          {lead.stage || '---'}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.probability ? `${lead.probability}%` : '---'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.scheduler || '---'}
+                      </td>
+                      <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                        <div
+                          className="line-clamp-3 break-words cursor-help"
+                          title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
+                        >
+                          {lead.expert_opinion || '---'}
+                        </div>
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.number_of_applicants_meeting ?? '---'}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.potential_applicants_meeting ?? '---'}
+                      </td>
+                      <td className="px-6 py-4 text-sm text-gray-900 max-w-xs">
+                        {editingManagerNotes[lead.id || index] ? (
+                          <div className="flex flex-col gap-2">
+                            <textarea
+                              value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
+                              onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
+                              className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
+                              placeholder="Enter manager notes..."
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveManagerNotes(lead)}
+                                disabled={savingManagerNotes[lead.id || index]}
+                                className="btn btn-xs btn-primary"
+                              >
+                                {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setEditingManagerNotes(prev => {
+                                    const newState = { ...prev };
+                                    delete newState[lead.id || index];
+                                    return newState;
+                                  });
+                                  setManagerNotesValues(prev => {
+                                    const newState = { ...prev };
+                                    delete newState[lead.id || index];
+                                    return newState;
+                                  });
+                                }}
+                                className="btn btn-xs btn-ghost"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        ) : (
+                          <div className="flex items-start gap-2 group">
+                            <div
+                              className="line-clamp-3 break-words flex-1 cursor-help"
+                              title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                            >
+                              {lead.manager_notes || '---'}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
+                                setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
+                              }}
+                              className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                              title="Edit manager notes"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
+                      </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {formatCurrency(lead.balance, lead.balance_currency)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
@@ -5690,7 +5688,7 @@ const CloserSuperPipelineReport = () => {
     try {
       const userName = await fetchCurrentUserName();
       const tableName = lead.lead_type === 'legacy' ? 'leads_lead' : 'leads';
-      const clientId = lead.lead_type === 'legacy' 
+      const clientId = lead.lead_type === 'legacy'
         ? (typeof leadId === 'string' ? parseInt(leadId.replace('legacy_', '')) : leadId)
         : leadId;
 
@@ -5709,8 +5707,8 @@ const CloserSuperPipelineReport = () => {
       if (error) throw error;
 
       // Update local state
-      setResults(prev => prev.map(l => 
-        l.id === lead.id 
+      setResults(prev => prev.map(l =>
+        l.id === lead.id
           ? { ...l, manager_notes: formatNoteText(notesText) }
           : l
       ));
@@ -5801,7 +5799,7 @@ const CloserSuperPipelineReport = () => {
           .from('misc_category')
           .select('id')
           .eq('parent_id', filters.category);
-        
+
         if (subCategories && subCategories.length > 0) {
           const subCategoryIds = subCategories.map(sc => sc.id.toString());
           newLeadsQuery = newLeadsQuery.in('category_id', subCategoryIds);
@@ -5830,7 +5828,7 @@ const CloserSuperPipelineReport = () => {
         console.error('Error fetching new leads:', newLeadsError);
         // Continue with empty array - will still try to fetch legacy leads
       }
-      
+
       if (newLeads) {
         newLeads.forEach((lead: any) => {
           // Convert expert_notes array to string
@@ -5877,7 +5875,7 @@ const CloserSuperPipelineReport = () => {
       // Fetch legacy leads
       // Closer pipeline allowed legacy stages: only stage 40 (Waiting for Mtng sum) and 50 (Mtng sum+Agreement sent)
       const allowedLegacyStageIds = [40, 50];
-      
+
       let legacyLeadsQuery = supabase
         .from('leads_lead')
         .select(`
@@ -5922,7 +5920,7 @@ const CloserSuperPipelineReport = () => {
           .from('misc_category')
           .select('id')
           .eq('parent_id', filters.category);
-        
+
         if (subCategories && subCategories.length > 0) {
           const subCategoryIds = subCategories.map(sc => sc.id);
           legacyLeadsQuery = legacyLeadsQuery.in('category_id', subCategoryIds);
@@ -5951,18 +5949,18 @@ const CloserSuperPipelineReport = () => {
         setIsSearching(false);
         return;
       }
-      
+
       if (legacyLeads) {
         // Fetch closer names for legacy leads
         const closerIds = [...new Set(legacyLeads.map((l: any) => l.closer_id).filter(Boolean))];
         const closerMap: Record<number, string> = {};
-        
+
         if (closerIds.length > 0) {
           const { data: closerData } = await supabase
             .from('tenants_employee')
             .select('id, display_name')
             .in('id', closerIds);
-          
+
           if (closerData) {
             closerData.forEach((emp: any) => {
               closerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
@@ -5973,13 +5971,13 @@ const CloserSuperPipelineReport = () => {
         // Fetch scheduler names for legacy leads
         const schedulerIds = [...new Set(legacyLeads.map((l: any) => l.meeting_scheduler_id).filter(Boolean))];
         const schedulerMap: Record<number, string> = {};
-        
+
         if (schedulerIds.length > 0) {
           const { data: schedulerData } = await supabase
             .from('tenants_employee')
             .select('id, display_name')
             .in('id', schedulerIds);
-          
+
           if (schedulerData) {
             schedulerData.forEach((emp: any) => {
               schedulerMap[emp.id] = emp.display_name || `Employee #${emp.id}`;
@@ -5990,13 +5988,13 @@ const CloserSuperPipelineReport = () => {
         // Fetch currency codes
         const currencyIds = [...new Set(legacyLeads.map((l: any) => l.currency_id).filter(Boolean))];
         const currencyMap: Record<number, string> = {};
-        
+
         if (currencyIds.length > 0) {
           const { data: currencyData } = await supabase
             .from('accounting_currencies')
             .select('id, iso_code')
             .in('id', currencyIds);
-          
+
           if (currencyData) {
             currencyData.forEach((curr: any) => {
               currencyMap[curr.id] = curr.iso_code || '';
@@ -6007,13 +6005,13 @@ const CloserSuperPipelineReport = () => {
         // Fetch language names for legacy leads
         const languageIds = [...new Set(legacyLeads.map((l: any) => l.language_id).filter(Boolean))];
         const languageMap: Record<number, string> = {};
-        
+
         if (languageIds.length > 0) {
           const { data: languageData } = await supabase
             .from('misc_language')
             .select('id, name')
             .in('id', languageIds);
-          
+
           if (languageData) {
             languageData.forEach((lang: any) => {
               languageMap[lang.id] = lang.name || '';
@@ -6089,7 +6087,7 @@ const CloserSuperPipelineReport = () => {
         const dateB = new Date(b.created_at || 0).getTime();
         return dateB - dateA;
       });
-      
+
       setResults(sortedLeads);
     } catch (error: any) {
       console.error('Error in CloserSuperPipelineReport:', error);
@@ -6142,19 +6140,19 @@ const CloserSuperPipelineReport = () => {
     return catName.includes(searchTerm);
   });
 
-  const filteredEmployees = employees.filter((emp: any) => 
+  const filteredEmployees = employees.filter((emp: any) =>
     emp.name.toLowerCase().includes(employeeSearch.toLowerCase())
   );
 
-  const filteredLanguages = languages.filter((lang: any) => 
+  const filteredLanguages = languages.filter((lang: any) =>
     lang.name.toLowerCase().includes(languageSearch.toLowerCase())
   );
 
   return (
     <div className="px-2 py-6">
       <h2 className="text-2xl font-bold mb-6 px-4">Closer Super Pipeline</h2>
-      
-        {/* Filters */}
+
+      {/* Filters */}
       <div className="mb-6 px-4">
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <div>
@@ -6166,183 +6164,183 @@ const CloserSuperPipelineReport = () => {
               className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
             />
           </div>
-            <div>
-              <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
-              <input
-                type="date"
-                value={filters.toDate}
-                onChange={(e) => handleFilterChange('toDate', e.target.value)}
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-              />
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search category..."
-                value={categorySearch}
-                onChange={(e) => {
-                  setCategorySearch(e.target.value);
-                  setShowCategoryDropdown(true);
-                  if (!e.target.value) {
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">To Date</label>
+            <input
+              type="date"
+              value={filters.toDate}
+              onChange={(e) => handleFilterChange('toDate', e.target.value)}
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+          </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Category</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search category..."
+              value={categorySearch}
+              onChange={(e) => {
+                setCategorySearch(e.target.value);
+                setShowCategoryDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('category', '');
+                }
+              }}
+              onFocus={() => setShowCategoryDropdown(true)}
+              onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
+            />
+            {showCategoryDropdown && filteredCategories.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
                     handleFilterChange('category', '');
-                  }
-                }}
-                onFocus={() => setShowCategoryDropdown(true)}
-                onBlur={() => setTimeout(() => setShowCategoryDropdown(false), 200)}
-              />
-              {showCategoryDropdown && filteredCategories.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
-                  <div
-                    className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                    onClick={() => {
-                      handleFilterChange('category', '');
-                      setCategorySearch('');
-                      setShowCategoryDropdown(false);
-                    }}
-                  >
-                    All Categories
-                  </div>
-                  {filteredCategories.map((cat) => {
-                    return (
-                      <div
-                        key={cat.id}
-                        className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                        onClick={() => {
-                          handleFilterChange('category', cat.id.toString());
-                          setCategorySearch(cat.name);
-                          setShowCategoryDropdown(false);
-                        }}
-                      >
-                        {cat.name}
-                      </div>
-                    );
-                  })}
+                    setCategorySearch('');
+                    setShowCategoryDropdown(false);
+                  }}
+                >
+                  All Categories
                 </div>
-              )}
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search employee..."
-                value={employeeSearch}
-                onChange={(e) => {
-                  setEmployeeSearch(e.target.value);
-                  setShowEmployeeDropdown(true);
-                  if (!e.target.value) {
+                {filteredCategories.map((cat) => {
+                  return (
+                    <div
+                      key={cat.id}
+                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                      onClick={() => {
+                        handleFilterChange('category', cat.id.toString());
+                        setCategorySearch(cat.name);
+                        setShowCategoryDropdown(false);
+                      }}
+                    >
+                      {cat.name}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Employee</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search employee..."
+              value={employeeSearch}
+              onChange={(e) => {
+                setEmployeeSearch(e.target.value);
+                setShowEmployeeDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('employee', '');
+                }
+              }}
+              onFocus={() => setShowEmployeeDropdown(true)}
+              onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
+            />
+            {showEmployeeDropdown && filteredEmployees.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
                     handleFilterChange('employee', '');
-                  }
-                }}
-                onFocus={() => setShowEmployeeDropdown(true)}
-                onBlur={() => setTimeout(() => setShowEmployeeDropdown(false), 200)}
-              />
-              {showEmployeeDropdown && filteredEmployees.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    setEmployeeSearch('');
+                    setShowEmployeeDropdown(false);
+                  }}
+                >
+                  All Employees
+                </div>
+                {filteredEmployees.map((emp) => (
                   <div
+                    key={emp.id}
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={() => {
-                      handleFilterChange('employee', '');
-                      setEmployeeSearch('');
+                      handleFilterChange('employee', emp.id.toString());
+                      setEmployeeSearch(emp.name);
                       setShowEmployeeDropdown(false);
                     }}
                   >
-                    All Employees
+                    {emp.name}
                   </div>
-                  {filteredEmployees.map((emp) => (
-                    <div
-                      key={emp.id}
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={() => {
-                        handleFilterChange('employee', emp.id.toString());
-                        setEmployeeSearch(emp.name);
-                        setShowEmployeeDropdown(false);
-                      }}
-                    >
-                      {emp.name}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="relative">
-              <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
-              <input
-                type="text"
-                className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
-                placeholder="Search language..."
-                value={languageSearch}
-                onChange={(e) => {
-                  setLanguageSearch(e.target.value);
-                  setShowLanguageDropdown(true);
-                  if (!e.target.value) {
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="relative">
+            <label className="block text-sm font-medium text-gray-700 mb-1">Language</label>
+            <input
+              type="text"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="Search language..."
+              value={languageSearch}
+              onChange={(e) => {
+                setLanguageSearch(e.target.value);
+                setShowLanguageDropdown(true);
+                if (!e.target.value) {
+                  handleFilterChange('language', '');
+                }
+              }}
+              onFocus={() => setShowLanguageDropdown(true)}
+              onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
+            />
+            {showLanguageDropdown && filteredLanguages.length > 0 && (
+              <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                <div
+                  className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
+                  onClick={() => {
                     handleFilterChange('language', '');
-                  }
-                }}
-                onFocus={() => setShowLanguageDropdown(true)}
-                onBlur={() => setTimeout(() => setShowLanguageDropdown(false), 200)}
-              />
-              {showLanguageDropdown && filteredLanguages.length > 0 && (
-                <div className="absolute z-10 w-full mt-1 bg-white border border-gray-300 rounded-md shadow-lg max-h-60 overflow-y-auto">
+                    setLanguageSearch('');
+                    setShowLanguageDropdown(false);
+                  }}
+                >
+                  All Languages
+                </div>
+                {filteredLanguages.map((lang) => (
                   <div
+                    key={lang.id}
                     className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
                     onClick={() => {
-                      handleFilterChange('language', '');
-                      setLanguageSearch('');
+                      handleFilterChange('language', lang.id);
+                      setLanguageSearch(lang.name);
                       setShowLanguageDropdown(false);
                     }}
                   >
-                    All Languages
+                    {lang.name}
                   </div>
-                  {filteredLanguages.map((lang) => (
-                    <div
-                      key={lang.id}
-                      className="px-4 py-2 cursor-pointer hover:bg-gray-100 text-sm"
-                      onClick={() => {
-                        handleFilterChange('language', lang.id);
-                        setLanguageSearch(lang.name);
-                        setShowLanguageDropdown(false);
-                      }}
-                    >
-                      {lang.name}
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="mt-4">
-            <button
-              onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
-              disabled={isSearching}
-              className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              style={{ backgroundColor: '#411CCF' }}
-            >
-              {isSearching ? 'Searching...' : 'Show'}
-            </button>
+                ))}
+              </div>
+            )}
           </div>
         </div>
+        <div className="mt-4">
+          <button
+            onClick={() => handleSearch(true)} // Pass true to apply date filters when Show is clicked
+            disabled={isSearching}
+            className="px-6 py-2 text-white rounded-md hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            style={{ backgroundColor: '#411CCF' }}
+          >
+            {isSearching ? 'Searching...' : 'Show'}
+          </button>
+        </div>
+      </div>
 
-        {/* Results Table - Inside same white box */}
-        {searchPerformed && (
-          <div className="border-t border-gray-200 pt-6 -mx-2">
-            <div className="mb-4 px-4">
-              <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
-            </div>
-            {results.length === 0 ? (
-              <div className="p-6 text-center text-gray-500">No leads found</div>
-            ) : (
-              <div className="overflow-x-auto px-4">
-                <table className="min-w-full divide-y divide-gray-200">
-                  <thead className="bg-gray-50">
-                    <tr>
-                      <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
-                      <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Closer</th>
-                      <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
+      {/* Results Table - Inside same white box */}
+      {searchPerformed && (
+        <div className="border-t border-gray-200 pt-6 -mx-2">
+          <div className="mb-4 px-4">
+            <h3 className="text-lg font-semibold">Total leads: {results.length}</h3>
+          </div>
+          {results.length === 0 ? (
+            <div className="p-6 text-center text-gray-500">No leads found</div>
+          ) : (
+            <div className="overflow-x-auto px-4">
+              <table className="min-w-full divide-y divide-gray-200">
+                <thead className="bg-gray-50">
+                  <tr>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Lead</th>
+                    <th className="px-2 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Stage</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Probability</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Closer</th>
+                    <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Scheduler</th>
                     <th className="px-3 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider" style={{ maxWidth: '200px' }}>Expert Opinion</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Total Applicants</th>
                     <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Potential Applicants</th>
@@ -6353,41 +6351,41 @@ const CloserSuperPipelineReport = () => {
                 <tbody className="bg-white divide-y divide-gray-200">
                   {results.map((lead, index) => (
                     <tr key={lead.id || index} className="hover:bg-gray-50">
-                        <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
-                        <div 
-                            className="text-sm font-medium text-blue-600 cursor-pointer hover:underline break-words"
+                      <td className="px-4 py-4" style={{ maxWidth: '200px' }}>
+                        <div
+                          className="text-sm font-medium text-blue-600 cursor-pointer hover:underline break-words"
                           onClick={() => navigate(`/clients/${lead.lead_number}`)}
                         >
                           #{lead.lead_number}
                         </div>
-                          <div className="text-sm text-gray-900 break-words" style={{ 
-                            display: '-webkit-box',
-                            WebkitLineClamp: 3,
-                            WebkitBoxOrient: 'vertical',
-                            overflow: 'hidden',
-                            wordBreak: 'break-word'
-                          }}>{lead.name || '---'}</div>
+                        <div className="text-sm text-gray-900 break-words" style={{
+                          display: '-webkit-box',
+                          WebkitLineClamp: 3,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                          wordBreak: 'break-word'
+                        }}>{lead.name || '---'}</div>
                       </td>
-                        <td className="px-2 py-4 text-sm text-gray-900">
-                          <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
-                        {lead.stage || '---'}
-                          </div>
+                      <td className="px-2 py-4 text-sm text-gray-900">
+                        <div className="break-words max-w-[120px] sm:max-w-none sm:whitespace-nowrap line-clamp-2 sm:line-clamp-none">
+                          {lead.stage || '---'}
+                        </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.probability ? `${lead.probability}%` : '---'}
                       </td>
-                        <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
-                          {lead.closer || '---'}
-                        </td>
+                      <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
+                        {lead.closer || '---'}
+                      </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.scheduler || '---'}
                       </td>
                       <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
-                        <div 
+                        <div
                           className="line-clamp-3 break-words cursor-help"
                           title={lead.expert_opinion && lead.expert_opinion !== '---' ? lead.expert_opinion : undefined}
                         >
-                        {lead.expert_opinion || '---'}
+                          {lead.expert_opinion || '---'}
                         </div>
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
@@ -6396,64 +6394,64 @@ const CloserSuperPipelineReport = () => {
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {lead.potential_applicants_meeting ?? '---'}
                       </td>
-                        <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
-                          {editingManagerNotes[lead.id || index] ? (
-                            <div className="flex flex-col gap-2">
-                              <textarea
-                                value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
-                                onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
-                                className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
-                                placeholder="Enter manager notes..."
-                              />
-                              <div className="flex gap-2">
-                                <button
-                                  onClick={() => handleSaveManagerNotes(lead)}
-                                  disabled={savingManagerNotes[lead.id || index]}
-                                  className="btn btn-xs btn-primary"
-                                >
-                                  {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
-                                </button>
-                                <button
-                                  onClick={() => {
-                                    setEditingManagerNotes(prev => {
-                                      const newState = { ...prev };
-                                      delete newState[lead.id || index];
-                                      return newState;
-                                    });
-                                    setManagerNotesValues(prev => {
-                                      const newState = { ...prev };
-                                      delete newState[lead.id || index];
-                                      return newState;
-                                    });
-                                  }}
-                                  className="btn btn-xs btn-ghost"
-                                >
-                                  Cancel
-                                </button>
-                              </div>
-                            </div>
-                          ) : (
-                            <div className="flex items-start gap-2 group">
-                              <div 
-                                className="line-clamp-3 break-words flex-1 cursor-help"
-                                title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                      <td className="px-3 py-4 text-sm text-gray-900 max-w-[200px]">
+                        {editingManagerNotes[lead.id || index] ? (
+                          <div className="flex flex-col gap-2">
+                            <textarea
+                              value={managerNotesValues[lead.id || index] || lead.manager_notes || ''}
+                              onChange={(e) => setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: e.target.value }))}
+                              className="textarea textarea-bordered textarea-sm w-full min-h-[60px]"
+                              placeholder="Enter manager notes..."
+                            />
+                            <div className="flex gap-2">
+                              <button
+                                onClick={() => handleSaveManagerNotes(lead)}
+                                disabled={savingManagerNotes[lead.id || index]}
+                                className="btn btn-xs btn-primary"
                               >
-                                {lead.manager_notes || '---'}
-                              </div>
+                                {savingManagerNotes[lead.id || index] ? 'Saving...' : 'Save'}
+                              </button>
                               <button
                                 onClick={() => {
-                                  setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
-                                  setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
+                                  setEditingManagerNotes(prev => {
+                                    const newState = { ...prev };
+                                    delete newState[lead.id || index];
+                                    return newState;
+                                  });
+                                  setManagerNotesValues(prev => {
+                                    const newState = { ...prev };
+                                    delete newState[lead.id || index];
+                                    return newState;
+                                  });
                                 }}
-                                className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
-                                title="Edit manager notes"
+                                className="btn btn-xs btn-ghost"
                               >
-                                <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                                </svg>
+                                Cancel
                               </button>
                             </div>
-                          )}
+                          </div>
+                        ) : (
+                          <div className="flex items-start gap-2 group">
+                            <div
+                              className="line-clamp-3 break-words flex-1 cursor-help"
+                              title={lead.manager_notes && lead.manager_notes !== '---' ? lead.manager_notes : undefined}
+                            >
+                              {lead.manager_notes || '---'}
+                            </div>
+                            <button
+                              onClick={() => {
+                                setEditingManagerNotes(prev => ({ ...prev, [lead.id || index]: true }));
+                                setManagerNotesValues(prev => ({ ...prev, [lead.id || index]: lead.manager_notes || '' }));
+                              }}
+                              className="btn btn-xs btn-ghost opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                              title="Edit manager notes"
+                            >
+                              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                              </svg>
+                            </button>
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-900">
                         {formatCurrency(lead.balance, lead.balance_currency)}
@@ -6506,7 +6504,7 @@ const ExpertsResultsReport = () => {
   const [sources, setSources] = useState<string[]>([]);
   const [allCategories, setAllCategories] = useState<any[]>([]);
   const [employeeNameMap, setEmployeeNameMap] = useState<Record<number, string>>({});
-  
+
   // Search states for searchable dropdowns
   const [stageSearch, setStageSearch] = useState<string>('');
   const [languageSearch, setLanguageSearch] = useState<string>('');
@@ -6514,7 +6512,7 @@ const ExpertsResultsReport = () => {
   const [expertExaminationSearch, setExpertExaminationSearch] = useState<string>('');
   const [expertSearch, setExpertSearch] = useState<string>('');
   const [sourceSearch, setSourceSearch] = useState<string>('');
-  
+
   // Dropdown visibility states
   const [showStageDropdown, setShowStageDropdown] = useState<boolean>(false);
   const [showLanguageDropdown, setShowLanguageDropdown] = useState<boolean>(false);
@@ -6665,27 +6663,27 @@ const ExpertsResultsReport = () => {
   }, [filters.source]);
 
   // Filter options based on search
-  const filteredStages = stages.filter((stage: { id: number; name: string }) => 
+  const filteredStages = stages.filter((stage: { id: number; name: string }) =>
     stage.name.toLowerCase().includes(stageSearch.toLowerCase())
   );
 
-  const filteredLanguages = languages.filter((lang: { id: number; name: string }) => 
+  const filteredLanguages = languages.filter((lang: { id: number; name: string }) =>
     lang.name.toLowerCase().includes(languageSearch.toLowerCase())
   );
 
-  const filteredCategories = categories.filter((cat: { id: number; name: string }) => 
+  const filteredCategories = categories.filter((cat: { id: number; name: string }) =>
     cat.name.toLowerCase().includes(categorySearch.toLowerCase())
   );
 
-  const filteredExpertExaminations = expertExaminationOptions.filter((opt: { value: string; label: string }) => 
+  const filteredExpertExaminations = expertExaminationOptions.filter((opt: { value: string; label: string }) =>
     opt.label.toLowerCase().includes(expertExaminationSearch.toLowerCase())
   );
 
-  const filteredExperts = employees.filter((emp: { id: number; name: string }) => 
+  const filteredExperts = employees.filter((emp: { id: number; name: string }) =>
     emp.name.toLowerCase().includes(expertSearch.toLowerCase())
   );
 
-  const filteredSources = sources.filter((source: string) => 
+  const filteredSources = sources.filter((source: string) =>
     source.toLowerCase().includes(sourceSearch.toLowerCase())
   );
 
@@ -6693,7 +6691,7 @@ const ExpertsResultsReport = () => {
     if (!categoryId || categoryId === '---' || categoryId === '--') {
       return '---';
     }
-    
+
     if (miscCategory) {
       const cat = Array.isArray(miscCategory) ? miscCategory[0] : miscCategory;
       const mainCategory = Array.isArray(cat?.misc_maincategory) ? cat.misc_maincategory[0] : cat?.misc_maincategory;
@@ -6707,15 +6705,15 @@ const ExpertsResultsReport = () => {
 
     const foundCategory = allCategories.find((cat: any) => cat.id.toString() === categoryId.toString());
     if (foundCategory) {
-      const mainCategory = Array.isArray(foundCategory.misc_maincategory) 
-        ? foundCategory.misc_maincategory[0] 
+      const mainCategory = Array.isArray(foundCategory.misc_maincategory)
+        ? foundCategory.misc_maincategory[0]
         : foundCategory.misc_maincategory;
       if (mainCategory?.name) {
         return `${foundCategory.name} (${mainCategory.name})`;
       }
       return foundCategory.name;
     }
-    
+
     return String(categoryId);
   };
 
@@ -6923,8 +6921,8 @@ const ExpertsResultsReport = () => {
         }
       }
       if (filters.expertExamination) {
-        const examValue = filters.expertExamination === 'feasible_no_check' ? '8' : 
-                         filters.expertExamination === 'feasible_check' ? '5' : '1';
+        const examValue = filters.expertExamination === 'feasible_no_check' ? '8' :
+          filters.expertExamination === 'feasible_check' ? '5' : '1';
         legacyLeadsQuery = legacyLeadsQuery.eq('expert_examination', examValue);
       }
       if (filters.expert) {
@@ -7111,7 +7109,7 @@ const ExpertsResultsReport = () => {
   return (
     <div className="px-2 py-6">
       <h2 className="text-2xl font-bold mb-6 px-4">Experts Results</h2>
-      
+
       {/* Filters */}
       <div className="mb-6 px-4">
         <div className="space-y-4">
@@ -7136,7 +7134,7 @@ const ExpertsResultsReport = () => {
               />
             </div>
           </div>
-          
+
           {/* Dropdowns section - all as searchable input fields */}
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4">
             <div className="relative">
@@ -7786,16 +7784,16 @@ const ContributionAllReport = () => {
           legacyPayments?.forEach((payment: any) => {
             const value = Number(payment.value_base || 0);
             let vat = Number(payment.vat_value || 0);
-            
-            const accountingCurrency: any = payment.accounting_currencies 
-              ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
+
+            const accountingCurrency: any = payment.accounting_currencies
+              ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
               : null;
-            
+
             const currency = accountingCurrency?.name || accountingCurrency?.iso_code ||
-              (payment.currency_id === 2 ? '€' : 
-               payment.currency_id === 3 ? '$' : 
-               payment.currency_id === 4 ? '£' : '₪');
-            
+              (payment.currency_id === 2 ? '€' :
+                payment.currency_id === 3 ? '$' :
+                  payment.currency_id === 4 ? '£' : '₪');
+
             if (!vat && (currency === '₪' || currency === 'ILS')) {
               vat = Math.round(value * 0.18 * 100) / 100;
             }
@@ -7854,9 +7852,9 @@ const ContributionAllReport = () => {
       }
 
       // Step 7: Process data and group by department and employee
-      const departmentEmployeeMap = new Map<string, Map<number, { 
-        employeeName: string; 
-        signed: number; 
+      const departmentEmployeeMap = new Map<string, Map<number, {
+        employeeName: string;
+        signed: number;
         signedPortion: number;
         due: number;
         duePortion: number;
@@ -7875,9 +7873,9 @@ const ContributionAllReport = () => {
         }
         const employeeMapForDept = departmentEmployeeMap.get(deptName)!;
         if (!employeeMapForDept.has(empId)) {
-          employeeMapForDept.set(empId, { 
-            employeeName: empName, 
-            signed: 0, 
+          employeeMapForDept.set(empId, {
+            employeeName: empName,
+            signed: 0,
             signedPortion: 0,
             due: 0,
             duePortion: 0,
@@ -7940,7 +7938,7 @@ const ContributionAllReport = () => {
 
         const employeeName = employeeMap.get(employeeId) || 'Unknown';
         const employeeData = initializeEmployee(departmentName, employeeId, employeeName);
-        
+
         // Add payment amount to due (process each payment individually like Collection Due)
         employeeData.due += payment.amount;
       });
@@ -7993,7 +7991,7 @@ const ContributionAllReport = () => {
 
         const employeeName = employeeMap.get(employeeId) || 'Unknown';
         const employeeData = initializeEmployee(departmentName, employeeId, employeeName);
-        
+
         // Add payment amount to due (process each payment individually like Collection Due)
         employeeData.due += payment.amount;
       });
@@ -8265,6 +8263,7 @@ const reports: ReportSection[] = [
     category: 'Contribution',
     items: [
       { label: 'All', icon: RectangleStackIcon, component: AllContributionReport },
+      { label: 'Sales Contribution', icon: ChartBarIcon, route: '/reports/sales-contribution' },
     ],
   },
   {
@@ -8326,7 +8325,7 @@ export default function ReportsPage() {
               .select('is_superuser')
               .eq('email', user.email)
               .maybeSingle();
-            
+
             if (userByEmail) {
               setIsSuperUser(userByEmail.is_superuser === true || userByEmail.is_superuser === 'true' || userByEmail.is_superuser === 1);
             }
@@ -8355,7 +8354,19 @@ export default function ReportsPage() {
     // First filter by superuser status
     let reportsToFilter = reports;
     if (!isSuperUser) {
-      reportsToFilter = reports.filter(section => section.category !== 'Tools');
+      reportsToFilter = reports
+        .filter(section => section.category !== 'Tools')
+        .map((section) => {
+          // Filter out Sales Contribution from Contribution category if not superuser
+          if (section.category === 'Contribution') {
+            return {
+              ...section,
+              items: section.items.filter(item => item.label !== 'Sales Contribution'),
+            };
+          }
+          return section;
+        })
+        .filter((section) => section.items.length > 0); // Remove empty sections
     }
 
     // Then filter by search query
@@ -8426,29 +8437,29 @@ export default function ReportsPage() {
               </div>
             ) : (
               filteredReports.map((section) => (
-              <div key={section.category}>
-                <h2 className="text-2xl font-semibold mb-4">{section.category}</h2>
+                <div key={section.category}>
+                  <h2 className="text-2xl font-semibold mb-4">{section.category}</h2>
                   <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 sm:gap-3 md:gap-4 lg:gap-6">
-                  {section.items.map((item) => (
-                    <button
-                      key={item.label}
+                    {section.items.map((item) => (
+                      <button
+                        key={item.label}
                         className="card bg-base-100 shadow hover:shadow-lg transition-shadow border border-base-200 flex flex-col items-center justify-center p-3 sm:p-4 md:p-5 lg:p-6 cursor-pointer hover:bg-primary hover:text-white group"
-                      onClick={() => {
-                        if (item.route) {
-                          navigate(item.route);
-                          return;
-                        }
-                        if (item.component) {
-                          setSelectedReport(item);
-                        }
-                      }}
-                    >
+                        onClick={() => {
+                          if (item.route) {
+                            navigate(item.route);
+                            return;
+                          }
+                          if (item.component) {
+                            setSelectedReport(item);
+                          }
+                        }}
+                      >
                         <item.icon className="w-8 h-8 sm:w-10 sm:h-10 md:w-12 md:h-12 mb-2 sm:mb-2 md:mb-3 text-black group-hover:text-white" />
                         <span className="font-semibold text-sm sm:text-base md:text-lg text-center group-hover:text-white">{item.label}</span>
-                    </button>
-                  ))}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-              </div>
               ))
             )}
           </div>
@@ -8483,7 +8494,7 @@ export default function ReportsPage() {
                     className="w-full pl-10 pr-10 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary focus:border-transparent text-sm"
                   />
                   {searchQuery && (
-              <button
+                    <button
                       onClick={() => {
                         setSearchQuery('');
                         setShowSearchDropdown(false);
@@ -8499,14 +8510,14 @@ export default function ReportsPage() {
                     setSelectedReport(null);
                     setSearchQuery('');
                   }}
-                className="btn btn-outline btn-primary flex items-center gap-2"
-              >
-                <ArrowLeftIcon className="w-5 h-5" />
-                Back to Reports
-              </button>
+                  className="btn btn-outline btn-primary flex items-center gap-2"
+                >
+                  <ArrowLeftIcon className="w-5 h-5" />
+                  Back to Reports
+                </button>
+              </div>
             </div>
-            </div>
-            
+
             {/* Search Results Dropdown */}
             {showSearchDropdown && searchQuery && (
               <div className="mb-6 border border-gray-200 rounded-lg bg-white shadow-lg max-h-96 overflow-y-auto z-50">
@@ -8529,9 +8540,8 @@ export default function ReportsPage() {
                               setSearchQuery('');
                             }
                           }}
-                          className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${
-                            selectedReport?.label === item.label ? 'bg-primary text-white' : 'bg-gray-50'
-                          }`}
+                          className={`w-full text-left px-4 py-2 rounded-md hover:bg-primary hover:text-white transition-colors flex items-center gap-3 ${selectedReport?.label === item.label ? 'bg-primary text-white' : 'bg-gray-50'
+                            }`}
                         >
                           <item.icon className="w-5 h-5" />
                           <div className="flex-1">
@@ -8550,7 +8560,7 @@ export default function ReportsPage() {
                 </div>
               </div>
             )}
-            
+
             <div className="min-h-[400px]">
               {selectedReport.component ? (
                 React.createElement(selectedReport.component)

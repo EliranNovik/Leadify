@@ -145,22 +145,22 @@ const SIGNED_STAGE_TOKENS = new Set([
 ]);
 
 const toStartOfDayIso = (dateStr: string) => {
-  const date = new Date(`${dateStr}T00:00:00`);
-  return Number.isNaN(date.getTime()) ? null : date.toISOString();
+  // Use explicit UTC time to avoid timezone shifts
+  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  return `${dateStr}T00:00:00.000Z`;
 };
 
-const toNextDayIso = (dateStr: string) => {
-  const date = new Date(`${dateStr}T00:00:00`);
-  if (Number.isNaN(date.getTime())) return null;
-  date.setDate(date.getDate() + 1);
-  return date.toISOString();
+const toEndOfDayIso = (dateStr: string) => {
+  // Use explicit UTC time for end of day (23:59:59.999)
+  // Format: YYYY-MM-DDTHH:mm:ss.sssZ
+  return `${dateStr}T23:59:59.999Z`;
 };
 
 const computeDateBounds = (fromDate?: string, toDate?: string) => {
   const startIso = fromDate ? toStartOfDayIso(fromDate) : null;
   const endIso = (() => {
-    if (toDate) return toNextDayIso(toDate);
-    if (fromDate) return toNextDayIso(fromDate);
+    if (toDate) return toEndOfDayIso(toDate);
+    if (fromDate) return toEndOfDayIso(fromDate);
     return null;
   })();
   return { startIso, endIso };
@@ -1141,11 +1141,12 @@ const resolveLegacyLanguage = (lead: any) => {
         .eq('stage', 60); // Stage 60 = Client signed agreement
 
       // Filter by date column (not cdate)
+      // Include full day: from 00:00:00.000 to 23:59:59.999
       if (startIso) {
         stage60Query = stage60Query.gte('date', startIso);
       }
       if (endIso) {
-        stage60Query = stage60Query.lt('date', endIso);
+        stage60Query = stage60Query.lte('date', endIso);
       }
 
       const { data: allStage60Records, error: stage60Error } = await stage60Query;
