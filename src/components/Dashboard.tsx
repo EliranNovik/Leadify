@@ -6,7 +6,7 @@ import OverdueFollowups from './OverdueFollowups';
 import WaitingForPriceOfferMyLeadsWidget from './WaitingForPriceOfferMyLeadsWidget';
 import ClosedDealsWithoutPaymentPlanWidget from './ClosedDealsWithoutPaymentPlanWidget';
 import UnavailableEmployeesModal from './UnavailableEmployeesModal';
-import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
+import { UserGroupIcon, CalendarIcon, ExclamationTriangleIcon, ChatBubbleLeftRightIcon, ArrowTrendingUpIcon, ChartBarIcon, ChevronLeftIcon, ChevronRightIcon, ChevronDownIcon, ChevronUpIcon, XMarkIcon, ClockIcon, SparklesIcon, MagnifyingGlassIcon, FunnelIcon, CheckCircleIcon, PlusIcon, ArrowPathIcon, VideoCameraIcon, PhoneIcon, EnvelopeIcon, DocumentTextIcon, PencilSquareIcon, TrashIcon, Squares2X2Icon, TableCellsIcon } from '@heroicons/react/24/outline';
 import { supabase, isAuthError, sessionManager, handleSessionExpiration } from '../lib/supabase';
 import { useAuthContext } from '../contexts/AuthContext';
 import { convertToNIS, calculateTotalRevenueInNIS, getCurrencySymbol } from '../lib/currencyConversion';
@@ -111,6 +111,8 @@ const Dashboard: React.FC = () => {
   // Department filter for team availability
   const [departmentFilter, setDepartmentFilter] = useState<string>('');
   const [availableDepartments, setAvailableDepartments] = useState<string[]>([]);
+  // State for expanded employee unavailability cards
+  const [expandedEmployeeCards, setExpandedEmployeeCards] = useState<Set<number>>(new Set());
   const navigate = useNavigate();
   // Map of meeting location name -> default_link (from tenants_meetinglocation)
   const [meetingLocationLinks, setMeetingLocationLinks] = useState<Record<string, string>>({});
@@ -260,6 +262,16 @@ const Dashboard: React.FC = () => {
     return roleMap[roleCode] || roleCode || 'N/A';
   };
 
+  // Helper function to format time string to remove seconds (e.g., "09:00:00" -> "09:00")
+  const formatTimeString = (timeStr: string): string => {
+    if (!timeStr) return '';
+    // If time includes seconds (HH:MM:SS), remove them
+    if (timeStr.length === 8 && timeStr.includes(':')) {
+      return timeStr.substring(0, 5); // Return HH:MM
+    }
+    return timeStr; // Already in HH:MM format or invalid
+  };
+
   const fetchUnavailableEmployeesData = async (selectedDate?: string) => {
     setUnavailableEmployeesLoading(true);
     try {
@@ -278,41 +290,192 @@ const Dashboard: React.FC = () => {
       const todayDay = String(today.getDate()).padStart(2, '0');
       const todayString = `${todayYear}-${todayMonth}-${todayDay}`;
 
-      const { data: employees, error } = await supabase
-        .from('tenants_employee')
-        .select(`
-          id,
-          display_name,
-          unavailable_times,
-          unavailable_ranges,
-          bonuses_role,
-          department_id,
-          photo_url,
-          photo,
-          tenant_departement!department_id(id, name)
-        `)
-        .not('unavailable_times', 'is', null);
+      // Fetch from both sources: employee_unavailability_reasons table AND tenants_employee table
+      const [reasonsResult, employeesResult] = await Promise.all([
+        supabase
+          .from('employee_unavailability_reasons')
+          .select(`
+            id,
+            employee_id,
+            unavailability_type,
+            start_date,
+            end_date,
+            start_time,
+            end_time,
+            sick_days_reason,
+            vacation_reason,
+            general_reason,
+            created_at,
+            tenants_employee!employee_id(
+              id,
+              display_name,
+              bonuses_role,
+              department_id,
+              photo_url,
+              photo,
+              tenant_departement!department_id(id, name)
+            )
+          `)
+          .or(`start_date.eq.${selectedDateString},and(start_date.lte.${selectedDateString},end_date.gte.${selectedDateString})`)
+          .order('start_time', { ascending: true }),
+        supabase
+          .from('tenants_employee')
+          .select(`
+            id,
+            display_name,
+            unavailable_times,
+            unavailable_ranges,
+            bonuses_role,
+            department_id,
+            photo_url,
+            photo,
+            tenant_departement!department_id(id, name)
+          `)
+          .not('unavailable_times', 'is', null)
+      ]);
 
-      if (error) {
-        return;
-      }
+      const unavailabilityReasons = reasonsResult.data || [];
+      const employees = employeesResult.data || [];
 
-      if (!employees) {
-        setUnavailableEmployeesData([]);
-        setUnavailableEmployeesCount(0);
-        setCurrentlyUnavailableCount(0);
-        setScheduledTimeOffCount(0);
-        return;
-      }
+      // Group by employee
+      const employeeMap = new Map<number, {
+        employeeId: number;
+        employeeName: string;
+        role: string;
+        department: string;
+        photo_url: string | null;
+        photo: string | null;
+        unavailabilities: any[];
+      }>();
 
-      let totalUnavailable = 0;
-      let currentlyUnavailable = 0;
-      let scheduledTimeOff = 0;
-      const detailedData: any[] = [];
+      // Track unique unavailabilities to prevent duplicates (employee_id + date + time)
+      const uniqueUnavailabilityKeys = new Set<string>();
 
       const now = new Date();
       const currentTime = now.getHours() * 60 + now.getMinutes();
+      let totalUnavailable = 0;
+      let currentlyUnavailable = 0;
+      let scheduledTimeOff = 0;
 
+      // Helper function to create a unique key for an unavailability
+      const getUnavailabilityKey = (employeeId: number, date: string, time: string): string => {
+        return `${employeeId}_${date}_${time}`;
+      };
+
+      // Process data from employee_unavailability_reasons table
+      unavailabilityReasons.forEach((reason: any) => {
+        const employee = reason.tenants_employee;
+        if (!employee) return;
+
+        const employeeId = reason.employee_id;
+        const startDate = reason.start_date;
+        const endDate = reason.end_date || startDate;
+
+        // Check if the selected date falls within this unavailability
+        const isOnDate = selectedDateString >= startDate && selectedDateString <= endDate;
+        if (!isOnDate) return;
+
+        if (!employeeMap.has(employeeId)) {
+          const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
+          employeeMap.set(employeeId, {
+            employeeId,
+            employeeName: employee.display_name,
+            role: getRoleDisplayName(employee.bonuses_role),
+            department: departmentName,
+            photo_url: employee.photo_url || null,
+            photo: employee.photo || null,
+            unavailabilities: []
+          });
+          totalUnavailable++;
+        }
+
+        const employeeData = employeeMap.get(employeeId)!;
+
+        // Get reason text based on type
+        let reasonText = '';
+        if (reason.unavailability_type === 'sick_days') {
+          reasonText = reason.sick_days_reason || '';
+        } else if (reason.unavailability_type === 'vacation') {
+          reasonText = reason.vacation_reason || '';
+        } else {
+          reasonText = reason.general_reason || '';
+        }
+
+        // Determine time display
+        let timeDisplay = '';
+        let isCurrentlyActive = false;
+
+        if (reason.start_time && reason.end_time) {
+          // Time-based unavailability - format to remove seconds
+          const formattedStartTime = formatTimeString(reason.start_time);
+          const formattedEndTime = formatTimeString(reason.end_time);
+          timeDisplay = `${formattedStartTime} - ${formattedEndTime}`;
+          if (selectedDateString === todayString) {
+            const startTime = parseInt(formattedStartTime.split(':')[0]) * 60 + parseInt(formattedStartTime.split(':')[1]);
+            const endTime = parseInt(formattedEndTime.split(':')[0]) * 60 + parseInt(formattedEndTime.split(':')[1]);
+            isCurrentlyActive = currentTime >= startTime && currentTime <= endTime;
+          }
+        } else if (endDate && endDate !== startDate) {
+          // Date range
+          const startDateFormatted = new Date(startDate).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: '2-digit'
+          });
+          const endDateFormatted = new Date(endDate).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: '2-digit'
+          });
+          timeDisplay = 'All Day';
+
+          // Check for duplicates
+          const uniqueKey = getUnavailabilityKey(employeeId, selectedDateString, timeDisplay);
+          if (uniqueUnavailabilityKeys.has(uniqueKey)) {
+            return; // Skip duplicate
+          }
+          uniqueUnavailabilityKeys.add(uniqueKey);
+
+          employeeData.unavailabilities.push({
+            id: `reason-${reason.id}`,
+            date: `${startDateFormatted} to ${endDateFormatted}`,
+            time: timeDisplay,
+            reason: reasonText,
+            isActive: false,
+            unavailabilityType: reason.unavailability_type
+          });
+          scheduledTimeOff++;
+          return;
+        } else {
+          timeDisplay = 'All Day';
+        }
+
+        // Check for duplicates before adding
+        const uniqueKey = getUnavailabilityKey(employeeId, selectedDateString, timeDisplay);
+        if (uniqueUnavailabilityKeys.has(uniqueKey)) {
+          return; // Skip duplicate
+        }
+        uniqueUnavailabilityKeys.add(uniqueKey);
+
+        if (isCurrentlyActive) {
+          currentlyUnavailable++;
+        } else {
+          scheduledTimeOff++;
+        }
+
+        employeeData.unavailabilities.push({
+          id: `reason-${reason.id}`,
+          date: new Date(startDate).toLocaleDateString('en-GB', {
+            day: '2-digit',
+            month: '2-digit',
+            year: 'numeric'
+          }),
+          time: timeDisplay,
+          reason: reasonText,
+          isActive: isCurrentlyActive,
+          unavailabilityType: reason.unavailability_type
+        });
+      });
+
+      // Process data from tenants_employee table (unavailable_times and unavailable_ranges)
       employees.forEach(employee => {
         const unavailableTimes = employee.unavailable_times || [];
         const unavailableRanges = employee.unavailable_ranges || [];
@@ -326,12 +489,39 @@ const Dashboard: React.FC = () => {
         );
 
         if (selectedDateTimes.length > 0 || selectedDateRanges.length > 0) {
-          totalUnavailable++;
+          const employeeId = employee.id;
+          const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
+
+          if (!employeeMap.has(employeeId)) {
+            employeeMap.set(employeeId, {
+              employeeId,
+              employeeName: employee.display_name,
+              role: getRoleDisplayName(employee.bonuses_role),
+              department: departmentName,
+              photo_url: employee.photo_url || null,
+              photo: employee.photo || null,
+              unavailabilities: []
+            });
+            totalUnavailable++;
+          }
+
+          const employeeData = employeeMap.get(employeeId)!;
 
           // Process time slots
           selectedDateTimes.forEach((time: any) => {
-            const startTime = parseInt(time.startTime.split(':')[0]) * 60 + parseInt(time.startTime.split(':')[1]);
-            const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
+            const formattedStartTime = formatTimeString(time.startTime);
+            const formattedEndTime = formatTimeString(time.endTime);
+            const timeDisplay = `${formattedStartTime} - ${formattedEndTime}`;
+
+            // Check for duplicates
+            const uniqueKey = getUnavailabilityKey(employeeId, selectedDateString, timeDisplay);
+            if (uniqueUnavailabilityKeys.has(uniqueKey)) {
+              return; // Skip duplicate
+            }
+            uniqueUnavailabilityKeys.add(uniqueKey);
+
+            const startTime = parseInt(formattedStartTime.split(':')[0]) * 60 + parseInt(formattedStartTime.split(':')[1]);
+            const endTime = parseInt(formattedEndTime.split(':')[0]) * 60 + parseInt(formattedEndTime.split(':')[1]);
             // Only mark as "currently active" if it's today and the current time is within the range
             const isCurrentlyActive = selectedDateString === todayString && currentTime >= startTime && currentTime <= endTime;
 
@@ -347,24 +537,27 @@ const Dashboard: React.FC = () => {
               year: 'numeric'
             });
 
-            const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
-            detailedData.push({
-              id: `${employee.id}-${time.id}`,
-              employeeId: employee.id,
-              employeeName: employee.display_name,
-              role: getRoleDisplayName(employee.bonuses_role),
-              department: departmentName,
+            employeeData.unavailabilities.push({
+              id: `time-${time.id || Date.now()}`,
               date: formattedDate,
-              time: `${time.startTime} - ${time.endTime}`,
-              reason: time.reason,
+              time: timeDisplay,
+              reason: time.reason || '',
               isActive: isCurrentlyActive,
-              photo_url: employee.photo_url || null,
-              photo: employee.photo || null
+              unavailabilityType: 'general' // Legacy data doesn't have type, default to general
             });
           });
 
           // Process date ranges
           selectedDateRanges.forEach((range: any) => {
+            const timeDisplay = 'All Day';
+
+            // Check for duplicates
+            const uniqueKey = getUnavailabilityKey(employeeId, selectedDateString, timeDisplay);
+            if (uniqueUnavailabilityKeys.has(uniqueKey)) {
+              return; // Skip duplicate
+            }
+            uniqueUnavailabilityKeys.add(uniqueKey);
+
             scheduledTimeOff++;
 
             const startDateFormatted = new Date(range.startDate).toLocaleDateString('en-GB', {
@@ -376,57 +569,47 @@ const Dashboard: React.FC = () => {
               month: '2-digit'
             });
 
-            const departmentName = (employee.tenant_departement as any)?.name || 'N/A';
-            detailedData.push({
-              id: `${employee.id}-${range.id}`,
-              employeeId: employee.id,
-              employeeName: employee.display_name,
-              role: getRoleDisplayName(employee.bonuses_role),
-              department: departmentName,
+            employeeData.unavailabilities.push({
+              id: `range-${range.id || Date.now()}`,
               date: `${startDateFormatted} to ${endDateFormatted}`,
-              time: 'All Day',
-              reason: range.reason,
+              time: timeDisplay,
+              reason: range.reason || '',
               isActive: false,
-              photo_url: employee.photo_url || null,
-              photo: employee.photo || null
+              unavailabilityType: 'general' // Legacy data doesn't have type, default to general
             });
           });
         }
       });
 
-      // Deduplicate: keep only the latest availability entry per employee
-      const employeeMap = new Map<number, any>();
-      // Sort by id in descending order to get latest entries first
-      detailedData.sort((a, b) => {
-        // Compare by id (which includes time/range id) in reverse order
-        return b.id.localeCompare(a.id);
-      });
+      // Convert to array format for display
+      const detailedData = Array.from(employeeMap.values()).map(emp => ({
+        id: `${emp.employeeId}-${emp.unavailabilities[0]?.id || 'main'}`,
+        employeeId: emp.employeeId,
+        employeeName: emp.employeeName,
+        role: emp.role,
+        department: emp.department,
+        photo_url: emp.photo_url,
+        photo: emp.photo,
+        // For backward compatibility, show first unavailability as main
+        date: emp.unavailabilities[0]?.date || '',
+        time: emp.unavailabilities[0]?.time || '',
+        reason: emp.unavailabilities[0]?.reason || '',
+        isActive: emp.unavailabilities.some(u => u.isActive),
+        // Store all unavailabilities for collapsible display
+        allUnavailabilities: emp.unavailabilities
+      }));
 
-      // Keep only the first occurrence of each employee (which will be the latest)
-      detailedData.forEach(item => {
-        if (!employeeMap.has(item.employeeId)) {
-          employeeMap.set(item.employeeId, item);
-        }
-      });
+      setUnavailableEmployeesData(detailedData);
+      setUnavailableEmployeesCount(totalUnavailable);
+      setCurrentlyUnavailableCount(currentlyUnavailable);
+      setScheduledTimeOffCount(scheduledTimeOff);
 
-      // Convert map back to array
-      const uniqueData = Array.from(employeeMap.values());
-
-      // Recalculate counts based on unique data
-      const uniqueTotalUnavailable = uniqueData.length;
-      const uniqueCurrentlyUnavailable = uniqueData.filter(item => item.isActive).length;
-      const uniqueScheduledTimeOff = uniqueTotalUnavailable - uniqueCurrentlyUnavailable;
-
-      setUnavailableEmployeesData(uniqueData);
-      setUnavailableEmployeesCount(uniqueTotalUnavailable);
-      setCurrentlyUnavailableCount(uniqueCurrentlyUnavailable);
-      setScheduledTimeOffCount(uniqueScheduledTimeOff);
-
-      // Extract unique departments from the unique data
-      const departments = Array.from(new Set(uniqueData.map(item => item.department).filter(dept => dept && dept !== 'N/A')));
+      // Extract unique departments
+      const departments = Array.from(new Set(detailedData.map(item => item.department).filter(dept => dept && dept !== 'N/A')));
       departments.sort();
       setAvailableDepartments(departments as string[]);
     } catch (error) {
+      console.error('Error fetching unavailable employees:', error);
     } finally {
       setUnavailableEmployeesLoading(false);
     }
@@ -7444,7 +7627,9 @@ const Dashboard: React.FC = () => {
                             <div className="flex-1 text-center px-2 mb-3">
                               {item.time && (
                                 <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                                  {item.time}
+                                  {item.time.includes(' - ')
+                                    ? item.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                    : formatTimeString(item.time)}
                                 </div>
                               )}
                               {/* Date Range - only if it's a range */}
@@ -7463,6 +7648,75 @@ const Dashboard: React.FC = () => {
                                 </div>
                               )}
                             </div>
+
+                            {/* Collapsible Additional Unavailabilities - Only show if there are multiple */}
+                            {item.allUnavailabilities && item.allUnavailabilities.length > 1 && (
+                              <div className={`border-t-2 pt-2 mt-2 ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                                <button
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    setExpandedEmployeeCards(prev => {
+                                      const newSet = new Set(prev);
+                                      if (newSet.has(item.employeeId)) {
+                                        newSet.delete(item.employeeId);
+                                      } else {
+                                        newSet.add(item.employeeId);
+                                      }
+                                      return newSet;
+                                    });
+                                  }}
+                                  className={`w-full flex items-center justify-between px-2 py-1.5 rounded-md text-xs font-medium transition-colors ${item.photo
+                                    ? 'text-white/90 bg-white/10 hover:bg-white/20'
+                                    : 'text-gray-700 bg-gray-100 hover:bg-gray-200'
+                                    }`}
+                                >
+                                  <span>
+                                    {(() => {
+                                      const moreCount = item.allUnavailabilities.length - 1;
+                                      const isExpanded = expandedEmployeeCards.has(item.employeeId);
+
+                                      // When collapsed, only show count. When expanded, show nothing (or could show count, but items are visible)
+                                      if (isExpanded) {
+                                        return `${moreCount} more`;
+                                      }
+                                      return `${moreCount} more`;
+                                    })()}
+                                  </span>
+                                  {expandedEmployeeCards.has(item.employeeId) ? (
+                                    <ChevronUpIcon className="w-4 h-4" />
+                                  ) : (
+                                    <ChevronDownIcon className="w-4 h-4" />
+                                  )}
+                                </button>
+
+                                {expandedEmployeeCards.has(item.employeeId) && (
+                                  <div className="mt-2 space-y-2">
+                                    {item.allUnavailabilities.slice(1).map((unav: any, idx: number) => {
+                                      // Format time to remove seconds if present
+                                      const formattedTime = unav.time && unav.time.includes(':')
+                                        ? unav.time.split(' - ').map((t: string) => formatTimeString(t.trim())).join(' - ')
+                                        : unav.time;
+                                      return (
+                                        <div
+                                          key={unav.id || idx}
+                                          className={`px-2 py-2 rounded-md text-xs ${item.photo
+                                            ? 'bg-white/10 text-white/90'
+                                            : 'bg-gray-50 text-gray-700'
+                                            }`}
+                                        >
+                                          <div className={`font-semibold mb-1 ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                                            {formattedTime}
+                                          </div>
+                                          <div className={`text-xs ${item.photo ? 'text-white/80' : 'text-gray-600'}`}>
+                                            {unav.reason}
+                                          </div>
+                                        </div>
+                                      );
+                                    })}
+                                  </div>
+                                )}
+                              </div>
+                            )}
                           </div>
                         </div>
                       );

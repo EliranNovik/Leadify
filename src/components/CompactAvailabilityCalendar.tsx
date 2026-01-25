@@ -79,6 +79,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
   const [meetingDates, setMeetingDates] = useState<Set<string>>(new Set());
   const [selectedDateMeetings, setSelectedDateMeetings] = useState<any[]>([]);
   const [rangeMeetings, setRangeMeetings] = useState<Map<string, any[]>>(new Map());
+  const [existingUnavailabilities, setExistingUnavailabilities] = useState<any[]>([]);
 
   // Get current month and year
   const currentMonth = currentDate.getMonth();
@@ -514,6 +515,141 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     }
   };
 
+  // Helper function to convert time string to minutes
+  const timeToMinutes = (timeStr: string): number => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+
+  // Helper function to check if two time ranges overlap
+  const timeRangesOverlap = (start1: string, end1: string, start2: string, end2: string): boolean => {
+    const start1Min = timeToMinutes(start1);
+    const end1Min = timeToMinutes(end1);
+    const start2Min = timeToMinutes(start2);
+    const end2Min = timeToMinutes(end2);
+    
+    // Check if ranges overlap (not just touching)
+    return (start1Min < end2Min && end1Min > start2Min);
+  };
+
+  // Helper to normalize time (remove seconds if present)
+  const normalizeTime = (timeStr: string): string => {
+    if (!timeStr) return '';
+    // If time has seconds (HH:MM:SS), remove them
+    if (timeStr.includes(':') && timeStr.split(':').length === 3) {
+      return timeStr.substring(0, 5); // Keep only HH:MM
+    }
+    return timeStr;
+  };
+
+  // Fetch existing unavailabilities for a specific date
+  const fetchExistingUnavailabilitiesForDate = async (date: Date) => {
+    if (!currentEmployeeId) return [];
+
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, '0');
+    const day = String(date.getDate()).padStart(2, '0');
+    const dateString = `${year}-${month}-${day}`;
+
+    try {
+      // Fetch from employee_unavailability_reasons table
+      // Get all records for this employee, we'll filter by date in code
+      const { data: reasonsData, error: reasonsError } = await supabase
+        .from('employee_unavailability_reasons')
+        .select('*')
+        .eq('employee_id', currentEmployeeId);
+
+      if (reasonsError) {
+        console.error('Error fetching existing unavailabilities:', reasonsError);
+        return [];
+      }
+
+      const existing: any[] = [];
+
+      // Process reasons data
+      if (reasonsData) {
+        reasonsData.forEach((reason: any) => {
+          const reasonStartDate = reason.start_date;
+          const reasonEndDate = reason.end_date || reasonStartDate;
+          
+          // Check if the selected date falls within this unavailability
+          if (dateString >= reasonStartDate && dateString <= reasonEndDate) {
+            let reasonText = '';
+            if (reason.unavailability_type === 'sick_days') {
+              reasonText = reason.sick_days_reason || '';
+            } else if (reason.unavailability_type === 'vacation') {
+              reasonText = reason.vacation_reason || '';
+            } else {
+              reasonText = reason.general_reason || '';
+            }
+
+            if (reason.start_time && reason.end_time) {
+              existing.push({
+                id: `reason-${reason.id}`,
+                date: dateString,
+                startTime: reason.start_time,
+                endTime: reason.end_time,
+                reason: reasonText,
+                type: reason.unavailability_type,
+                source: 'reasons_table'
+              });
+            } else {
+              // All day range
+              existing.push({
+                id: `reason-${reason.id}`,
+                date: dateString,
+                startTime: null,
+                endTime: null,
+                reason: reasonText,
+                type: reason.unavailability_type,
+                source: 'reasons_table',
+                isAllDay: true
+              });
+            }
+          }
+        });
+      }
+
+      // Also fetch from legacy unavailable_times, but only if not already in the new table
+      // Create a set of keys from the new table to check for duplicates
+      const existingKeys = new Set<string>();
+      existing.forEach((ex: any) => {
+        if (ex.isAllDay) {
+          existingKeys.add(`all-day-${ex.date}`);
+        } else {
+          const normalizedStart = normalizeTime(ex.startTime || '');
+          const normalizedEnd = normalizeTime(ex.endTime || '');
+          existingKeys.add(`${ex.date}-${normalizedStart}-${normalizedEnd}`);
+        }
+      });
+
+      // Only add legacy entries that don't match existing entries
+      const dayUnavailableTimes = unavailableTimes.filter(ut => ut.date === dateString);
+      dayUnavailableTimes.forEach((time: UnavailableTime) => {
+        const normalizedStart = normalizeTime(time.startTime);
+        const normalizedEnd = normalizeTime(time.endTime);
+        const key = `${time.date}-${normalizedStart}-${normalizedEnd}`;
+        // Only add if not already in the new table
+        if (!existingKeys.has(key)) {
+          existing.push({
+            id: `time-${time.id}`,
+            date: time.date,
+            startTime: time.startTime,
+            endTime: time.endTime,
+            reason: time.reason,
+            type: 'general',
+            source: 'legacy_times'
+          });
+        }
+      });
+
+      return existing;
+    } catch (error) {
+      console.error('Error fetching existing unavailabilities:', error);
+      return [];
+    }
+  };
+
   // Save unavailable time
   const saveUnavailableTime = async () => {
     if (!selectedDate || !newUnavailableTime.reason.trim()) {
@@ -533,8 +669,70 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
       return;
     }
 
+    const year = selectedDate.getFullYear();
+    const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
+    const day = String(selectedDate.getDate()).padStart(2, '0');
+    const dateString = `${year}-${month}-${day}`;
+
+    // Validate start time is before end time
+    if (newUnavailableTime.startTime >= newUnavailableTime.endTime) {
+      toast.error('Start time must be before end time');
+      return;
+    }
+
     setLoading(true);
     try {
+      // Fetch existing unavailabilities for this date
+      const existing = await fetchExistingUnavailabilitiesForDate(selectedDate);
+
+      // Check for exact duplicates (same date, same time)
+      const exactDuplicate = existing.find((ex: any) => {
+        if (ex.isAllDay) return false; // All day entries don't conflict with time-based entries
+        return ex.startTime === newUnavailableTime.startTime && 
+               ex.endTime === newUnavailableTime.endTime;
+      });
+
+      if (exactDuplicate) {
+        toast.error('You already have an unavailability with the same time on this date');
+        setLoading(false);
+        return;
+      }
+
+      // Check for overlapping times (excluding all-day entries)
+      const overlapping = existing.find((ex: any) => {
+        if (ex.isAllDay) return true; // All day entries conflict with any time-based entry
+        if (!ex.startTime || !ex.endTime) return false;
+        return timeRangesOverlap(
+          newUnavailableTime.startTime,
+          newUnavailableTime.endTime,
+          ex.startTime,
+          ex.endTime
+        );
+      });
+
+      if (overlapping) {
+        const overlapTime = overlapping.isAllDay 
+          ? 'All Day' 
+          : `${overlapping.startTime} - ${overlapping.endTime}`;
+        toast.error(`This time overlaps with an existing unavailability (${overlapTime})`);
+        setLoading(false);
+        return;
+      }
+
+      // For sick_days and vacation, check if there's already an entry for this date and type
+      // For general, allow multiple entries on the same day (but not duplicates/overlaps)
+      if (newUnavailableTime.unavailabilityType !== 'general') {
+        const typeConflict = existing.find((ex: any) => 
+          ex.type === newUnavailabilityTime.unavailabilityType && ex.isAllDay
+        );
+
+        if (typeConflict) {
+          toast.error(`You already have a ${newUnavailableTime.unavailabilityType === 'sick_days' ? 'sick day' : 'vacation'} entry for this date`);
+          setLoading(false);
+          return;
+        }
+      }
+
       const { data: { user } } = await supabase.auth.getUser();
       if (!user?.id) {
         toast.error('User not authenticated');
@@ -551,11 +749,6 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         toast.error('Could not get user information');
         return;
       }
-
-      const year = selectedDate.getFullYear();
-      const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
-      const day = String(selectedDate.getDate()).padStart(2, '0');
-      const dateString = `${year}-${month}-${day}`;
 
       // Upload document if it's a sick day and document is provided
       let documentUrl: string | null = null;
@@ -599,44 +792,30 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         return;
       }
 
-      // Also save to existing unavailable_times for backward compatibility
-      const newTime: UnavailableTime = {
-        id: Date.now().toString(),
-        date: dateString,
-        startTime: newUnavailableTime.startTime,
-        endTime: newUnavailableTime.endTime,
-        reason: newUnavailableTime.reason
-      };
-
+      // Create Outlook event if enabled (using the new data structure)
       if (outlookSyncEnabled) {
         try {
+          const newTime: UnavailableTime = {
+            id: Date.now().toString(),
+            date: dateString,
+            startTime: newUnavailableTime.startTime,
+            endTime: newUnavailableTime.endTime,
+            reason: newUnavailableTime.reason
+          };
           const outlookEventId = await createOutlookEvent(newTime);
-          newTime.outlookEventId = outlookEventId;
+          // Note: Outlook event ID is not stored in the new table structure
         } catch (error) {
           console.error('Error creating Outlook event:', error);
         }
       }
 
-      const updatedTimes = [...unavailableTimes, newTime];
-      setUnavailableTimes(updatedTimes);
-
-      const { error } = await supabase
-        .from('tenants_employee')
-        .update({ 
-          unavailable_times: updatedTimes,
-          last_sync_date: new Date().toISOString()
-        })
-        .eq('display_name', userData.full_name);
-
-      if (error) {
-        console.error('Error saving unavailable time:', error);
-        toast.error('Failed to save unavailable time');
-        return;
-      }
-
       toast.success('Unavailable time saved successfully');
       setShowAddModal(false);
       setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
+      setExistingUnavailabilities([]);
+      
+      // Refresh unavailable times
+      await fetchUnavailableTimes();
       
       // Trigger refresh of team availability
       if (onAvailabilityChange) {
@@ -705,61 +884,42 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     return eventData.id;
   };
 
-  // Delete unavailable time
+  // Delete unavailable time (from new table only)
   const deleteUnavailableTime = async (timeId: string) => {
-    setLoading(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) {
-        toast.error('User not authenticated');
-        return;
-      }
+    // Check if it's from the new table (starts with "reason-")
+    if (timeId.startsWith('reason-')) {
+      const reasonId = timeId.replace('reason-', '');
+      setLoading(true);
+      try {
+        const { error } = await supabase
+          .from('employee_unavailability_reasons')
+          .delete()
+          .eq('id', reasonId);
 
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
-        return;
-      }
-
-      const timeToDelete = unavailableTimes.find(ut => ut.id === timeId);
-      if (!timeToDelete) return;
-
-      if (timeToDelete.outlookEventId && outlookSyncEnabled) {
-        try {
-          await deleteOutlookEvent(timeToDelete.outlookEventId);
-        } catch (error) {
-          console.error('Error deleting Outlook event:', error);
+        if (error) {
+          console.error('Error deleting unavailability reason:', error);
+          toast.error('Failed to delete unavailability');
+          return;
         }
-      }
 
-      const updatedTimes = unavailableTimes.filter(ut => ut.id !== timeId);
-      setUnavailableTimes(updatedTimes);
-
-      const { error } = await supabase
-        .from('tenants_employee')
-        .update({ 
-          unavailable_times: updatedTimes,
-          last_sync_date: new Date().toISOString()
-        })
-        .eq('display_name', userData.full_name);
-
-      if (error) {
+        toast.success('Unavailable time deleted successfully');
+        
+        // Refresh unavailable times
+        await fetchUnavailableTimes();
+        
+        // Trigger refresh of team availability
+        if (onAvailabilityChange) {
+          onAvailabilityChange();
+        }
+      } catch (error) {
         console.error('Error deleting unavailable time:', error);
         toast.error('Failed to delete unavailable time');
-        return;
+      } finally {
+        setLoading(false);
       }
-
-      toast.success('Unavailable time deleted successfully');
-    } catch (error) {
-      console.error('Error deleting unavailable time:', error);
-      toast.error('Failed to delete unavailable time');
-    } finally {
-      setLoading(false);
+    } else {
+      // Legacy entry - just show a message that it can't be deleted from here
+      toast.error('Legacy unavailability entries cannot be deleted from this interface');
     }
   };
 
@@ -869,47 +1029,19 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
         return;
       }
 
-      // Also save to existing unavailable_ranges for backward compatibility
-      const newRange: UnavailableRange = {
-        id: Date.now().toString(),
-        startDate: newUnavailableRange.startDate,
-        endDate: newUnavailableRange.endDate,
-        reason: newUnavailableRange.reason
-      };
-
+      // Create Outlook event if enabled
       if (outlookSyncEnabled) {
         try {
-          const outlookEventId = await createOutlookRangeEvent(newRange);
-          newRange.outlookEventId = outlookEventId;
+          const newRange: UnavailableRange = {
+            id: Date.now().toString(),
+            startDate: newUnavailableRange.startDate,
+            endDate: newUnavailableRange.endDate,
+            reason: newUnavailableRange.reason
+          };
+          await createOutlookRangeEvent(newRange);
         } catch (error) {
           console.error('Error creating Outlook event:', error);
         }
-      }
-
-      const updatedRanges = [...unavailableRanges, newRange];
-      setUnavailableRanges(updatedRanges);
-
-      try {
-        const { error } = await supabase
-          .from('tenants_employee')
-          .update({ 
-            unavailable_ranges: updatedRanges,
-            last_sync_date: new Date().toISOString()
-          })
-          .eq('display_name', userData.full_name);
-
-        if (error) {
-          if (error.code === '42703') {
-            console.log('unavailable_ranges column not found, saving locally only');
-            toast.success('Unavailable range saved locally (database column not available yet)');
-            return;
-          }
-          throw error;
-        }
-      } catch (columnError) {
-        console.error('Error saving unavailable ranges:', columnError);
-        toast.error('Failed to save unavailable range - database column not available');
-        return;
       }
 
       toast.success('Unavailable range saved successfully');
@@ -985,70 +1117,42 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
     return eventData.id;
   };
 
-  // Delete unavailable range
+  // Delete unavailable range (from new table only)
   const deleteUnavailableRange = async (rangeId: string) => {
-    setLoading(true);
-    try {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user?.id) {
-        toast.error('User not authenticated');
-        return;
-      }
-
-      const { data: userData, error: userError } = await supabase
-        .from('users')
-        .select('full_name')
-        .eq('auth_id', user.id)
-        .single();
-
-      if (userError || !userData?.full_name) {
-        toast.error('Could not get user information');
-        return;
-      }
-
-      const rangeToDelete = unavailableRanges.find(r => r.id === rangeId);
-      if (!rangeToDelete) return;
-
-      if (rangeToDelete.outlookEventId && outlookSyncEnabled) {
-        try {
-          await deleteOutlookEvent(rangeToDelete.outlookEventId);
-        } catch (error) {
-          console.error('Error deleting Outlook event:', error);
-        }
-      }
-
-      const updatedRanges = unavailableRanges.filter(r => r.id !== rangeId);
-      setUnavailableRanges(updatedRanges);
-
+    // Check if it's from the new table (starts with "reason-")
+    if (rangeId.startsWith('reason-')) {
+      const reasonId = rangeId.replace('reason-', '');
+      setLoading(true);
       try {
         const { error } = await supabase
-          .from('tenants_employee')
-          .update({ 
-            unavailable_ranges: updatedRanges,
-            last_sync_date: new Date().toISOString()
-          })
-          .eq('display_name', userData.full_name);
+          .from('employee_unavailability_reasons')
+          .delete()
+          .eq('id', reasonId);
 
         if (error) {
-          if (error.code === '42703') {
-            console.log('unavailable_ranges column not found, deleting locally only');
-            toast.success('Unavailable range deleted locally (database column not available yet)');
-            return;
-          }
-          throw error;
+          console.error('Error deleting unavailability reason:', error);
+          toast.error('Failed to delete unavailability');
+          return;
         }
-      } catch (columnError) {
-        console.error('Error deleting unavailable ranges:', columnError);
-        toast.error('Failed to delete unavailable range - database column not available');
-        return;
-      }
 
-      toast.success('Unavailable range deleted successfully');
-    } catch (error) {
-      console.error('Error deleting unavailable range:', error);
-      toast.error('Failed to delete unavailable range');
-    } finally {
-      setLoading(false);
+        toast.success('Unavailable range deleted successfully');
+        
+        // Refresh unavailable times
+        await fetchUnavailableTimes();
+        
+        // Trigger refresh of team availability
+        if (onAvailabilityChange) {
+          onAvailabilityChange();
+        }
+      } catch (error) {
+        console.error('Error deleting unavailable range:', error);
+        toast.error('Failed to delete unavailable range');
+      } finally {
+        setLoading(false);
+      }
+    } else {
+      // Legacy entry - just show a message that it can't be deleted from here
+      toast.error('Legacy unavailability entries cannot be deleted from this interface');
     }
   };
 
@@ -1128,6 +1232,12 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   setSelectedDate(day.date);
                   setShowAddModal(true);
                   
+                  // Fetch existing unavailabilities for this date
+                  if (currentEmployeeId) {
+                    const existing = await fetchExistingUnavailabilitiesForDate(day.date);
+                    setExistingUnavailabilities(existing);
+                  }
+                  
                   // Fetch meetings for this date
                   const { data: { user } } = await supabase.auth.getUser();
                   if (user?.id) {
@@ -1198,6 +1308,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                     setSelectedDate(null);
                     setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
                     setSelectedDateMeetings([]);
+                    setExistingUnavailabilities([]);
                   }}
                 className="btn btn-ghost btn-sm btn-circle"
               >
@@ -1217,6 +1328,38 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                   disabled
                 />
               </div>
+              
+              {/* Existing Unavailabilities on this date */}
+              {existingUnavailabilities.length > 0 && (
+                <div className="bg-blue-50 border border-blue-200 rounded-lg p-3">
+                  <div className="text-sm font-semibold text-blue-800 mb-2">
+                    Existing Unavailabilities on this day:
+                  </div>
+                  <div className="space-y-2">
+                    {existingUnavailabilities.map((unav: any, idx: number) => (
+                      <div key={idx} className="bg-white rounded p-2 border border-blue-200">
+                        <div className="flex items-start justify-between">
+                          <div className="flex-1">
+                            <div className="text-sm font-medium text-blue-900">
+                              {unav.isAllDay ? (
+                                <span>All Day</span>
+                              ) : (
+                                <span>{normalizeTime(unav.startTime)} - {normalizeTime(unav.endTime)}</span>
+                              )}
+                            </div>
+                            <div className="text-xs text-blue-700 mt-1">
+                              {unav.reason}
+                            </div>
+                            <div className="text-xs text-blue-600 mt-1 capitalize">
+                              Type: {unav.type === 'sick_days' ? 'Sick day/s' : unav.type === 'vacation' ? 'Vacation' : 'General'}
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
               
               {/* Meetings on this date */}
               {selectedDateMeetings.length > 0 && (
@@ -1398,6 +1541,7 @@ const CompactAvailabilityCalendar = forwardRef<CompactAvailabilityCalendarRef, C
                     setSelectedDate(null);
                     setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
                     setSelectedDateMeetings([]);
+                    setExistingUnavailabilities([]);
                   }}
                 >
                   Cancel

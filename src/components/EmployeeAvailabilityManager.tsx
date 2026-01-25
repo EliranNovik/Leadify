@@ -217,6 +217,30 @@ const EmployeeAvailabilityManager: React.FC = () => {
       const day = String(selectedDate.getDate()).padStart(2, '0');
       const dateString = `${year}-${month}-${day}`;
 
+      // For sick_days and vacation, check if there's already an entry for this date and type
+      // For general, allow multiple entries on the same day
+      if (newUnavailableTime.unavailabilityType !== 'general') {
+        const { data: existingReasons, error: checkError } = await supabase
+          .from('employee_unavailability_reasons')
+          .select('id')
+          .eq('employee_id', parseInt(selectedEmployee.id))
+          .eq('start_date', dateString)
+          .eq('unavailability_type', newUnavailableTime.unavailabilityType);
+
+        if (checkError) {
+          console.error('Error checking existing unavailability:', checkError);
+          toast.error('Failed to check existing unavailability');
+          setLoading(false);
+          return;
+        }
+
+        if (existingReasons && existingReasons.length > 0) {
+          toast.error(`This employee already has a ${newUnavailableTime.unavailabilityType === 'sick_days' ? 'sick day' : 'vacation'} entry for this date`);
+          setLoading(false);
+          return;
+        }
+      }
+
       // Upload document if it's a sick day and document is provided
       let documentUrl: string | null = null;
       if (newUnavailableTime.unavailabilityType === 'sick_days' && newUnavailableTime.documentFile) {

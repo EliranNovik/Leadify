@@ -211,6 +211,14 @@ const SalesContributionPage = () => {
     }
   }, []);
 
+  // Helper function to generate a hash of role percentages for cache key
+  const getRolePercentagesHash = useCallback((percentages: Map<string, number>): string => {
+    const roleNames = ['CLOSER', 'SCHEDULER', 'MANAGER', 'EXPERT', 'HANDLER', 'CLOSER_WITH_HELPER', 'HELPER_CLOSER'];
+    const values = roleNames.map(role => `${role}:${percentages.get(role) || 0}`).join('|');
+    // Simple hash - just use the values string (could use a proper hash function if needed)
+    return values;
+  }, []);
+
   // Save role percentages to database
   const saveRolePercentages = useCallback(async () => {
     setSavingRolePercentages(true);
@@ -253,6 +261,45 @@ const SalesContributionPage = () => {
       });
 
       await Promise.all(savePromises);
+
+      // Clear cache to force recalculation with new role percentages
+      setRoleDataCache(new Map());
+
+      // Trigger recalculation for all employees if we have data loaded
+      if (departmentData.size > 0 && filters.fromDate && filters.toDate) {
+        const allEmployeeIds: number[] = [];
+        const employeeNamesMap = new Map<number, string>();
+        departmentData.forEach(deptData => {
+          deptData.employees.forEach(emp => {
+            if (!allEmployeeIds.includes(emp.employeeId)) {
+              allEmployeeIds.push(emp.employeeId);
+              employeeNamesMap.set(emp.employeeId, emp.employeeName);
+            }
+          });
+        });
+
+        // Refetch role data for all employees in parallel batches
+        // Note: fetchRoleData is accessed via closure (defined later in the file)
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+        const refetchAll = async () => {
+          const batchSize = 10;
+          for (let i = 0; i < allEmployeeIds.length; i += batchSize) {
+            const batch = allEmployeeIds.slice(i, i + batchSize);
+            await Promise.all(
+              batch.map(employeeId => {
+                const employeeName = employeeNamesMap.get(employeeId) || '';
+                return fetchRoleData(employeeId, employeeName).catch(err => {
+                  console.error(`Error refetching role data for employee ${employeeId} after role percentages change:`, err);
+                });
+              })
+            );
+          }
+        };
+
+        // Trigger refetch in background (don't await)
+        refetchAll();
+      }
+
       toast.success('Role percentages saved successfully');
       setShowRolePercentagesModal(false);
     } catch (error: any) {
@@ -261,7 +308,7 @@ const SalesContributionPage = () => {
     } finally {
       setSavingRolePercentages(false);
     }
-  }, [tempRolePercentages, rolePercentages]);
+  }, [tempRolePercentages, rolePercentages, departmentData, filters.fromDate, filters.toDate]);
 
   // Save department percentages and income to database
   const saveSettings = useCallback(async () => {
@@ -746,11 +793,12 @@ const SalesContributionPage = () => {
 
   // Fetch role data for an employee
   const fetchRoleData = useCallback(async (employeeId: number, employeeName: string) => {
-    // Include date range and income in cache key to ensure data is refetched when dates or income change
+    // Include date range, income, and role percentages hash in cache key to ensure data is refetched when any of these change
     const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
     const incomeKey = totalIncome || 0;
+    const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
     const employeeKey = `${employeeId}_${dateRangeKey}`;
-    const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}`;
+    const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
 
     // Check cache - but always recalculate signed portion with current income
     // Skip only if we have cached data for this exact combination (date + income)
@@ -1749,10 +1797,11 @@ const SalesContributionPage = () => {
 
       setRoleDataCache(prev => {
         const newCache = new Map(prev);
-        // Include date range and income in cache key
+        // Include date range, income, and role percentages hash in cache key
         const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
         const incomeKey = totalIncome || 0;
-        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}`;
+        const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
         newCache.set(cacheKey, roleDataResults);
         return newCache;
       });
@@ -1809,14 +1858,14 @@ const SalesContributionPage = () => {
         return newSet;
       });
     }
-  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, rolePercentages]);
+  }, [filters.fromDate, filters.toDate, totalSignedValue, totalIncome, rolePercentages, getRolePercentagesHash]);
 
   // Recalculate signed portions when income changes
-  // This ensures signed portions are recalculated with the new income value
+  // This ensures signed portions are recalculated with the new income value immediately
   const prevIncomeRef = useRef<number>(totalIncome);
   useEffect(() => {
-    // Only trigger if income actually changed, we have employees, and date filters are set
-    if (prevIncomeRef.current !== totalIncome && totalIncome > 0 && departmentData.size > 0 && filters.fromDate && filters.toDate && searchPerformed) {
+    // Only trigger if income actually changed and we have employees loaded
+    if (prevIncomeRef.current !== totalIncome && departmentData.size > 0 && filters.fromDate && filters.toDate) {
       prevIncomeRef.current = totalIncome;
       // Clear cache to force recalculation (cache key includes income, so old cache won't match)
       setRoleDataCache(new Map());
@@ -1852,7 +1901,7 @@ const SalesContributionPage = () => {
 
       refetchAll();
     }
-  }, [totalIncome, departmentData, filters.fromDate, filters.toDate, searchPerformed, fetchRoleData]);
+  }, [totalIncome, departmentData, filters.fromDate, filters.toDate, fetchRoleData]);
 
   // Update employee signed total in department data
   const updateEmployeeSignedTotal = useCallback((employeeId: number, signedTotal: number) => {
@@ -2422,7 +2471,8 @@ const SalesContributionPage = () => {
           // For employee view, fetch role data
           const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
           const incomeKey = totalIncome || 0;
-          const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}`;
+          const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+          const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
           if (!roleDataCache.has(cacheKey)) {
             fetchRoleData(employeeId, employeeName);
           }
@@ -2678,10 +2728,11 @@ const SalesContributionPage = () => {
 
         empMap.forEach(empData => {
           // Calculate signed total from role breakdown if available
-          // Include date range and income in cache key to get correct data
+          // Include date range, income, and role percentages hash in cache key to get correct data
           const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
           const incomeKey = totalIncome || 0;
-          const cacheKey = `${empData.employeeId}_${dateRangeKey}_${incomeKey}`;
+          const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+          const cacheKey = `${empData.employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
           const roleData = roleDataCache.get(cacheKey) || [];
           if (roleData.length > 0) {
             // Sum up all signedTotal from role combinations for this employee
@@ -2755,10 +2806,11 @@ const SalesContributionPage = () => {
       const incomeKey = totalIncome || 0;
 
       // Collect all employees that need fetching
+      const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
       const employeesToFetch: Array<{ id: number; name: string }> = [];
       allEmployeeIds.forEach(employeeId => {
-        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}`;
-        // Only fetch if not already cached for current date range and income
+        const cacheKey = `${employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
+        // Only fetch if not already cached for current date range, income, and role percentages
         if (!roleDataCache.has(cacheKey)) {
           const employeeName = employeeNamesMap.get(employeeId) || '';
           employeesToFetch.push({ id: employeeId, name: employeeName });
@@ -3595,7 +3647,8 @@ const SalesContributionPage = () => {
                   const employeeKey = isFieldView ? emp.employeeName : `${emp.employeeId}`;
                   const dateRangeKey = `${filters.fromDate || ''}_${filters.toDate || ''}`;
                   const incomeKey = totalIncome || 0;
-                  const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}`;
+                  const rolePercentagesHash = getRolePercentagesHash(rolePercentages);
+                  const cacheKey = `${emp.employeeId}_${dateRangeKey}_${incomeKey}_${rolePercentagesHash}`;
                   const isExpanded = expandedRows.has(employeeKey);
                   const roleData = roleDataCache.get(cacheKey) || [];
                   const isLoadingRoleData = loadingRoleData.has(employeeKey);
