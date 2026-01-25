@@ -50,14 +50,14 @@ const MyAvailabilitySection: React.FC<{ onAvailabilityChange?: () => void }> = (
 const Dashboard: React.FC = () => {
   // Get auth state from context to skip redundant checks
   const { user: authUser, isInitialized } = useAuthContext();
-  
+
   // State to track if auth check is complete (prevents flash of dashboard before redirect)
   // If user is already authenticated via context, skip the check
   const [isAuthChecked, setIsAuthChecked] = useState(!!authUser && isInitialized);
-  
+
   // Get the current month name
   const currentMonthName = new Date().toLocaleString('en-US', { month: 'long' });
-  
+
   // State for summary numbers
   const [meetingsToday, setMeetingsToday] = useState(0);
   const [overdueFollowups, setOverdueFollowups] = useState(0);
@@ -80,6 +80,7 @@ const Dashboard: React.FC = () => {
   const [showAllSuggestions, setShowAllSuggestions] = useState(false);
   const [isAISuggestionsModalOpen, setIsAISuggestionsModalOpen] = useState(false);
   const [isUnavailableEmployeesModalOpen, setIsUnavailableEmployeesModalOpen] = useState(false);
+  const [isMyAvailabilityModalOpen, setIsMyAvailabilityModalOpen] = useState(false);
   const [unavailableEmployeesCount, setUnavailableEmployeesCount] = useState(0);
   const [currentlyUnavailableCount, setCurrentlyUnavailableCount] = useState(0);
   const [scheduledTimeOffCount, setScheduledTimeOffCount] = useState(0);
@@ -103,7 +104,7 @@ const Dashboard: React.FC = () => {
   // 1. Add state for real signed leads
   const [realSignedLeads, setRealSignedLeads] = useState<any[]>([]);
   const [realLeadsLoading, setRealLeadsLoading] = useState(false);
-  
+
   // State for real performance data
   const [realPerformanceData, setRealPerformanceData] = useState<any[]>([]);
   const [realTeamAverageData, setRealTeamAverageData] = useState<any[]>([]);
@@ -114,15 +115,15 @@ const Dashboard: React.FC = () => {
   // 1. Add state for real overdue leads
   const [realOverdueLeads, setRealOverdueLeads] = useState<any[]>([]);
   const [overdueLeadsLoading, setOverdueLeadsLoading] = useState(false);
-  
+
   // Removed cache - simplified approach
-  
+
   // State for "Show More" functionality
   const [showAllOverdueLeads, setShowAllOverdueLeads] = useState(false);
   const [allOverdueLeads, setAllOverdueLeads] = useState<any[]>([]);
   const [loadingMoreLeads, setLoadingMoreLeads] = useState(false);
   const [overdueCountFetched, setOverdueCountFetched] = useState(false);
-  
+
   // State for follow-ups tabs and view mode
   const [followUpTab, setFollowUpTab] = useState<'today' | 'overdue' | 'tomorrow' | 'future'>('today');
   const [followUpViewMode, setFollowUpViewMode] = useState<'table' | 'card'>(() => {
@@ -141,7 +142,7 @@ const Dashboard: React.FC = () => {
   const [editingFollowUpId, setEditingFollowUpId] = useState<string | number | null>(null);
   const [editFollowUpDate, setEditFollowUpDate] = useState<string>('');
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
-  
+
   // Additional state hooks (must be declared before any conditional returns)
   const [showAISuggestionsModal, setShowAISuggestionsModal] = useState(false);
   const [filterType, setFilterType] = useState<'all' | 'urgent' | 'important' | 'reminder'>('all');
@@ -201,17 +202,17 @@ const Dashboard: React.FC = () => {
       return 'today';
     }
     const date = new Date(dateString + 'T00:00:00');
-    return date.toLocaleDateString('en-US', { 
-      weekday: 'long', 
-      year: 'numeric', 
-      month: 'long', 
-      day: 'numeric' 
+    return date.toLocaleDateString('en-US', {
+      weekday: 'long',
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric'
     });
   };
 
   const getRoleDisplayName = (roleCode: string | null | undefined): string => {
     if (!roleCode) return 'N/A';
-    
+
     const roleMap: { [key: string]: string } = {
       'c': 'Closer',
       's': 'Scheduler',
@@ -241,7 +242,7 @@ const Dashboard: React.FC = () => {
       'col': 'Collection',
       'lawyer': 'Helper Closer'
     };
-    
+
     return roleMap[roleCode] || roleCode || 'N/A';
   };
 
@@ -255,7 +256,7 @@ const Dashboard: React.FC = () => {
       const month = String(selectedDateObj.getMonth() + 1).padStart(2, '0');
       const day = String(selectedDateObj.getDate()).padStart(2, '0');
       const selectedDateString = `${year}-${month}-${day}`;
-      
+
       // Also get today's date for "currently active" comparison
       const today = new Date();
       const todayYear = today.getFullYear();
@@ -301,12 +302,12 @@ const Dashboard: React.FC = () => {
       employees.forEach(employee => {
         const unavailableTimes = employee.unavailable_times || [];
         const unavailableRanges = employee.unavailable_ranges || [];
-        
+
         // Check for specific time slots on selected date
         const selectedDateTimes = unavailableTimes.filter((time: any) => time.date === selectedDateString);
-        
+
         // Check for date ranges that include selected date
-        const selectedDateRanges = unavailableRanges.filter((range: any) => 
+        const selectedDateRanges = unavailableRanges.filter((range: any) =>
           selectedDateString >= range.startDate && selectedDateString <= range.endDate
         );
 
@@ -319,7 +320,7 @@ const Dashboard: React.FC = () => {
             const endTime = parseInt(time.endTime.split(':')[0]) * 60 + parseInt(time.endTime.split(':')[1]);
             // Only mark as "currently active" if it's today and the current time is within the range
             const isCurrentlyActive = selectedDateString === todayString && currentTime >= startTime && currentTime <= endTime;
-            
+
             if (isCurrentlyActive) {
               currentlyUnavailable++;
             } else {
@@ -386,17 +387,17 @@ const Dashboard: React.FC = () => {
         // Compare by id (which includes time/range id) in reverse order
         return b.id.localeCompare(a.id);
       });
-      
+
       // Keep only the first occurrence of each employee (which will be the latest)
       detailedData.forEach(item => {
         if (!employeeMap.has(item.employeeId)) {
           employeeMap.set(item.employeeId, item);
         }
       });
-      
+
       // Convert map back to array
       const uniqueData = Array.from(employeeMap.values());
-      
+
       // Recalculate counts based on unique data
       const uniqueTotalUnavailable = uniqueData.length;
       const uniqueCurrentlyUnavailable = uniqueData.filter(item => item.isActive).length;
@@ -406,7 +407,7 @@ const Dashboard: React.FC = () => {
       setUnavailableEmployeesCount(uniqueTotalUnavailable);
       setCurrentlyUnavailableCount(uniqueCurrentlyUnavailable);
       setScheduledTimeOffCount(uniqueScheduledTimeOff);
-      
+
       // Extract unique departments from the unique data
       const departments = Array.from(new Set(uniqueData.map(item => item.department).filter(dept => dept && dept !== 'N/A')));
       departments.sort();
@@ -441,14 +442,14 @@ const Dashboard: React.FC = () => {
       }
 
       const userId = userData.id;
-      
+
       // Get today's date for filtering
       const today = new Date();
       today.setHours(0, 0, 0, 0);
       const todayStart = today.toISOString();
       today.setHours(23, 59, 59, 999);
       const todayEnd = today.toISOString();
-      
+
       // Get tomorrow's date for filtering
       const tomorrow = new Date(today);
       tomorrow.setDate(tomorrow.getDate() + 1);
@@ -456,18 +457,18 @@ const Dashboard: React.FC = () => {
       const tomorrowStart = tomorrow.toISOString();
       tomorrow.setHours(23, 59, 59, 999);
       const tomorrowEnd = tomorrow.toISOString();
-      
+
       // Get 2 days from now (start of future follow-ups)
       const twoDaysFromNow = new Date(today);
       twoDaysFromNow.setDate(twoDaysFromNow.getDate() + 2);
       twoDaysFromNow.setHours(0, 0, 0, 0);
       const futureStart = twoDaysFromNow.toISOString();
-      
+
       const fiftyDaysAgo = new Date();
       fiftyDaysAgo.setDate(fiftyDaysAgo.getDate() - 50);
       fiftyDaysAgo.setHours(0, 0, 0, 0);
       const fiftyDaysAgoISO = fiftyDaysAgo.toISOString();
-      
+
       // Fetch new leads with follow-ups from follow_ups table
       let newFollowupsQuery = supabase
         .from('follow_ups')
@@ -516,7 +517,7 @@ const Dashboard: React.FC = () => {
       }
 
       newFollowupsQuery = newFollowupsQuery.limit(fetchAll ? 1000 : 1000);
-      
+
       const { data: newFollowupsData, error: newFollowupsError } = await newFollowupsQuery;
       if (newFollowupsError) throw newFollowupsError;
 
@@ -570,12 +571,12 @@ const Dashboard: React.FC = () => {
         .filter(followup => {
           const lead = followup.leads as any;
           // Filter out inactive leads: no lead_number, empty lead_number, or has unactivated_at
-          return lead && 
-                 lead.lead_number && 
-                 lead.lead_number !== '' && 
-                 !lead.unactivated_at &&
-                 lead.status !== 'not_qualified' && 
-                 lead.status !== 'declined';
+          return lead &&
+            lead.lead_number &&
+            lead.lead_number !== '' &&
+            !lead.unactivated_at &&
+            lead.status !== 'not_qualified' &&
+            lead.status !== 'declined';
         })
         .map(followup => {
           const lead = followup.leads as any;
@@ -591,9 +592,9 @@ const Dashboard: React.FC = () => {
       const processedLegacyLeads = (legacyFollowupsData || [])
         .filter(followup => {
           const lead = followup.leads_lead as any;
-          return lead && 
-                 lead.status === 0 && 
-                 (lead.stage === null || lead.stage < 100);
+          return lead &&
+            lead.status === 0 &&
+            (lead.stage === null || lead.stage < 100);
         })
         .map(followup => {
           const lead = followup.leads_lead as any;
@@ -611,13 +612,13 @@ const Dashboard: React.FC = () => {
         legacyLeads: processedLegacyLeads,
         totalCount: processedNewLeads.length + processedLegacyLeads.length
       };
-      
+
       return result;
     } catch (error) {
       return { newLeads: [], legacyLeads: [], totalCount: 0 };
     }
   };
-  
+
   // Keep old function name for backward compatibility
   const fetchOverdueLeadsData = async (fetchAll = false) => {
     return fetchFollowUpLeadsData('overdue', fetchAll);
@@ -687,7 +688,7 @@ const Dashboard: React.FC = () => {
   // Handler to save edited follow-up date
   const handleSaveFollowUp = async (lead: any) => {
     if (!currentUserId || !editingFollowUpId) return;
-    
+
     try {
       if (editFollowUpDate && editFollowUpDate.trim() !== '') {
         const { error } = await supabase
@@ -695,16 +696,16 @@ const Dashboard: React.FC = () => {
           .update({ date: editFollowUpDate + 'T00:00:00Z' })
           .eq('id', editingFollowUpId)
           .eq('user_id', currentUserId);
-        
+
         if (error) throw error;
-        
+
         toast.success('Follow-up date updated successfully');
       } else {
         // Delete if date is empty
         await handleDeleteFollowUp(lead);
         return;
       }
-      
+
       // Refresh follow-ups
       if (followUpTab === 'today') {
         const result = await fetchFollowUpLeadsData('today');
@@ -719,7 +720,7 @@ const Dashboard: React.FC = () => {
         const result = await fetchFollowUpLeadsData('overdue');
         setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
       }
-      
+
       setEditingFollowUpId(null);
       setEditFollowUpDate('');
     } catch (error: any) {
@@ -730,22 +731,22 @@ const Dashboard: React.FC = () => {
   // Handler to delete follow-up
   const handleDeleteFollowUp = async (lead: any) => {
     if (!currentUserId || !lead.follow_up_id) return;
-    
+
     if (!window.confirm('Are you sure you want to delete this follow-up?')) {
       return;
     }
-    
+
     try {
       const { error } = await supabase
         .from('follow_ups')
         .delete()
         .eq('id', lead.follow_up_id)
         .eq('user_id', currentUserId);
-      
+
       if (error) throw error;
-      
+
       toast.success('Follow-up deleted successfully');
-      
+
       // Refresh follow-ups
       if (followUpTab === 'today') {
         const result = await fetchFollowUpLeadsData('today');
@@ -760,7 +761,7 @@ const Dashboard: React.FC = () => {
         const result = await fetchFollowUpLeadsData('overdue');
         setRealOverdueLeads([...result.newLeads, ...result.legacyLeads]);
       }
-      
+
       setEditingFollowUpId(null);
       setEditFollowUpDate('');
     } catch (error: any) {
@@ -794,10 +795,10 @@ const Dashboard: React.FC = () => {
         let userEmployeeId: number | null = null;
         let userDisplayName: string | null = null;
         let userEmail: string | null = null;
-        
+
         if (user) {
           userEmail = user.email || null;
-          
+
           const { data: userData } = await supabase
             .from('users')
             .select(`
@@ -810,34 +811,34 @@ const Dashboard: React.FC = () => {
             `)
             .eq('auth_id', user.id)
             .single();
-          
+
           if (userData?.employee_id) {
             userEmployeeId = userData.employee_id;
           }
-          
+
           // Use email from userData if available, otherwise use auth email
           if (userData?.email) {
             userEmail = userData.email;
           }
-          
+
           // Get display name from employee relationship
           if (userData?.tenants_employee) {
-            const empData = Array.isArray(userData.tenants_employee) 
-              ? userData.tenants_employee[0] 
+            const empData = Array.isArray(userData.tenants_employee)
+              ? userData.tenants_employee[0]
               : userData.tenants_employee;
             if (empData?.display_name) {
               userDisplayName = empData.display_name;
             }
           }
         }
-        
+
         const today = new Date();
         const todayStr = today.toISOString().split('T')[0];
         const todayStart = new Date(today);
         todayStart.setHours(0, 0, 0, 0);
         const todayEnd = new Date(today);
         todayEnd.setHours(23, 59, 59, 999);
-        
+
         // Fetch client meetings with proper joins to both leads and leads_lead tables
         const { data: meetings, error } = await supabase
           .from('meetings')
@@ -863,7 +864,7 @@ const Dashboard: React.FC = () => {
           `)
           .eq('meeting_date', todayStr)
           .or('status.is.null,status.neq.canceled,status.neq.cancelled');
-        
+
         // Fetch legacy leads directly from leads_lead table that have meetings today
         // Get IDs of legacy leads that are already in meetings table to exclude them
         const existingLegacyLeadIds = new Set<string>();
@@ -874,7 +875,7 @@ const Dashboard: React.FC = () => {
             }
           });
         }
-        
+
         let directLegacyMeetings: any[] = [];
         try {
           const { data: legacyLeadsData, error: legacyError } = await supabase
@@ -884,13 +885,13 @@ const Dashboard: React.FC = () => {
             .not('meeting_date', 'is', null)
             .not('name', 'is', null)
             .limit(500);
-          
+
           if (!legacyError && legacyLeadsData) {
             // Filter out legacy leads that already exist in meetings table
             const newLegacyLeads = legacyLeadsData.filter((legacyLead: any) => {
               return !existingLegacyLeadIds.has(String(legacyLead.id));
             });
-            
+
             // Transform legacy leads to match meeting structure
             directLegacyMeetings = newLegacyLeads.map((legacyLead: any) => ({
               id: `legacy_${legacyLead.id}`,
@@ -898,9 +899,9 @@ const Dashboard: React.FC = () => {
               meeting_time: legacyLead.meeting_time || '09:00',
               meeting_location: 'Teams', // Will be mapped properly later via meetingLocationLinks or location ID lookup
               meeting_manager: legacyLead.meeting_manager_id,
-              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' : 
-                               legacyLead.meeting_total_currency_id === 2 ? 'USD' : 
-                               legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
+              meeting_currency: legacyLead.meeting_total_currency_id === 1 ? 'NIS' :
+                legacyLead.meeting_total_currency_id === 2 ? 'USD' :
+                  legacyLead.meeting_total_currency_id === 3 ? 'EUR' : 'NIS',
               meeting_amount: parseFloat(legacyLead.total || '0'),
               expert: legacyLead.expert_id,
               helper: legacyLead.meeting_lawyer_id,
@@ -927,7 +928,7 @@ const Dashboard: React.FC = () => {
           console.error('Error fetching legacy leads directly:', legacyErr);
           // Continue even if legacy fetch fails
         }
-        
+
         // Fetch staff meetings from outlook_teams_meetings where user is in attendees
         let staffMeetings: any[] = [];
         if (userEmail) {
@@ -937,25 +938,25 @@ const Dashboard: React.FC = () => {
             .gte('start_date_time', todayStart.toISOString())
             .lte('start_date_time', todayEnd.toISOString())
             .or('status.is.null,status.neq.cancelled');
-          
+
           if (!outlookError && outlookMeetings) {
             // Filter staff meetings where user's email is in attendees array
             staffMeetings = outlookMeetings.filter((meeting: any) => {
               if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
               // Check if user's email is in the attendees array
               return meeting.attendees.some((attendee: any) => {
-                const attendeeEmail = typeof attendee === 'string' 
-                  ? attendee.toLowerCase() 
+                const attendeeEmail = typeof attendee === 'string'
+                  ? attendee.toLowerCase()
                   : (attendee.email || '').toLowerCase();
                 return attendeeEmail === userEmail?.toLowerCase();
               });
             });
           }
         }
-          
+
         // Combine meetings from meetings table with direct legacy meetings (if fetched)
         const allMeetingsDataForProcessing = error ? directLegacyMeetings : [...(meetings || []), ...directLegacyMeetings];
-        
+
         if (!error || directLegacyMeetings.length > 0) {
           // Fetch employee names for ID mapping
           const employeeIds = new Set<string>();
@@ -965,7 +966,7 @@ const Dashboard: React.FC = () => {
                 employeeIds.add(id.toString());
               }
             };
-            
+
             addValidId(meeting.legacy_lead?.expert_id);
             addValidId(meeting.legacy_lead?.meeting_manager_id);
             addValidId(meeting.legacy_lead?.meeting_lawyer_id);
@@ -1006,7 +1007,7 @@ const Dashboard: React.FC = () => {
               .from('tenants_employee')
               .select('id, display_name')
               .in('id', Array.from(employeeIds));
-            
+
             if (!employeeError && employees) {
               employeeNameMap = employees.reduce((acc, emp) => {
                 acc[emp.id.toString()] = emp.display_name;
@@ -1019,7 +1020,7 @@ const Dashboard: React.FC = () => {
           // Helper function to check if user matches any role
           const userMatchesRole = (meeting: any): boolean => {
             if (!userEmployeeId) return true; // If no user employee_id, show all meetings
-            
+
             // Check legacy lead roles
             if (meeting.legacy_lead) {
               const legacyLead = meeting.legacy_lead;
@@ -1032,7 +1033,7 @@ const Dashboard: React.FC = () => {
                 legacyLead.case_handler_id?.toString() === userEmployeeId.toString()
               );
             }
-            
+
             // Check new lead roles
             if (meeting.lead) {
               const newLead = meeting.lead;
@@ -1050,7 +1051,7 @@ const Dashboard: React.FC = () => {
                 }
                 return false;
               };
-              
+
               return (
                 checkField(newLead.scheduler) ||
                 checkField(newLead.manager) ||
@@ -1063,7 +1064,7 @@ const Dashboard: React.FC = () => {
                 checkField(meeting.helper)
               );
             }
-            
+
             // Fallback: check meeting-level fields
             if (userEmployeeId) {
               return (
@@ -1082,15 +1083,15 @@ const Dashboard: React.FC = () => {
             }
             return false;
           };
-          
+
           // Filter meetings by user role
           const filteredMeetings = allMeetingsDataForProcessing.filter(userMatchesRole);
-          
+
           // Process the meetings to combine lead data from both tables
           const processedMeetings = filteredMeetings.map((meeting: any) => {
             // Determine which lead data to use
             let leadData = null;
-            
+
             if (meeting.legacy_lead) {
               // Use legacy lead data and map column names to match new leads structure
               leadData = {
@@ -1111,13 +1112,13 @@ const Dashboard: React.FC = () => {
                 lead_type: 'new'
               };
             }
-            
+
             return {
               ...meeting,
               lead: leadData
             };
           });
-          
+
           // Store processed meetings first
           const processedMeetingsList = processedMeetings.map((meeting: any) => {
             // Determine expert name
@@ -1220,14 +1221,14 @@ const Dashboard: React.FC = () => {
               time: meeting.meeting_time,
               location: meeting.meeting_location || 'Teams',
               manager: managerName,
-            value: formatMeetingValue({
-              leadBalance: meeting.lead?.balance,
-              leadBalanceCurrency: meeting.lead?.balance_currency,
-              legacyTotal: meeting.legacy_lead?.total,
-              legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
-              meetingAmount: meeting.meeting_amount,
-              meetingCurrency: meeting.meeting_currency,
-            }).display,
+              value: formatMeetingValue({
+                leadBalance: meeting.lead?.balance,
+                leadBalanceCurrency: meeting.lead?.balance_currency,
+                legacyTotal: meeting.legacy_lead?.total,
+                legacyCurrencyId: meeting.legacy_lead?.currency_id ?? null,
+                meetingAmount: meeting.meeting_amount,
+                meetingCurrency: meeting.meeting_currency,
+              }).display,
               link: meeting.teams_meeting_url || meetingLocationLinks[meeting.meeting_location] || '',
             };
           });
@@ -1237,7 +1238,7 @@ const Dashboard: React.FC = () => {
             // Extract time from start_date_time
             const startDate = new Date(staffMeeting.start_date_time);
             const timeStr = startDate.toTimeString().substring(0, 5); // HH:MM format
-            
+
             return {
               id: `staff-${staffMeeting.id}`,
               lead: 'Staff Meeting',
@@ -1256,27 +1257,27 @@ const Dashboard: React.FC = () => {
               meetingDateTime: startDate
             };
           });
-          
+
           // Combine client meetings and staff meetings
           const allMeetings = [...processedMeetingsList, ...processedStaffMeetings];
-          
+
           // Sort all meetings by time
           allMeetings.sort((a: any, b: any) => {
             const timeA = a.time || '00:00';
             const timeB = b.time || '00:00';
             return timeA.localeCompare(timeB);
           });
-          
+
           setTodayMeetings(allMeetings);
-          
+
           // Calculate meetings in next hour
           const nowForNextHour = new Date();
           const oneHourLater = new Date(nowForNextHour.getTime() + 60 * 60 * 1000);
-          
+
           const meetingsInNextHourList = allMeetings
             .map((meeting: any) => {
               if (!meeting.time && !meeting.meetingDateTime) return null;
-              
+
               let meetingDateTime: Date;
               if (meeting.meetingDateTime) {
                 // Staff meeting already has meetingDateTime
@@ -1285,15 +1286,15 @@ const Dashboard: React.FC = () => {
                 // Parse meeting time (format: HH:MM or HH:MM:SS)
                 const timeParts = meeting.time.split(':');
                 if (timeParts.length < 2) return null;
-                
+
                 const meetingHour = parseInt(timeParts[0], 10);
                 const meetingMinute = parseInt(timeParts[1], 10);
-                
+
                 // Create meeting datetime for today
                 meetingDateTime = new Date(nowForNextHour);
                 meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
               }
-              
+
               // Check if meeting is between now and one hour from now
               if (meetingDateTime >= nowForNextHour && meetingDateTime <= oneHourLater) {
                 return {
@@ -1305,7 +1306,7 @@ const Dashboard: React.FC = () => {
             })
             .filter(Boolean)
             .sort((a: any, b: any) => a.meetingDateTime.getTime() - b.meetingDateTime.getTime());
-          
+
           setMeetingsInNextHour(meetingsInNextHourList.length);
           setNextHourMeetings(meetingsInNextHourList);
         } else {
@@ -1317,27 +1318,27 @@ const Dashboard: React.FC = () => {
             todayStart.setHours(0, 0, 0, 0);
             const todayEnd = new Date(today);
             todayEnd.setHours(23, 59, 59, 999);
-            
+
             const { data: outlookMeetings, error: outlookError } = await supabase
               .from('outlook_teams_meetings')
               .select('*')
               .gte('start_date_time', todayStart.toISOString())
               .lte('start_date_time', todayEnd.toISOString())
               .or('status.is.null,status.neq.cancelled');
-            
+
             if (!outlookError && outlookMeetings) {
               staffMeetingsFallback = outlookMeetings.filter((meeting: any) => {
                 if (!meeting.attendees || !Array.isArray(meeting.attendees)) return false;
                 return meeting.attendees.some((attendee: any) => {
-                  const attendeeEmail = typeof attendee === 'string' 
-                    ? attendee.toLowerCase() 
+                  const attendeeEmail = typeof attendee === 'string'
+                    ? attendee.toLowerCase()
                     : (attendee.email || '').toLowerCase();
                   return attendeeEmail === userEmail?.toLowerCase();
                 });
               });
             }
           }
-          
+
           const processedStaffMeetings = staffMeetingsFallback.map((staffMeeting: any) => {
             const startDate = new Date(staffMeeting.start_date_time);
             const timeStr = startDate.toTimeString().substring(0, 5);
@@ -1359,7 +1360,7 @@ const Dashboard: React.FC = () => {
               meetingDateTime: startDate
             };
           });
-          
+
           setTodayMeetings(processedStaffMeetings);
           setMeetingsInNextHour(0);
           setNextHourMeetings([]);
@@ -1371,15 +1372,15 @@ const Dashboard: React.FC = () => {
       }
       setMeetingsLoading(false);
     };
-    
+
     // Fetch immediately on mount
     fetchMeetings();
-    
+
     // Refresh meetings every minute to update the "next hour" count
     const interval = setInterval(() => {
       fetchMeetings();
     }, 60000); // 60 seconds
-    
+
     return () => clearInterval(interval);
   }, []); // Empty dependency array - only run on mount
 
@@ -1388,11 +1389,11 @@ const Dashboard: React.FC = () => {
     const now = new Date();
     const diffMs = meetingDateTime.getTime() - now.getTime();
     const diffMinutes = Math.floor(diffMs / 60000);
-    
+
     if (diffMinutes < 1) return 'now';
     if (diffMinutes === 1) return 'in 1 minute';
     if (diffMinutes < 60) return `in ${diffMinutes} minutes`;
-    
+
     const hours = Math.floor(diffMinutes / 60);
     const minutes = diffMinutes % 60;
     if (minutes === 0) return `in ${hours} hour${hours > 1 ? 's' : ''}`;
@@ -1411,22 +1412,22 @@ const Dashboard: React.FC = () => {
 
       const now = new Date();
       const oneHourLater = new Date(now.getTime() + 60 * 60 * 1000);
-      
+
       const meetingsList = todayMeetings
         .map((meeting: any) => {
           if (!meeting.time) return null;
-          
+
           // Parse meeting time (format: HH:MM or HH:MM:SS)
           const timeParts = meeting.time.split(':');
           if (timeParts.length < 2) return null;
-          
+
           const meetingHour = parseInt(timeParts[0], 10);
           const meetingMinute = parseInt(timeParts[1], 10);
-          
+
           // Create meeting datetime for today
           const meetingDateTime = new Date(now);
           meetingDateTime.setHours(meetingHour, meetingMinute, 0, 0);
-          
+
           // Check if meeting is between now and one hour from now
           if (meetingDateTime >= now && meetingDateTime <= oneHourLater) {
             return {
@@ -1438,7 +1439,7 @@ const Dashboard: React.FC = () => {
         })
         .filter(Boolean)
         .sort((a: any, b: any) => a.meetingDateTime.getTime() - b.meetingDateTime.getTime());
-      
+
       setMeetingsInNextHour(meetingsList.length);
       setNextHourMeetings(meetingsList);
     };
@@ -1503,7 +1504,7 @@ const Dashboard: React.FC = () => {
       // Prevent multiple calls
       if (overdueCountFetched) return;
       setOverdueCountFetched(true);
-      
+
       try {
         // Get current user's data with employee relationship using JOIN
         const { data: { user }, error: authError } = await supabase.auth.getUser();
@@ -1543,21 +1544,21 @@ const Dashboard: React.FC = () => {
         // Use display_name from employee table or full_name from users table
         const userFullName = (userData.tenants_employee as any)?.display_name || userData.full_name;
         const userEmployeeId = userData.employee_id;
-        
+
         if (!userFullName) {
           setOverdueFollowups(0);
           return;
         }
-        
+
         // Get today's date for filtering
         const today = new Date();
         today.setHours(0, 0, 0, 0);
         const todayStart = today.toISOString();
         today.setHours(23, 59, 59, 999);
         const todayEnd = today.toISOString();
-        
+
         const userId = userData.id;
-        
+
         // Fetch today's follow-ups count for new leads from follow_ups table
         const newLeadsPromise = supabase
           .from('follow_ups')
@@ -1566,7 +1567,7 @@ const Dashboard: React.FC = () => {
           .not('new_lead_id', 'is', null)
           .gte('date', todayStart)
           .lte('date', todayEnd);
-        
+
         // Fetch today's follow-ups count for legacy leads from follow_ups table
         const legacyLeadsPromise = supabase
           .from('follow_ups')
@@ -1575,12 +1576,12 @@ const Dashboard: React.FC = () => {
           .not('lead_id', 'is', null)
           .gte('date', todayStart)
           .lte('date', todayEnd);
-        
+
         const countPromises = [newLeadsPromise, legacyLeadsPromise];
-        
+
         const results = await Promise.all(countPromises);
         const [newLeadsCount, legacyLeadsCount] = results;
-        
+
         const totalCount = (newLeadsCount.count || 0) + (legacyLeadsCount?.count || 0);
         setOverdueFollowups(totalCount);
       } catch (error) {
@@ -1615,7 +1616,7 @@ const Dashboard: React.FC = () => {
         // Fetch recent incoming emails (last 7 days)
         const sevenDaysAgo = new Date();
         sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-        
+
         const { data: recentEmails } = await supabase
           .from('emails')
           .select(`
@@ -1664,7 +1665,7 @@ const Dashboard: React.FC = () => {
 
         // Combine and format messages
         const allMessages: any[] = [];
-        
+
         if (recentEmails) {
           recentEmails.forEach(email => {
             if (email.leads && typeof email.leads === 'object' && 'name' in email.leads) {
@@ -1819,7 +1820,7 @@ const Dashboard: React.FC = () => {
   // Department Performance data
   const [departmentPerformanceLoading, setDepartmentPerformanceLoading] = useState<boolean>(true);
   const [invoicedDataLoading, setInvoicedDataLoading] = useState<boolean>(true);
-  
+
   // State for real chart data (daily department performance)
   const [departmentChartData, setDepartmentChartData] = useState<{
     [category: string]: { date: string; contracts: number; amount: number }[];
@@ -1869,11 +1870,11 @@ const Dashboard: React.FC = () => {
         const now = new Date();
         const thisMonth = now.getMonth();
         const thisYear = now.getFullYear();
-        
+
         // This month
         const startOfThisMonth = new Date(thisYear, thisMonth, 1);
         const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0);
-        
+
         // Last month
         const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
         const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
@@ -1981,11 +1982,11 @@ const Dashboard: React.FC = () => {
         const now = new Date();
         const thisMonth = now.getMonth();
         const thisYear = now.getFullYear();
-        
+
         // This month
         const startOfThisMonth = new Date(thisYear, thisMonth, 1, 0, 0, 0, 0);
         const endOfThisMonth = new Date(thisYear, thisMonth + 1, 0, 23, 59, 59, 999);
-        
+
         // Last month
         const lastMonth = thisMonth === 0 ? 11 : thisMonth - 1;
         const lastMonthYear = thisMonth === 0 ? thisYear - 1 : thisYear;
@@ -2106,10 +2107,10 @@ const Dashboard: React.FC = () => {
       // Process each contract
       for (const contract of contractsData || []) {
         if (!contract.date) continue;
-        
+
         const contractDate = new Date(contract.date);
         const dateStr = contractDate.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
-        
+
         // Count all contracts for team average
         allContractsByDate[dateStr] = (allContractsByDate[dateStr] || 0) + 1;
 
@@ -2128,7 +2129,7 @@ const Dashboard: React.FC = () => {
               .select('closer')
               .eq('id', contract.newlead_id)
               .single();
-            
+
             if (newLead?.closer === userFullName) {
               belongsToUser = true;
             }
@@ -2139,7 +2140,7 @@ const Dashboard: React.FC = () => {
               .select('closer_id')
               .eq('id', contract.lead_id)
               .single();
-            
+
             if (legacyLead?.closer_id === userEmployeeId) {
               belongsToUser = true;
             }
@@ -2190,100 +2191,100 @@ const Dashboard: React.FC = () => {
 
   // Fetch department performance data
   const fetchDepartmentPerformance = async () => {
-      setDepartmentPerformanceLoading(true);
-      try {
-        const now = new Date();
-        const today = new Date();
-        const thirtyDaysAgo = new Date();
-        thirtyDaysAgo.setDate(now.getDate() - 30);
-        
-        // Use selected month and year instead of current month
-        const selectedMonthIndex = months.indexOf(selectedMonth);
-        const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
-        const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-        // IMPORTANT: Also include merged target departments (4, 5, 6) even if not marked important
-        // These are the target departments for merging: 2 (Austria/Germany), 4, 5, 6
-        // NOTE: Department 4 might be "Commercial & Civil" but we want to use department 20 instead
-        const mergedTargetDeptIds = [2, 4, 5, 6]; // Target departments for merging
-        // Note: Department 20 should be displayed and renamed to "Commercial & Civil"
-        // Exclude department 4 if it's "Commercial & Civil" to avoid duplicate (we'll use department 20 instead)
-        const salesDeptIdsToExclude = [12, 14, 15]; // Sales departments that should be merged (exclude from display) - removed 20
-        
-        // Fetch important departments AND merged target departments
-        const { data: importantDepartments, error: importantError } = await supabase
-          .from('tenant_departement')
-          .select('id, name, min_income, important')
-          .eq('important', 't')
-          .order('id');
-        
-        if (importantError) {
-          throw importantError;
+    setDepartmentPerformanceLoading(true);
+    try {
+      const now = new Date();
+      const today = new Date();
+      const thirtyDaysAgo = new Date();
+      thirtyDaysAgo.setDate(now.getDate() - 30);
+
+      // Use selected month and year instead of current month
+      const selectedMonthIndex = months.indexOf(selectedMonth);
+      const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
+      const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
+      // IMPORTANT: Also include merged target departments (4, 5, 6) even if not marked important
+      // These are the target departments for merging: 2 (Austria/Germany), 4, 5, 6
+      // NOTE: Department 4 might be "Commercial & Civil" but we want to use department 20 instead
+      const mergedTargetDeptIds = [2, 4, 5, 6]; // Target departments for merging
+      // Note: Department 20 should be displayed and renamed to "Commercial & Civil"
+      // Exclude department 4 if it's "Commercial & Civil" to avoid duplicate (we'll use department 20 instead)
+      const salesDeptIdsToExclude = [12, 14, 15]; // Sales departments that should be merged (exclude from display) - removed 20
+
+      // Fetch important departments AND merged target departments
+      const { data: importantDepartments, error: importantError } = await supabase
+        .from('tenant_departement')
+        .select('id, name, min_income, important')
+        .eq('important', 't')
+        .order('id');
+
+      if (importantError) {
+        throw importantError;
+      }
+
+      // Fetch merged target departments (in case they're not in the important list)
+      const { data: mergedTargetDepts, error: mergedError } = await supabase
+        .from('tenant_departement')
+        .select('id, name, min_income, important')
+        .in('id', mergedTargetDeptIds)
+        .order('id');
+
+      if (mergedError) {
+        console.error('Error fetching merged target departments:', mergedError);
+      }
+
+      // Combine both lists, avoiding duplicates, and EXCLUDE sales departments from display
+      // NOTE: Department 20 (Commercial & Civil) should NOT be excluded
+      const departmentMap = new Map<number, any>();
+      (importantDepartments || []).forEach(dept => {
+        // Exclude sales departments that should be merged (they'll be merged during processing)
+        // But keep department 20 (Commercial & Civil)
+        if (!salesDeptIdsToExclude.includes(dept.id)) {
+          departmentMap.set(dept.id, dept);
         }
-        
-        // Fetch merged target departments (in case they're not in the important list)
-        const { data: mergedTargetDepts, error: mergedError } = await supabase
-          .from('tenant_departement')
-          .select('id, name, min_income, important')
-          .in('id', mergedTargetDeptIds)
-          .order('id');
-        
-        if (mergedError) {
-          console.error('Error fetching merged target departments:', mergedError);
+      });
+      (mergedTargetDepts || []).forEach(dept => {
+        // Exclude sales departments that should be merged
+        // But keep department 20 (Commercial & Civil)
+        if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) {
+          departmentMap.set(dept.id, dept);
         }
-        
-        // Combine both lists, avoiding duplicates, and EXCLUDE sales departments from display
-        // NOTE: Department 20 (Commercial & Civil) should NOT be excluded
-        const departmentMap = new Map<number, any>();
-        (importantDepartments || []).forEach(dept => {
-          // Exclude sales departments that should be merged (they'll be merged during processing)
-          // But keep department 20 (Commercial & Civil)
-          if (!salesDeptIdsToExclude.includes(dept.id)) {
-            departmentMap.set(dept.id, dept);
-          }
-        });
-        (mergedTargetDepts || []).forEach(dept => {
-          // Exclude sales departments that should be merged
-          // But keep department 20 (Commercial & Civil)
-          if (!salesDeptIdsToExclude.includes(dept.id) && !departmentMap.has(dept.id)) {
-            departmentMap.set(dept.id, dept);
-          }
-        });
-        
-        // Convert map to arrays and fix department name for ID 20
-        let departmentTargets = Array.from(departmentMap.values());
-        
-        // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
-        // Also exclude any other department named "Commercial & Civil" if department 20 exists
-        departmentTargets = departmentTargets.filter(dept => {
-          // Always keep department 20 (we'll rename it)
-          if (dept.id === 20) return true;
-          // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
-          if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
-            return false;
-          }
-          // If department 20 exists, exclude any other department named "Commercial & Civil"
-          if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
-            return false;
-          }
-          return true;
-        });
-        
-        // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
-        departmentTargets = departmentTargets.map(dept => {
-          if (dept.id === 20) {
-            return { ...dept, name: 'Commercial & Civil' };
-          }
-          return dept;
-        });
-        
-        // Sort by ID to ensure consistent order
-        departmentTargets.sort((a, b) => a.id - b.id);
-        const departmentIds = departmentTargets.map(dept => dept.id);
-        
-        // Fetch all categories with their main categories and department_ids for category name mapping
-        const { data: allCategoriesData, error: categoriesError } = await supabase
-          .from('misc_category')
-          .select(`
+      });
+
+      // Convert map to arrays and fix department name for ID 20
+      let departmentTargets = Array.from(departmentMap.values());
+
+      // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
+      // Also exclude any other department named "Commercial & Civil" if department 20 exists
+      departmentTargets = departmentTargets.filter(dept => {
+        // Always keep department 20 (we'll rename it)
+        if (dept.id === 20) return true;
+        // Exclude any department named "Commercial - Sales" (these should be merged into department 20)
+        if (dept.name === 'Commercial - Sales' || dept.name?.includes('Commercial - Sales')) {
+          return false;
+        }
+        // If department 20 exists, exclude any other department named "Commercial & Civil"
+        if (departmentMap.has(20) && (dept.name === 'Commercial & Civil' || dept.name?.includes('Commercial & Civil'))) {
+          return false;
+        }
+        return true;
+      });
+
+      // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
+      departmentTargets = departmentTargets.map(dept => {
+        if (dept.id === 20) {
+          return { ...dept, name: 'Commercial & Civil' };
+        }
+        return dept;
+      });
+
+      // Sort by ID to ensure consistent order
+      departmentTargets.sort((a, b) => a.id - b.id);
+      const departmentIds = departmentTargets.map(dept => dept.id);
+
+      // Fetch all categories with their main categories and department_ids for category name mapping
+      const { data: allCategoriesData, error: categoriesError } = await supabase
+        .from('misc_category')
+        .select(`
             id,
             name,
             parent_id,
@@ -2294,398 +2295,221 @@ const Dashboard: React.FC = () => {
               tenant_departement(id, name)
             )
           `)
-          .order('name', { ascending: true });
-        
-        if (categoriesError) {
-          console.error('Error fetching categories for department mapping:', categoriesError);
+        .order('name', { ascending: true });
+
+      if (categoriesError) {
+        console.error('Error fetching categories for department mapping:', categoriesError);
+      }
+
+      // Create a map from category name (normalized) to category data with department_id
+      const categoryNameToDataMap = new Map<string, any>();
+      (allCategoriesData || []).forEach((category: any) => {
+        if (category.name) {
+          const normalizedName = category.name.trim().toLowerCase();
+          categoryNameToDataMap.set(normalizedName, category);
         }
-        
-        // Create a map from category name (normalized) to category data with department_id
-        const categoryNameToDataMap = new Map<string, any>();
-        (allCategoriesData || []).forEach((category: any) => {
-          if (category.name) {
-            const normalizedName = category.name.trim().toLowerCase();
-            categoryNameToDataMap.set(normalizedName, category);
-          }
-        });
-        
-        // Log which departments are important
-        const importantDepts = departmentTargets.filter(dept => dept.important === 't');
-        // Debug: Log each department with its index
-        departmentTargets.forEach((dept, index) => {
-        });
-        
-        // Set department names for UI display
-        const names = departmentTargets.map(dept => dept.name);
-        setDepartmentNames(names);
-        // Debug: Show the exact mapping of ID -> Name -> Target
-        departmentTargets.forEach((dept, index) => {
-        });
-        
-        // Create target map (department ID -> min_income)
-        const targetMap: { [key: number]: number } = {};
-        departmentTargets?.forEach(dept => {
-          targetMap[dept.id] = parseFloat(dept.min_income || '0');
-        });
-        // Initialize data structure dynamically based on actual departments
-        const newAgreementData = {
-          Today: [
-            { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            ...departmentTargets.map(dept => ({ 
-              count: 0, 
-              amount: 0, 
-              expected: parseFloat(dept.min_income || '0') 
-            })), // Actual departments
-            { count: 0, amount: 0, expected: 0 }, // Total (last index)
-          ],
-          Yesterday: [
-            { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            ...departmentTargets.map(dept => ({ 
-              count: 0, 
-              amount: 0, 
-              expected: parseFloat(dept.min_income || '0') 
-            })), // Actual departments
-            { count: 0, amount: 0, expected: 0 }, // Total (last index)
-          ],
-          Week: [
-            { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            ...departmentTargets.map(dept => ({ 
-              count: 0, 
-              amount: 0, 
-              expected: parseFloat(dept.min_income || '0') 
-            })), // Actual departments
-            { count: 0, amount: 0, expected: 0 }, // Total (last index)
-          ],
-          "Last 30d": [
-            { count: 0, amount: 0, expected: 0 }, // General (index 0)
-            ...departmentTargets.map(dept => ({ 
-              count: 0, 
-              amount: 0, 
-              expected: parseFloat(dept.min_income || '0') 
-            })), // Actual departments
-            { count: 0, amount: 0, expected: 0 }, // Total (last index)
-          ],
-          [selectedMonthName]: [
-            ...departmentTargets.map(dept => ({ 
-              count: 0, 
-              amount: 0, 
-              expected: parseFloat(dept.min_income || '0') 
-            })), // Actual departments (no General column for month view)
-            { count: 0, amount: 0, expected: 0 }, // Total (last index)
-          ],
-        };
-        
-        // Calculate date ranges
-        const todayStr = today.toISOString().split('T')[0];
-        const yesterday = new Date(today);
-        yesterday.setDate(yesterday.getDate() - 1);
-        const yesterdayStr = yesterday.toISOString().split('T')[0];
-        const oneWeekAgo = new Date(today);
-        oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
-        const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
-        const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
-        
-        // Fix timezone issue: Use UTC to avoid timezone conversion problems
-        const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
-        const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
-        // Calculate end of month here so we can use it for effectiveLast30dEnd
-        const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
-        const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
-        
-        // Calculate Last 30d: today and 30 days before today (inclusive)
-        // Last 30d should always be from 30 days ago to today, regardless of month view
-        const currentYear = today.getFullYear();
-        const currentMonthIndex = today.getMonth();
-        const isViewingCurrentMonth = selectedYear === currentYear && selectedMonthIndex === currentMonthIndex;
-        // For Last 30d, always use thirtyDaysAgoStr (30 days ago from today)
-        const last30dStartDate = thirtyDaysAgoStr;
-        const effectiveLast30dEnd = todayStr;
-        console.log('🔍 Agreement Signed - Date ranges:', {
-          todayStr,
-          thirtyDaysAgoStr,
-          last30dStartDate,
-          effectiveLast30dEnd,
-          startOfMonthStr,
-          endOfMonthStr,
-          isViewingCurrentMonth,
-          selectedYear,
-          currentYear,
-          selectedMonthIndex,
-          currentMonthIndex
-        });
-        // For date comparison, we need to extract just the date part from the record date
-        const extractDateFromRecord = (recordDate: string) => {
-          // Handle both ISO string format and date-only format
-          if (recordDate.includes('T')) {
-            return recordDate.split('T')[0];
-          }
-          return recordDate;
-        };
-        // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
-        // Fetch data for Today and Last 30d (use effectiveThirtyDaysAgo so it matches month data at end of month)
-        // Fetch legacy leads stage records with timeout protection
-        let stageRecords: any[] = [];
-        let stageError: any = null;
-        
-        try {
-          // Query legacy leads - use date for filtering
-          // Use last30dStartDate (thirtyDaysAgoStr) for Last 30d - always from 30 days ago to today
-          const queryPromise = supabase
-            .from('leads_leadstage')
-            .select('id, date, cdate, lead_id')
-            .eq('stage', 60)
-            .not('lead_id', 'is', null) // Legacy leads only
-            .gte('date', last30dStartDate)
-            .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
-            .limit(5000); // Add limit to prevent timeout
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Query timeout')), 15000)
-          );
-          
-          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-          
-          if (result?.error) {
-            stageError = result.error;
-          } else {
-            stageRecords = result?.data || [];
-          }
-        } catch (err: any) {
-          stageError = err;
+      });
+
+      // Log which departments are important
+      const importantDepts = departmentTargets.filter(dept => dept.important === 't');
+      // Debug: Log each department with its index
+      departmentTargets.forEach((dept, index) => {
+      });
+
+      // Set department names for UI display
+      const names = departmentTargets.map(dept => dept.name);
+      setDepartmentNames(names);
+      // Debug: Show the exact mapping of ID -> Name -> Target
+      departmentTargets.forEach((dept, index) => {
+      });
+
+      // Create target map (department ID -> min_income)
+      const targetMap: { [key: number]: number } = {};
+      departmentTargets?.forEach(dept => {
+        targetMap[dept.id] = parseFloat(dept.min_income || '0');
+      });
+      // Initialize data structure dynamically based on actual departments
+      const newAgreementData = {
+        Today: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        Yesterday: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        Week: [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        "Last 30d": [
+          { count: 0, amount: 0, expected: 0 }, // General (index 0)
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
+          })), // Actual departments
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+        [selectedMonthName]: [
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
+          })), // Actual departments (no General column for month view)
+          { count: 0, amount: 0, expected: 0 }, // Total (last index)
+        ],
+      };
+
+      // Calculate date ranges
+      const todayStr = today.toISOString().split('T')[0];
+      const yesterday = new Date(today);
+      yesterday.setDate(yesterday.getDate() - 1);
+      const yesterdayStr = yesterday.toISOString().split('T')[0];
+      const oneWeekAgo = new Date(today);
+      oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+      const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
+      const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
+
+      // Fix timezone issue: Use UTC to avoid timezone conversion problems
+      const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
+      const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
+      // Calculate end of month here so we can use it for effectiveLast30dEnd
+      const endOfMonth = new Date(selectedYear, selectedMonthIndex + 1, 0);
+      const endOfMonthStr = endOfMonth.toISOString().split('T')[0];
+
+      // Calculate Last 30d: today and 30 days before today (inclusive)
+      // Last 30d should always be from 30 days ago to today, regardless of month view
+      const currentYear = today.getFullYear();
+      const currentMonthIndex = today.getMonth();
+      const isViewingCurrentMonth = selectedYear === currentYear && selectedMonthIndex === currentMonthIndex;
+      // For Last 30d, always use thirtyDaysAgoStr (30 days ago from today)
+      const last30dStartDate = thirtyDaysAgoStr;
+      const effectiveLast30dEnd = todayStr;
+      console.log('🔍 Agreement Signed - Date ranges:', {
+        todayStr,
+        thirtyDaysAgoStr,
+        last30dStartDate,
+        effectiveLast30dEnd,
+        startOfMonthStr,
+        endOfMonthStr,
+        isViewingCurrentMonth,
+        selectedYear,
+        currentYear,
+        selectedMonthIndex,
+        currentMonthIndex
+      });
+      // For date comparison, we need to extract just the date part from the record date
+      const extractDateFromRecord = (recordDate: string) => {
+        // Handle both ISO string format and date-only format
+        if (recordDate.includes('T')) {
+          return recordDate.split('T')[0];
         }
-        
-        if (stageError) {
-          // Don't throw, continue without stage records
-        }
-        // Fetch new leads signed agreements from multiple sources
-        // Fetch new leads signed agreements ONLY from leads_leadstage (stage 60)
-        // Do NOT include contracts - match SignedSalesReportPage behavior
-        // 2. Fetch new leads stage records (newlead_id)
-        // Add timeout protection and limit to prevent query timeout
-        let newLeadStageRecords: any[] = [];
-        let newLeadStageError: any = null;
-        
-        try {
-          // Use last30dStartDate (thirtyDaysAgoStr) and todayStr to ensure we include today's records
-          // Last 30d should always be from 30 days ago to today
-          const queryPromise = supabase
-            .from('leads_leadstage')
-            .select('id, date, cdate, newlead_id')
-            .eq('stage', 60)
-            .not('newlead_id', 'is', null) // New leads only
-            .gte('date', last30dStartDate)
-            .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
-            .limit(5000); // Add limit to prevent timeout
-          
-          const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error('Query timeout')), 15000)
-          );
-          
-          const result = await Promise.race([queryPromise, timeoutPromise]) as any;
-          
-          if (result?.error) {
-            newLeadStageError = result.error;
-          } else {
-            newLeadStageRecords = result?.data || [];
-          }
-        } catch (err: any) {
-          newLeadStageError = err;
-          // Continue without new lead stages
-        }
-        
-        if (newLeadStageError) {
-          // Don't throw, continue without new lead stages
-        }
-        // Combine all new lead IDs (only from leads_leadstage for stage 60)
-        const newLeadIdsSet = new Set<string>();
-        (newLeadStageRecords || []).forEach(record => {
-          if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
-        });
-        
-        const newLeadIds = Array.from(newLeadIdsSet);
-        // Fetch new leads data
-        let newLeadsData: any[] = [];
-        if (newLeadIds.length > 0) {
-          const { data: newLeads, error: newLeadsError } = await supabase
-            .from('leads')
-            .select(`
-              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
-              misc_category!category_id(
-                id, name, parent_id,
-                misc_maincategory!parent_id(
-                  id, name, department_id,
-                  tenant_departement(id, name)
-                )
-              )
-            `)
-            .in('id', newLeadIds);
-          
-          if (newLeadsError) {
-            // Don't throw, continue without new leads
-          } else {
-            newLeadsData = newLeads || [];
-          }
-        }
-        
-        // Fetch leads data separately if we have stage records
-        let agreementRecords: any[] = [];
-        
-        // Process legacy leads
-        if (stageRecords && stageRecords.length > 0) {
-          const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          const { data: leadsData, error: leadsError } = await supabase
-            .from('leads_lead')
-            .select(`
-              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
-              accounting_currencies!leads_lead_currency_id_fkey(
-                id,
-                iso_code,
-                name
-              ),
-              misc_category(
-                id, name, parent_id,
-                misc_maincategory(
-                  id, name, department_id,
-                  tenant_departement(id, name)
-                )
-              )
-            `)
-            .in('id', leadIds);
-          
-          if (leadsError) {
-            throw leadsError;
-          }
-          // Deduplicate stage records: keep only the latest date for each lead_id
-          const leadRecordsMap = new Map<number, any>();
-          stageRecords.forEach(stageRecord => {
-            if (!stageRecord.lead_id) return;
-            const leadId = stageRecord.lead_id;
-            const recordDate = stageRecord.date || stageRecord.cdate;
-            if (!recordDate) return;
-            
-            const existingRecord = leadRecordsMap.get(leadId);
-            if (!existingRecord) {
-              leadRecordsMap.set(leadId, stageRecord);
-            } else {
-              const existingDate = existingRecord.date || existingRecord.cdate;
-              if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-                // This record has a later date, replace the existing one
-                leadRecordsMap.set(leadId, stageRecord);
-              }
-            }
-          });
-          
-          // Convert map back to array
-          const deduplicatedStageRecords = Array.from(leadRecordsMap.values());
-          
-          // Join the legacy data
-          const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
-          const legacyRecords = deduplicatedStageRecords.map(stageRecord => {
-            const lead = leadsMap.get(stageRecord.lead_id);
-            // Use date as the sign date (preferred) or cdate as fallback
-            const recordDate = stageRecord.date || stageRecord.cdate;
-            return {
-              ...stageRecord,
-              date: recordDate,
-              leads_lead: lead || null,
-              isNewLead: false
-            };
-          }).filter(record => record.leads_lead !== null);
-          
-          agreementRecords.push(...legacyRecords);
-        }
-        
-        // Process new leads - create records ONLY from stage records (leads_leadstage for stage 60)
-        // Do NOT include contracts - match SignedSalesReportPage behavior
-        // Deduplicate new lead stage records: keep only the latest date for each newlead_id
-        const newLeadRecordsMap = new Map<string, any>();
-        (newLeadStageRecords || []).forEach(record => {
-          if (!record.newlead_id) return;
-          const newLeadId = String(record.newlead_id);
-          const recordDate = record.date || record.cdate;
-          if (!recordDate) return;
-          
-          const existingRecord = newLeadRecordsMap.get(newLeadId);
-          if (!existingRecord) {
-            newLeadRecordsMap.set(newLeadId, record);
-          } else {
-            const existingDate = existingRecord.date || existingRecord.cdate;
-            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-              // This record has a later date, replace the existing one
-              newLeadRecordsMap.set(newLeadId, record);
-            }
-          }
-        });
-        
-        // Convert map back to array
-        const deduplicatedNewLeadStageRecords = Array.from(newLeadRecordsMap.values());
-        
-        const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
-        
-        // Create records from deduplicated new lead stage records (only source - no contracts)
-        deduplicatedNewLeadStageRecords.forEach(record => {
-          if (!record.newlead_id) return;
-          const lead = newLeadsMap.get(String(record.newlead_id));
-          if (!lead) return;
-          // Use date as the sign date (preferred) or cdate as fallback
-          const recordDate = (record.date || record.cdate || '').split('T')[0];
-          agreementRecords.push({
-            id: `newstage-${record.id}`,
-            date: recordDate,
-            cdate: record.date || record.cdate,
-            lead_id: null,
-            newlead_id: String(record.newlead_id),
-            leads_lead: lead,
-            isNewLead: true
-          });
-        });
-        
-        // Only use leads_leadstage for stage 60 - no date_signed from leads table
-        if (agreementRecords && agreementRecords.length > 0) {
-        }
-        
-        // Fetch data for selected month (separate query)
-        // endOfMonthStr is already calculated above, reuse it
-        
-        // Fetch legacy leads stage records for month
-        // Use endOfMonthStr + 1 day as upper bound to ensure we include the entire last day of the month
-        const monthEndUpperBound = new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0];
-        const { data: monthStageRecords, error: monthStageError } = await supabase
+        return recordDate;
+      };
+      // CORRECT APPROACH: Query leads_leadstage for stage 60 (agreement signed) separately
+      // Fetch data for Today and Last 30d (use effectiveThirtyDaysAgo so it matches month data at end of month)
+      // Fetch legacy leads stage records with timeout protection
+      let stageRecords: any[] = [];
+      let stageError: any = null;
+
+      try {
+        // Query legacy leads - use date for filtering
+        // Use last30dStartDate (thirtyDaysAgoStr) for Last 30d - always from 30 days ago to today
+        const queryPromise = supabase
           .from('leads_leadstage')
           .select('id, date, cdate, lead_id')
           .eq('stage', 60)
           .not('lead_id', 'is', null) // Legacy leads only
-          .gte('date', startOfMonthStr)
-          .lte('date', monthEndUpperBound);
-        
-        if (monthStageError) {
-          throw monthStageError;
+          .gte('date', last30dStartDate)
+          .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
+          .limit(5000); // Add limit to prevent timeout
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Query timeout')), 15000)
+        );
+
+        const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+
+        if (result?.error) {
+          stageError = result.error;
+        } else {
+          stageRecords = result?.data || [];
         }
-        // Fetch new leads signed agreements for month ONLY from leads_leadstage (stage 60)
-        // Do NOT include contracts - match SignedSalesReportPage behavior
-        const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
+      } catch (err: any) {
+        stageError = err;
+      }
+
+      if (stageError) {
+        // Don't throw, continue without stage records
+      }
+      // Fetch new leads signed agreements from multiple sources
+      // Fetch new leads signed agreements ONLY from leads_leadstage (stage 60)
+      // Do NOT include contracts - match SignedSalesReportPage behavior
+      // 2. Fetch new leads stage records (newlead_id)
+      // Add timeout protection and limit to prevent query timeout
+      let newLeadStageRecords: any[] = [];
+      let newLeadStageError: any = null;
+
+      try {
+        // Use last30dStartDate (thirtyDaysAgoStr) and todayStr to ensure we include today's records
+        // Last 30d should always be from 30 days ago to today
+        const queryPromise = supabase
           .from('leads_leadstage')
           .select('id, date, cdate, newlead_id')
           .eq('stage', 60)
           .not('newlead_id', 'is', null) // New leads only
-          .gte('date', startOfMonthStr)
-          .lte('date', monthEndUpperBound);
-        
-        if (monthNewLeadStageError) {
+          .gte('date', last30dStartDate)
+          .lte('date', new Date(new Date(todayStr).getTime() + 86400000).toISOString().split('T')[0])
+          .limit(5000); // Add limit to prevent timeout
+
+        const timeoutPromise = new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Query timeout')), 15000)
+        );
+
+        const result = await Promise.race([queryPromise, timeoutPromise]) as any;
+
+        if (result?.error) {
+          newLeadStageError = result.error;
+        } else {
+          newLeadStageRecords = result?.data || [];
         }
-        // Combine all new lead IDs for month (only from leads_leadstage for stage 60)
-        const monthNewLeadIdsSet = new Set<string>();
-        (monthNewLeadStageRecords || []).forEach(record => {
-          if (record.newlead_id) monthNewLeadIdsSet.add(String(record.newlead_id));
-        });
-        
-        const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
-        // Fetch month new leads data
-        let monthNewLeadsData: any[] = [];
-        if (monthNewLeadIds.length > 0) {
-          const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
-            .from('leads')
-            .select(`
+      } catch (err: any) {
+        newLeadStageError = err;
+        // Continue without new lead stages
+      }
+
+      if (newLeadStageError) {
+        // Don't throw, continue without new lead stages
+      }
+      // Combine all new lead IDs (only from leads_leadstage for stage 60)
+      const newLeadIdsSet = new Set<string>();
+      (newLeadStageRecords || []).forEach(record => {
+        if (record.newlead_id) newLeadIdsSet.add(String(record.newlead_id));
+      });
+
+      const newLeadIds = Array.from(newLeadIdsSet);
+      // Fetch new leads data
+      let newLeadsData: any[] = [];
+      if (newLeadIds.length > 0) {
+        const { data: newLeads, error: newLeadsError } = await supabase
+          .from('leads')
+          .select(`
               id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
               misc_category!category_id(
                 id, name, parent_id,
@@ -2695,23 +2519,24 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', monthNewLeadIds);
-          
-          if (monthNewLeadsError) {
-          } else {
-            monthNewLeadsData = monthNewLeads || [];
-          }
+          .in('id', newLeadIds);
+
+        if (newLeadsError) {
+          // Don't throw, continue without new leads
+        } else {
+          newLeadsData = newLeads || [];
         }
-        
-        // Fetch leads data separately for month if we have stage records
-        let monthAgreementRecords: any[] = [];
-        
-        // Process legacy leads for month
-        if (monthStageRecords && monthStageRecords.length > 0) {
-          const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
-          const { data: monthLeadsData, error: monthLeadsError } = await supabase
-            .from('leads_lead')
-            .select(`
+      }
+
+      // Fetch leads data separately if we have stage records
+      let agreementRecords: any[] = [];
+
+      // Process legacy leads
+      if (stageRecords && stageRecords.length > 0) {
+        const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
+        const { data: leadsData, error: leadsError } = await supabase
+          .from('leads_lead')
+          .select(`
               id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
               accounting_currencies!leads_lead_currency_id_fkey(
                 id,
@@ -2726,492 +2551,668 @@ const Dashboard: React.FC = () => {
                 )
               )
             `)
-            .in('id', monthLeadIds);
-          
-          if (monthLeadsError) {
-            throw monthLeadsError;
-          }
-          // Deduplicate month stage records: keep only the latest date for each lead_id
-          const monthLeadRecordsMap = new Map<number, any>();
-          monthStageRecords.forEach(stageRecord => {
-            if (!stageRecord.lead_id) return;
-            const leadId = stageRecord.lead_id;
-            const recordDate = stageRecord.date || stageRecord.cdate;
-            if (!recordDate) return;
-            
-            const existingRecord = monthLeadRecordsMap.get(leadId);
-            if (!existingRecord) {
-              monthLeadRecordsMap.set(leadId, stageRecord);
-            } else {
-              const existingDate = existingRecord.date || existingRecord.cdate;
-              if (existingDate && new Date(recordDate) > new Date(existingDate)) {
-                // This record has a later date, replace the existing one
-                monthLeadRecordsMap.set(leadId, stageRecord);
-              }
-            }
-          });
-          
-          // Convert map back to array
-          const deduplicatedMonthStageRecords = Array.from(monthLeadRecordsMap.values());
-          
-          // Join the legacy data
-          const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
-          const monthLegacyRecords = deduplicatedMonthStageRecords.map(stageRecord => {
-            const lead = monthLeadsMap.get(stageRecord.lead_id);
-            // Use date as the sign date (preferred) or cdate as fallback
-            const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
-            return {
-              ...stageRecord,
-              date: recordDate,
-              leads_lead: lead || null,
-              isNewLead: false
-            };
-          }).filter(record => record.leads_lead !== null);
-          
-          monthAgreementRecords.push(...monthLegacyRecords);
+          .in('id', leadIds);
+
+        if (leadsError) {
+          throw leadsError;
         }
-        
-        // Process new leads for month (only from leads_leadstage - no contracts)
-        // Deduplicate month new lead stage records: keep only the latest date for each newlead_id
-        const monthNewLeadRecordsMap = new Map<string, any>();
-        (monthNewLeadStageRecords || []).forEach(record => {
-          if (!record.newlead_id) return;
-          const newLeadId = String(record.newlead_id);
-          const recordDate = record.date || record.cdate;
+        // Deduplicate stage records: keep only the latest date for each lead_id
+        const leadRecordsMap = new Map<number, any>();
+        stageRecords.forEach(stageRecord => {
+          if (!stageRecord.lead_id) return;
+          const leadId = stageRecord.lead_id;
+          const recordDate = stageRecord.date || stageRecord.cdate;
           if (!recordDate) return;
-          
-          const existingRecord = monthNewLeadRecordsMap.get(newLeadId);
+
+          const existingRecord = leadRecordsMap.get(leadId);
           if (!existingRecord) {
-            monthNewLeadRecordsMap.set(newLeadId, record);
+            leadRecordsMap.set(leadId, stageRecord);
           } else {
             const existingDate = existingRecord.date || existingRecord.cdate;
             if (existingDate && new Date(recordDate) > new Date(existingDate)) {
               // This record has a later date, replace the existing one
-              monthNewLeadRecordsMap.set(newLeadId, record);
+              leadRecordsMap.set(leadId, stageRecord);
             }
           }
         });
-        
+
         // Convert map back to array
-        const deduplicatedMonthNewLeadStageRecords = Array.from(monthNewLeadRecordsMap.values());
-        
-        const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
-        
-        deduplicatedMonthNewLeadStageRecords.forEach(record => {
-          if (!record.newlead_id) return;
-          const lead = monthNewLeadsMap.get(String(record.newlead_id));
-          if (!lead) return;
+        const deduplicatedStageRecords = Array.from(leadRecordsMap.values());
+
+        // Join the legacy data
+        const leadsMap = new Map(leadsData?.map(lead => [lead.id, lead]) || []);
+        const legacyRecords = deduplicatedStageRecords.map(stageRecord => {
+          const lead = leadsMap.get(stageRecord.lead_id);
           // Use date as the sign date (preferred) or cdate as fallback
-          const recordDate = (record.date || record.cdate || '').split('T')[0];
-          monthAgreementRecords.push({
-            id: `month-newstage-${record.id}`,
+          const recordDate = stageRecord.date || stageRecord.cdate;
+          return {
+            ...stageRecord,
             date: recordDate,
-            cdate: record.date || record.cdate,
-            lead_id: null,
-            newlead_id: String(record.newlead_id),
-            leads_lead: lead,
-            isNewLead: true
-          });
-        });
-        
-        // Only use leads_leadstage for stage 60 - no date_signed from leads table
-        if (monthAgreementRecords && monthAgreementRecords.length > 0) {
-        }
-        
-        if (agreementRecords && agreementRecords.length > 0) {
-          // Process all records efficiently
-          let processedCount = 0;
-          let skippedCount = 0;
-          
-          // Track processed records to prevent duplicates
-          const processedRecordIds = new Set();
-          
-          agreementRecords.forEach(record => {
-            // Skip if already processed
-            if (processedRecordIds.has(record.id)) {
-              return;
-            }
-            processedRecordIds.add(record.id);
-            
-            const lead = record.leads_lead as any;
-            if (!lead) {
-              return;
-            }
-            
-            // Use actual amounts (VAT already excluded in database)
-            let amount = 0;
-            if (record.isNewLead) {
-              // For new leads, use balance or proposal_total
-              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-            } else {
-              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-              const currencyId = lead.currency_id;
-              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-              if (numericCurrencyId === 1) {
-                // Use total_base for NIS/ILS currency
-                amount = parseFloat(lead.total_base) || 0;
-              } else {
-                // Use total for other currencies
-                amount = parseFloat(lead.total) || 0;
-              }
-            }
-            const amountInNIS = convertToNIS(amount, lead.currency_id);
-            
-            // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
-            const parseNumericAmount = (val: any) => {
-              if (typeof val === 'number') return val;
-              if (typeof val === 'string') {
-                const cleaned = val.replace(/[^0-9.-]/g, '');
-                const parsed = parseFloat(cleaned);
-                return Number.isNaN(parsed) ? 0 : parsed;
-              }
-              return 0;
-            };
-            
-            // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
-            const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-              for (const candidate of candidates) {
-                if (candidate === null || candidate === undefined) continue;
-                const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-                if (rawValue === null || rawValue === undefined) continue;
-                
-                if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-                  return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
-                }
-                
-                const valueStr = rawValue.toString().trim();
-                if (!valueStr) continue;
-                
-                const numeric = Number(valueStr);
-                if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-                  return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
-                }
-                
-                const upper = valueStr.toUpperCase();
-                if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-                  return { displaySymbol: '₪', conversionValue: 'NIS' };
-                }
-                if (upper === 'USD' || valueStr === '$') {
-                  return { displaySymbol: '$', conversionValue: 'USD' };
-                }
-                if (upper === 'EUR' || valueStr === '€') {
-                  return { displaySymbol: '€', conversionValue: 'EUR' };
-                }
-                if (upper === 'GBP' || valueStr === '£') {
-                  return { displaySymbol: '£', conversionValue: 'GBP' };
-                }
-              }
-              return { displaySymbol: '₪', conversionValue: 'NIS' };
-            };
-            
-            const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-            const currencyMeta = record.isNewLead
-              ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
-              : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
-            const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-            const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-            
-            const recordDate = record.date;
-            
-            // Debug currency conversion
-            // Log non-NIS currencies for verification
-            if (lead.currency_id && lead.currency_id !== 1) {
-            }
-            
-            // Get department ID from the JOIN
-            let departmentId = null;
-            if (lead.misc_category?.misc_maincategory?.department_id) {
-              departmentId = lead.misc_category.misc_maincategory.department_id;
-            } else if (lead.category && categoryNameToDataMap) {
-              // If misc_category join failed (category_id is null), try to look up by category name
-              const normalizedCategoryName = lead.category.trim().toLowerCase();
-              const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
-              if (mappedCategory?.misc_maincategory?.department_id) {
-                departmentId = mappedCategory.misc_maincategory.department_id;
-              }
-            }
-            if (departmentId && departmentIds.includes(departmentId)) {
-              processedCount++;
-              
-              // For Today and Last 30d, use the department index + 1 (to skip General)
-              const deptIndex = departmentIds.indexOf(departmentId) + 1;
-              
-              // For current month, use the department index directly (no General column)
-              const monthDeptIndex = departmentIds.indexOf(departmentId);
-              // Extract date part for comparison
-              const recordDateOnly = extractDateFromRecord(recordDate);
-              
-              // Check if it's today
-              if (recordDateOnly === todayStr) {
-                newAgreementData.Today[deptIndex].count++;
-                newAgreementData.Today[deptIndex].amount += amountAfterFee; // Use amount after fee
-                newAgreementData.Today[0].count++; // General
-                newAgreementData.Today[0].amount += amountAfterFee; // Use amount after fee
-              }
-              
-              // Check if it's yesterday
-              if (recordDateOnly === yesterdayStr) {
-                newAgreementData.Yesterday[deptIndex].count++;
-                newAgreementData.Yesterday[deptIndex].amount += amountAfterFee; // Use amount after fee
-                newAgreementData.Yesterday[0].count++; // General
-                newAgreementData.Yesterday[0].amount += amountAfterFee; // Use amount after fee
-              }
-              
-              // Check if it's in the last week (7 days including today)
-              if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
-                newAgreementData.Week[deptIndex].count++;
-                newAgreementData.Week[deptIndex].amount += amountAfterFee; // Use amount after fee
-                newAgreementData.Week[0].count++; // General
-                newAgreementData.Week[0].amount += amountAfterFee; // Use amount after fee
-              }
-              
-              // Check if it's in last 30 days (rolling 30 days from today)
-              // Always use thirtyDaysAgoStr for Last 30d - from 30 days ago to today
-              if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
-                newAgreementData["Last 30d"][deptIndex].count++;
-                newAgreementData["Last 30d"][deptIndex].amount += amountAfterFee; // Use amount after fee
-                newAgreementData["Last 30d"][0].count++; // General
-                newAgreementData["Last 30d"][0].amount += amountAfterFee; // Use amount after fee
-              }
-              
-              // Note: Month data will be processed separately from monthStageRecords
-              
-              // Debug: Show why dates might be different
-            } else {
-              skippedCount++;
-            }
-          });
-        }
-        
-        // Process month data separately
-        if (monthAgreementRecords && monthAgreementRecords.length > 0) {
-          let monthProcessedCount = 0;
-          let monthSkippedCount = 0;
-          
-          // Track processed records to prevent duplicates
-          const processedMonthRecordIds = new Set();
-          
-          monthAgreementRecords.forEach(record => {
-            // Skip if already processed
-            if (processedMonthRecordIds.has(record.id)) {
-              return;
-            }
-            processedMonthRecordIds.add(record.id);
-            
-            const lead = record.leads_lead as any;
-            if (!lead) {
-              return;
-            }
-            
-            // Use actual amounts (VAT already excluded in database)
-            let amount = 0;
-            if (record.isNewLead) {
-              // For new leads, use balance or proposal_total
-              amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
-            } else {
-              // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
-              const currencyId = lead.currency_id;
-              const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
-              if (numericCurrencyId === 1) {
-                // Use total_base for NIS/ILS currency
-                amount = parseFloat(lead.total_base) || 0;
-              } else {
-                // Use total for other currencies
-                amount = parseFloat(lead.total) || 0;
-              }
-            }
-            const amountInNIS = convertToNIS(amount, lead.currency_id);
-            
-            // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
-            const parseNumericAmount = (val: any) => {
-              if (typeof val === 'number') return val;
-              if (typeof val === 'string') {
-                const cleaned = val.replace(/[^0-9.-]/g, '');
-                const parsed = parseFloat(cleaned);
-                return Number.isNaN(parsed) ? 0 : parsed;
-              }
-              return 0;
-            };
-            
-            // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
-            const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
-              for (const candidate of candidates) {
-                if (candidate === null || candidate === undefined) continue;
-                const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
-                if (rawValue === null || rawValue === undefined) continue;
-                
-                if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
-                  return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
-                }
-                
-                const valueStr = rawValue.toString().trim();
-                if (!valueStr) continue;
-                
-                const numeric = Number(valueStr);
-                if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
-                  return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
-                }
-                
-                const upper = valueStr.toUpperCase();
-                if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
-                  return { displaySymbol: '₪', conversionValue: 'NIS' };
-                }
-                if (upper === 'USD' || valueStr === '$') {
-                  return { displaySymbol: '$', conversionValue: 'USD' };
-                }
-                if (upper === 'EUR' || valueStr === '€') {
-                  return { displaySymbol: '€', conversionValue: 'EUR' };
-                }
-                if (upper === 'GBP' || valueStr === '£') {
-                  return { displaySymbol: '£', conversionValue: 'GBP' };
-                }
-              }
-              return { displaySymbol: '₪', conversionValue: 'NIS' };
-            };
-            
-            const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
-            const currencyMeta = record.isNewLead
-              ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
-              : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
-            const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
-            const amountAfterFee = amountInNIS - subcontractorFeeNIS;
-            
-            const recordDate = record.date;
-            
-            // Get department ID from the JOIN
-            let departmentId = null;
-            if (lead.misc_category?.misc_maincategory?.department_id) {
-              departmentId = lead.misc_category.misc_maincategory.department_id;
-            } else if (lead.category && categoryNameToDataMap) {
-              // If misc_category join failed (category_id is null), try to look up by category name
-              const normalizedCategoryName = lead.category.trim().toLowerCase();
-              const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
-              if (mappedCategory?.misc_maincategory?.department_id) {
-                departmentId = mappedCategory.misc_maincategory.department_id;
-              }
-            }
-            if (departmentId && departmentIds.includes(departmentId)) {
-              monthProcessedCount++;
-              
-              // For current month, use the department index directly (no General column)
-              const monthDeptIndex = departmentIds.indexOf(departmentId);
-              // Extract date part for comparison
-              const recordDateOnly = extractDateFromRecord(recordDate);
-              
-              // Check if it's in selected month (must be between start and end of month)
-              if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
-                newAgreementData[selectedMonthName][monthDeptIndex].count++;
-                newAgreementData[selectedMonthName][monthDeptIndex].amount += amountAfterFee; // Use amount after fee
-              }
-            } else {
-              monthSkippedCount++;
-            }
-          });
-        }
-        
-        // Calculate totals for each time period
-        // Debug: Show the raw data before calculating totals
-        // Calculate dynamic totals based on actual number of departments
-        const numDepartments = departmentTargets.length;
-        const totalIndexToday = numDepartments + 1; // General + departments + Total
-        const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-        // Today totals (sum of departments, excluding General and Total)
-        const todayTotalCount = newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-        const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
-        newAgreementData.Today[totalIndexToday] = {
-          count: todayTotalCount,
-          amount: todayTotalAmount,
-          expected: 0
-        };
-        
-        // Yesterday totals
-        const yesterdayTotalCount = newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-        const yesterdayTotalAmount = Math.ceil(newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
-        newAgreementData.Yesterday[totalIndexToday] = {
-          count: yesterdayTotalCount,
-          amount: yesterdayTotalAmount,
-          expected: 0
-        };
-        
-        // Week totals
-        const weekTotalCount = newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
-        const weekTotalAmount = Math.ceil(newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
-        newAgreementData.Week[totalIndexToday] = {
-          count: weekTotalCount,
-          amount: weekTotalAmount,
-          expected: 0
-        };
-        
-        // Last 30d totals - use the General row [0] which already contains the total
-        const last30TotalCount = newAgreementData["Last 30d"][0].count;
-        const last30TotalAmount = Math.ceil(newAgreementData["Last 30d"][0].amount);
-        newAgreementData["Last 30d"][totalIndexToday] = {
-          count: last30TotalCount,
-          amount: last30TotalAmount,
-          expected: 0
-        };
-        
-        // Current month totals - calculate by summing the individual department values
-        const monthTotalCount = newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
-        const monthTotalAmount = Math.ceil(newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
-        newAgreementData[selectedMonthName][totalIndexMonth] = {
-          count: monthTotalCount,
-          amount: monthTotalAmount,
-          expected: 0
-        };
-        
-        console.log('🔍 Agreement Signed - Totals comparison:', {
-          last30dCount: last30TotalCount,
-          last30dAmount: last30TotalAmount,
-          monthCount: monthTotalCount,
-          monthAmount: monthTotalAmount,
-          difference: last30TotalCount - monthTotalCount,
-          amountDifference: last30TotalAmount - monthTotalAmount
-        });
-        
-        // Debug: Show the calculated totals
-        // Log currency distribution summary
-        const currencyDistribution = {
-          NIS: 0,
-          USD: 0,
-          EUR: 0,
-          GBP: 0,
-          Unknown: 0
-        };
-        // Combine all records that were processed
-        const allProcessedRecords = [...(agreementRecords || []), ...(monthAgreementRecords || [])];
-        if (allProcessedRecords.length > 0) {
-          // Check first 5 records for currency data
-          for (let i = 0; i < Math.min(5, allProcessedRecords.length); i++) {
-            const record = allProcessedRecords[i];
-            const lead = record.leads_lead;
-          }
-        }
-        
-        allProcessedRecords.forEach((record, index) => {
-          const lead = record.leads_lead;
-          if (lead && lead.currency_id) {
-            switch (lead.currency_id) {
-              case 1: currencyDistribution.NIS++; break;
-              case 2: currencyDistribution.USD++; break;
-              case 3: currencyDistribution.EUR++; break;
-              case 4: currencyDistribution.GBP++; break;
-              default: currencyDistribution.Unknown++; break;
-            }
-          } else if (index < 5) { // Log first 5 records that don't have currency
-          }
-        });
-        setAgreementData(newAgreementData);
-        
-        // Fetch daily chart data for the last 30 days
-        await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
-        
-      } catch (error) {
-      } finally {
-        setDepartmentPerformanceLoading(false);
+            leads_lead: lead || null,
+            isNewLead: false
+          };
+        }).filter(record => record.leads_lead !== null);
+
+        agreementRecords.push(...legacyRecords);
       }
+
+      // Process new leads - create records ONLY from stage records (leads_leadstage for stage 60)
+      // Do NOT include contracts - match SignedSalesReportPage behavior
+      // Deduplicate new lead stage records: keep only the latest date for each newlead_id
+      const newLeadRecordsMap = new Map<string, any>();
+      (newLeadStageRecords || []).forEach(record => {
+        if (!record.newlead_id) return;
+        const newLeadId = String(record.newlead_id);
+        const recordDate = record.date || record.cdate;
+        if (!recordDate) return;
+
+        const existingRecord = newLeadRecordsMap.get(newLeadId);
+        if (!existingRecord) {
+          newLeadRecordsMap.set(newLeadId, record);
+        } else {
+          const existingDate = existingRecord.date || existingRecord.cdate;
+          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+            // This record has a later date, replace the existing one
+            newLeadRecordsMap.set(newLeadId, record);
+          }
+        }
+      });
+
+      // Convert map back to array
+      const deduplicatedNewLeadStageRecords = Array.from(newLeadRecordsMap.values());
+
+      const newLeadsMap = new Map(newLeadsData.map(lead => [String(lead.id), lead]));
+
+      // Create records from deduplicated new lead stage records (only source - no contracts)
+      deduplicatedNewLeadStageRecords.forEach(record => {
+        if (!record.newlead_id) return;
+        const lead = newLeadsMap.get(String(record.newlead_id));
+        if (!lead) return;
+        // Use date as the sign date (preferred) or cdate as fallback
+        const recordDate = (record.date || record.cdate || '').split('T')[0];
+        agreementRecords.push({
+          id: `newstage-${record.id}`,
+          date: recordDate,
+          cdate: record.date || record.cdate,
+          lead_id: null,
+          newlead_id: String(record.newlead_id),
+          leads_lead: lead,
+          isNewLead: true
+        });
+      });
+
+      // Only use leads_leadstage for stage 60 - no date_signed from leads table
+      if (agreementRecords && agreementRecords.length > 0) {
+      }
+
+      // Fetch data for selected month (separate query)
+      // endOfMonthStr is already calculated above, reuse it
+
+      // Fetch legacy leads stage records for month
+      // Use endOfMonthStr + 1 day as upper bound to ensure we include the entire last day of the month
+      const monthEndUpperBound = new Date(new Date(endOfMonthStr).getTime() + 86400000).toISOString().split('T')[0];
+      const { data: monthStageRecords, error: monthStageError } = await supabase
+        .from('leads_leadstage')
+        .select('id, date, cdate, lead_id')
+        .eq('stage', 60)
+        .not('lead_id', 'is', null) // Legacy leads only
+        .gte('date', startOfMonthStr)
+        .lte('date', monthEndUpperBound);
+
+      if (monthStageError) {
+        throw monthStageError;
+      }
+      // Fetch new leads signed agreements for month ONLY from leads_leadstage (stage 60)
+      // Do NOT include contracts - match SignedSalesReportPage behavior
+      const { data: monthNewLeadStageRecords, error: monthNewLeadStageError } = await supabase
+        .from('leads_leadstage')
+        .select('id, date, cdate, newlead_id')
+        .eq('stage', 60)
+        .not('newlead_id', 'is', null) // New leads only
+        .gte('date', startOfMonthStr)
+        .lte('date', monthEndUpperBound);
+
+      if (monthNewLeadStageError) {
+      }
+      // Combine all new lead IDs for month (only from leads_leadstage for stage 60)
+      const monthNewLeadIdsSet = new Set<string>();
+      (monthNewLeadStageRecords || []).forEach(record => {
+        if (record.newlead_id) monthNewLeadIdsSet.add(String(record.newlead_id));
+      });
+
+      const monthNewLeadIds = Array.from(monthNewLeadIdsSet);
+      // Fetch month new leads data
+      let monthNewLeadsData: any[] = [];
+      if (monthNewLeadIds.length > 0) {
+        const { data: monthNewLeads, error: monthNewLeadsError } = await supabase
+          .from('leads')
+          .select(`
+              id, balance, proposal_total, currency_id, balance_currency, proposal_currency, subcontractor_fee, category,
+              misc_category!category_id(
+                id, name, parent_id,
+                misc_maincategory!parent_id(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+          .in('id', monthNewLeadIds);
+
+        if (monthNewLeadsError) {
+        } else {
+          monthNewLeadsData = monthNewLeads || [];
+        }
+      }
+
+      // Fetch leads data separately for month if we have stage records
+      let monthAgreementRecords: any[] = [];
+
+      // Process legacy leads for month
+      if (monthStageRecords && monthStageRecords.length > 0) {
+        const monthLeadIds = [...new Set(monthStageRecords.map(record => record.lead_id).filter(id => id !== null))];
+        const { data: monthLeadsData, error: monthLeadsError } = await supabase
+          .from('leads_lead')
+          .select(`
+              id, total, total_base, currency_id, subcontractor_fee, meeting_total_currency_id,
+              accounting_currencies!leads_lead_currency_id_fkey(
+                id,
+                iso_code,
+                name
+              ),
+              misc_category(
+                id, name, parent_id,
+                misc_maincategory(
+                  id, name, department_id,
+                  tenant_departement(id, name)
+                )
+              )
+            `)
+          .in('id', monthLeadIds);
+
+        if (monthLeadsError) {
+          throw monthLeadsError;
+        }
+        // Deduplicate month stage records: keep only the latest date for each lead_id
+        const monthLeadRecordsMap = new Map<number, any>();
+        monthStageRecords.forEach(stageRecord => {
+          if (!stageRecord.lead_id) return;
+          const leadId = stageRecord.lead_id;
+          const recordDate = stageRecord.date || stageRecord.cdate;
+          if (!recordDate) return;
+
+          const existingRecord = monthLeadRecordsMap.get(leadId);
+          if (!existingRecord) {
+            monthLeadRecordsMap.set(leadId, stageRecord);
+          } else {
+            const existingDate = existingRecord.date || existingRecord.cdate;
+            if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+              // This record has a later date, replace the existing one
+              monthLeadRecordsMap.set(leadId, stageRecord);
+            }
+          }
+        });
+
+        // Convert map back to array
+        const deduplicatedMonthStageRecords = Array.from(monthLeadRecordsMap.values());
+
+        // Join the legacy data
+        const monthLeadsMap = new Map(monthLeadsData?.map(lead => [lead.id, lead]) || []);
+        const monthLegacyRecords = deduplicatedMonthStageRecords.map(stageRecord => {
+          const lead = monthLeadsMap.get(stageRecord.lead_id);
+          // Use date as the sign date (preferred) or cdate as fallback
+          const recordDate = (stageRecord.date || stageRecord.cdate || '').split('T')[0];
+          return {
+            ...stageRecord,
+            date: recordDate,
+            leads_lead: lead || null,
+            isNewLead: false
+          };
+        }).filter(record => record.leads_lead !== null);
+
+        monthAgreementRecords.push(...monthLegacyRecords);
+      }
+
+      // Process new leads for month (only from leads_leadstage - no contracts)
+      // Deduplicate month new lead stage records: keep only the latest date for each newlead_id
+      const monthNewLeadRecordsMap = new Map<string, any>();
+      (monthNewLeadStageRecords || []).forEach(record => {
+        if (!record.newlead_id) return;
+        const newLeadId = String(record.newlead_id);
+        const recordDate = record.date || record.cdate;
+        if (!recordDate) return;
+
+        const existingRecord = monthNewLeadRecordsMap.get(newLeadId);
+        if (!existingRecord) {
+          monthNewLeadRecordsMap.set(newLeadId, record);
+        } else {
+          const existingDate = existingRecord.date || existingRecord.cdate;
+          if (existingDate && new Date(recordDate) > new Date(existingDate)) {
+            // This record has a later date, replace the existing one
+            monthNewLeadRecordsMap.set(newLeadId, record);
+          }
+        }
+      });
+
+      // Convert map back to array
+      const deduplicatedMonthNewLeadStageRecords = Array.from(monthNewLeadRecordsMap.values());
+
+      const monthNewLeadsMap = new Map(monthNewLeadsData.map(lead => [String(lead.id), lead]));
+
+      deduplicatedMonthNewLeadStageRecords.forEach(record => {
+        if (!record.newlead_id) return;
+        const lead = monthNewLeadsMap.get(String(record.newlead_id));
+        if (!lead) return;
+        // Use date as the sign date (preferred) or cdate as fallback
+        const recordDate = (record.date || record.cdate || '').split('T')[0];
+        monthAgreementRecords.push({
+          id: `month-newstage-${record.id}`,
+          date: recordDate,
+          cdate: record.date || record.cdate,
+          lead_id: null,
+          newlead_id: String(record.newlead_id),
+          leads_lead: lead,
+          isNewLead: true
+        });
+      });
+
+      // Only use leads_leadstage for stage 60 - no date_signed from leads table
+      if (monthAgreementRecords && monthAgreementRecords.length > 0) {
+      }
+
+      if (agreementRecords && agreementRecords.length > 0) {
+        // Process all records efficiently
+        let processedCount = 0;
+        let skippedCount = 0;
+
+        // Track processed records to prevent duplicates
+        const processedRecordIds = new Set();
+
+        agreementRecords.forEach(record => {
+          // Skip if already processed
+          if (processedRecordIds.has(record.id)) {
+            return;
+          }
+          processedRecordIds.add(record.id);
+
+          const lead = record.leads_lead as any;
+          if (!lead) {
+            return;
+          }
+
+          // Use actual amounts (VAT already excluded in database)
+          let amount = 0;
+          if (record.isNewLead) {
+            // For new leads, use balance or proposal_total
+            amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+          } else {
+            // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+            const currencyId = lead.currency_id;
+            const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+            if (numericCurrencyId === 1) {
+              // Use total_base for NIS/ILS currency
+              amount = parseFloat(lead.total_base) || 0;
+            } else {
+              // Use total for other currencies
+              amount = parseFloat(lead.total) || 0;
+            }
+          }
+          const amountInNIS = convertToNIS(amount, lead.currency_id);
+
+          // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
+          const parseNumericAmount = (val: any) => {
+            if (typeof val === 'number') return val;
+            if (typeof val === 'string') {
+              const cleaned = val.replace(/[^0-9.-]/g, '');
+              const parsed = parseFloat(cleaned);
+              return Number.isNaN(parsed) ? 0 : parsed;
+            }
+            return 0;
+          };
+
+          // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
+          const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+            for (const candidate of candidates) {
+              if (candidate === null || candidate === undefined) continue;
+              const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+              if (rawValue === null || rawValue === undefined) continue;
+
+              if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+                return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
+              }
+
+              const valueStr = rawValue.toString().trim();
+              if (!valueStr) continue;
+
+              const numeric = Number(valueStr);
+              if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
+                return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
+              }
+
+              const upper = valueStr.toUpperCase();
+              if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
+                return { displaySymbol: '₪', conversionValue: 'NIS' };
+              }
+              if (upper === 'USD' || valueStr === '$') {
+                return { displaySymbol: '$', conversionValue: 'USD' };
+              }
+              if (upper === 'EUR' || valueStr === '€') {
+                return { displaySymbol: '€', conversionValue: 'EUR' };
+              }
+              if (upper === 'GBP' || valueStr === '£') {
+                return { displaySymbol: '£', conversionValue: 'GBP' };
+              }
+            }
+            return { displaySymbol: '₪', conversionValue: 'NIS' };
+          };
+
+          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+          const currencyMeta = record.isNewLead
+            ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+            : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+          const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+
+          const recordDate = record.date;
+
+          // Debug currency conversion
+          // Log non-NIS currencies for verification
+          if (lead.currency_id && lead.currency_id !== 1) {
+          }
+
+          // Get department ID from the JOIN
+          let departmentId = null;
+          if (lead.misc_category?.misc_maincategory?.department_id) {
+            departmentId = lead.misc_category.misc_maincategory.department_id;
+          } else if (lead.category && categoryNameToDataMap) {
+            // If misc_category join failed (category_id is null), try to look up by category name
+            const normalizedCategoryName = lead.category.trim().toLowerCase();
+            const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
+            if (mappedCategory?.misc_maincategory?.department_id) {
+              departmentId = mappedCategory.misc_maincategory.department_id;
+            }
+          }
+          if (departmentId && departmentIds.includes(departmentId)) {
+            processedCount++;
+
+            // For Today and Last 30d, use the department index + 1 (to skip General)
+            const deptIndex = departmentIds.indexOf(departmentId) + 1;
+
+            // For current month, use the department index directly (no General column)
+            const monthDeptIndex = departmentIds.indexOf(departmentId);
+            // Extract date part for comparison
+            const recordDateOnly = extractDateFromRecord(recordDate);
+
+            // Check if it's today
+            if (recordDateOnly === todayStr) {
+              newAgreementData.Today[deptIndex].count++;
+              newAgreementData.Today[deptIndex].amount += amountAfterFee; // Use amount after fee
+              newAgreementData.Today[0].count++; // General
+              newAgreementData.Today[0].amount += amountAfterFee; // Use amount after fee
+            }
+
+            // Check if it's yesterday
+            if (recordDateOnly === yesterdayStr) {
+              newAgreementData.Yesterday[deptIndex].count++;
+              newAgreementData.Yesterday[deptIndex].amount += amountAfterFee; // Use amount after fee
+              newAgreementData.Yesterday[0].count++; // General
+              newAgreementData.Yesterday[0].amount += amountAfterFee; // Use amount after fee
+            }
+
+            // Check if it's in the last week (7 days including today)
+            if (recordDateOnly >= oneWeekAgoStr && recordDateOnly <= todayStr) {
+              newAgreementData.Week[deptIndex].count++;
+              newAgreementData.Week[deptIndex].amount += amountAfterFee; // Use amount after fee
+              newAgreementData.Week[0].count++; // General
+              newAgreementData.Week[0].amount += amountAfterFee; // Use amount after fee
+            }
+
+            // Check if it's in last 30 days (rolling 30 days from today)
+            // Always use thirtyDaysAgoStr for Last 30d - from 30 days ago to today
+            if (recordDateOnly >= last30dStartDate && recordDateOnly <= todayStr) {
+              newAgreementData["Last 30d"][deptIndex].count++;
+              newAgreementData["Last 30d"][deptIndex].amount += amountAfterFee; // Use amount after fee
+              newAgreementData["Last 30d"][0].count++; // General
+              newAgreementData["Last 30d"][0].amount += amountAfterFee; // Use amount after fee
+            }
+
+            // Note: Month data will be processed separately from monthStageRecords
+
+            // Debug: Show why dates might be different
+          } else {
+            skippedCount++;
+          }
+        });
+      }
+
+      // Process month data separately
+      if (monthAgreementRecords && monthAgreementRecords.length > 0) {
+        let monthProcessedCount = 0;
+        let monthSkippedCount = 0;
+
+        // Track processed records to prevent duplicates
+        const processedMonthRecordIds = new Set();
+
+        monthAgreementRecords.forEach(record => {
+          // Skip if already processed
+          if (processedMonthRecordIds.has(record.id)) {
+            return;
+          }
+          processedMonthRecordIds.add(record.id);
+
+          const lead = record.leads_lead as any;
+          if (!lead) {
+            return;
+          }
+
+          // Use actual amounts (VAT already excluded in database)
+          let amount = 0;
+          if (record.isNewLead) {
+            // For new leads, use balance or proposal_total
+            amount = parseFloat(lead.balance) || parseFloat(lead.proposal_total) || 0;
+          } else {
+            // For legacy leads: if currency_id is 1 (NIS/ILS), use total_base; otherwise use total
+            const currencyId = lead.currency_id;
+            const numericCurrencyId = typeof currencyId === 'string' ? parseInt(currencyId, 10) : Number(currencyId);
+            if (numericCurrencyId === 1) {
+              // Use total_base for NIS/ILS currency
+              amount = parseFloat(lead.total_base) || 0;
+            } else {
+              // Use total for other currencies
+              amount = parseFloat(lead.total) || 0;
+            }
+          }
+          const amountInNIS = convertToNIS(amount, lead.currency_id);
+
+          // Calculate and subtract subcontractor_fee (matching SignedSalesReportPage logic)
+          const parseNumericAmount = (val: any) => {
+            if (typeof val === 'number') return val;
+            if (typeof val === 'string') {
+              const cleaned = val.replace(/[^0-9.-]/g, '');
+              const parsed = parseFloat(cleaned);
+              return Number.isNaN(parsed) ? 0 : parsed;
+            }
+            return 0;
+          };
+
+          // Build currency meta for fee conversion (same logic as SignedSalesReportPage)
+          const buildCurrencyMeta = (...candidates: any[]): { displaySymbol: string; conversionValue: string | number } => {
+            for (const candidate of candidates) {
+              if (candidate === null || candidate === undefined) continue;
+              const rawValue = Array.isArray(candidate) ? candidate[0] : candidate;
+              if (rawValue === null || rawValue === undefined) continue;
+
+              if (typeof rawValue === 'number' && Number.isFinite(rawValue)) {
+                return { displaySymbol: getCurrencySymbol(rawValue), conversionValue: rawValue };
+              }
+
+              const valueStr = rawValue.toString().trim();
+              if (!valueStr) continue;
+
+              const numeric = Number(valueStr);
+              if (!Number.isNaN(numeric) && numeric.toString() === valueStr) {
+                return { displaySymbol: getCurrencySymbol(numeric), conversionValue: numeric };
+              }
+
+              const upper = valueStr.toUpperCase();
+              if (upper === '₪' || upper === 'NIS' || upper === 'ILS') {
+                return { displaySymbol: '₪', conversionValue: 'NIS' };
+              }
+              if (upper === 'USD' || valueStr === '$') {
+                return { displaySymbol: '$', conversionValue: 'USD' };
+              }
+              if (upper === 'EUR' || valueStr === '€') {
+                return { displaySymbol: '€', conversionValue: 'EUR' };
+              }
+              if (upper === 'GBP' || valueStr === '£') {
+                return { displaySymbol: '£', conversionValue: 'GBP' };
+              }
+            }
+            return { displaySymbol: '₪', conversionValue: 'NIS' };
+          };
+
+          const subcontractorFee = parseNumericAmount(lead.subcontractor_fee) || 0;
+          const currencyMeta = record.isNewLead
+            ? buildCurrencyMeta(lead.currency_id, lead.proposal_currency, lead.balance_currency)
+            : buildCurrencyMeta(lead.currency_id, lead.meeting_total_currency_id, lead.accounting_currencies);
+          const subcontractorFeeNIS = convertToNIS(subcontractorFee, currencyMeta.conversionValue);
+          const amountAfterFee = amountInNIS - subcontractorFeeNIS;
+
+          const recordDate = record.date;
+
+          // Get department ID from the JOIN
+          let departmentId = null;
+          if (lead.misc_category?.misc_maincategory?.department_id) {
+            departmentId = lead.misc_category.misc_maincategory.department_id;
+          } else if (lead.category && categoryNameToDataMap) {
+            // If misc_category join failed (category_id is null), try to look up by category name
+            const normalizedCategoryName = lead.category.trim().toLowerCase();
+            const mappedCategory = categoryNameToDataMap.get(normalizedCategoryName);
+            if (mappedCategory?.misc_maincategory?.department_id) {
+              departmentId = mappedCategory.misc_maincategory.department_id;
+            }
+          }
+          if (departmentId && departmentIds.includes(departmentId)) {
+            monthProcessedCount++;
+
+            // For current month, use the department index directly (no General column)
+            const monthDeptIndex = departmentIds.indexOf(departmentId);
+            // Extract date part for comparison
+            const recordDateOnly = extractDateFromRecord(recordDate);
+
+            // Check if it's in selected month (must be between start and end of month)
+            if (recordDateOnly >= startOfMonthStr && recordDateOnly <= endOfMonthStr) {
+              newAgreementData[selectedMonthName][monthDeptIndex].count++;
+              newAgreementData[selectedMonthName][monthDeptIndex].amount += amountAfterFee; // Use amount after fee
+            }
+          } else {
+            monthSkippedCount++;
+          }
+        });
+      }
+
+      // Calculate totals for each time period
+      // Debug: Show the raw data before calculating totals
+      // Calculate dynamic totals based on actual number of departments
+      const numDepartments = departmentTargets.length;
+      const totalIndexToday = numDepartments + 1; // General + departments + Total
+      const totalIndexMonth = numDepartments; // departments + Total (no General for month)
+      // Today totals (sum of departments, excluding General and Total)
+      const todayTotalCount = newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const todayTotalAmount = Math.ceil(newAgreementData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newAgreementData.Today[totalIndexToday] = {
+        count: todayTotalCount,
+        amount: todayTotalAmount,
+        expected: 0
+      };
+
+      // Yesterday totals
+      const yesterdayTotalCount = newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const yesterdayTotalAmount = Math.ceil(newAgreementData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newAgreementData.Yesterday[totalIndexToday] = {
+        count: yesterdayTotalCount,
+        amount: yesterdayTotalAmount,
+        expected: 0
+      };
+
+      // Week totals
+      const weekTotalCount = newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
+      const weekTotalAmount = Math.ceil(newAgreementData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
+      newAgreementData.Week[totalIndexToday] = {
+        count: weekTotalCount,
+        amount: weekTotalAmount,
+        expected: 0
+      };
+
+      // Last 30d totals - use the General row [0] which already contains the total
+      const last30TotalCount = newAgreementData["Last 30d"][0].count;
+      const last30TotalAmount = Math.ceil(newAgreementData["Last 30d"][0].amount);
+      newAgreementData["Last 30d"][totalIndexToday] = {
+        count: last30TotalCount,
+        amount: last30TotalAmount,
+        expected: 0
+      };
+
+      // Current month totals - calculate by summing the individual department values
+      const monthTotalCount = newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
+      const monthTotalAmount = Math.ceil(newAgreementData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
+      newAgreementData[selectedMonthName][totalIndexMonth] = {
+        count: monthTotalCount,
+        amount: monthTotalAmount,
+        expected: 0
+      };
+
+      console.log('🔍 Agreement Signed - Totals comparison:', {
+        last30dCount: last30TotalCount,
+        last30dAmount: last30TotalAmount,
+        monthCount: monthTotalCount,
+        monthAmount: monthTotalAmount,
+        difference: last30TotalCount - monthTotalCount,
+        amountDifference: last30TotalAmount - monthTotalAmount
+      });
+
+      // Debug: Show the calculated totals
+      // Log currency distribution summary
+      const currencyDistribution = {
+        NIS: 0,
+        USD: 0,
+        EUR: 0,
+        GBP: 0,
+        Unknown: 0
+      };
+      // Combine all records that were processed
+      const allProcessedRecords = [...(agreementRecords || []), ...(monthAgreementRecords || [])];
+      if (allProcessedRecords.length > 0) {
+        // Check first 5 records for currency data
+        for (let i = 0; i < Math.min(5, allProcessedRecords.length); i++) {
+          const record = allProcessedRecords[i];
+          const lead = record.leads_lead;
+        }
+      }
+
+      allProcessedRecords.forEach((record, index) => {
+        const lead = record.leads_lead;
+        if (lead && lead.currency_id) {
+          switch (lead.currency_id) {
+            case 1: currencyDistribution.NIS++; break;
+            case 2: currencyDistribution.USD++; break;
+            case 3: currencyDistribution.EUR++; break;
+            case 4: currencyDistribution.GBP++; break;
+            default: currencyDistribution.Unknown++; break;
+          }
+        } else if (index < 5) { // Log first 5 records that don't have currency
+        }
+      });
+      setAgreementData(newAgreementData);
+
+      // Fetch daily chart data for the last 30 days
+      await fetchDepartmentChartData(departmentIds, departmentTargets, thirtyDaysAgoStr, todayStr);
+
+    } catch (error) {
+    } finally {
+      setDepartmentPerformanceLoading(false);
+    }
   };
-  
+
   // Fetch real daily chart data for department performance
   const fetchDepartmentChartData = async (
     departmentIds: number[],
@@ -3227,33 +3228,33 @@ const Dashboard: React.FC = () => {
         .eq('stage', 60)
         .gte('date', fromDate)
         .lte('date', toDate);
-      
+
       if (stageError) {
         return;
       }
-      
+
       if (!stageRecords || stageRecords.length === 0) {
         setDepartmentChartData({});
         return;
       }
-      
+
       // Fetch leads data
       const leadIds = [...new Set(stageRecords.map(record => record.lead_id).filter(id => id !== null))];
       const { data: leadsData, error: leadsError } = await supabase
         .from('leads_lead')
         .select('id, category_id, meeting_total, meeting_total_currency_id')
         .in('id', leadIds);
-      
+
       if (leadsError) {
         return;
       }
-      
+
       // Create a map of lead_id to lead data
       const leadsMap = new Map();
       leadsData?.forEach(lead => {
         leadsMap.set(lead.id, lead);
       });
-      
+
       // Create date range array
       const startDate = new Date(fromDate);
       const endDate = new Date(toDate);
@@ -3261,11 +3262,11 @@ const Dashboard: React.FC = () => {
       for (let d = new Date(startDate); d <= endDate; d.setDate(d.getDate() + 1)) {
         dateArray.push(d.toISOString().split('T')[0]);
       }
-      
+
       // Initialize chart data structure with all categories
       const allCategories = ['General', ...departmentTargets.map(d => d.name), 'Total'];
       const chartDataMap: { [category: string]: { [date: string]: { contracts: number; amount: number } } } = {};
-      
+
       // Initialize all categories with all dates
       allCategories.forEach(category => {
         chartDataMap[category] = {};
@@ -3273,19 +3274,19 @@ const Dashboard: React.FC = () => {
           chartDataMap[category][date] = { contracts: 0, amount: 0 };
         });
       });
-      
+
       // Process stage records
       stageRecords.forEach(record => {
         const lead = leadsMap.get(record.lead_id);
         if (!lead) return;
-        
+
         const recordDate = record.date?.split('T')[0] || record.date;
         if (!recordDate || !dateArray.includes(recordDate)) return;
-        
+
         // Get department from category_id
         const departmentId = lead.category_id;
         const deptIndex = departmentIds.indexOf(departmentId);
-        
+
         // Convert amount to NIS
         let amountInNIS = 0;
         if (lead.meeting_total && lead.meeting_total_currency_id) {
@@ -3299,7 +3300,7 @@ const Dashboard: React.FC = () => {
             amountInNIS = amount * 3.8; // Approximate conversion
           }
         }
-        
+
         if (deptIndex >= 0) {
           const categoryName = departmentTargets[deptIndex]?.name;
           if (categoryName && chartDataMap[categoryName]) {
@@ -3307,7 +3308,7 @@ const Dashboard: React.FC = () => {
             chartDataMap[categoryName][recordDate].amount += amountInNIS;
           }
         }
-        
+
         // Also add to General and Total
         if (chartDataMap['General']) {
           chartDataMap['General'][recordDate].contracts++;
@@ -3318,7 +3319,7 @@ const Dashboard: React.FC = () => {
           chartDataMap['Total'][recordDate].amount += amountInNIS;
         }
       });
-      
+
       // Convert to array format for charts
       const finalChartData: { [category: string]: { date: string; contracts: number; amount: number }[] } = {};
       Object.keys(chartDataMap).forEach(category => {
@@ -3328,7 +3329,7 @@ const Dashboard: React.FC = () => {
           amount: chartDataMap[category][date].amount
         }));
       });
-      
+
       setDepartmentChartData(finalChartData);
     } catch (error) {
       setDepartmentChartData({});
@@ -3346,12 +3347,12 @@ const Dashboard: React.FC = () => {
       const today = new Date();
       const thirtyDaysAgo = new Date();
       thirtyDaysAgo.setDate(now.getDate() - 30);
-      
+
       // Use selected month and year
       const selectedMonthIndex = months.indexOf(selectedMonth);
       const selectedDate = new Date(selectedYear, selectedMonthIndex, 1);
       const selectedMonthName = selectedDate.toLocaleDateString('en-US', { month: 'long' });
-      
+
       // Fetch only important departments (matching CollectionDueReport - no merging, no exclusions)
       // Also explicitly include department 20 (Commercial & Civil) even if not marked important
       const { data: allDepartments, error: departmentsError } = await supabase
@@ -3359,11 +3360,11 @@ const Dashboard: React.FC = () => {
         .select('id, name, min_income, important')
         .eq('important', 't')
         .order('id');
-      
+
       if (departmentsError) {
         throw departmentsError;
       }
-      
+
       // Extract department IDs and create target mapping
       // CRITICAL: Exclude any department with name "Commercial - Sales" (except department 20 which we'll rename)
       // Also exclude any other department named "Commercial & Civil" if department 20 exists
@@ -3381,7 +3382,7 @@ const Dashboard: React.FC = () => {
         }
         return true;
       });
-      
+
       // Fix department name for ID 20: should be "Commercial & Civil" not "Commercial - Sales"
       departmentTargets = departmentTargets.map(dept => {
         if (dept.id === 20) {
@@ -3390,7 +3391,7 @@ const Dashboard: React.FC = () => {
         return dept;
       });
       const departmentIds = departmentTargets.map(dept => dept.id);
-      
+
       // Fetch all categories with their main categories and department_ids for category name mapping
       const { data: allCategoriesData, error: categoriesError } = await supabase
         .from('misc_category')
@@ -3406,11 +3407,11 @@ const Dashboard: React.FC = () => {
           )
         `)
         .order('name', { ascending: true });
-      
+
       if (categoriesError) {
         console.error('Error fetching categories for invoiced department mapping:', categoriesError);
       }
-      
+
       // Create a map from category name (normalized) to category data with department_id
       const categoryNameToDataMap = new Map<string, any>();
       (allCategoriesData || []).forEach((category: any) => {
@@ -3419,7 +3420,7 @@ const Dashboard: React.FC = () => {
           categoryNameToDataMap.set(normalizedName, category);
         }
       });
-      
+
       // Helper function to resolve category and get department (same as CollectionDueReport)
       const resolveCategoryAndDepartment = (
         categoryValue?: string | null,
@@ -3427,7 +3428,7 @@ const Dashboard: React.FC = () => {
         miscCategory?: any
       ): { departmentId: number | null; departmentName: string } => {
         let resolvedMiscCategory = miscCategory;
-        
+
         // If miscCategory join failed but we have categoryId, try to find by ID in allCategoriesData
         if (!resolvedMiscCategory && categoryId !== null && categoryId !== undefined && allCategoriesData) {
           const numericId = typeof categoryId === 'number' ? categoryId : Number(categoryId);
@@ -3438,7 +3439,7 @@ const Dashboard: React.FC = () => {
             }
           }
         }
-        
+
         // If we still don't have a category but have categoryValue, try to look it up in the map by name
         if (!resolvedMiscCategory && categoryValue && categoryValue.trim() !== '' && categoryNameToDataMap.size > 0) {
           const normalizedName = categoryValue.trim().toLowerCase();
@@ -3447,7 +3448,7 @@ const Dashboard: React.FC = () => {
             resolvedMiscCategory = mappedCategory;
           }
         }
-        
+
         // If we still don't have a category, return defaults
         if (!resolvedMiscCategory) {
           return { departmentId: null, departmentName: '—' };
@@ -3469,7 +3470,7 @@ const Dashboard: React.FC = () => {
         }
 
         // Extract department from main category
-        const department = mainCategory.tenant_departement 
+        const department = mainCategory.tenant_departement
           ? (Array.isArray(mainCategory.tenant_departement) ? mainCategory.tenant_departement[0] : mainCategory.tenant_departement)
           : null;
 
@@ -3478,25 +3479,25 @@ const Dashboard: React.FC = () => {
 
         return { departmentId, departmentName };
       };
-      
+
       // Create target map (department ID -> min_income)
       const targetMap: { [key: number]: number } = {};
       departmentTargets.forEach(dept => {
         targetMap[dept.id] = parseFloat(dept.min_income || '0');
       });
-      
+
       // Calculate date ranges
       const todayStr = today.toISOString().split('T')[0];
       const thirtyDaysAgoStr = thirtyDaysAgo.toISOString().split('T')[0];
       const startOfMonth = new Date(Date.UTC(selectedYear, selectedMonthIndex, 1));
       const startOfMonthStr = startOfMonth.toISOString().split('T')[0];
       const endOfMonthStr = new Date(selectedYear, selectedMonthIndex + 1, 0).toISOString().split('T')[0];
-      
+
       // Calculate Last 30d: always use rolling 30 days from today (not affected by month boundaries)
       // IMPORTANT: Last 30d should be inclusive of both start and end dates
       // If today is Jan 11, 30 days ago is Dec 12, so range is Dec 12 to Jan 11 (inclusive) = 31 days total
       const effectiveThirtyDaysAgo = thirtyDaysAgoStr;
-      
+
       // Debug: Log the date range for Last 30d to verify it matches Collection Due Report
       console.log('🔍 Invoiced Data - Last 30d date range:', {
         effectiveThirtyDaysAgo,
@@ -3504,7 +3505,7 @@ const Dashboard: React.FC = () => {
         range: `${effectiveThirtyDaysAgo} to ${todayStr} (inclusive)`,
         note: 'This should match Collection Due Report date range'
       });
-      
+
       // Debug: Log the date range for Last 30d
       console.log('🔍 Invoiced Data - Last 30d date range:', {
         effectiveThirtyDaysAgo,
@@ -3518,55 +3519,55 @@ const Dashboard: React.FC = () => {
       const oneWeekAgo = new Date(today);
       oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
       const oneWeekAgoStr = oneWeekAgo.toISOString().split('T')[0];
-      
+
       // Initialize invoiced data structure
       const newInvoicedData = {
         Today: [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({ 
-            count: 0, 
-            amount: 0, 
-            expected: parseFloat(dept.min_income || '0') 
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
           })), // Actual departments
           { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         Yesterday: [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({ 
-            count: 0, 
-            amount: 0, 
-            expected: parseFloat(dept.min_income || '0') 
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
           })), // Actual departments
           { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         Week: [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({ 
-            count: 0, 
-            amount: 0, 
-            expected: parseFloat(dept.min_income || '0') 
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
           })), // Actual departments
           { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         "Last 30d": [
           { count: 0, amount: 0, expected: 0 }, // General (index 0)
-          ...departmentTargets.map(dept => ({ 
-            count: 0, 
-            amount: 0, 
-            expected: parseFloat(dept.min_income || '0') 
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
           })), // Actual departments
           { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
         [selectedMonthName]: [
-          ...departmentTargets.map(dept => ({ 
-            count: 0, 
-            amount: 0, 
-            expected: parseFloat(dept.min_income || '0') 
+          ...departmentTargets.map(dept => ({
+            count: 0,
+            amount: 0,
+            expected: parseFloat(dept.min_income || '0')
           })), // Actual departments (no General for month)
           { count: 0, amount: 0, expected: 0 }, // Total (last index)
         ],
       };
-      
+
       // Fetch new payment plans - show all payments with due_date (both paid and unpaid)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
@@ -3587,20 +3588,20 @@ const Dashboard: React.FC = () => {
         .eq('ready_to_pay', true)
         .not('due_date', 'is', null)
         .is('cancel_date', null);
-      
+
       const { data: newPayments, error: newError } = await newPaymentsQuery;
       if (newError) {
         console.error('❌ Invoiced Data - Error fetching new payments:', newError);
         throw newError;
       }
       console.log('✅ Invoiced Data - Fetched new payments:', newPayments?.length || 0);
-      
+
       // Filter out any payments with cancel_date (safety check)
       const filteredNewPayments = (newPayments || []).filter(p => !p.cancel_date);
       if (filteredNewPayments.length !== (newPayments || []).length) {
         console.log('⚠️ Invoiced Data - Filtered out', (newPayments || []).length - filteredNewPayments.length, 'new payments with cancel_date');
       }
-      
+
       if (filteredNewPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample new payment:', {
           id: filteredNewPayments[0].id,
@@ -3611,20 +3612,20 @@ const Dashboard: React.FC = () => {
           paid: filteredNewPayments[0].paid
         });
       }
-      
+
       // Fetch legacy payment plans from finances_paymentplanrow
       // IMPORTANT: Match Collection Due Report - NO ready_to_pay filter, only filter by due_date IS NOT NULL
       // Use pagination to fetch ALL records (Supabase limit is 1000 per query)
       // Note: We don't filter by date range here because we need data for multiple periods (Today, Last 30d, Month)
       // We'll filter by date in the processing step
       console.log('🔍 Invoiced Data - Fetching legacy payment plans (matching Collection Due Report - all with due_date, no ready_to_pay filter, using pagination)...');
-      
+
       let allLegacyPayments: any[] = [];
       const batchSize = 1000; // Supabase limit
       let offset = 0;
       let hasMore = true;
       let batchNumber = 0;
-      
+
       while (hasMore) {
         batchNumber++;
         const { data: batch, error: batchError } = await supabase
@@ -3647,16 +3648,16 @@ const Dashboard: React.FC = () => {
           .is('cancel_date', null) // Exclude cancelled payments only - show both paid and unpaid payments
           .order('id', { ascending: true }) // Order by id for consistent pagination
           .range(offset, offset + batchSize - 1);
-        
+
         if (batchError) {
           console.error('❌ Invoiced Data - Error fetching legacy payments batch:', batchError);
           throw batchError;
         }
-        
+
         if (batch && batch.length > 0) {
           allLegacyPayments = [...allLegacyPayments, ...batch];
           console.log(`✅ Invoiced Data - Fetched batch ${batchNumber}: ${batch.length} payments (total so far: ${allLegacyPayments.length})`);
-          
+
           // If we got fewer than batchSize, we've reached the end
           if (batch.length < batchSize) {
             hasMore = false;
@@ -3667,17 +3668,17 @@ const Dashboard: React.FC = () => {
           hasMore = false;
         }
       }
-      
+
       console.log('✅ Invoiced Data - Fetched all legacy payments (all with due_date, matching Collection Due Report):', allLegacyPayments.length);
-      
+
       // Filter out any payments with cancel_date (safety check)
       const filteredLegacyPayments = allLegacyPayments.filter(p => !p.cancel_date);
       if (filteredLegacyPayments.length !== allLegacyPayments.length) {
         console.log('⚠️ Invoiced Data - Filtered out', allLegacyPayments.length - filteredLegacyPayments.length, 'legacy payments with cancel_date');
       }
-      
+
       console.log('✅ Invoiced Data - Total legacy payments (after cancel_date filter):', filteredLegacyPayments.length);
-      
+
       if (filteredLegacyPayments.length > 0) {
         console.log('📊 Invoiced Data - Sample legacy payment:', {
           id: filteredLegacyPayments[0].id,
@@ -3688,14 +3689,14 @@ const Dashboard: React.FC = () => {
           actual_date: filteredLegacyPayments[0].actual_date
         });
       }
-      
+
       // Get unique lead IDs
       const newLeadIds = Array.from(new Set(filteredNewPayments.map(p => p.lead_id).filter(Boolean)));
       const legacyLeadIds = Array.from(new Set(filteredLegacyPayments.map(p => p.lead_id).filter(Boolean))).map(id => Number(id)).filter(id => !Number.isNaN(id));
-      
+
       console.log('📊 Invoiced Data - Unique new lead IDs:', newLeadIds.length);
       console.log('📊 Invoiced Data - Unique legacy lead IDs:', legacyLeadIds.length);
-      
+
       // Fetch lead metadata with handler info and category (to get department from category, matching Agreement Signed)
       let newLeadsMap = new Map();
       if (newLeadIds.length > 0) {
@@ -3732,11 +3733,11 @@ const Dashboard: React.FC = () => {
       let legacyLeadsMap = new Map();
       if (legacyLeadIds.length > 0) {
         console.log('🔍 Invoiced Data - Fetching legacy leads metadata...');
-        
+
         // Supabase's .in() has a limit of 1000 items, so we need to fetch in batches
         const leadIdBatchSize = 1000;
         let allLegacyLeads: any[] = [];
-        
+
         for (let i = 0; i < legacyLeadIds.length; i += leadIdBatchSize) {
           const batchLeadIds = legacyLeadIds.slice(i, i + leadIdBatchSize);
           const { data: legacyLeadsBatch, error: legacyLeadsError } = await supabase
@@ -3784,7 +3785,7 @@ const Dashboard: React.FC = () => {
           });
         }
       }
-      
+
       console.log('📊 Invoiced Data - Date ranges:', {
         todayStr,
         effectiveThirtyDaysAgo,
@@ -3792,19 +3793,19 @@ const Dashboard: React.FC = () => {
         endOfMonthStr,
         selectedMonthName
       });
-      
+
       // Fetch handler information and map to departments (EXACTLY matching CollectionDueReport)
       // Collect handler names from new leads and handler IDs from legacy leads
       const allHandlerNames = new Set<string>();
       const allHandlerIds = new Set<number>();
-      
+
       // Collect handler names from new leads
       newLeadsMap.forEach((lead: any) => {
         if (lead.handler && typeof lead.handler === 'string' && lead.handler.trim() && lead.handler !== '---' && lead.handler.toLowerCase() !== 'not assigned') {
           allHandlerNames.add(lead.handler.trim());
         }
       });
-      
+
       // Collect handler IDs from legacy leads
       legacyLeadsMap.forEach((lead: any) => {
         const handlerId = lead.case_handler_id ? Number(lead.case_handler_id) : null;
@@ -3812,18 +3813,18 @@ const Dashboard: React.FC = () => {
           allHandlerIds.add(handlerId);
         }
       });
-      
+
       // Fetch employees by display_name for new leads
       const handlerNameToIdMap = new Map<string, number>();
       const handlerMap = new Map<number, string>(); // handlerId -> display_name
-      
+
       if (allHandlerNames.size > 0) {
         const handlerNamesArray = Array.from(allHandlerNames);
         const { data: handlerDataByName, error: handlerErrorByName } = await supabase
           .from('tenants_employee')
           .select('id, display_name')
           .in('display_name', handlerNamesArray);
-        
+
         if (!handlerErrorByName && handlerDataByName) {
           handlerDataByName.forEach(emp => {
             const empId = Number(emp.id);
@@ -3835,7 +3836,7 @@ const Dashboard: React.FC = () => {
           });
         }
       }
-      
+
       // Fetch employees by ID for legacy leads
       const uniqueHandlerIds = Array.from(new Set(allHandlerIds));
       if (uniqueHandlerIds.length > 0) {
@@ -3843,7 +3844,7 @@ const Dashboard: React.FC = () => {
           .from('tenants_employee')
           .select('id, display_name')
           .in('id', uniqueHandlerIds);
-        
+
         if (!handlerErrorById && handlerDataById) {
           handlerDataById.forEach(emp => {
             const empId = Number(emp.id);
@@ -3854,15 +3855,15 @@ const Dashboard: React.FC = () => {
           });
         }
       }
-      
+
       // Fetch department information from tenants_employee for all handlers (EXACTLY matching CollectionDueReport)
       const handlerIdsWithDepartments = Array.from(new Set([
         ...Array.from(handlerNameToIdMap.values()),
         ...Array.from(allHandlerIds)
       ]));
-      
+
       const handlerIdToDepartmentNameMap = new Map<number, string>(); // handlerId -> departmentName (string)
-      
+
       if (handlerIdsWithDepartments.length > 0) {
         const { data: employeeDepartmentData, error: employeeDepartmentError } = await supabase
           .from('tenants_employee')
@@ -3876,7 +3877,7 @@ const Dashboard: React.FC = () => {
             )
           `)
           .in('id', handlerIdsWithDepartments);
-        
+
         if (!employeeDepartmentError && employeeDepartmentData) {
           employeeDepartmentData.forEach(emp => {
             const empId = Number(emp.id);
@@ -3897,7 +3898,7 @@ const Dashboard: React.FC = () => {
           });
         }
       }
-      
+
       // Create a map from department name to department ID (for matching with departmentIds)
       const departmentNameToIdMap = new Map<string, number>();
       departmentTargets.forEach(dept => {
@@ -3909,7 +3910,7 @@ const Dashboard: React.FC = () => {
         departmentNameToIdMap.set('Commercial - Sales', 20);
         departmentNameToIdMap.set('Commercial & Civil', 20); // Ensure both names map to the same ID
       }
-      
+
       // Function to normalize department names by removing " - Sales" suffix for consolidation
       // This ensures "Austria and Germany" and "Austria and Germany - Sales" map to the same department
       const normalizeDepartmentName = (deptName: string): string => {
@@ -3918,7 +3919,7 @@ const Dashboard: React.FC = () => {
         const baseName = deptName.replace(/ - Sales$/, '').trim();
         return baseName;
       };
-      
+
       // Create a map from normalized name to primary department ID (the one WITHOUT " - Sales" suffix)
       // First pass: identify primary departments (those without " - Sales" suffix)
       const normalizedNameToPrimaryIdMap = new Map<string, number>();
@@ -3941,14 +3942,14 @@ const Dashboard: React.FC = () => {
           // But we still want to keep the original mapping too for exact matches
         }
       });
-      
+
       // Create a map from any department name (including variants) to the consolidated department ID
       const allDepartmentNamesToIdMap = new Map<string, number>();
       departmentTargets.forEach(dept => {
         const normalizedName = normalizeDepartmentName(dept.name);
         const primaryId = normalizedNameToPrimaryIdMap.get(normalizedName);
         const targetId = primaryId || dept.id; // Use primary ID if available, otherwise use the department's own ID
-        
+
         // Map the original name to the target ID
         allDepartmentNamesToIdMap.set(dept.name, targetId);
         // Map the normalized name to the target ID (will overwrite with primary ID if it exists)
@@ -3959,7 +3960,7 @@ const Dashboard: React.FC = () => {
         allDepartmentNamesToIdMap.set('Commercial - Sales', 20);
         allDepartmentNamesToIdMap.set('Commercial & Civil', 20);
       }
-      
+
       // Process payments and group by department (using employee's department NAME, EXACTLY matching CollectionDueReport)
       // IMPORTANT: Each payment row is counted separately - no deduplication by lead_id
       // Multiple payment rows per lead are all counted and summed
@@ -3985,7 +3986,7 @@ const Dashboard: React.FC = () => {
           newPaymentsSkipped++;
           return;
         }
-        
+
         newPaymentsProcessed++;
 
         // Use value (without VAT) for total amount from payment_plans table (matching CollectionDueReport logic)
@@ -4042,7 +4043,7 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
       });
-      
+
       console.log('📊 Invoiced Data - New payments processing:', {
         total: filteredNewPayments.length,
         processed: newPaymentsProcessed,
@@ -4058,7 +4059,7 @@ const Dashboard: React.FC = () => {
         const leadIdKey = payment.lead_id?.toString() || String(payment.lead_id);
         const leadIdNum = typeof payment.lead_id === 'number' ? payment.lead_id : Number(payment.lead_id);
         let lead = legacyLeadsMap.get(leadIdKey) || legacyLeadsMap.get(leadIdNum);
-        
+
         if (!lead) {
           legacyPaymentsSkipped++;
           return;
@@ -4076,17 +4077,17 @@ const Dashboard: React.FC = () => {
           legacyPaymentsSkipped++;
           return;
         }
-        
+
         legacyPaymentsProcessed++;
 
         // Use value (without VAT) for legacy payments as specified in CollectionDueReport
         const value = Number(payment.value || payment.value_base || 0);
-        
+
         // Get currency from accounting_currencies relation
-        const accountingCurrency: any = payment.accounting_currencies 
-          ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies) 
+        const accountingCurrency: any = payment.accounting_currencies
+          ? (Array.isArray(payment.accounting_currencies) ? payment.accounting_currencies[0] : payment.accounting_currencies)
           : null;
-        
+
         // Normalize currency: convert symbols to codes for convertToNIS
         let currencyForConversion = 'NIS'; // Default to NIS
         if (accountingCurrency?.name) {
@@ -4103,13 +4104,13 @@ const Dashboard: React.FC = () => {
             default: currencyForConversion = 'NIS'; break;
           }
         }
-        
+
         // Normalize symbols to codes
         if (currencyForConversion === '₪') currencyForConversion = 'NIS';
         else if (currencyForConversion === '€') currencyForConversion = 'EUR';
         else if (currencyForConversion === '$') currencyForConversion = 'USD';
         else if (currencyForConversion === '£') currencyForConversion = 'GBP';
-        
+
         // Convert to NIS (value without VAT), same as CollectionDueReport
         const amountInNIS = convertToNIS(value, currencyForConversion);
 
@@ -4158,51 +4159,51 @@ const Dashboard: React.FC = () => {
           newInvoicedData[selectedMonthName][monthDeptIndex].amount += amountInNIS;
         }
       });
-      
+
       console.log('📊 Invoiced Data - Legacy payments processing:', {
         total: filteredLegacyPayments.length,
         processed: legacyPaymentsProcessed,
         skipped: legacyPaymentsSkipped
       });
-      
+
       console.log('📊 Invoiced Data - Final data before totals:', {
         Today: newInvoicedData["Today"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
         Last30d: newInvoicedData["Last 30d"].map((item, idx) => ({ idx, count: item.count, amount: item.amount })),
         Month: newInvoicedData[selectedMonthName].map((item, idx) => ({ idx, count: item.count, amount: item.amount }))
       });
-      
+
       // Calculate totals
       const numDepartments = departmentTargets.length;
       const totalIndexToday = numDepartments + 1; // General + departments + Total
       const totalIndexMonth = numDepartments; // departments + Total (no General for month)
-      
+
       // Today totals (sum of departments, excluding General and Total)
       const todayTotalCount = newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
       const todayTotalAmount = Math.ceil(newInvoicedData.Today.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Today[totalIndexToday] = { count: todayTotalCount, amount: todayTotalAmount, expected: 0 };
-      
+
       // Yesterday totals
       const yesterdayTotalCount = newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
       const yesterdayTotalAmount = Math.ceil(newInvoicedData.Yesterday.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Yesterday[totalIndexToday] = { count: yesterdayTotalCount, amount: yesterdayTotalAmount, expected: 0 };
-      
+
       // Week totals
       const weekTotalCount = newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
       const weekTotalAmount = Math.ceil(newInvoicedData.Week.slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData.Week[totalIndexToday] = { count: weekTotalCount, amount: weekTotalAmount, expected: 0 };
-      
+
       // Last 30d totals
       const last30TotalCount = newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.count, 0);
       const last30TotalAmount = Math.ceil(newInvoicedData["Last 30d"].slice(1, numDepartments + 1).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData["Last 30d"][totalIndexToday] = { count: last30TotalCount, amount: last30TotalAmount, expected: 0 };
-      
+
       // Current month totals
       const monthTotalCount = newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.count, 0);
       const monthTotalAmount = Math.ceil(newInvoicedData[selectedMonthName].slice(0, numDepartments).reduce((sum, item) => sum + item.amount, 0));
       newInvoicedData[selectedMonthName][totalIndexMonth] = { count: monthTotalCount, amount: monthTotalAmount, expected: 0 };
-      
+
       setInvoicedData(newInvoicedData);
-      
+
     } catch (error: any) {
     } finally {
       setInvoicedDataLoading(false);
@@ -4214,26 +4215,26 @@ const Dashboard: React.FC = () => {
   const isAboveTarget = realRevenueThisMonth >= REVENUE_TARGET;
 
   // Calculate lead growth percentage
-  const leadGrowthPercentage = totalLeadsLastMonth > 0 
-    ? ((totalLeadsThisMonth - totalLeadsLastMonth) / totalLeadsLastMonth) * 100 
+  const leadGrowthPercentage = totalLeadsLastMonth > 0
+    ? ((totalLeadsThisMonth - totalLeadsLastMonth) / totalLeadsLastMonth) * 100
     : 0;
   const isLeadGrowthPositive = leadGrowthPercentage >= 0;
 
   // Calculate conversion rate
-  const conversionRate = totalExistingLeads > 0 
-    ? (meetingsScheduledThisMonth / totalExistingLeads) * 100 
+  const conversionRate = totalExistingLeads > 0
+    ? (meetingsScheduledThisMonth / totalExistingLeads) * 100
     : 0;
 
   // Calculate contracts signed percentage
-  const contractsPercentage = contractsSignedLastMonth > 0 
-    ? ((contractsSignedThisMonth - contractsSignedLastMonth) / contractsSignedLastMonth) * 100 
+  const contractsPercentage = contractsSignedLastMonth > 0
+    ? ((contractsSignedThisMonth - contractsSignedLastMonth) / contractsSignedLastMonth) * 100
     : 0;
   const isContractsGrowthPositive = contractsPercentage >= 0;
 
   const scoreboardTabs = ["Today", "Last 30d", "Tables"];
   // Department names state
   const [departmentNames, setDepartmentNames] = useState<string[]>([]);
-  
+
   // Dynamic scoreboard categories based on actual departments
   const scoreboardCategories = [
     "General",
@@ -4273,21 +4274,21 @@ const Dashboard: React.FC = () => {
   const [showTodayCols, setShowTodayCols] = React.useState(true);
   const [showLast30Cols, setShowLast30Cols] = React.useState(true);
   const [showLastMonthCols, setShowLastMonthCols] = React.useState(true);
-  
+
   // Filter mode: 'today' or 'week' - controls which data is shown in "Today" column
   const [todayFilterMode, setTodayFilterMode] = React.useState<'today' | 'week'>('today');
-  
+
   // Month and year filter states - default to current month and year
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthName);
   const [selectedYear, setSelectedYear] = useState<number>(new Date().getFullYear());
-  
-  
+
+
   // Available months and years for filtering
   const months = [
     'January', 'February', 'March', 'April', 'May', 'June',
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
-  
+
   const years = [2023, 2024, 2025, 2026, 2027];
 
   // Add useEffect to refetch data when month/year changes
@@ -4478,7 +4479,7 @@ const Dashboard: React.FC = () => {
     const data = Array.from({ length: 30 }, (_, i) => {
       const date = new Date(today);
       date.setDate(today.getDate() - (29 - i));
-      
+
       // Different patterns for different departments
       let baseValue = 0;
       switch (category) {
@@ -4503,7 +4504,7 @@ const Dashboard: React.FC = () => {
         default:
           baseValue = Math.random() * 5;
       }
-      
+
       return {
         date: date.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }),
         fullDate: date.toLocaleDateString(),
@@ -4533,7 +4534,7 @@ const Dashboard: React.FC = () => {
     // Filter out "General" from departmentNames if it exists to avoid duplicates
     const filteredDeptNames = departmentNames.filter(name => name !== 'General');
     const categories = ['General', ...filteredDeptNames, 'Total'];
-    
+
     // Create a mapping from department name to its index in departmentNames (which matches data structure order)
     const deptNameToIndex = new Map<string, number>();
     departmentNames.forEach((name, idx) => {
@@ -4541,11 +4542,11 @@ const Dashboard: React.FC = () => {
         deptNameToIndex.set(name, idx);
       }
     });
-    
+
     return categories.map((category, index) => {
       let signedAmount = 0;
       let dueAmount = 0;
-      
+
       if (index === 0) {
         // General -> data index 0
         signedAmount = agreementData['Today']?.[0]?.amount || 0;
@@ -4563,7 +4564,7 @@ const Dashboard: React.FC = () => {
           dueAmount = invoicedData['Today']?.[deptIndexInNames + 1]?.amount || 0;
         }
       }
-      
+
       return {
         category,
         signed: Math.ceil(signedAmount),
@@ -4576,7 +4577,7 @@ const Dashboard: React.FC = () => {
     // Filter out "General" from departmentNames if it exists to avoid duplicates
     const filteredDeptNames = departmentNames.filter(name => name !== 'General');
     const categories = ['General', ...filteredDeptNames, 'Total'];
-    
+
     // Create a mapping from department name to its index in departmentNames (which matches data structure order)
     const deptNameToIndex = new Map<string, number>();
     departmentNames.forEach((name, idx) => {
@@ -4584,11 +4585,11 @@ const Dashboard: React.FC = () => {
         deptNameToIndex.set(name, idx);
       }
     });
-    
+
     return categories.map((category, index) => {
       let signedAmount = 0;
       let dueAmount = 0;
-      
+
       if (index === 0) {
         // General -> data index 0
         signedAmount = agreementData['Last 30d']?.[0]?.amount || 0;
@@ -4606,7 +4607,7 @@ const Dashboard: React.FC = () => {
           dueAmount = invoicedData['Last 30d']?.[deptIndexInNames + 1]?.amount || 0;
         }
       }
-      
+
       return {
         category,
         signed: Math.ceil(signedAmount),
@@ -4620,7 +4621,7 @@ const Dashboard: React.FC = () => {
     const filteredDeptNames = departmentNames.filter(name => name !== 'General');
     const categories = [...filteredDeptNames, 'Total'];
     const selectedMonthName = new Date(selectedYear, months.indexOf(selectedMonth), 1).toLocaleDateString('en-US', { month: 'long' });
-    
+
     // Create a mapping from department name to its index in departmentNames (which matches data structure order)
     const deptNameToIndex = new Map<string, number>();
     departmentNames.forEach((name, idx) => {
@@ -4628,11 +4629,11 @@ const Dashboard: React.FC = () => {
         deptNameToIndex.set(name, idx);
       }
     });
-    
+
     return categories.map((category, index) => {
       let signedAmount = 0;
       let dueAmount = 0;
-      
+
       if (index === categories.length - 1) {
         // Total -> data index = departmentNames.length (no General column in month data)
         signedAmount = agreementData[selectedMonthName]?.[departmentNames.length]?.amount || 0;
@@ -4646,7 +4647,7 @@ const Dashboard: React.FC = () => {
           dueAmount = invoicedData[selectedMonthName]?.[deptIndexInNames]?.amount || 0;
         }
       }
-      
+
       return {
         category,
         signed: Math.ceil(signedAmount),
@@ -4687,7 +4688,7 @@ const Dashboard: React.FC = () => {
       // Only match heights on desktop (md breakpoint and above)
       // On mobile, let AI box have natural height
       const isMobile = window.innerWidth < 768; // md breakpoint
-      
+
       if (!isMobile && performanceDashboardRef.current && aiRef.current && !aiContainerCollapsed) {
         const performanceHeight = performanceDashboardRef.current.offsetHeight;
         setAiHeight(performanceHeight);
@@ -4696,13 +4697,13 @@ const Dashboard: React.FC = () => {
         setAiHeight(undefined);
       }
     }
-    
+
     // Initial update with delay to ensure DOM is ready
     const timeoutId = setTimeout(updateHeight, 100);
-    
+
     // Update on resize
     window.addEventListener('resize', updateHeight);
-    
+
     // Use ResizeObserver for more accurate height tracking
     let resizeObserver: ResizeObserver | null = null;
     if (performanceDashboardRef.current) {
@@ -4712,7 +4713,7 @@ const Dashboard: React.FC = () => {
       });
       resizeObserver.observe(performanceDashboardRef.current);
     }
-    
+
     return () => {
       clearTimeout(timeoutId);
       window.removeEventListener('resize', updateHeight);
@@ -4734,7 +4735,7 @@ const Dashboard: React.FC = () => {
       </div>
     );
   }
-  
+
   console.log('✅ [Dashboard] Auth check complete, rendering dashboard...');
 
   // Extended list for the modal view
@@ -4853,146 +4854,148 @@ const Dashboard: React.FC = () => {
     const dataSource: { [key: string]: { count: number; amount: number; expected: number }[] } = tableType === 'agreement' ? agreementData : invoicedData;
 
     return (
-      <table className="min-w-full text-sm">
-        <thead className="bg-slate-50 border-b border-slate-200">
-          <tr>
-            <th className="text-left px-5 py-3 font-semibold text-slate-700"></th>
-            {categories.map(category => (
-              <th key={category} className="text-center px-5 py-3 font-semibold text-slate-700">{category}</th>
-            ))}
-            <th className="text-center px-5 py-3 font-semibold text-slate-700">Total</th>
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-slate-100">
-          {visibleColumns.map(columnType => {
-            const isToday = columnType === 'Today';
-            const isYesterday = columnType === 'Yesterday';
-            const isWeek = columnType === 'Week';
-            const isLast30 = columnType === 'Last 30d';
-            const isThisMonth = columnType === selectedMonth;
-            
-            return (
-              <React.Fragment key={columnType}>
-                {/* Combined Count and Amount row */}
-                <tr className="hover:bg-slate-50">
-                  <td className="px-5 py-3 font-semibold text-slate-700">{columnType}</td>
-                  {categories.map((category, index) => {
-                    // Find the correct department index in departmentNames to match the data structure
-                    const deptIndexInNames = departmentNames.indexOf(category);
-                    const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                    const data = isToday ? dataSource["Today"][dataIndex + 1] : // Skip General row
-                                isYesterday ? dataSource["Yesterday"][dataIndex + 1] : // Skip General row
-                                isWeek ? dataSource["Week"][dataIndex + 1] : // Skip General row
-                                isLast30 ? dataSource["Last 30d"][dataIndex + 1] : // Skip General row
-                                dataSource[selectedMonth]?.[dataIndex]; // This month uses selected month data (no General row)
-                    const amount = data?.amount || 0;
-                    const target = data?.expected || 0;
-                    const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                    
-                    return (
-                      <td key={`${category}-combined`} className="px-5 py-3 text-center">
-                        <div className="space-y-1">
-                          <div className="badge font-semibold px-2 py-1 bg-slate-100 text-slate-700 border border-slate-200">{data?.count || 0}</div>
-                          <div className="border-t border-slate-200 my-1"></div>
-                          <div className="font-semibold text-slate-700">₪{Math.ceil(amount).toLocaleString()}</div>
-                        </div>
-                      </td>
-                    );
-                  })}
-                  {/* Total column for this time period */}
-                  <td className="px-5 py-3 text-center text-slate-700">
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-center">
-                        <div className="badge bg-slate-100 text-slate-700 font-semibold px-2 py-1 border border-slate-200">
-                          {(() => {
-                            // Calculate the correct total index based on number of departments
-                            const totalIndexToday = departmentNames.length + 1; // General + departments + Total
-                            const totalIndexMonth = departmentNames.length; // departments + Total (no General)
-                            
-                            if (isToday) {
-                              // Use pre-calculated total from data structure
-                              return dataSource["Today"]?.[totalIndexToday]?.count || 0;
-                            } else if (isWeek) {
-                              // Use pre-calculated total from data structure
-                              return dataSource["Week"]?.[totalIndexToday]?.count || 0;
-                            } else if (isLast30) {
-                              // Use pre-calculated total from data structure
-                              return dataSource["Last 30d"]?.[totalIndexToday]?.count || 0;
-                            } else {
-                              // Use pre-calculated total from data structure for month
-                              return dataSource[selectedMonth]?.[totalIndexMonth]?.count || 0;
-                            }
-                          })()}
-                        </div>
-                      </div>
-                      <div className="border-t border-slate-200 my-1"></div>
-                      <div className="font-semibold text-slate-700">
-                        ₪{(() => {
-                          // Calculate the correct total index based on number of departments
-                          const totalIndexToday = departmentNames.length + 1; // General + departments + Total
-                          const totalIndexMonth = departmentNames.length; // departments + Total (no General)
-                          
-                          if (isToday) {
-                            // Use pre-calculated total from data structure
-                            return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                          } else if (isWeek) {
-                            // Use pre-calculated total from data structure
-                            return Math.ceil(dataSource["Week"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                          } else if (isLast30) {
-                            // Use pre-calculated total from data structure
-                            return Math.ceil(dataSource["Last 30d"]?.[totalIndexToday]?.amount || 0).toLocaleString();
-                          } else {
-                            // Use pre-calculated total from data structure for month
-                            return Math.ceil(dataSource[selectedMonth]?.[totalIndexMonth]?.amount || 0).toLocaleString();
-                          }
-                        })()}
-                      </div>
-                    </div>
-                  </td>
-                </tr>
-                {/* Target row - only show for current month */}
-                {isThisMonth && (
-                  <tr className="bg-white border border-slate-200">
-                    <td className="px-5 py-3 font-semibold text-slate-700">Target {columnType}</td>
+      <div className="overflow-x-auto -mx-2 md:mx-0 px-2 md:px-0">
+        <table className="min-w-full text-xs md:text-sm w-full">
+          <thead className="bg-slate-50 border-b border-slate-200">
+            <tr>
+              <th className="text-left px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700"></th>
+              {categories.map(category => (
+                <th key={category} className="text-center px-0.5 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{category}</th>
+              ))}
+              <th className="text-center px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700">Total</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-slate-100">
+            {visibleColumns.map(columnType => {
+              const isToday = columnType === 'Today';
+              const isYesterday = columnType === 'Yesterday';
+              const isWeek = columnType === 'Week';
+              const isLast30 = columnType === 'Last 30d';
+              const isThisMonth = columnType === selectedMonth;
+
+              return (
+                <React.Fragment key={columnType}>
+                  {/* Combined Count and Amount row */}
+                  <tr className="hover:bg-slate-50">
+                    <td className="px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">{columnType}</td>
                     {categories.map((category, index) => {
                       // Find the correct department index in departmentNames to match the data structure
                       const deptIndexInNames = departmentNames.indexOf(category);
                       const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
-                      const data = dataSource[selectedMonth]?.[dataIndex];
+                      const data = isToday ? dataSource["Today"][dataIndex + 1] : // Skip General row
+                        isYesterday ? dataSource["Yesterday"][dataIndex + 1] : // Skip General row
+                          isWeek ? dataSource["Week"][dataIndex + 1] : // Skip General row
+                            isLast30 ? dataSource["Last 30d"][dataIndex + 1] : // Skip General row
+                              dataSource[selectedMonth]?.[dataIndex]; // This month uses selected month data (no General row)
                       const amount = data?.amount || 0;
                       const target = data?.expected || 0;
                       const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
-                      
+
                       return (
-                        <td key={`${category}-target`} className={`px-5 py-3 text-center font-semibold ${targetClass}`}>
-                          {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                        <td key={`${category}-combined`} className="px-0.5 md:px-5 py-1.5 md:py-3 text-center">
+                          <div className="space-y-0.5 md:space-y-1">
+                            <div className="badge text-[11px] md:text-xs font-semibold px-1 md:px-2 py-0.5 md:py-1 bg-slate-100 text-slate-700 border border-slate-200">{data?.count || 0}</div>
+                            <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
+                            <div className="text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">₪{Math.ceil(amount).toLocaleString()}</div>
+                          </div>
                         </td>
                       );
                     })}
-                    {/* Total target column */}
-                    <td className="px-5 py-3 text-center font-semibold text-slate-700">
-                      {(() => {
-                        // Sum all department targets (excluding Total row)
-                        // For month data, departments are at indices 0 to departmentNames.length - 1
-                        const numDepartments = departmentNames.length;
-                        const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
-                        return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
-                      })()}
+                    {/* Total column for this time period */}
+                    <td className="px-1 md:px-5 py-1.5 md:py-3 text-center text-slate-700">
+                      <div className="space-y-0.5 md:space-y-1">
+                        <div className="flex items-center justify-center">
+                          <div className="badge text-[11px] md:text-xs bg-slate-100 text-slate-700 font-semibold px-1 md:px-2 py-0.5 md:py-1 border border-slate-200">
+                            {(() => {
+                              // Calculate the correct total index based on number of departments
+                              const totalIndexToday = departmentNames.length + 1; // General + departments + Total
+                              const totalIndexMonth = departmentNames.length; // departments + Total (no General)
+
+                              if (isToday) {
+                                // Use pre-calculated total from data structure
+                                return dataSource["Today"]?.[totalIndexToday]?.count || 0;
+                              } else if (isWeek) {
+                                // Use pre-calculated total from data structure
+                                return dataSource["Week"]?.[totalIndexToday]?.count || 0;
+                              } else if (isLast30) {
+                                // Use pre-calculated total from data structure
+                                return dataSource["Last 30d"]?.[totalIndexToday]?.count || 0;
+                              } else {
+                                // Use pre-calculated total from data structure for month
+                                return dataSource[selectedMonth]?.[totalIndexMonth]?.count || 0;
+                              }
+                            })()}
+                          </div>
+                        </div>
+                        <div className="border-t border-slate-200 my-0.5 md:my-1"></div>
+                        <div className="text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                          ₪{(() => {
+                            // Calculate the correct total index based on number of departments
+                            const totalIndexToday = departmentNames.length + 1; // General + departments + Total
+                            const totalIndexMonth = departmentNames.length; // departments + Total (no General)
+
+                            if (isToday) {
+                              // Use pre-calculated total from data structure
+                              return Math.ceil(dataSource["Today"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                            } else if (isWeek) {
+                              // Use pre-calculated total from data structure
+                              return Math.ceil(dataSource["Week"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                            } else if (isLast30) {
+                              // Use pre-calculated total from data structure
+                              return Math.ceil(dataSource["Last 30d"]?.[totalIndexToday]?.amount || 0).toLocaleString();
+                            } else {
+                              // Use pre-calculated total from data structure for month
+                              return Math.ceil(dataSource[selectedMonth]?.[totalIndexMonth]?.amount || 0).toLocaleString();
+                            }
+                          })()}
+                        </div>
+                      </div>
                     </td>
                   </tr>
-                )}
-              </React.Fragment>
-            );
-          })}
-        </tbody>
-      </table>
+                  {/* Target row - only show for current month */}
+                  {isThisMonth && (
+                    <tr className="bg-white border border-slate-200">
+                      <td className="px-1 md:px-5 py-1.5 md:py-3 text-xs md:text-sm font-semibold text-slate-700 whitespace-nowrap">Target {columnType}</td>
+                      {categories.map((category, index) => {
+                        // Find the correct department index in departmentNames to match the data structure
+                        const deptIndexInNames = departmentNames.indexOf(category);
+                        const dataIndex = deptIndexInNames >= 0 ? deptIndexInNames : index;
+                        const data = dataSource[selectedMonth]?.[dataIndex];
+                        const amount = data?.amount || 0;
+                        const target = data?.expected || 0;
+                        const targetClass = target > 0 ? (amount >= target ? 'text-green-600' : 'text-red-600') : 'text-slate-700';
+
+                        return (
+                          <td key={`${category}-target`} className={`px-0.5 md:px-5 py-1.5 md:py-3 text-center text-[11px] md:text-sm font-semibold ${targetClass} whitespace-nowrap`}>
+                            {target ? `₪${Math.ceil(target).toLocaleString()}` : '—'}
+                          </td>
+                        );
+                      })}
+                      {/* Total target column */}
+                      <td className="px-1 md:px-5 py-1.5 md:py-3 text-center text-[11px] md:text-sm font-semibold text-slate-700 whitespace-nowrap">
+                        {(() => {
+                          // Sum all department targets (excluding Total row)
+                          // For month data, departments are at indices 0 to departmentNames.length - 1
+                          const numDepartments = departmentNames.length;
+                          const totalTarget = dataSource[selectedMonth]?.slice(0, numDepartments).reduce((sum: number, item: { count: number; amount: number; expected: number }) => sum + (item.expected || 0), 0) || 0;
+                          return totalTarget ? `₪${Math.ceil(totalTarget).toLocaleString()}` : '—';
+                        })()}
+                      </td>
+                    </tr>
+                  )}
+                </React.Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     );
   };
 
   const filteredSuggestions = allSuggestions.filter(suggestion => {
     const matchesType = filterType === 'all' || suggestion.type === filterType;
     const matchesSearch = suggestion.message.toLowerCase().includes(searchTerm.toLowerCase()) ||
-                         suggestion.context?.toLowerCase().includes(searchTerm.toLowerCase());
+      suggestion.context?.toLowerCase().includes(searchTerm.toLowerCase());
     return matchesType && matchesSearch;
   });
 
@@ -5032,7 +5035,7 @@ const Dashboard: React.FC = () => {
   useEffect(() => {
     if (!showLeadsList) return;
     setRealLeadsLoading(true);
-    
+
     (async () => {
       try {
         // Calculate date 30 days ago
@@ -5107,7 +5110,7 @@ const Dashboard: React.FC = () => {
                 .select('closer')
                 .eq('id', contract.newlead_id)
                 .single();
-              
+
               if (newLead?.closer === userFullName) {
                 belongsToUser = true;
               }
@@ -5117,7 +5120,7 @@ const Dashboard: React.FC = () => {
                 .select('closer_id')
                 .eq('id', contract.lead_id)
                 .single();
-              
+
               if (legacyLead?.closer_id === userEmployeeId) {
                 belongsToUser = true;
               }
@@ -5184,13 +5187,13 @@ const Dashboard: React.FC = () => {
             // Fetch currency codes
             const currencyIds = legacyLeads.map(l => l.currency_id).filter(Boolean);
             let currencyMap: Record<number, string> = {};
-            
+
             if (currencyIds.length > 0) {
               const { data: currencies } = await supabase
                 .from('accounting_currencies')
                 .select('id, iso_code')
                 .in('id', currencyIds);
-              
+
               if (currencies) {
                 currencyMap = currencies.reduce((acc, curr) => {
                   acc[curr.id] = curr.iso_code;
@@ -5232,10 +5235,10 @@ const Dashboard: React.FC = () => {
           if (categories) {
             categoryMap = categories.reduce((acc, cat: any) => {
               // Format as "subcategory (main category)" or just "category" if no main category
-              const mainCategory = Array.isArray(cat.misc_maincategory) 
-                ? cat.misc_maincategory[0] 
+              const mainCategory = Array.isArray(cat.misc_maincategory)
+                ? cat.misc_maincategory[0]
                 : cat.misc_maincategory;
-              
+
               if (mainCategory?.name) {
                 acc[cat.id] = `${cat.name} (${mainCategory.name})`;
               } else {
@@ -5364,10 +5367,10 @@ const Dashboard: React.FC = () => {
     setLoadingMoreLeads(true);
     try {
       const { newLeads, legacyLeads, totalCount } = await fetchOverdueLeadsData(true);
-      
+
       // Process all leads for display - pass true to indicate we want all leads
       const processedLeads = await processOverdueLeadsForDisplay([...newLeads, ...legacyLeads], true);
-      
+
       setAllOverdueLeads(processedLeads);
       setShowAllOverdueLeads(true);
     } catch (error) {
@@ -5385,42 +5388,42 @@ const Dashboard: React.FC = () => {
       const newLeads = leadsData.filter(lead => {
         // New leads have lead_number as a string field
         // Filter out deleted leads (those without lead_number)
-        return lead.lead_number && 
-               typeof lead.lead_number === 'string' && 
-               lead.lead_number.trim() !== '' &&
-               !lead.id?.toString().startsWith('legacy_');
+        return lead.lead_number &&
+          typeof lead.lead_number === 'string' &&
+          lead.lead_number.trim() !== '' &&
+          !lead.id?.toString().startsWith('legacy_');
       });
-      
+
       const legacyLeads = leadsData.filter(lead => {
         // Legacy leads either:
         // 1. Don't have lead_number (from leads_lead table)
         // 2. Have any of the role ID fields (expert_id, meeting_manager_id, etc.)
         // 3. Have id that starts with 'legacy_' (already processed)
         // 4. Have id as a number (legacy leads have bigint id)
-        const hasRoleField = lead.expert_id || 
-                            lead.meeting_manager_id || 
-                            lead.meeting_lawyer_id || 
-                            lead.meeting_scheduler_id || 
-                            lead.case_handler_id || 
-                            lead.closer_id;
+        const hasRoleField = lead.expert_id ||
+          lead.meeting_manager_id ||
+          lead.meeting_lawyer_id ||
+          lead.meeting_scheduler_id ||
+          lead.case_handler_id ||
+          lead.closer_id;
         const isLegacyId = typeof lead.id === 'number' || lead.id?.toString().startsWith('legacy_');
         return (!lead.lead_number && isLegacyId) || hasRoleField || isLegacyId;
       });
       // Fetch stage names for new leads
       let newLeadStageIds: number[] = [];
       if (newLeads.length > 0) {
-        newLeadStageIds = [...new Set(newLeads.map(lead => lead.stage).filter((stage): stage is number => 
+        newLeadStageIds = [...new Set(newLeads.map(lead => lead.stage).filter((stage): stage is number =>
           stage !== null && stage !== undefined && typeof stage === 'number'
         ))];
       }
-      
+
       let newLeadStageNameMap: { [key: number]: string } = {};
       if (newLeadStageIds.length > 0) {
         const { data: newLeadStages, error: newLeadStagesError } = await supabase
           .from('lead_stages')
           .select('id, name')
           .in('id', newLeadStageIds);
-        
+
         if (!newLeadStagesError && newLeadStages) {
           newLeadStageNameMap = newLeadStages.reduce((acc: { [key: number]: string }, stage: any) => {
             acc[stage.id] = stage.name || getStageName(String(stage.id));
@@ -5428,12 +5431,12 @@ const Dashboard: React.FC = () => {
           }, {});
         }
       }
-      
+
       // Fetch employee names for new leads (for expert_id, meeting_manager_id, and also check expert/manager fields if they're numeric IDs)
       let newLeadEmployeeIds: number[] = [];
       if (newLeads.length > 0) {
         const employeeIdSet = new Set<number>();
-        
+
         // Collect from ID fields
         newLeads.forEach(lead => {
           if (lead.expert_id && typeof lead.expert_id === 'number') {
@@ -5442,7 +5445,7 @@ const Dashboard: React.FC = () => {
           if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
             employeeIdSet.add(lead.meeting_manager_id);
           }
-          
+
           // Also check expert and manager text fields - they might contain numeric IDs
           if (lead.expert && typeof lead.expert === 'string' && !isNaN(Number(lead.expert))) {
             const expertId = Number(lead.expert);
@@ -5457,17 +5460,17 @@ const Dashboard: React.FC = () => {
             }
           }
         });
-        
+
         newLeadEmployeeIds = Array.from(employeeIdSet);
       }
-      
+
       let newLeadEmployeeNameMap: { [key: number]: string } = {};
       if (newLeadEmployeeIds.length > 0) {
         const { data: newLeadEmployees, error: newLeadEmployeesError } = await supabase
           .from('tenants_employee')
           .select('id, display_name')
           .in('id', newLeadEmployeeIds);
-        
+
         if (!newLeadEmployeesError && newLeadEmployees) {
           newLeadEmployeeNameMap = newLeadEmployees.reduce((acc: { [key: number]: string }, employee: any) => {
             acc[employee.id] = employee.display_name;
@@ -5475,13 +5478,13 @@ const Dashboard: React.FC = () => {
           }, {});
         }
       }
-      
+
       // Fetch categories with main categories for new leads
       let newLeadCategoryIds: number[] = [];
       let newLeadCategoryNameMap: { [key: number]: string } = {};
       if (newLeads.length > 0) {
         newLeadCategoryIds = [...new Set(newLeads.map(lead => lead.category_id).filter((id): id is number => id !== null && id !== undefined && typeof id === 'number'))];
-        
+
         if (newLeadCategoryIds.length > 0) {
           const { data: newLeadCategories, error: newLeadCategoriesError } = await supabase
             .from('misc_category')
@@ -5495,14 +5498,14 @@ const Dashboard: React.FC = () => {
               )
             `)
             .in('id', newLeadCategoryIds);
-          
+
           if (!newLeadCategoriesError && newLeadCategories) {
             newLeadCategoryNameMap = newLeadCategories.reduce((acc: { [key: number]: string }, category: any) => {
               // Format as "subcategory (main category)" or just "category" if no main category
-              const mainCategory = Array.isArray(category.misc_maincategory) 
-                ? category.misc_maincategory[0] 
+              const mainCategory = Array.isArray(category.misc_maincategory)
+                ? category.misc_maincategory[0]
                 : category.misc_maincategory;
-              
+
               if (mainCategory?.name) {
                 acc[category.id] = `${category.name} (${mainCategory.name})`;
               } else {
@@ -5513,7 +5516,7 @@ const Dashboard: React.FC = () => {
           }
         }
       }
-      
+
       // Process new leads - filter out any that don't have lead_number (deleted leads)
       // Also filter out leads where lead_number equals the ID (which means it's deleted)
       const validNewLeads = newLeads.filter(lead => {
@@ -5544,7 +5547,7 @@ const Dashboard: React.FC = () => {
             expertName = lead.expert;
           }
         }
-        
+
         // Resolve manager name - check if meeting_manager_id is set, or if manager field contains a numeric ID
         let managerName = 'Not assigned';
         if (lead.meeting_manager_id && typeof lead.meeting_manager_id === 'number') {
@@ -5567,7 +5570,7 @@ const Dashboard: React.FC = () => {
             managerName = lead.meeting_manager;
           }
         }
-        
+
         // Resolve category name - check if category_id is set, otherwise use category text field
         let categoryName = 'Not specified';
         if (lead.category_id && typeof lead.category_id === 'number') {
@@ -5575,14 +5578,14 @@ const Dashboard: React.FC = () => {
         } else if (lead.category && typeof lead.category === 'string') {
           categoryName = lead.category;
         }
-        
+
         // Use lead_number directly from database - it's already fetched from the leads table
         // At this point we know lead_number exists and is valid (filtered above)
         return {
           ...lead,
           lead_type: 'new' as const,
           lead_number: lead.lead_number, // Use lead_number from database, guaranteed to exist
-          stage_name: (lead.stage !== null && lead.stage !== undefined) 
+          stage_name: (lead.stage !== null && lead.stage !== undefined)
             ? (newLeadStageNameMap[lead.stage] || getStageName(String(lead.stage)))
             : 'Follow-up Required',
           expert_name: expertName,
@@ -5602,7 +5605,7 @@ const Dashboard: React.FC = () => {
 
       if (legacyLeads.length > 0) {
         const limitedLegacyLeads = (showAllOverdueLeads || processAll) ? legacyLeads : legacyLeads.slice(0, 10); // Use all leads when showing all or processing all
-        
+
         // Collect unique IDs from limited leads
         const stageIds = [...new Set(limitedLegacyLeads.map(lead => lead.stage).filter(Boolean))];
         const employeeIds = [...new Set([
@@ -5643,10 +5646,10 @@ const Dashboard: React.FC = () => {
         if (categoryResult.status === 'fulfilled' && categoryResult.value.data) {
           categoryNameMap = categoryResult.value.data.reduce((acc: { [key: number]: string }, category: any) => {
             // Format as "subcategory (main category)" or just "category" if no main category
-            const mainCategory = Array.isArray(category.misc_maincategory) 
-              ? category.misc_maincategory[0] 
+            const mainCategory = Array.isArray(category.misc_maincategory)
+              ? category.misc_maincategory[0]
               : category.misc_maincategory;
-            
+
             if (mainCategory?.name) {
               acc[category.id] = `${category.name} (${mainCategory.name})`;
             } else {
@@ -5659,7 +5662,7 @@ const Dashboard: React.FC = () => {
 
       // Process legacy leads (use all when showing all or processing all, otherwise limit to 10)
       const leadsToProcess = (showAllOverdueLeads || processAll) ? legacyLeads : legacyLeads.slice(0, 10);
-        
+
       const processedLegacyLeads = leadsToProcess.map(lead => ({
         ...lead,
         id: `legacy_${lead.id}`,
@@ -5726,9 +5729,9 @@ const Dashboard: React.FC = () => {
                   Meeting {formatTimeUntil(nextHourMeetings[0].meetingDateTime)} with {nextHourMeetings[0].name} ({nextHourMeetings[0].lead})
                 </span>
                 {/* Count Badge */}
-                <span 
+                <span
                   className="inline-flex items-center justify-center min-w-[28px] h-7 px-2.5 bg-white text-red-500 text-xs font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
-                  title={nextHourMeetings.map((meeting: any) => 
+                  title={nextHourMeetings.map((meeting: any) =>
                     `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
                   ).join('\n')}
                 >
@@ -5752,12 +5755,12 @@ const Dashboard: React.FC = () => {
                   <div className="absolute -top-2 right-4 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-900"></div>
                 </div>
               </div>
-              
+
               {/* Mobile: Count Badge - Top Right */}
               <div className="md:hidden absolute top-2 right-2 z-10 group">
-                <span 
+                <span
                   className="inline-flex items-center justify-center min-w-[24px] h-6 px-2 bg-white text-red-500 text-[10px] font-bold rounded-full shadow-lg animate-pulse ring-2 ring-white ring-opacity-75 cursor-help flex-shrink-0"
-                  title={nextHourMeetings.map((meeting: any) => 
+                  title={nextHourMeetings.map((meeting: any) =>
                     `Meeting ${formatTimeUntil(meeting.meetingDateTime)} with ${meeting.name} (${meeting.lead})`
                   ).join('\n')}
                 >
@@ -5781,7 +5784,7 @@ const Dashboard: React.FC = () => {
                   <div className="absolute -top-2 right-4 w-0 h-0 border-l-4 border-r-4 border-b-4 border-transparent border-b-gray-900"></div>
                 </div>
               </div>
-              
+
               {/* Mobile: Text Notice - Bottom */}
               <div className="md:hidden absolute bottom-1 left-0 right-0 z-10 flex items-center justify-center px-2">
                 <span className="inline-flex items-center px-2 py-0.5 text-white text-[9px] font-semibold whitespace-normal break-words text-center leading-tight">
@@ -5818,7 +5821,7 @@ const Dashboard: React.FC = () => {
             </div>
           </div>
           {/* SVG Bar Chart Placeholder */}
-          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10"/><rect x="10" y="10" width="4" height="20"/><rect x="18" y="16" width="4" height="14"/><rect x="26" y="6" width="4" height="24"/><rect x="34" y="14" width="4" height="16"/></svg>
+          <svg className="absolute bottom-2 right-2 w-10 h-5 md:w-12 md:h-8 opacity-40" fill="none" stroke="white" strokeWidth="2" viewBox="0 0 48 32"><rect x="2" y="20" width="4" height="10" /><rect x="10" y="10" width="4" height="20" /><rect x="18" y="16" width="4" height="14" /><rect x="26" y="6" width="4" height="24" /><rect x="34" y="14" width="4" height="16" /></svg>
         </div>
 
         {/* New Messages */}
@@ -5874,61 +5877,61 @@ const Dashboard: React.FC = () => {
               ) : todayMeetings.length === 0 ? (
                 <div className="text-center py-8 text-base-content/70">No meetings scheduled for today</div>
               ) : (
-              <div className="flex gap-4 overflow-x-auto py-4 px-1 scrollbar-hide">
+                <div className="flex gap-4 overflow-x-auto py-4 px-1 scrollbar-hide">
                   {todayMeetings.map((meeting, index) => (
                     <div key={meeting.id} className="min-w-[85vw] max-w-[90vw] bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 transform hover:-translate-y-1 border border-gray-100 group flex flex-col justify-between h-full min-h-[340px] relative pb-16" style={{ flex: '0 0 85vw' }}>
-                    <div className="flex-1 cursor-pointer flex flex-col">
-                      {/* Lead Number and Name */}
-                      <div className="mb-3 flex items-center gap-2">
+                      <div className="flex-1 cursor-pointer flex flex-col">
+                        {/* Lead Number and Name */}
+                        <div className="mb-3 flex items-center gap-2">
                           <span className="text-xs font-semibold text-gray-400 tracking-widest">{meeting.lead}</span>
-                        <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
-                        <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
-                      </div>
-                      <div className="space-y-2 divide-y divide-gray-100">
-                        {/* Time */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Time</span>
-                          <span className="text-sm font-bold text-gray-800">
-                            {meeting.time && meeting.time.includes(':') && meeting.time.split(':').length === 3
-                              ? meeting.time.substring(0, 5)
-                              : meeting.time}
-                          </span>
+                          <span className="w-1 h-1 bg-gray-300 rounded-full"></span>
+                          <h3 className="text-lg font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate flex-1">{meeting.name}</h3>
                         </div>
-                        {/* Manager */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Manager</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
-                        </div>
+                        <div className="space-y-2 divide-y divide-gray-100">
+                          {/* Time */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Time</span>
+                            <span className="text-sm font-bold text-gray-800">
+                              {meeting.time && meeting.time.includes(':') && meeting.time.split(':').length === 3
+                                ? meeting.time.substring(0, 5)
+                                : meeting.time}
+                            </span>
+                          </div>
+                          {/* Manager */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Manager</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.manager}</span>
+                          </div>
                           {/* Topic */}
-                        <div className="flex justify-between items-center py-1">
+                          <div className="flex justify-between items-center py-1">
                             <span className="text-xs font-semibold text-gray-500">Topic</span>
                             <span className="text-sm font-bold text-gray-800">{meeting.topic}</span>
-                        </div>
-                        {/* Amount */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Amount</span>
+                          </div>
+                          {/* Amount */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Amount</span>
                             <span className="text-sm font-bold text-green-600">{meeting.value}</span>
-                        </div>
-                        {/* Expert */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Expert</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
-                        </div>
-                        {/* Scheduler */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Scheduler</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.scheduler || '---'}</span>
-                        </div>
-                        {/* Stage */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Stage</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.stage || 'N/A'}</span>
-                        </div>
-                        {/* Location */}
-                        <div className="flex justify-between items-center py-1">
-                          <span className="text-xs font-semibold text-gray-500">Location</span>
-                          <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
-                        </div>
+                          </div>
+                          {/* Expert */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Expert</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.expert}</span>
+                          </div>
+                          {/* Scheduler */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Scheduler</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.scheduler || '---'}</span>
+                          </div>
+                          {/* Stage */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Stage</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.stage || 'N/A'}</span>
+                          </div>
+                          {/* Location */}
+                          <div className="flex justify-between items-center py-1">
+                            <span className="text-xs font-semibold text-gray-500">Location</span>
+                            <span className="text-sm font-bold text-gray-800">{meeting.location}</span>
+                          </div>
                         </div>
                       </div>
                       {/* Action Buttons */}
@@ -5945,31 +5948,31 @@ const Dashboard: React.FC = () => {
                         // - staff meetings with links
                         return hasLink && (isTeamsMeeting || isOnline || hasDefaultForLocation || isStaffMeeting);
                       })() && (
-                        <div className="absolute bottom-4 left-4 right-4">
-                          {/* Join Meeting (Teams) */}
-                          <button 
-                            className="btn btn-primary btn-xs sm:btn-sm w-full"
-                            onClick={() => {
-                              const url = getValidTeamsLink(
-                                meeting.link ||
-                                meeting.teams_meeting_url ||
-                                meetingLocationLinks[meeting.location]
-                              );
-                              if (url) {
-                                window.open(url, '_blank');
-                              } else {
-                                alert('No meeting URL available');
-                              }
-                            }}
-                            title={meeting.isStaffMeeting ? "Join Meeting" : "Teams Meeting"}
-                          >
-                            <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
-                          </button>
-                        </div>
-                      )}
-                  </div>
-                ))}
-              </div>
+                          <div className="absolute bottom-4 left-4 right-4">
+                            {/* Join Meeting (Teams) */}
+                            <button
+                              className="btn btn-primary btn-xs sm:btn-sm w-full"
+                              onClick={() => {
+                                const url = getValidTeamsLink(
+                                  meeting.link ||
+                                  meeting.teams_meeting_url ||
+                                  meetingLocationLinks[meeting.location]
+                                );
+                                if (url) {
+                                  window.open(url, '_blank');
+                                } else {
+                                  alert('No meeting URL available');
+                                }
+                              }}
+                              title={meeting.isStaffMeeting ? "Join Meeting" : "Teams Meeting"}
+                            >
+                              <VideoCameraIcon className="w-3 h-3 sm:w-4 sm:h-4" />
+                            </button>
+                          </div>
+                        )}
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
@@ -5979,49 +5982,45 @@ const Dashboard: React.FC = () => {
         <div className="glass-card mt-4 animate-fade-in">
           <div className="flex flex-col md:flex-row justify-between items-start md:items-center mb-4 gap-4">
             <div className="font-bold text-lg text-base-content/80">Follow ups</div>
-            
+
             {/* Tabs */}
             <div className="flex gap-2 items-center">
               <button
                 onClick={() => setFollowUpTab('today')}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                  followUpTab === 'today'
-                    ? 'text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${followUpTab === 'today'
+                  ? 'text-white shadow-md'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
                 style={followUpTab === 'today' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Today
               </button>
               <button
                 onClick={() => setFollowUpTab('overdue')}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                  followUpTab === 'overdue'
-                    ? 'text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${followUpTab === 'overdue'
+                  ? 'text-white shadow-md'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
                 style={followUpTab === 'overdue' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Overdue
               </button>
               <button
                 onClick={() => setFollowUpTab('tomorrow')}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                  followUpTab === 'tomorrow'
-                    ? 'text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${followUpTab === 'tomorrow'
+                  ? 'text-white shadow-md'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
                 style={followUpTab === 'tomorrow' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Tomorrow
               </button>
               <button
                 onClick={() => setFollowUpTab('future')}
-                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${
-                  followUpTab === 'future'
-                    ? 'text-white shadow-md'
-                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
-                }`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium transition-all ${followUpTab === 'future'
+                  ? 'text-white shadow-md'
+                  : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                  }`}
                 style={followUpTab === 'future' ? { backgroundColor: '#3E2BCD' } : {}}
               >
                 Future
@@ -6043,18 +6042,18 @@ const Dashboard: React.FC = () => {
               </div>
             </div>
           </div>
-          
+
           {/* Get current leads based on tab */}
           {(() => {
-            const isLoading = followUpTab === 'today' ? todayFollowUpsLoading : 
-                             followUpTab === 'tomorrow' ? tomorrowFollowUpsLoading :
-                             followUpTab === 'future' ? futureFollowUpsLoading :
-                             overdueLeadsLoading;
+            const isLoading = followUpTab === 'today' ? todayFollowUpsLoading :
+              followUpTab === 'tomorrow' ? tomorrowFollowUpsLoading :
+                followUpTab === 'future' ? futureFollowUpsLoading :
+                  overdueLeadsLoading;
             const currentLeads = followUpTab === 'today' ? todayFollowUps :
-                                followUpTab === 'tomorrow' ? tomorrowFollowUps :
-                                followUpTab === 'future' ? futureFollowUps :
-                                realOverdueLeads;
-            
+              followUpTab === 'tomorrow' ? tomorrowFollowUps :
+                followUpTab === 'future' ? futureFollowUps :
+                  realOverdueLeads;
+
             if (isLoading) {
               return (
                 <div className="flex justify-center items-center py-12">
@@ -6062,7 +6061,7 @@ const Dashboard: React.FC = () => {
                 </div>
               );
             }
-            
+
             if (currentLeads.length === 0) {
               return (
                 <div className="text-center py-12 text-gray-500">
@@ -6070,7 +6069,7 @@ const Dashboard: React.FC = () => {
                 </div>
               );
             }
-            
+
             // Table View (Desktop only, Mobile always shows cards)
             // Use CSS media query approach - hide table on mobile, show cards
             if (followUpViewMode === 'table') {
@@ -6079,275 +6078,275 @@ const Dashboard: React.FC = () => {
                   {/* Desktop Table View */}
                   <div className="hidden md:block overflow-x-auto">
                     <table className="table w-full">
-                    <thead>
-                      <tr>
-                        <th>Lead</th>
-                        <th>Stage</th>
-                        <th>Category</th>
-                        <th>Topic</th>
-                        <th>Expert</th>
-                        <th>Manager</th>
-                        <th>Amount</th>
-                        <th>Follow-up Date</th>
-                        {followUpTab === 'overdue' && <th>Days Overdue</th>}
-                        <th>Actions</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {currentLeads.map((lead) => {
-                        const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                        return (
-                          <tr 
-                            key={lead.id} 
-                            className="cursor-pointer hover:bg-gray-50"
-                            onClick={() => {
-                              if (lead.lead_type === 'legacy') {
-                                // For legacy leads, remove "legacy_" prefix and navigate to {id}
-                                const legacyId = lead.id?.toString().replace('legacy_', '');
-                                navigate(`/clients/${legacyId}`);
-                              } else {
-                                // For new leads, use lead_number instead of id
-                                navigate(`/clients/${lead.lead_number}`);
-                              }
-                            }}
-                          >
-                            <td>
-                              <div className="flex flex-col">
-                                <span className="text-sm text-gray-500">
-                                  {lead.lead_number}
-                                  {lead.lead_type === 'legacy' && <span className="text-xs text-gray-400 ml-1">(L)</span>}
-                                </span>
-                                <span className="font-semibold text-gray-900">{lead.name}</span>
-                              </div>
-                            </td>
-                            <td>{lead.stage_name || 'N/A'}</td>
-                            <td>{lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'N/A')}</td>
-                            <td>{lead.topic || 'N/A'}</td>
-                            <td>{lead.expert_name || 'N/A'}</td>
-                            <td>{lead.manager_name || 'N/A'}</td>
-                            <td>
-                              {lead.lead_type === 'legacy' 
-                                ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
-                                : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
-                              }
-                            </td>
-                            <td>
-                              {editingFollowUpId === lead.follow_up_id ? (
-                                <div className="flex items-center gap-2">
-                                  <input
-                                    type="date"
-                                    value={editFollowUpDate}
-                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
-                                    className="input input-sm input-bordered"
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                  <button
-                                    className="btn btn-xs btn-primary"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleSaveFollowUp(lead);
-                                    }}
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    className="btn btn-xs btn-ghost"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCancelEditFollowUp();
-                                    }}
-                                  >
-                                    Cancel
-                                  </button>
+                      <thead>
+                        <tr>
+                          <th>Lead</th>
+                          <th>Stage</th>
+                          <th>Category</th>
+                          <th>Topic</th>
+                          <th>Expert</th>
+                          <th>Manager</th>
+                          <th>Amount</th>
+                          <th>Follow-up Date</th>
+                          {followUpTab === 'overdue' && <th>Days Overdue</th>}
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {currentLeads.map((lead) => {
+                          const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                          return (
+                            <tr
+                              key={lead.id}
+                              className="cursor-pointer hover:bg-gray-50"
+                              onClick={() => {
+                                if (lead.lead_type === 'legacy') {
+                                  // For legacy leads, remove "legacy_" prefix and navigate to {id}
+                                  const legacyId = lead.id?.toString().replace('legacy_', '');
+                                  navigate(`/clients/${legacyId}`);
+                                } else {
+                                  // For new leads, use lead_number instead of id
+                                  navigate(`/clients/${lead.lead_number}`);
+                                }
+                              }}
+                            >
+                              <td>
+                                <div className="flex flex-col">
+                                  <span className="text-sm text-gray-500">
+                                    {lead.lead_number}
+                                    {lead.lead_type === 'legacy' && <span className="text-xs text-gray-400 ml-1">(L)</span>}
+                                  </span>
+                                  <span className="font-semibold text-gray-900">{lead.name}</span>
                                 </div>
-                              ) : (
-                                <span>{lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}</span>
-                              )}
-                            </td>
-                            {followUpTab === 'overdue' && (
-                              <td>{daysOverdue}</td>
-                            )}
-                            <td onClick={(e) => e.stopPropagation()}>
-                              {editingFollowUpId !== lead.follow_up_id && (
-                                <div className="flex gap-1">
-                                  <button
-                                    className="btn btn-xs btn-ghost"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditFollowUp(lead);
-                                    }}
-                                    title="Edit follow-up date"
-                                  >
-                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
-                                  </button>
-                                  <button
-                                    className="btn btn-xs btn-ghost text-error"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteFollowUp(lead);
-                                    }}
-                                    title="Delete follow-up"
-                                  >
-                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
-                                  </button>
-                                </div>
-                              )}
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                {/* Mobile Card View (shown when table mode but on mobile) */}
-                <div className="md:hidden space-y-4">
-                  {currentLeads.map((lead) => {
-                    const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
-                    return (
-                      <div 
-                        key={lead.id} 
-                        className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
-                        onClick={() => {
-                          if (lead.lead_type === 'legacy') {
-                            // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
-                            const legacyId = lead.id?.toString().replace('legacy_', '');
-                            navigate(`/clients/legacy-${legacyId}`);
-                          } else {
-                            // For new leads, use lead_number instead of id
-                            navigate(`/clients/${lead.lead_number}`);
-                          }
-                        }}
-                      >
-                        <div className="flex-1 flex flex-col">
-                          <div className="mb-3 flex flex-col gap-1">
-                            <div className="flex items-center gap-2">
-                              <span className="text-sm font-semibold text-gray-400 tracking-widest">
-                                {lead.lead_number}
-                                {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
-                              </span>
-                              {followUpTab === 'today' && (
-                                <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
-                              )}
-                              {followUpTab === 'tomorrow' && (
-                                <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
-                              )}
-                              {followUpTab === 'future' && (
-                                <span className="text-sm font-bold px-2 py-1 rounded bg-purple-600 text-white">Future</span>
-                              )}
-                            </div>
-                            <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate">{lead.name}</h3>
-                          </div>
-                          <div className="flex justify-between items-center py-1">
-                            <span className="text-sm font-semibold text-gray-500">Stage</span>
-                            <span className="text-sm font-bold text-black">
-                              {lead.stage_name || 'Follow-up Required'}
-                            </span>
-                          </div>
-                          <div className="space-y-2 divide-y divide-gray-100 mt-2">
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Category</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'Not specified')}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Topic</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
-                            </div>
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Expert</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.expert_name || 'Not assigned'}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Amount</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' 
-                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                              </td>
+                              <td>{lead.stage_name || 'N/A'}</td>
+                              <td>{lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'N/A')}</td>
+                              <td>{lead.topic || 'N/A'}</td>
+                              <td>{lead.expert_name || 'N/A'}</td>
+                              <td>{lead.manager_name || 'N/A'}</td>
+                              <td>
+                                {lead.lead_type === 'legacy'
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}`
                                   : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                 }
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Manager</span>
-                              <span className="text-sm font-bold text-gray-800">
-                                {lead.manager_name || 'Not assigned'}
-                              </span>
-                            </div>
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Probability</span>
-                              <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
-                            </div>
-                            {/* Follow-up Date */}
-                            <div className="flex justify-between items-center py-1">
-                              <span className="text-sm font-semibold text-gray-500">Follow-up Date</span>
-                              {editingFollowUpId === lead.follow_up_id ? (
-                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <input
-                                    type="date"
-                                    value={editFollowUpDate}
-                                    onChange={(e) => setEditFollowUpDate(e.target.value)}
-                                    className="input input-xs input-bordered"
-                                    onClick={(e) => e.stopPropagation()}
-                                  />
-                                  <button
-                                    className="btn btn-xs btn-primary"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleSaveFollowUp(lead);
-                                    }}
-                                  >
-                                    Save
-                                  </button>
-                                  <button
-                                    className="btn btn-xs btn-ghost"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleCancelEditFollowUp();
-                                    }}
-                                  >
-                                    Cancel
-                                  </button>
-                                </div>
-                              ) : (
-                                <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-                                  <span className="text-sm font-bold text-gray-800">
-                                    {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
-                                  </span>
-                                  <button
-                                    className="btn btn-xs btn-ghost"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleEditFollowUp(lead);
-                                    }}
-                                    title="Edit follow-up date"
-                                  >
-                                    <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
-                                  </button>
-                                  <button
-                                    className="btn btn-xs btn-ghost text-error"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      handleDeleteFollowUp(lead);
-                                    }}
-                                    title="Delete follow-up"
-                                  >
-                                    <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
-                                  </button>
-                                </div>
+                              </td>
+                              <td>
+                                {editingFollowUpId === lead.follow_up_id ? (
+                                  <div className="flex items-center gap-2">
+                                    <input
+                                      type="date"
+                                      value={editFollowUpDate}
+                                      onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                      className="input input-sm input-bordered"
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                    <button
+                                      className="btn btn-xs btn-primary"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSaveFollowUp(lead);
+                                      }}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      className="btn btn-xs btn-ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCancelEditFollowUp();
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <span>{lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}</span>
+                                )}
+                              </td>
+                              {followUpTab === 'overdue' && (
+                                <td>{daysOverdue}</td>
                               )}
+                              <td onClick={(e) => e.stopPropagation()}>
+                                {editingFollowUpId !== lead.follow_up_id && (
+                                  <div className="flex gap-1">
+                                    <button
+                                      className="btn btn-xs btn-ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleEditFollowUp(lead);
+                                      }}
+                                      title="Edit follow-up date"
+                                    >
+                                      <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                    </button>
+                                    <button
+                                      className="btn btn-xs btn-ghost text-error"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteFollowUp(lead);
+                                      }}
+                                      title="Delete follow-up"
+                                    >
+                                      <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                    </button>
+                                  </div>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                  {/* Mobile Card View (shown when table mode but on mobile) */}
+                  <div className="md:hidden space-y-4">
+                    {currentLeads.map((lead) => {
+                      const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
+                      return (
+                        <div
+                          key={lead.id}
+                          className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
+                          onClick={() => {
+                            if (lead.lead_type === 'legacy') {
+                              // For legacy leads, remove "legacy_" prefix and navigate to legacy-{id}
+                              const legacyId = lead.id?.toString().replace('legacy_', '');
+                              navigate(`/clients/legacy-${legacyId}`);
+                            } else {
+                              // For new leads, use lead_number instead of id
+                              navigate(`/clients/${lead.lead_number}`);
+                            }
+                          }}
+                        >
+                          <div className="flex-1 flex flex-col">
+                            <div className="mb-3 flex flex-col gap-1">
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-semibold text-gray-400 tracking-widest">
+                                  {lead.lead_number}
+                                  {lead.lead_type === 'legacy' && <span className="text-sm text-gray-500 ml-1">(L)</span>}
+                                </span>
+                                {followUpTab === 'today' && (
+                                  <span className="text-sm font-bold px-2 py-1 rounded bg-green-600 text-white">Today</span>
+                                )}
+                                {followUpTab === 'tomorrow' && (
+                                  <span className="text-sm font-bold px-2 py-1 rounded bg-blue-600 text-white">Tomorrow</span>
+                                )}
+                                {followUpTab === 'future' && (
+                                  <span className="text-sm font-bold px-2 py-1 rounded bg-purple-600 text-white">Future</span>
+                                )}
+                              </div>
+                              <h3 className="text-xl font-extrabold text-gray-900 group-hover:text-primary transition-colors truncate">{lead.name}</h3>
+                            </div>
+                            <div className="flex justify-between items-center py-1">
+                              <span className="text-sm font-semibold text-gray-500">Stage</span>
+                              <span className="text-sm font-bold text-black">
+                                {lead.stage_name || 'Follow-up Required'}
+                              </span>
+                            </div>
+                            <div className="space-y-2 divide-y divide-gray-100 mt-2">
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Category</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy' ? lead.category_name : (lead.category_name || lead.category || 'Not specified')}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Topic</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.topic || 'Not specified'}</span>
+                              </div>
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Expert</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.expert_name || 'Not assigned'}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Amount</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.lead_type === 'legacy'
+                                    ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}`
+                                    : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
+                                  }
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Manager</span>
+                                <span className="text-sm font-bold text-gray-800">
+                                  {lead.manager_name || 'Not assigned'}
+                                </span>
+                              </div>
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Probability</span>
+                                <span className="text-sm font-bold text-gray-800">{lead.probability || 0}%</span>
+                              </div>
+                              {/* Follow-up Date */}
+                              <div className="flex justify-between items-center py-1">
+                                <span className="text-sm font-semibold text-gray-500">Follow-up Date</span>
+                                {editingFollowUpId === lead.follow_up_id ? (
+                                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                    <input
+                                      type="date"
+                                      value={editFollowUpDate}
+                                      onChange={(e) => setEditFollowUpDate(e.target.value)}
+                                      className="input input-xs input-bordered"
+                                      onClick={(e) => e.stopPropagation()}
+                                    />
+                                    <button
+                                      className="btn btn-xs btn-primary"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleSaveFollowUp(lead);
+                                      }}
+                                    >
+                                      Save
+                                    </button>
+                                    <button
+                                      className="btn btn-xs btn-ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleCancelEditFollowUp();
+                                      }}
+                                    >
+                                      Cancel
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                                    <span className="text-sm font-bold text-gray-800">
+                                      {lead.next_followup ? new Date(lead.next_followup).toLocaleDateString() : 'N/A'}
+                                    </span>
+                                    <button
+                                      className="btn btn-xs btn-ghost"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleEditFollowUp(lead);
+                                      }}
+                                      title="Edit follow-up date"
+                                    >
+                                      <PencilSquareIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                    </button>
+                                    <button
+                                      className="btn btn-xs btn-ghost text-error"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        handleDeleteFollowUp(lead);
+                                      }}
+                                      title="Delete follow-up"
+                                    >
+                                      <TrashIcon className="w-4 h-4" style={{ color: '#3E28CD' }} />
+                                    </button>
+                                  </div>
+                                )}
+                              </div>
                             </div>
                           </div>
                         </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
+                      );
+                    })}
+                  </div>
+                </>
               );
             }
-            
+
             // Card View (Mobile default, Desktop optional)
             return (
               <>
@@ -6356,8 +6355,8 @@ const Dashboard: React.FC = () => {
                   {currentLeads.map((lead) => {
                     const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
                     return (
-                      <div 
-                        key={lead.id} 
+                      <div
+                        key={lead.id}
                         className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
                         onClick={() => {
                           if (lead.lead_type === 'legacy') {
@@ -6417,8 +6416,8 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Amount</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' 
-                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                {lead.lead_type === 'legacy'
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}`
                                   : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                 }
                               </span>
@@ -6505,8 +6504,8 @@ const Dashboard: React.FC = () => {
                   {currentLeads.map((lead) => {
                     const daysOverdue = lead.next_followup ? Math.floor((new Date().getTime() - new Date(lead.next_followup).getTime()) / (1000 * 3600 * 24)) : 0;
                     return (
-                      <div 
-                        key={lead.id} 
+                      <div
+                        key={lead.id}
                         className="bg-white rounded-2xl p-5 shadow-md hover:shadow-xl transition-all duration-200 border border-red-100 group flex flex-col justify-between min-h-[340px] relative cursor-pointer"
                         onClick={() => {
                           if (lead.lead_type === 'legacy') {
@@ -6566,8 +6565,8 @@ const Dashboard: React.FC = () => {
                             <div className="flex justify-between items-center py-1">
                               <span className="text-sm font-semibold text-gray-500">Amount</span>
                               <span className="text-sm font-bold text-gray-800">
-                                {lead.lead_type === 'legacy' 
-                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}` 
+                                {lead.lead_type === 'legacy'
+                                  ? `₪${Math.ceil(lead.amount || 0).toLocaleString()}`
                                   : `${lead.balance_currency || '₪'}${Math.ceil(lead.balance || 0).toLocaleString()}`
                                 }
                               </span>
@@ -6661,20 +6660,19 @@ const Dashboard: React.FC = () => {
             <div className="space-y-3">
               {latestMessages.map((message, index) => (
                 <div key={index} className="bg-gradient-to-r from-white to-gray-50 rounded-xl p-5 shadow-lg border border-gray-100 hover:shadow-xl hover:scale-[1.02] transition-all duration-300 cursor-pointer group"
-                     onClick={() => {
-                       // Navigate to client's interactions tab
-                       if (message.client_id) {
-  
-                         navigate(`/clients/${message.lead_number}?tab=interactions`);
-                       }
-                     }}>
+                  onClick={() => {
+                    // Navigate to client's interactions tab
+                    if (message.client_id) {
+
+                      navigate(`/clients/${message.lead_number}?tab=interactions`);
+                    }
+                  }}>
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-3">
-                      <span className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${
-                        message.type === 'email' 
-                          ? 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white' 
-                          : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
-                      }`}>
+                      <span className={`text-xs px-3 py-1.5 rounded-full font-medium shadow-sm animate-pulse ${message.type === 'email'
+                        ? 'bg-gradient-to-r from-pink-500 via-purple-500 to-purple-600 text-white'
+                        : 'bg-gradient-to-r from-blue-500 via-cyan-500 to-teal-400 text-white'
+                        }`}>
                         {message.type === 'email' ? 'Email' : 'WhatsApp'}
                       </span>
                       <span className="font-bold text-gray-900 text-lg">{message.client_name}</span>
@@ -6723,70 +6721,69 @@ const Dashboard: React.FC = () => {
       <div className="flex flex-col md:flex-row mb-6 md:mb-10 w-full relative transition-all duration-500 ease-in-out md:items-start gap-4 md:gap-0">
         {/* AI Suggestions Box */}
         {!aiContainerCollapsed && (
-        <div 
-          ref={aiRef} 
-          className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 md:overflow-hidden`}
-          style={aiHeight ? { height: `${aiHeight}px`, minHeight: `${aiHeight}px`, maxHeight: `${aiHeight}px` } : undefined}
-        >
-          <div className="flex justify-between items-center mb-4 flex-shrink-0">
-            <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
-            <button
-              onClick={() => setAiContainerCollapsed(true)}
-              className="btn btn-ghost btn-sm text-gray-500 hover:text-gray-700 transition-colors"
-              title="Close AI Assistant"
-            >
-              <XMarkIcon className="w-5 h-5" />
-            </button>
-          </div>
-          {/* On mobile: no flex-1, let content determine height. On desktop: flex-1 with scroll */}
-          <div className="md:flex-1 md:overflow-y-auto md:min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
-            <style>{`
+          <div
+            ref={aiRef}
+            className={`bg-white border border-gray-200 rounded-2xl p-4 shadow-lg flex flex-col transition-all duration-500 ease-in-out w-full md:w-1/5 opacity-100 md:overflow-hidden`}
+            style={aiHeight ? { height: `${aiHeight}px`, minHeight: `${aiHeight}px`, maxHeight: `${aiHeight}px` } : undefined}
+          >
+            <div className="flex justify-between items-center mb-4 flex-shrink-0">
+              <h3 className="text-lg font-semibold text-gray-900">AI Assistant</h3>
+              <button
+                onClick={() => setAiContainerCollapsed(true)}
+                className="btn btn-ghost btn-sm text-gray-500 hover:text-gray-700 transition-colors"
+                title="Close AI Assistant"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            {/* On mobile: no flex-1, let content determine height. On desktop: flex-1 with scroll */}
+            <div className="md:flex-1 md:overflow-y-auto md:min-h-0 scrollbar-hide" style={{ scrollbarWidth: 'none', msOverflowStyle: 'none' }}>
+              <style>{`
               .scrollbar-hide::-webkit-scrollbar {
                 display: none;
               }
             `}</style>
-            <AISuggestions />
+              <AISuggestions />
+            </div>
           </div>
-        </div>
         )}
-        
+
         {/* Professional CRM Scoreboard */}
-        <div 
+        <div
           ref={performanceDashboardRef}
-          className={`bg-white border border-gray-200 rounded-2xl shadow-lg transition-all duration-500 ease-in-out ${
-            aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
-          } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}
+          className={`bg-white border border-gray-200 rounded-2xl shadow-lg transition-all duration-500 ease-in-out ${aiContainerCollapsed ? 'w-full' : 'w-full md:w-4/5'
+            } ${aiContainerCollapsed ? 'ml-0' : 'md:ml-8'}`}
         >
           <div className="p-8">
-              {/* Header with gradient background */}
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 shadow-lg">
-                    <ChartBarIcon className="w-8 h-8 text-white" />
-                  </div>
-                  <div>
-                    <h2 className="text-3xl font-bold text-gray-900">Performance Dashboard</h2>
-                    <p className="text-gray-600 text-sm mt-1">Real-time sales metrics and analytics</p>
-                  </div>
+            {/* Header with gradient background */}
+            <div className="flex flex-col md:flex-row md:items-center md:justify-between mb-8 gap-4">
+              <div className="flex items-center gap-3">
+                <div className="flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-tr from-purple-600 to-indigo-600 shadow-lg">
+                  <ChartBarIcon className="w-8 h-8 text-white" />
                 </div>
-                <div className="flex items-center gap-2">
-                  <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border border-gray-200">
-                    {scoreboardTabs.map(tab => (
-                      <a
-                        key={tab}
-                        className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200' : 'text-gray-600 hover:bg-gray-50'}`}
-                        onClick={() => setScoreTab(tab)}
-                      >
-                        {tab}
-                      </a>
-                    ))}
-                  </div>
+                <div>
+                  <h2 className="text-3xl font-bold text-gray-900">Performance Dashboard</h2>
+                  <p className="text-gray-600 text-sm mt-1">Real-time sales metrics and analytics</p>
                 </div>
               </div>
+              <div className="flex items-center gap-2">
+                <div className="tabs tabs-boxed bg-gray-100 shadow-inner rounded-xl p-1 border border-gray-200">
+                  {scoreboardTabs.map(tab => (
+                    <a
+                      key={tab}
+                      className={`tab text-sm font-semibold px-4 py-2 rounded-lg transition-all ${scoreTab === tab ? 'tab-active bg-white text-purple-600 shadow-sm border border-purple-200' : 'text-gray-600 hover:bg-gray-50'}`}
+                      onClick={() => setScoreTab(tab)}
+                    >
+                      {tab}
+                    </a>
+                  ))}
+                </div>
+              </div>
+            </div>
 
-              {/* Performance Summary Cards */}
-              {/* COMMENTED OUT: 4 performance boxes (Leads This Month, Meetings Scheduled, Revenue This Month, Contracts Signed) */}
-              {/* <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
+            {/* Performance Summary Cards */}
+            {/* COMMENTED OUT: 4 performance boxes (Leads This Month, Meetings Scheduled, Revenue This Month, Contracts Signed) */}
+            {/* <div className="grid grid-cols-1 lg:grid-cols-4 gap-6 mb-8">
                 <div className="bg-white rounded-2xl p-6 border border-gray-200 shadow-lg hover:shadow-xl transition-all duration-300 transform hover:-translate-y-1">
                   <div className="flex items-center justify-between mb-3">
                     <div className="p-2 bg-purple-50 rounded-lg">
@@ -6855,7 +6852,7 @@ const Dashboard: React.FC = () => {
                     )}
                   </div>
                   {/* Progress Bar */}
-                  {/* {!revenueLoading && (
+            {/* {!revenueLoading && (
                     <div className="mt-3">
                       <div className="w-full bg-gray-200 rounded-full h-2">
                         <div 
@@ -6897,879 +6894,338 @@ const Dashboard: React.FC = () => {
                 </div>
               </div> */}
 
-              {/* Department Performance Boxes */}
-              {scoreTab === 'Tables' && (
-                <div className="space-y-6">
-                  <div className="flex items-center gap-3 mb-6">
-                    <div className="p-2 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-lg border border-purple-200">
-                      <ChartBarIcon className="w-5 h-5 text-purple-600" />
-                    </div>
-                    <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
+            {/* Department Performance Boxes */}
+            {scoreTab === 'Tables' && (
+              <div className="space-y-6">
+                <div className="flex items-center gap-3 mb-6">
+                  <div className="p-2 bg-gradient-to-br from-purple-100 to-indigo-100 rounded-lg border border-purple-200">
+                    <ChartBarIcon className="w-5 h-5 text-purple-600" />
                   </div>
-                  {/* Desktop: consolidated performance table */}
-                  <div className="hidden md:block">
-                    <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
-                      <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-slate-50">
-                        <div className="text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
-                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
-                            {todayFilterMode === 'week' ? 'Week' : 'Today'}
-                          </button>
-                          <button 
-                            className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
-                            title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
-                          >
-                            Week
-                          </button>
-                          <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                          <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
-                          <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <details className="dropdown dropdown-end">
-                            <summary className="btn btn-xs btn-ghost text-slate-700">
-                              {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </summary>
-                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                              {months.map(month => (
-                                <li key={month} style={{ width: '100%' }}>
-                                  <a 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      setSelectedMonth(month);
-                                      // Close the details element
-                                      const details = e.currentTarget.closest('details');
-                                      if (details) {
-                                        details.removeAttribute('open');
-                                      }
-                                    }}
-                                    className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
-                                  >
-                                    {month}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                          <details className="dropdown dropdown-end">
-                            <summary className="btn btn-xs btn-ghost text-slate-700">
-                              {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </summary>
-                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                              {years.map(year => (
-                                <li key={year} style={{ width: '100%' }}>
-                                  <a 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      setSelectedYear(year);
-                                      // Close the details element
-                                      const details = e.currentTarget.closest('details');
-                                      if (details) {
-                                        details.removeAttribute('open');
-                                      }
-                                    }}
-                                    className="block w-full p-2 text-sm hover:bg-gray-100"
-                                  >
-                                    {year}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        </div>
-                      </div>
-                      {departmentPerformanceLoading ? (
-                        <div className="flex justify-center items-center py-12">
-                          <span className="loading loading-spinner loading-lg text-primary"></span>
-                        </div>
-                      ) : renderColumnsView('agreement')}
-                    </div>
-                              </div>
-                              
-                  {/* Duplicate table for Invoiced section */}
-                  <div className="hidden md:block mt-6">
-                    <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden">
-                      <div className="flex items-center justify-between p-3 border-b border-slate-200 bg-slate-50">
-                        <div className="text-sm font-semibold text-[#3b28c7]">Invoiced</div>
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-semibold text-slate-700 mr-2">Filter by:</span>
-                          <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
-                            {todayFilterMode === 'week' ? 'Week' : 'Today'}
-                          </button>
-                          <button 
-                            className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} 
-                            onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
-                            title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
-                          >
-                            Week
-                          </button>
-                          <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
-                          <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
-                          <div className="border-l border-slate-300 h-6 mx-2"></div>
-                          <details className="dropdown dropdown-end">
-                            <summary className="btn btn-xs btn-ghost text-slate-700">
-                              {selectedMonth} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </summary>
-                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                              {months.map(month => (
-                                <li key={month} style={{ width: '100%' }}>
-                                  <a 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      setSelectedMonth(month);
-                                      // Close the details element
-                                      const details = e.currentTarget.closest('details');
-                                      if (details) {
-                                        details.removeAttribute('open');
-                                      }
-                                    }}
-                                    className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
-                                  >
-                                    {month}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                          <details className="dropdown dropdown-end">
-                            <summary className="btn btn-xs btn-ghost text-slate-700">
-                              {selectedYear} <svg className="w-3 h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
-                            </summary>
-                            <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
-                              {years.map(year => (
-                                <li key={year} style={{ width: '100%' }}>
-                                  <a 
-                                    onClick={(e) => {
-                                      e.preventDefault();
-                                      setSelectedYear(year);
-                                      // Close the details element
-                                      const details = e.currentTarget.closest('details');
-                                      if (details) {
-                                        details.removeAttribute('open');
-                                      }
-                                    }}
-                                    className="block w-full p-2 text-sm hover:bg-gray-100"
-                                  >
-                                    {year}
-                                  </a>
-                                </li>
-                              ))}
-                            </ul>
-                          </details>
-                        </div>
-                      </div>
-                      {invoicedDataLoading ? (
-                        <div className="flex justify-center items-center py-12">
-                          <span className="loading loading-spinner loading-lg text-primary"></span>
-                        </div>
-                      ) : renderColumnsView('invoiced')}
-                    </div>
-                                  </div>
-                                  
-                  {/* Mobile comparison blocks */}
-                  {departmentPerformanceLoading ? (
-                    <div className="flex justify-center items-center py-12 md:hidden">
-                      <span className="loading loading-spinner loading-lg text-primary"></span>
-                    </div>
-                  ) : (
-                    <div className="md:hidden space-y-4">
-                      {/* Agreement Signed Section */}
-                          <div>
-                        <div className="flex items-center gap-2 mb-3">
-                          <div className="text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
-                          </div>
-                        <div className="flex items-center gap-2 mb-3 px-3 text-xs text-gray-600">
-                            <span className="font-semibold text-gray-700">Month:</span>
-                            <select
-                              className="select select-xs select-bordered w-auto"
-                              value={selectedMonth}
-                              onChange={(e) => setSelectedMonth(e.target.value)}
-                            >
-                              {months.map((month) => (
-                                <option key={month} value={month}>{month}</option>
-                              ))}
-                            </select>
-                          </div>
-
-                        {/* Today Box */}
-                        <div className="mb-4">
-                          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-                                  <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
-                                    <div className="flex items-center gap-2">
-                                <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                                <span className="font-semibold text-slate-800 uppercase tracking-wide">Today</span>
-                                    </div>
-                                  </div>
-                            <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
-                                    {mobileCategories.map((category) => {
-                                const periodData = getMobilePeriodData('today', category, 'agreement');
-                                const cardKey = `agreement-today-${category}`;
-                                      const isFlipped = flippedCards.has(cardKey);
-                                      const percentage = periodData.expected > 0
-                                        ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
-                                        : 0;
-                                      const chartData = departmentChartData[category] || [];
-
-                                      return (
-                                        <div
-                                          key={cardKey}
-                                          className="relative h-64 min-w-[260px] flex-shrink-0"
-                                          style={{ perspective: '1000px' }}
-                                        >
-                                          <div
-                                            className="relative w-full h-full transition-transform duration-700 cursor-pointer"
-                                            style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
-                                            onClick={() => handleCardFlip(cardKey)}
-                                          >
-                                            <div
-                                              className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
-                                              style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
-                                            >
-                                              <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                                                <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
-                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Today</span>
-                                              </div>
-                                              <div className="p-4">
-                                          <div className="bg-gradient-to-br from-indigo-500 to-purple-600 rounded-lg p-4 border border-opacity-20 shadow-md">
-                                                  <div className="flex items-center gap-2 mb-3">
-                                              <div className="w-2.5 h-2.5 bg-indigo-500 rounded-full shadow-sm"></div>
-                                              <span className="text-xs font-semibold text-white uppercase tracking-wide">Today</span>
-                                                  </div>
-                                                  <div className="space-y-2">
-                                                    <div>
-                                                      <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
-                                                      <div className="text-xs font-medium text-white/90">Contracts</div>
-                                                    </div>
-                                                    <div className="pt-2 border-t border-white/20">
-                                                      <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
-                                                      <div className="text-xs font-medium text-white/90">Amount</div>
-                                                    </div>
-                                                        </div>
-                                                        </div>
-                                                      </div>
-                                      </div>
-                                      <div
-                                        className="absolute inset-0 bg-gradient-to-br from-indigo-500 to-purple-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
-                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                                      >
-                                        <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
-                                          <h4 className="text-sm font-semibold text-white">{category}</h4>
-                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Today</span>
-                                        </div>
-                                        <div className="p-4 h-full">
-                                          <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                            {chartData && chartData.length > 0 ? (
-                                              <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                                  <XAxis
-                                                    dataKey="date"
-                                                    tick={{ fontSize: 10, fill: 'white' }}
-                                                    axisLine={{ stroke: 'white' }}
-                                                    tickLine={{ stroke: 'white' }}
-                                                    interval={Math.floor(chartData.length / 6)}
-                                                  />
-                                                  <YAxis
-                                                    tick={{ fontSize: 10, fill: 'white' }}
-                                                    axisLine={{ stroke: 'white' }}
-                                                    tickLine={{ stroke: 'white' }}
-                                                    width={40}
-                                                  />
-                                                  <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
-                                                  <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
-                                                </LineChart>
-                                              </ResponsiveContainer>
-                                            ) : (
-                                              <div className="flex items-center justify-center h-full text-white/70 text-xs">
-                                                No trend data yet
-                                                          </div>
-                                            )}
-                                                          </div>
-                                                        </div>
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
-                          </div>
-                        </div>
-
-                        {/* Last 30d and Month Box */}
-                        <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-                          <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
-                            <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-purple-500"></div>
-                              <span className="font-semibold text-slate-800 uppercase tracking-wide">Last 30d & {selectedMonth}</span>
-                            </div>
-                          </div>
-                          <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
-                            {mobileCategories.map((category) => {
-                              const last30Data = getMobilePeriodData('last30d', category, 'agreement');
-                              const monthData = getMobilePeriodData('currentMonth', category, 'agreement');
-                              const targetData = getMobilePeriodData('target', category, 'agreement');
-                              const cardKey = `agreement-combined-${category}`;
-                              const isFlipped = flippedCards.has(cardKey);
-                              const chartData = departmentChartData[category] || [];
-
-                              return (
-                                <div
-                                  key={cardKey}
-                                  className="relative h-80 min-w-[260px] flex-shrink-0"
-                                  style={{ perspective: '1000px' }}
-                                >
-                                  <div
-                                    className="relative w-full h-full transition-transform duration-700 cursor-pointer"
-                                    style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
-                                    onClick={() => handleCardFlip(cardKey)}
-                                  >
-                                    <div
-                                      className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
-                                      style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
-                                    >
-                                      <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                                        <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
-                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Last 30d & {selectedMonth}</span>
-                                      </div>
-                                      <div className="p-4">
-                                        <div className="bg-gradient-to-br from-purple-500 to-indigo-600 rounded-lg p-3 border border-opacity-20 shadow-md">
-                                          <div className="flex items-center gap-2 mb-2">
-                                            <div className="w-2 h-2 bg-purple-500 rounded-full shadow-sm"></div>
-                                            <span className="text-[10px] font-semibold text-white uppercase tracking-wide">Last 30d & {selectedMonth}</span>
-                                          </div>
-                                          <div className="space-y-2">
-                                            {/* Last 30d and Current Month - Horizontal */}
-                                            <div className="flex gap-2">
-                                              {/* Last 30d */}
-                                              <div className="flex-1">
-                                                <div className="flex items-center gap-1.5 mb-1">
-                                                  <div className="w-1.5 h-1.5 bg-purple-300 rounded-full"></div>
-                                                  <span className="text-[9px] font-medium text-white/90 uppercase">Last 30d</span>
-                                                </div>
-                                                <div className="space-y-1">
-                                                  <div>
-                                                    <div className="text-base font-bold text-white">{last30Data.count}</div>
-                                                    <div className="text-[9px] font-medium text-white/80">Contracts</div>
-                                                  </div>
-                                                  <div>
-                                                    <div className="text-xs font-bold text-white">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
-                                                    <div className="text-[9px] font-medium text-white/80">Amount</div>
-                                                  </div>
-                                                </div>
-                                              </div>
-
-                                              {/* Divider */}
-                                              <div className="w-px bg-white/20"></div>
-
-                                              {/* Current Month */}
-                                              <div className="flex-1">
-                                                <div className="flex items-center gap-1.5 mb-1">
-                                                  <div className="w-1.5 h-1.5 bg-blue-300 rounded-full"></div>
-                                                  <span className="text-[9px] font-medium text-white/90 uppercase">{selectedMonth}</span>
-                                                </div>
-                                                <div className="space-y-1">
-                                                  <div>
-                                                    <div className="text-base font-bold text-white">{monthData.count}</div>
-                                                    <div className="text-[9px] font-medium text-white/80">Contracts</div>
-                                                  </div>
-                                                  <div>
-                                                    <div className="text-xs font-bold text-white">₪{monthData.amount ? Math.ceil(monthData.amount).toLocaleString() : '0'}</div>
-                                                    <div className="text-[9px] font-medium text-white/80">Amount</div>
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            </div>
-
-                                            <div className="pt-2 border-t border-white/20"></div>
-
-                                            {/* Target */}
-                                            <div>
-                                              <div className="flex items-center gap-2 mb-1">
-                                                <div className="w-1.5 h-1.5 bg-emerald-300 rounded-full"></div>
-                                                <span className="text-[9px] font-medium text-white/90 uppercase">Target</span>
-                                              </div>
-                                              <div className="pl-4">
-                                                <div className="text-sm font-bold text-white">₪{targetData.expected ? Math.ceil(targetData.expected).toLocaleString() : '0'}</div>
-                                                <div className="text-[9px] font-medium text-white/80">Target Amount</div>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                    </div>
-                                    <div
-                                      className="absolute inset-0 bg-gradient-to-br from-purple-500 to-indigo-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
-                                      style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                                    >
-                                      <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
-                                        <h4 className="text-sm font-semibold text-white">{category}</h4>
-                                        <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Last 30d & {selectedMonth}</span>
-                                      </div>
-                                      <div className="p-4 h-full">
-                                        <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                          {chartData && chartData.length > 0 ? (
-                                            <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                              <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                                <XAxis
-                                                  dataKey="date"
-                                                  tick={{ fontSize: 10, fill: 'white' }}
-                                                  axisLine={{ stroke: 'white' }}
-                                                  tickLine={{ stroke: 'white' }}
-                                                  interval={Math.floor(chartData.length / 6)}
-                                                />
-                                                <YAxis
-                                                  tick={{ fontSize: 10, fill: 'white' }}
-                                                  axisLine={{ stroke: 'white' }}
-                                                  tickLine={{ stroke: 'white' }}
-                                                  width={40}
-                                                />
-                                                <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
-                                                <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
-                                              </LineChart>
-                                            </ResponsiveContainer>
-                                          ) : (
-                                            <div className="flex items-center justify-center h-full text-white/70 text-xs">
-                                              No trend data yet
-                                            </div>
-                                                    )}
-                                                  </div>
-                                                </div>
-                                              </div>
-                                            </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-
-                      {/* Invoiced Section */}
-                      {invoicedDataLoading ? (
-                        <div className="flex justify-center items-center py-12">
-                          <span className="loading loading-spinner loading-lg text-primary"></span>
-                        </div>
-                      ) : (
-                        <div>
-                          <div className="flex items-center gap-2 mb-3">
-                            <div className="text-sm font-semibold text-[#3b28c7]">Invoiced</div>
-                          </div>
-
-                          {/* Today Box */}
-                          <div className="mb-4">
-                            <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-                              <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
-                                <div className="flex items-center gap-2">
-                                  <div className="w-2 h-2 rounded-full bg-indigo-500"></div>
-                                  <span className="font-semibold text-slate-800 uppercase tracking-wide">Today</span>
-                                </div>
-                              </div>
-                              <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
-                                {mobileCategories.map((category) => {
-                                  const periodData = getMobilePeriodData('today', category, 'invoiced');
-                                  const cardKey = `invoiced-today-${category}`;
-                                  const isFlipped = flippedCards.has(cardKey);
-                                  const percentage = periodData.expected > 0
-                                    ? Math.min(100, Math.round((periodData.amount / periodData.expected) * 100))
-                                    : 0;
-                                  const chartData = departmentChartData[category] || [];
-
-                                  return (
-                                    <div
-                                      key={cardKey}
-                                      className="relative h-64 min-w-[260px] flex-shrink-0"
-                                      style={{ perspective: '1000px' }}
-                                    >
-                                      <div
-                                        className="relative w-full h-full transition-transform duration-700 cursor-pointer"
-                                        style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
-                                        onClick={() => handleCardFlip(cardKey)}
-                                      >
-                                        <div
-                                          className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
-                                          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
-                                        >
-                                          <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                                            <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
-                                            <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Today</span>
-                                          </div>
-                                          <div className="p-4">
-                                            <div className="bg-gradient-to-br from-teal-500 to-cyan-600 rounded-lg p-4 border border-opacity-20 shadow-md">
-                                              <div className="flex items-center gap-2 mb-3">
-                                                <div className="w-2.5 h-2.5 bg-teal-500 rounded-full shadow-sm"></div>
-                                                <span className="text-xs font-semibold text-white uppercase tracking-wide">Today</span>
-                                              </div>
-                                              <div className="space-y-2">
-                                                <div>
-                                                  <div className="text-2xl font-bold text-white mb-1">{periodData.count}</div>
-                                                  <div className="text-xs font-medium text-white/90">Contracts</div>
-                                                </div>
-                                                <div className="pt-2 border-t border-white/20">
-                                                  <div className="text-lg font-bold text-white mb-1">₪{periodData.amount ? Math.ceil(periodData.amount).toLocaleString() : '0'}</div>
-                                                  <div className="text-xs font-medium text-white/90">Amount</div>
-                                                </div>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                        <div
-                                          className="absolute inset-0 bg-gradient-to-br from-teal-500 to-cyan-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
-                                          style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                                        >
-                                          <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
-                                            <h4 className="text-sm font-semibold text-white">{category}</h4>
-                                            <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Today</span>
-                                          </div>
-                                              <div className="p-4 h-full">
-                                                <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                                  {chartData && chartData.length > 0 ? (
-                                                    <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                                      <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                                        <XAxis
-                                                          dataKey="date"
-                                                          tick={{ fontSize: 10, fill: 'white' }}
-                                                          axisLine={{ stroke: 'white' }}
-                                                          tickLine={{ stroke: 'white' }}
-                                                          interval={Math.floor(chartData.length / 6)}
-                                                        />
-                                                        <YAxis
-                                                          tick={{ fontSize: 10, fill: 'white' }}
-                                                          axisLine={{ stroke: 'white' }}
-                                                          tickLine={{ stroke: 'white' }}
-                                                          width={40}
-                                                        />
-                                                        <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
-                                                        <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
-                                                      </LineChart>
-                                                    </ResponsiveContainer>
-                                                  ) : (
-                                                    <div className="flex items-center justify-center h-full text-white/70 text-xs">
-                                                      No trend data yet
-                                                    </div>
-                                                  )}
-                                                </div>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      );
-                                    })}
-                              </div>
-                            </div>
-                          </div>
-
-                          {/* Last 30d and Month Box */}
-                          <div className="rounded-2xl border border-gray-100 bg-white shadow-sm">
-                            <div className="flex gap-3 px-4 py-2 items-center border-b border-gray-100 text-xs text-gray-600">
-                            <div className="flex items-center gap-2">
-                              <div className="w-2 h-2 rounded-full bg-teal-500"></div>
-                              <span className="font-semibold text-slate-800 uppercase tracking-wide">Last 30d & {selectedMonth}</span>
-                            </div>
-                          </div>
-                          <div className="flex gap-3 px-4 py-3 flex-nowrap overflow-x-auto">
-                            {mobileCategories.map((category) => {
-                              const last30Data = getMobilePeriodData('last30d', category, 'invoiced');
-                                const monthData = getMobilePeriodData('currentMonth', category, 'invoiced');
-                                const targetData = getMobilePeriodData('target', category, 'invoiced');
-                                const cardKey = `invoiced-combined-${category}`;
-                                const isFlipped = flippedCards.has(cardKey);
-                                const chartData = departmentChartData[category] || [];
-
-                                return (
-                                  <div
-                                    key={cardKey}
-                                    className="relative h-80 min-w-[260px] flex-shrink-0"
-                                    style={{ perspective: '1000px' }}
-                                  >
-                                    <div
-                                      className="relative w-full h-full transition-transform duration-700 cursor-pointer"
-                                      style={{ transformStyle: 'preserve-3d', transform: isFlipped ? 'rotateY(180deg)' : 'rotateY(0deg)' }}
-                                      onClick={() => handleCardFlip(cardKey)}
-                                    >
-                                      <div
-                                        className="absolute inset-0 bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden"
-                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(0deg)' }}
-                                      >
-                                        <div className="px-4 py-3 bg-slate-50 border-b border-slate-200 flex items-center justify-between">
-                                          <h4 className="text-sm font-semibold text-slate-800">{category}</h4>
-                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Last 30d & {selectedMonth}</span>
-                                        </div>
-                                        <div className="p-4">
-                                          <div className="bg-gradient-to-br from-teal-500 to-cyan-600 rounded-lg p-3 border border-opacity-20 shadow-md">
-                                            <div className="flex items-center gap-2 mb-2">
-                                              <div className="w-2 h-2 bg-teal-500 rounded-full shadow-sm"></div>
-                                              <span className="text-[10px] font-semibold text-white uppercase tracking-wide">Last 30d & {selectedMonth}</span>
-                                            </div>
-                                            <div className="space-y-2">
-                                              {/* Last 30d and Current Month - Horizontal */}
-                                              <div className="flex gap-2">
-                                                {/* Last 30d */}
-                                                <div className="flex-1">
-                                                  <div className="flex items-center gap-1.5 mb-1">
-                                                    <div className="w-1.5 h-1.5 bg-purple-300 rounded-full"></div>
-                                                    <span className="text-[9px] font-medium text-white/90 uppercase">Last 30d</span>
-                                                  </div>
-                                                  <div className="space-y-1">
-                                                    <div>
-                                                      <div className="text-base font-bold text-white">{last30Data.count}</div>
-                                                      <div className="text-[9px] font-medium text-white/80">Contracts</div>
-                                                    </div>
-                                                    <div>
-                                                      <div className="text-xs font-bold text-white">₪{last30Data.amount ? Math.ceil(last30Data.amount).toLocaleString() : '0'}</div>
-                                                      <div className="text-[9px] font-medium text-white/80">Amount</div>
-                                                    </div>
-                                                  </div>
-                                                </div>
-
-                                                {/* Divider */}
-                                                <div className="w-px bg-white/20"></div>
-
-                                                {/* Current Month */}
-                                                <div className="flex-1">
-                                                  <div className="flex items-center gap-1.5 mb-1">
-                                                    <div className="w-1.5 h-1.5 bg-blue-300 rounded-full"></div>
-                                                    <span className="text-[9px] font-medium text-white/90 uppercase">{selectedMonth}</span>
-                                                  </div>
-                                                  <div className="space-y-1">
-                                                    <div>
-                                                      <div className="text-base font-bold text-white">{monthData.count}</div>
-                                                      <div className="text-[9px] font-medium text-white/80">Contracts</div>
-                                                    </div>
-                                                    <div>
-                                                      <div className="text-xs font-bold text-white">₪{monthData.amount ? Math.ceil(monthData.amount).toLocaleString() : '0'}</div>
-                                                      <div className="text-[9px] font-medium text-white/80">Amount</div>
-                                                    </div>
-                                                  </div>
-                                                </div>
-                                              </div>
-
-                                              <div className="pt-2 border-t border-white/20"></div>
-
-                                              {/* Target */}
-                                              <div>
-                                                <div className="flex items-center gap-2 mb-1">
-                                                  <div className="w-1.5 h-1.5 bg-emerald-300 rounded-full"></div>
-                                                  <span className="text-[9px] font-medium text-white/90 uppercase">Target</span>
-                                                </div>
-                                                <div className="pl-4">
-                                                  <div className="text-sm font-bold text-white">₪{targetData.expected ? Math.ceil(targetData.expected).toLocaleString() : '0'}</div>
-                                                  <div className="text-[9px] font-medium text-white/80">Target Amount</div>
-                                                </div>
-                                              </div>
-                                            </div>
-                                          </div>
-                                        </div>
-                                      </div>
-                                      <div
-                                        className="absolute inset-0 bg-gradient-to-br from-teal-500 to-cyan-600 rounded-xl border border-opacity-30 shadow-lg overflow-hidden"
-                                        style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}
-                                      >
-                                        <div className="px-4 py-3 bg-white/10 border-b border-white/20 flex items-center justify-between">
-                                          <h4 className="text-sm font-semibold text-white">{category}</h4>
-                                          <span className="text-[10px] font-semibold uppercase tracking-wide text-white/80">Last 30d & {selectedMonth}</span>
-                                        </div>
-                                        <div className="p-4 h-full">
-                                          <div className="w-full h-40" style={{ minWidth: '200px', minHeight: '160px' }}>
-                                            {chartData && chartData.length > 0 ? (
-                                              <ResponsiveContainer width="100%" height="100%" minWidth={200} minHeight={160}>
-                                                <LineChart data={chartData} margin={{ top: 5, right: 5, left: 5, bottom: 5 }}>
-                                                  <XAxis
-                                                    dataKey="date"
-                                                    tick={{ fontSize: 10, fill: 'white' }}
-                                                    axisLine={{ stroke: 'white' }}
-                                                    tickLine={{ stroke: 'white' }}
-                                                    interval={Math.floor(chartData.length / 6)}
-                                                  />
-                                                  <YAxis
-                                                    tick={{ fontSize: 10, fill: 'white' }}
-                                                    axisLine={{ stroke: 'white' }}
-                                                    tickLine={{ stroke: 'white' }}
-                                                    width={40}
-                                                  />
-                                                  <Tooltip contentStyle={{ backgroundColor: 'rgba(15,23,42,0.9)', border: 'none' }} />
-                                                  <Line type="monotone" dataKey="contracts" stroke="#fff" strokeWidth={2} dot={false} />
-                                                </LineChart>
-                                              </ResponsiveContainer>
-                                            ) : (
-                                              <div className="flex items-center justify-center h-full text-white/70 text-xs">
-                                                No trend data yet
-                                              </div>
-                                            )}
-                                          </div>
-                                        </div>
-                                      </div>
-                                  </div>
-                                </div>
-                              );
-                            })}
-                          </div>
-                        </div>
-                      </div>
-                      )}
-                    </div>
-                  )}
+                  <h3 className="text-lg font-semibold text-slate-800">Department Performance</h3>
                 </div>
-              )}
-
-              {/* Professional Chart Visualization */}
-              {(scoreTab === 'Today' || scoreTab === selectedMonth || scoreTab === 'Last 30d') && (
-                <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
-                  <div className="flex items-center justify-between mb-8">
-                    <div className="flex items-center gap-3">
-                      <div className="p-3 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl shadow-lg">
-                        <ChartBarIcon className="w-6 h-6 text-white" />
-                      </div>
-                      <div>
-                        <h3 className="text-xl font-bold text-gray-900">Performance Analytics</h3>
-                        <p className="text-sm text-gray-600">Real-time business metrics</p>
+                {/* Performance tables - Desktop and Mobile */}
+                <div>
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
+                      <div className="text-xs md:text-sm font-semibold text-[#3b28c7]">Agreement signed</div>
+                      <div className="flex flex-wrap items-center gap-1 md:gap-2">
+                        <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
+                        <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                          {todayFilterMode === 'week' ? 'Week' : 'Today'}
+                        </button>
+                        <button
+                          className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`}
+                          onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
+                          title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
+                        >
+                          Week
+                        </button>
+                        <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                        <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
+                        <details className="dropdown dropdown-end">
+                          <summary className="btn btn-xs btn-ghost text-slate-700">
+                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          </summary>
+                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                            {months.map(month => (
+                              <li key={month} style={{ width: '100%' }}>
+                                <a
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setSelectedMonth(month);
+                                    // Close the details element
+                                    const details = e.currentTarget.closest('details');
+                                    if (details) {
+                                      details.removeAttribute('open');
+                                    }
+                                  }}
+                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                >
+                                  {month}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                        <details className="dropdown dropdown-end">
+                          <summary className="btn btn-xs btn-ghost text-slate-700">
+                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          </summary>
+                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                            {years.map(year => (
+                              <li key={year} style={{ width: '100%' }}>
+                                <a
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setSelectedYear(year);
+                                    // Close the details element
+                                    const details = e.currentTarget.closest('details');
+                                    if (details) {
+                                      details.removeAttribute('open');
+                                    }
+                                  }}
+                                  className="block w-full p-2 text-sm hover:bg-gray-100"
+                                >
+                                  {year}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
                       </div>
                     </div>
-                    <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
-                      <div className="flex items-center gap-6">
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 bg-gradient-to-r from-purple-600 to-purple-700 rounded-full shadow-sm"></div>
-                          <span className="text-sm font-medium text-gray-700">Signed</span>
-                        </div>
-                        <div className="flex items-center gap-2">
-                          <div className="w-4 h-4 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full shadow-sm"></div>
-                          <span className="text-sm font-medium text-gray-700">Due</span>
-                        </div>
+                    {departmentPerformanceLoading ? (
+                      <div className="flex justify-center items-center py-12">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                      </div>
+                    ) : renderColumnsView('agreement')}
+                  </div>
+                </div>
+
+                {/* Duplicate table for Invoiced section */}
+                <div className="mt-4 md:mt-6">
+                  <div className="bg-white rounded-xl border border-gray-200 shadow-lg overflow-hidden -mx-2 md:mx-0">
+                    <div className="flex flex-col md:flex-row md:items-center md:justify-between px-2 md:p-3 py-2 md:py-3 border-b border-slate-200 bg-slate-50 gap-2">
+                      <div className="text-xs md:text-sm font-semibold text-[#3b28c7]">Invoiced</div>
+                      <div className="flex flex-wrap items-center gap-1 md:gap-2">
+                        <span className="text-xs md:text-sm font-semibold text-slate-700 mr-1 md:mr-2">Filter by:</span>
+                        <button className={`btn btn-xs ${showTodayCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowTodayCols(v => !v)}>
+                          {todayFilterMode === 'week' ? 'Week' : 'Today'}
+                        </button>
+                        <button
+                          className={`btn btn-xs ${todayFilterMode === 'week' ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`}
+                          onClick={() => setTodayFilterMode(v => v === 'week' ? 'today' : 'week')}
+                          title={todayFilterMode === 'week' ? 'Switch back to Today' : 'Show Week data'}
+                        >
+                          Week
+                        </button>
+                        <button className={`btn btn-xs ${showLast30Cols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLast30Cols(v => !v)}>Last 30d</button>
+                        <button className={`btn btn-xs ${showLastMonthCols ? 'btn-primary text-white' : 'btn-ghost text-slate-700'}`} onClick={() => setShowLastMonthCols(v => !v)}>This Month</button>
+                        <div className="border-l border-slate-300 h-4 md:h-6 mx-1 md:mx-2"></div>
+                        <details className="dropdown dropdown-end">
+                          <summary className="btn btn-xs btn-ghost text-slate-700">
+                            {selectedMonth} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          </summary>
+                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-40 max-h-80 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                            {months.map(month => (
+                              <li key={month} style={{ width: '100%' }}>
+                                <a
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setSelectedMonth(month);
+                                    // Close the details element
+                                    const details = e.currentTarget.closest('details');
+                                    if (details) {
+                                      details.removeAttribute('open');
+                                    }
+                                  }}
+                                  className={`block w-full p-2 text-sm hover:bg-gray-100 ${selectedMonth === month ? 'bg-primary text-primary-content' : ''}`}
+                                >
+                                  {month}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                        <details className="dropdown dropdown-end">
+                          <summary className="btn btn-xs btn-ghost text-slate-700">
+                            {selectedYear} <svg className="w-2 h-2 md:w-3 md:h-3 ml-1" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                          </summary>
+                          <ul className="dropdown-content z-[1] p-2 shadow bg-base-100 rounded-box w-24 max-h-60 overflow-y-auto" style={{ display: 'flex', flexDirection: 'column' }}>
+                            {years.map(year => (
+                              <li key={year} style={{ width: '100%' }}>
+                                <a
+                                  onClick={(e) => {
+                                    e.preventDefault();
+                                    setSelectedYear(year);
+                                    // Close the details element
+                                    const details = e.currentTarget.closest('details');
+                                    if (details) {
+                                      details.removeAttribute('open');
+                                    }
+                                  }}
+                                  className="block w-full p-2 text-sm hover:bg-gray-100"
+                                >
+                                  {year}
+                                </a>
+                              </li>
+                            ))}
+                          </ul>
+                        </details>
+                      </div>
+                    </div>
+                    {invoicedDataLoading ? (
+                      <div className="flex justify-center items-center py-12">
+                        <span className="loading loading-spinner loading-lg text-primary"></span>
+                      </div>
+                    ) : renderColumnsView('invoiced')}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Professional Chart Visualization */}
+            {(scoreTab === 'Today' || scoreTab === selectedMonth || scoreTab === 'Last 30d') && (
+              <div className="bg-gradient-to-br from-gray-50 to-white rounded-2xl border border-gray-200 p-8 shadow-lg">
+                <div className="flex items-center justify-between mb-8">
+                  <div className="flex items-center gap-3">
+                    <div className="p-3 bg-gradient-to-r from-purple-600 to-indigo-600 rounded-xl shadow-lg">
+                      <ChartBarIcon className="w-6 h-6 text-white" />
+                    </div>
+                    <div>
+                      <h3 className="text-xl font-bold text-gray-900">Performance Analytics</h3>
+                      <p className="text-sm text-gray-600">Real-time business metrics</p>
+                    </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-4 shadow-sm border border-gray-200">
+                    <div className="flex items-center gap-6">
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 bg-gradient-to-r from-purple-600 to-purple-700 rounded-full shadow-sm"></div>
+                        <span className="text-sm font-medium text-gray-700">Signed</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <div className="w-4 h-4 bg-gradient-to-r from-cyan-500 to-blue-500 rounded-full shadow-sm"></div>
+                        <span className="text-sm font-medium text-gray-700">Due</span>
                       </div>
                     </div>
                   </div>
-                  <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
-                    <div className="w-full h-[450px]" style={{ minWidth: '400px', minHeight: '450px' }}>
-                      {(() => {
-                        const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
-                        return chartData && chartData.length > 0 ? (
-                          <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={450}>
-                            <BarChart
-                              data={chartData}
-                              barCategoryGap={16}
-                              margin={{ top: 30, right: 30, left: 20, bottom: 40 }}
-                            >
-                              <defs>
-                                <linearGradient id="signedGradient" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8}/>
-                                  <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.9}/>
-                                </linearGradient>
-                                <linearGradient id="dueGradient" x1="0" y1="0" x2="0" y2="1">
-                                  <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.8}/>
-                                  <stop offset="100%" stopColor="#0891b2" stopOpacity={0.9}/>
-                                </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="2 2" stroke="#e5e7eb" opacity={0.3} />
-                              <XAxis 
-                                dataKey="category" 
-                                tick={{ fontSize: 11, fill: '#4b5563', fontWeight: '500' }} 
-                                axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
-                                tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
-                                tickMargin={12}
-                                interval={0}
-                              />
-                              <YAxis 
-                                tick={{ fontSize: 12, fill: '#4b5563' }} 
-                                axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
-                                tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }} 
-                                width={45}
-                                tickMargin={8}
-                              />
-                              <Tooltip
-                                contentStyle={{ 
-                                  background: 'rgba(255,255,255,0.98)', 
-                                  borderRadius: 16, 
-                                  border: '1px solid #e5e7eb',
-                                  boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
-                                  padding: '12px 16px'
-                                }}
-                                labelStyle={{ color: '#111827', fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}
-                                itemStyle={{ color: '#374151', fontSize: '13px', fontWeight: '500' }}
-                                formatter={(value: number, name: string) => {
-                                  if (name === 'signed') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Signed'];
-                                  if (name === 'due') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Due'];
-                                  return [Math.ceil(value).toLocaleString(), name || 'Unknown'];
-                                }}
-                                cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
-                              />
-                              <Bar 
-                                dataKey="signed" 
-                                name="signed" 
-                                fill="url(#signedGradient)"
-                                radius={[8, 8, 0, 0]} 
-                                barSize={28}
-                                stroke="#7c3aed"
-                                strokeWidth={1}
-                                strokeOpacity={0.3}
-                              />
-                              <Bar 
-                                dataKey="due" 
-                                name="due" 
-                                fill="url(#dueGradient)"
-                                radius={[8, 8, 0, 0]} 
-                                barSize={28}
-                                stroke="#0891b2"
-                                strokeWidth={1}
-                                strokeOpacity={0.3}
-                              />
-                            </BarChart>
-                          </ResponsiveContainer>
-                        ) : (
-                          <div className="flex items-center justify-center h-full text-gray-500">
-                            <div className="text-center">
-                              <div className="text-lg font-medium mb-2">No data available</div>
-                              <div className="text-sm">Chart will appear when data is loaded</div>
-                            </div>
+                </div>
+                <div className="bg-white rounded-xl p-6 shadow-sm border border-gray-100">
+                  <div className="w-full h-[450px]" style={{ minWidth: '400px', minHeight: '450px' }}>
+                    {(() => {
+                      const chartData = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
+                      return chartData && chartData.length > 0 ? (
+                        <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={450}>
+                          <BarChart
+                            data={chartData}
+                            barCategoryGap={16}
+                            margin={{ top: 30, right: 30, left: 20, bottom: 40 }}
+                          >
+                            <defs>
+                              <linearGradient id="signedGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#8b5cf6" stopOpacity={0.8} />
+                                <stop offset="100%" stopColor="#7c3aed" stopOpacity={0.9} />
+                              </linearGradient>
+                              <linearGradient id="dueGradient" x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#06b6d4" stopOpacity={0.8} />
+                                <stop offset="100%" stopColor="#0891b2" stopOpacity={0.9} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="2 2" stroke="#e5e7eb" opacity={0.3} />
+                            <XAxis
+                              dataKey="category"
+                              tick={{ fontSize: 11, fill: '#4b5563', fontWeight: '500' }}
+                              axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                              tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                              tickMargin={12}
+                              interval={0}
+                            />
+                            <YAxis
+                              tick={{ fontSize: 12, fill: '#4b5563' }}
+                              axisLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                              tickLine={{ stroke: '#d1d5db', strokeWidth: 1 }}
+                              width={45}
+                              tickMargin={8}
+                            />
+                            <Tooltip
+                              contentStyle={{
+                                background: 'rgba(255,255,255,0.98)',
+                                borderRadius: 16,
+                                border: '1px solid #e5e7eb',
+                                boxShadow: '0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04)',
+                                padding: '12px 16px'
+                              }}
+                              labelStyle={{ color: '#111827', fontWeight: 'bold', fontSize: '14px', marginBottom: '8px' }}
+                              itemStyle={{ color: '#374151', fontSize: '13px', fontWeight: '500' }}
+                              formatter={(value: number, name: string) => {
+                                if (name === 'signed') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Signed'];
+                                if (name === 'due') return [`${Math.ceil(value).toLocaleString()} NIS`, 'Due'];
+                                return [Math.ceil(value).toLocaleString(), name || 'Unknown'];
+                              }}
+                              cursor={{ fill: 'rgba(0, 0, 0, 0.05)' }}
+                            />
+                            <Bar
+                              dataKey="signed"
+                              name="signed"
+                              fill="url(#signedGradient)"
+                              radius={[8, 8, 0, 0]}
+                              barSize={28}
+                              stroke="#7c3aed"
+                              strokeWidth={1}
+                              strokeOpacity={0.3}
+                            />
+                            <Bar
+                              dataKey="due"
+                              name="due"
+                              fill="url(#dueGradient)"
+                              radius={[8, 8, 0, 0]}
+                              barSize={28}
+                              stroke="#0891b2"
+                              strokeWidth={1}
+                              strokeOpacity={0.3}
+                            />
+                          </BarChart>
+                        </ResponsiveContainer>
+                      ) : (
+                        <div className="flex items-center justify-center h-full text-gray-500">
+                          <div className="text-center">
+                            <div className="text-lg font-medium mb-2">No data available</div>
+                            <div className="text-sm">Chart will appear when data is loaded</div>
                           </div>
-                        );
+                        </div>
+                      );
+                    })()}
+                  </div>
+                </div>
+
+                {/* Chart Statistics */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
+                  <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
+                      <span className="text-sm font-medium text-gray-600">Total Signed</span>
+                    </div>
+                    <div className="text-2xl font-bold text-gray-900">
+                      {(() => {
+                        const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
+                        return data.reduce((sum: number, item: any) => sum + item.signed, 0);
                       })()}
                     </div>
                   </div>
-                  
-                  {/* Chart Statistics */}
-                  <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-6">
-                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-2 h-2 bg-purple-600 rounded-full"></div>
-                        <span className="text-sm font-medium text-gray-600">Total Signed</span>
-                      </div>
-                      <div className="text-2xl font-bold text-gray-900">
-                        {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
-                          return data.reduce((sum: number, item: any) => sum + item.signed, 0);
-                        })()}
-                      </div>
+                  <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 bg-cyan-500 rounded-full"></div>
+                      <span className="text-sm font-medium text-gray-600">Total Due</span>
                     </div>
-                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-2 h-2 bg-cyan-500 rounded-full"></div>
-                        <span className="text-sm font-medium text-gray-600">Total Due</span>
-                      </div>
-                      <div className="text-2xl font-bold text-gray-900">
-                        {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
-                          return data.reduce((sum: number, item: any) => sum + item.due, 0);
-                        })()}
-                      </div>
+                    <div className="text-2xl font-bold text-gray-900">
+                      {(() => {
+                        const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
+                        return data.reduce((sum: number, item: any) => sum + item.due, 0);
+                      })()}
                     </div>
-                    <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
-                      <div className="flex items-center gap-2 mb-1">
-                        <div className="w-2 h-2 bg-green-500 rounded-full"></div>
-                        <span className="text-sm font-medium text-gray-600">Conversion Rate</span>
-                      </div>
-                      <div className="text-2xl font-bold text-gray-900">
-                        {(() => {
-                          const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
-                          const signed = data.reduce((sum: number, item: any) => sum + item.signed, 0);
-                          const due = data.reduce((sum: number, item: any) => sum + item.due, 0);
-                          const total = signed + due;
-                          return total > 0 ? `${Math.round((signed / total) * 100)}%` : '0%';
-                        })()}
-                      </div>
+                  </div>
+                  <div className="bg-white rounded-xl p-4 border border-gray-200 shadow-sm">
+                    <div className="flex items-center gap-2 mb-1">
+                      <div className="w-2 h-2 bg-green-500 rounded-full"></div>
+                      <span className="text-sm font-medium text-gray-600">Conversion Rate</span>
+                    </div>
+                    <div className="text-2xl font-bold text-gray-900">
+                      {(() => {
+                        const data = scoreTab === 'Today' ? scoreboardBarDataToday : scoreTab === selectedMonth ? scoreboardBarDataMonth : scoreboardBarData30d;
+                        const signed = data.reduce((sum: number, item: any) => sum + item.signed, 0);
+                        const due = data.reduce((sum: number, item: any) => sum + item.due, 0);
+                        const total = signed + due;
+                        return total > 0 ? `${Math.round((signed / total) * 100)}%` : '0%';
+                      })()}
                     </div>
                   </div>
                 </div>
-              )}
+              </div>
+            )}
 
-              {/* Quick Actions removed per request */}
-            </div>
+            {/* Quick Actions removed per request */}
+          </div>
         </div>
       </div>
 
@@ -7778,219 +7234,244 @@ const Dashboard: React.FC = () => {
         <div className="grid grid-cols-1 lg:grid-cols-[1fr_400px] gap-6">
           {/* Team Availability Section */}
           <div className="bg-white rounded-2xl shadow-lg border border-gray-200">
-          <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
-                <UserGroupIcon className="w-6 h-6 text-white" />
-              </div>
-              <div>
-                <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
-                <p className="text-sm text-gray-500">
-                  Employees unavailable on {getDateDescription(teamAvailabilityDate)}
-                </p>
-              </div>
-            </div>
-            
-            {/* Center: Department Filter - Dropdown */}
-            <div className="flex items-center justify-center flex-1">
-              <div className="relative">
-                <select
-                  className="select select-bordered select-sm w-48"
-                  value={departmentFilter}
-                  onChange={(e) => setDepartmentFilter(e.target.value)}
+            <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4 px-6 py-4 border-b border-gray-200">
+              <div className="flex items-center justify-between w-full lg:w-auto">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 bg-gradient-to-tr from-purple-500 to-blue-600 rounded-lg flex items-center justify-center">
+                    <UserGroupIcon className="w-6 h-6 text-white" />
+                  </div>
+                  <div>
+                    <h2 className="text-lg font-bold text-gray-900">Team Availability</h2>
+                    <p className="text-sm text-gray-500">
+                      Employees unavailable {getDateDescription(teamAvailabilityDate)}
+                    </p>
+                  </div>
+                </div>
+                {/* My Availability Button - Mobile Only */}
+                <button
+                  onClick={() => setIsMyAvailabilityModalOpen(true)}
+                  className="btn btn-sm btn-primary lg:hidden"
+                  title="My Availability"
                 >
-                  <option value="">All Departments</option>
-                  {availableDepartments.map((dept) => (
-                    <option key={dept} value={dept}>
-                      {dept}
-                    </option>
-                  ))}
-                </select>
+                  <CalendarIcon className="w-5 h-5 mr-2" />
+                  My Availability
+                </button>
+              </div>
+
+              {/* Center: Department Filter - Dropdown - Desktop Only */}
+              <div className="hidden lg:flex items-center justify-center flex-1">
+                <div className="relative">
+                  <select
+                    className="select select-bordered select-sm w-48"
+                    value={departmentFilter}
+                    onChange={(e) => setDepartmentFilter(e.target.value)}
+                  >
+                    <option value="">All Departments</option>
+                    {availableDepartments.map((dept) => (
+                      <option key={dept} value={dept}>
+                        {dept}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              </div>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                    currentDate.setDate(currentDate.getDate() - 1);
+                    const year = currentDate.getFullYear();
+                    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(currentDate.getDate()).padStart(2, '0');
+                    setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                  }}
+                  className="btn btn-sm btn-ghost btn-circle"
+                  title="Previous day"
+                >
+                  <ChevronLeftIcon className="w-5 h-5" />
+                </button>
+                <CalendarIcon className="w-5 h-5 text-gray-500" />
+                <input
+                  type="date"
+                  className="input input-bordered input-sm"
+                  value={teamAvailabilityDate}
+                  onChange={(e) => setTeamAvailabilityDate(e.target.value)}
+                  title="Select date to check availability"
+                />
+                <button
+                  type="button"
+                  onClick={() => {
+                    const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
+                    currentDate.setDate(currentDate.getDate() + 1);
+                    const year = currentDate.getFullYear();
+                    const month = String(currentDate.getMonth() + 1).padStart(2, '0');
+                    const day = String(currentDate.getDate()).padStart(2, '0');
+                    setTeamAvailabilityDate(`${year}-${month}-${day}`);
+                  }}
+                  className="btn btn-sm btn-ghost btn-circle"
+                  title="Next day"
+                >
+                  <ChevronRightIcon className="w-5 h-5" />
+                </button>
               </div>
             </div>
-            
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => {
-                  const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
-                  currentDate.setDate(currentDate.getDate() - 1);
-                  const year = currentDate.getFullYear();
-                  const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-                  const day = String(currentDate.getDate()).padStart(2, '0');
-                  setTeamAvailabilityDate(`${year}-${month}-${day}`);
-                }}
-                className="btn btn-sm btn-ghost btn-circle"
-                title="Previous day"
-              >
-                <ChevronLeftIcon className="w-5 h-5" />
-              </button>
-              <CalendarIcon className="w-5 h-5 text-gray-500" />
-              <input
-                type="date"
-                className="input input-bordered input-sm"
-                value={teamAvailabilityDate}
-                onChange={(e) => setTeamAvailabilityDate(e.target.value)}
-                title="Select date to check availability"
-              />
-              <button
-                type="button"
-                onClick={() => {
-                  const currentDate = new Date(teamAvailabilityDate + 'T00:00:00');
-                  currentDate.setDate(currentDate.getDate() + 1);
-                  const year = currentDate.getFullYear();
-                  const month = String(currentDate.getMonth() + 1).padStart(2, '0');
-                  const day = String(currentDate.getDate()).padStart(2, '0');
-                  setTeamAvailabilityDate(`${year}-${month}-${day}`);
-                }}
-                className="btn btn-sm btn-ghost btn-circle"
-                title="Next day"
-              >
-                <ChevronRightIcon className="w-5 h-5" />
-              </button>
-            </div>
-          </div>
-          
-          {/* Employee Cards */}
-          {unavailableEmployeesLoading ? (
-            <div className="flex justify-center items-center py-8 px-6">
-              <div className="loading loading-spinner loading-lg text-gray-600"></div>
-            </div>
-          ) : unavailableEmployeesData.length > 0 ? (
-            <div className="px-6 pb-6 pt-6">
-              <div className="flex overflow-x-auto gap-5 pb-4 -mx-6 px-6 sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 sm:overflow-x-visible sm:pb-0 sm:-mx-0 sm:px-0">
-                {unavailableEmployeesData
-                  .filter((item) => {
-                    if (!departmentFilter.trim()) return true;
-                    return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
-                  })
-                  .map((item) => {
-                  const employeeInitials = item.employeeName
-                    .split(' ')
-                    .map((n: string) => n[0])
-                    .join('')
-                    .toUpperCase()
-                    .slice(0, 2);
-                  
-                  return (
-                    <div
-                      key={item.id}
-                      className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] flex-shrink-0 w-[280px] sm:w-auto sm:min-w-0"
-                      style={{
-                        boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
-                      }}
-                    >
-                      {/* Background Image with Overlay */}
-                      {item.photo && (
-                        <div 
-                          className="absolute inset-0 bg-cover bg-center bg-no-repeat"
-                          style={{ backgroundImage: `url(${item.photo})` }}
+
+            {/* Employee Cards */}
+            {unavailableEmployeesLoading ? (
+              <div className="flex justify-center items-center py-8 px-6">
+                <div className="loading loading-spinner loading-lg text-gray-600"></div>
+              </div>
+            ) : unavailableEmployeesData.length > 0 ? (
+              <div className="px-6 pb-6 pt-6">
+                <div className="flex overflow-x-auto gap-5 pb-4 -mx-6 px-6 sm:grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6 sm:overflow-x-visible sm:pb-0 sm:-mx-0 sm:px-0">
+                  {unavailableEmployeesData
+                    .filter((item) => {
+                      if (!departmentFilter.trim()) return true;
+                      return item.department?.toLowerCase().includes(departmentFilter.toLowerCase());
+                    })
+                    .map((item) => {
+                      const employeeInitials = item.employeeName
+                        .split(' ')
+                        .map((n: string) => n[0])
+                        .join('')
+                        .toUpperCase()
+                        .slice(0, 2);
+
+                      const roleInitials = item.role
+                        ? item.role
+                          .split(' ')
+                          .map((n: string) => n[0])
+                          .join('')
+                          .toUpperCase()
+                          .slice(0, 2)
+                        : '';
+
+                      return (
+                        <div
+                          key={item.id}
+                          className="relative overflow-hidden rounded-xl border-2 border-gray-300 bg-white min-h-[200px] flex-shrink-0 w-[200px] sm:w-auto sm:min-w-0 flex flex-col"
+                          style={{
+                            boxShadow: '0 4px 12px rgba(0, 0, 0, 0.15)'
+                          }}
                         >
-                          <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
-                        </div>
-                      )}
-                      
-                      {/* Role Badge - Top Right Corner */}
-                      {item.role && (
-                        <div className="absolute top-2 right-2 z-20">
-                          <span className="badge badge-sm px-2 py-1 bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-xs font-semibold shadow-lg">
-                            {item.role}
-                          </span>
-                        </div>
-                      )}
-                      
-                      {/* Content */}
-                      <div className={`relative z-10 p-4 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
-                        {/* Top Row: Profile Image (Left), Time Range (Center), Role Badge (Right - already positioned) */}
-                        <div className="flex items-start justify-between mb-2">
-                          {/* Left Side: Profile Image and Name */}
-                          <div className="flex-shrink-0 flex flex-col items-center">
-                            {/* Profile Image or Initials Circle */}
-                            {item.photo_url ? (
-                              <img
-                                src={item.photo_url}
-                                alt={item.employeeName}
-                                className="w-20 h-20 rounded-full object-cover shadow-lg mb-1.5"
-                                onError={(e) => {
-                                  const target = e.target as HTMLImageElement;
-                                  const targetParent = target.parentElement;
-                                  if (targetParent) {
-                                    target.style.display = 'none';
-                                    const fallback = document.createElement('div');
-                                    fallback.className = `w-20 h-20 rounded-full flex items-center justify-center shadow-lg mb-1.5 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`;
-                                    fallback.textContent = employeeInitials;
-                                    targetParent.insertBefore(fallback, target);
-                                  }
-                                }}
-                              />
-                            ) : (
-                              <div className={`w-20 h-20 rounded-full flex items-center justify-center shadow-lg mb-1.5 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-base font-bold`}>
-                                {employeeInitials}
+                          {/* Background Image with Overlay - Covers entire card including department area */}
+                          {item.photo && (
+                            <div
+                              className="absolute inset-0 bg-cover bg-center bg-no-repeat"
+                              style={{
+                                backgroundImage: `url(${item.photo})`
+                              }}
+                            >
+                              <div className="absolute inset-0 bg-gradient-to-b from-black/70 via-black/50 to-black/70"></div>
+                            </div>
+                          )}
+
+                          {/* Department Box - Top of Card with glassy blur showing background image */}
+                          {item.department && (
+                            <div
+                              className={`relative z-30 w-full py-2 px-3 pr-12 text-sm font-medium text-center backdrop-blur-md ${item.photo
+                                ? 'text-white bg-white/10 border-b border-white/20'
+                                : 'text-gray-900 bg-white/80 border-b border-gray-200/50'
+                                }`}
+                            >
+                              {item.department}
+                            </div>
+                          )}
+
+                          {/* Role Initials Badge - Top Right Corner */}
+                          {item.role && roleInitials && (
+                            <div
+                              className="absolute right-3 top-2 z-30"
+                            >
+                              <span className="inline-block px-2 py-1 rounded-md bg-gradient-to-tr from-pink-500 via-purple-500 to-purple-600 text-white border-0 text-[10px] font-semibold shadow-lg">
+                                {roleInitials}
+                              </span>
+                            </div>
+                          )}
+
+                          {/* Content */}
+                          <div className={`relative z-10 p-3 flex flex-col h-full ${item.photo ? 'text-white' : 'text-gray-900'}`}>
+                            {/* Profile Image and Name - Centered */}
+                            <div className="flex justify-center mb-2">
+                              <div className="flex flex-col items-center">
+                                {/* Profile Image or Initials Circle */}
+                                {item.photo_url ? (
+                                  <img
+                                    src={item.photo_url}
+                                    alt={item.employeeName}
+                                    className="w-14 h-14 rounded-full object-cover shadow-lg mb-1"
+                                    onError={(e) => {
+                                      const target = e.target as HTMLImageElement;
+                                      const targetParent = target.parentElement;
+                                      if (targetParent) {
+                                        target.style.display = 'none';
+                                        const fallback = document.createElement('div');
+                                        fallback.className = `w-14 h-14 rounded-full flex items-center justify-center shadow-lg mb-1 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`;
+                                        fallback.textContent = employeeInitials;
+                                        targetParent.insertBefore(fallback, target);
+                                      }
+                                    }}
+                                  />
+                                ) : (
+                                  <div className={`w-14 h-14 rounded-full flex items-center justify-center shadow-lg mb-1 ${item.photo ? 'bg-primary/90' : 'bg-primary'} text-white text-sm font-bold`}>
+                                    {employeeInitials}
+                                  </div>
+                                )}
+                                {/* Employee Name - Always shown under the circle */}
+                                <h4 className={`text-xs font-semibold text-center ${item.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
+                                  {item.employeeName}
+                                </h4>
                               </div>
-                            )}
-                            {/* Employee Name - Always shown under the circle */}
-                            <h4 className={`text-sm font-semibold text-center truncate max-w-[80px] ${item.photo ? 'text-white drop-shadow-lg' : 'text-gray-900'}`}>
-                              {item.employeeName}
-                            </h4>
-                          </div>
-                          
-                          {/* Spacer for right side (role badge) */}
-                          <div className="w-16 flex-shrink-0"></div>
-                        </div>
-                        
-                        {/* Center: Time Range - Moved lower */}
-                        <div className="flex-1 text-center px-2 mb-3">
-                          {item.time && (
-                            <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
-                              {item.time}
                             </div>
-                          )}
-                          {/* Date Range - only if it's a range */}
-                          {item.date && item.date.includes('to') && (
-                            <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
-                              {item.date}
+
+                            {/* Center: Time Range - Moved lower */}
+                            <div className="flex-1 text-center px-2 mb-3">
+                              {item.time && (
+                                <div className={`text-sm font-semibold ${item.photo ? 'text-white' : 'text-gray-800'}`}>
+                                  {item.time}
+                                </div>
+                              )}
+                              {/* Date Range - only if it's a range */}
+                              {item.date && item.date.includes('to') && (
+                                <div className={`text-xs font-medium mt-1 ${item.photo ? 'text-white/90' : 'text-gray-700'}`}>
+                                  {item.date}
+                                </div>
+                              )}
                             </div>
-                          )}
-                        </div>
-                        
-                        {/* Department */}
-                        <div className="text-center mb-3">
-                          <div className={`text-sm font-medium ${item.photo ? 'text-white/90' : 'text-gray-600'}`}>
-                            {item.department}
+
+                            {/* Reason */}
+                            <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
+                              {item.reason && (
+                                <div className={`text-sm text-center px-2 py-2.5 rounded-md min-h-[3rem] flex items-center justify-center ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
+                                  <span className="line-clamp-2 break-words">{item.reason}</span>
+                                </div>
+                              )}
+                            </div>
                           </div>
                         </div>
-                        
-                        {/* Reason */}
-                        <div className={`border-t-2 pt-3 mt-auto ${item.photo ? 'border-white/30' : 'border-gray-300'}`}>
-                          {item.reason && (
-                            <div className={`text-sm text-center px-2 py-1 rounded-md truncate ${item.photo ? 'text-white/90 bg-white/20' : 'text-gray-600 bg-gray-100'}`} title={item.reason}>
-                              {item.reason}
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-                    );
-                  })}
-              </div>
-            </div>
-          ) : (
-            <div className="px-6 pb-6 pt-8 text-center">
-              <div className="flex flex-col items-center gap-4">
-                <div className="p-3 bg-green-100 rounded-full">
-                  <CheckCircleIcon className="w-8 h-8 text-green-600" />
-                </div>
-                <div>
-                  <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
-                  <p className="text-gray-600">
-                    No employees are unavailable on {getDateDescription(teamAvailabilityDate)}. Great job team!
-                  </p>
+                      );
+                    })}
                 </div>
               </div>
-            </div>
-          )}
+            ) : (
+              <div className="px-6 pb-6 pt-8 text-center">
+                <div className="flex flex-col items-center gap-4">
+                  <div className="p-3 bg-green-100 rounded-full">
+                    <CheckCircleIcon className="w-8 h-8 text-green-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-lg font-semibold text-gray-900 mb-2">All Team Members Available</h3>
+                    <p className="text-gray-600">
+                      No employees are unavailable on {getDateDescription(teamAvailabilityDate)}. Great job team!
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
-          
+
           {/* My Availability Calendar - Desktop Only */}
           <div className="hidden lg:block">
             <div className="bg-white rounded-2xl shadow-lg border border-gray-200 p-6 h-full">
@@ -8018,47 +7499,47 @@ const Dashboard: React.FC = () => {
       <div className="w-full mt-12">
         <div className="bg-white rounded-2xl shadow-lg border border-gray-200 w-full max-w-full">
           <div className="p-8">
-              <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
-                <div className="flex items-center gap-2 mb-2">
-                  <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
-                    <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
-                      <defs>
-                        <linearGradient id="perfIconGradient" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
-                          <stop stopColor="#a21caf" />
-                          <stop offset="1" stopColor="#06b6d4" />
-                        </linearGradient>
-                      </defs>
-                      <path d="M3 17V21M7 13V21M11 9V21M15 5V21M19 3V21" stroke="url(#perfIconGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </div>
-                  <span className="text-2xl font-bold text-gray-900">My Performance</span>
+            <div className="flex flex-col md:flex-row md:items-end md:justify-between mb-6 gap-4">
+              <div className="flex items-center gap-2 mb-2">
+                <div className="flex items-center justify-center w-12 h-12 rounded-full shadow bg-white">
+                  <svg width="28" height="28" viewBox="0 0 24 24" fill="none">
+                    <defs>
+                      <linearGradient id="perfIconGradient" x1="0" y1="0" x2="24" y2="24" gradientUnits="userSpaceOnUse">
+                        <stop stopColor="#a21caf" />
+                        <stop offset="1" stopColor="#06b6d4" />
+                      </linearGradient>
+                    </defs>
+                    <path d="M3 17V21M7 13V21M11 9V21M15 5V21M19 3V21" stroke="url(#perfIconGradient)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
                 </div>
-                <div className="flex gap-6 text-sm md:text-base items-center">
-                  <div className="flex flex-col items-center">
-                    <span className="font-bold text-gray-900 text-xl">{contractsLast30}</span>
-                    <span className="text-gray-500">Last 30 Days</span>
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="font-bold text-gray-900 text-xl">{contractsToday}</span>
-                    <span className="text-gray-500">Today</span>
-                  </div>
-                  <div className="flex flex-col items-center">
-                    <span className="font-bold text-gray-900 text-xl">{contractsThisMonth}</span>
-                    <span className="text-gray-500">This Month</span>
-                  </div>
-                  {/* View Leads Button */}
-                  <button
-                    className="btn btn-sm btn-outline border-gray-300 text-gray-700 hover:bg-gray-100 ml-2"
-                    onClick={() => setShowLeadsList((v) => !v)}
-                  >
-                    {showLeadsList ? 'Hide Leads' : 'View Leads'}
-                  </button>
-                </div>
+                <span className="text-2xl font-bold text-gray-900">My Performance</span>
               </div>
-              <div className="w-full h-72 bg-white" style={{ minWidth: '400px', minHeight: '288px' }}>
-                {performanceData && performanceData.length > 0 ? (
-                  <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={288}>
-                    <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
+              <div className="flex gap-6 text-sm md:text-base items-center">
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-gray-900 text-xl">{contractsLast30}</span>
+                  <span className="text-gray-500">Last 30 Days</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-gray-900 text-xl">{contractsToday}</span>
+                  <span className="text-gray-500">Today</span>
+                </div>
+                <div className="flex flex-col items-center">
+                  <span className="font-bold text-gray-900 text-xl">{contractsThisMonth}</span>
+                  <span className="text-gray-500">This Month</span>
+                </div>
+                {/* View Leads Button */}
+                <button
+                  className="btn btn-sm btn-outline border-gray-300 text-gray-700 hover:bg-gray-100 ml-2"
+                  onClick={() => setShowLeadsList((v) => !v)}
+                >
+                  {showLeadsList ? 'Hide Leads' : 'View Leads'}
+                </button>
+              </div>
+            </div>
+            <div className="w-full h-72 bg-white" style={{ minWidth: '400px', minHeight: '288px' }}>
+              {performanceData && performanceData.length > 0 ? (
+                <ResponsiveContainer width="100%" height="100%" minWidth={400} minHeight={288}>
+                  <LineChart data={performanceData} margin={{ top: 20, right: 30, left: 0, bottom: 0 }}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e5e7eb" />
                     <XAxis dataKey="date" tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} />
                     <YAxis allowDecimals={false} tick={{ fontSize: 12, fill: '#222' }} axisLine={{ stroke: '#e5e7eb' }} tickLine={false} width={30} />
@@ -8099,26 +7580,26 @@ const Dashboard: React.FC = () => {
                     })()}
                   </LineChart>
                 </ResponsiveContainer>
-                ) : (
-                  <div className="flex items-center justify-center h-full text-gray-500">
-                    <div className="text-center">
-                      <div className="text-lg font-medium mb-2">No performance data available</div>
-                      <div className="text-sm">Chart will appear when data is loaded</div>
-                    </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-gray-500">
+                  <div className="text-center">
+                    <div className="text-lg font-medium mb-2">No performance data available</div>
+                    <div className="text-sm">Chart will appear when data is loaded</div>
                   </div>
-                )}
-              </div>
-              {/* Legend for My Contracts and Team Avg */}
-              <div className="flex gap-6 mt-4 items-center">
-                <div className="flex items-center gap-2">
-                  <span className="inline-block w-6 h-2 rounded-full" style={{background:'#3b28c7'}}></span>
-                  <span className="text-base font-semibold text-gray-900">My Contracts</span>
                 </div>
-                <div className="flex items-center gap-2">
-                  <span className="inline-block w-6 h-2 rounded-full" style={{background:'#06b6d4'}}></span>
-                  <span className="text-base font-semibold text-gray-900">Team Avg</span>
-                </div>
+              )}
+            </div>
+            {/* Legend for My Contracts and Team Avg */}
+            <div className="flex gap-6 mt-4 items-center">
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-2 rounded-full" style={{ background: '#3b28c7' }}></span>
+                <span className="text-base font-semibold text-gray-900">My Contracts</span>
               </div>
+              <div className="flex items-center gap-2">
+                <span className="inline-block w-6 h-2 rounded-full" style={{ background: '#06b6d4' }}></span>
+                <span className="text-base font-semibold text-gray-900">Team Avg</span>
+              </div>
+            </div>
           </div>
         </div>
       </div>
@@ -8145,8 +7626,8 @@ const Dashboard: React.FC = () => {
                   </thead>
                   <tbody>
                     {realSignedLeads.map((lead) => (
-                      <tr 
-                        key={lead.id} 
+                      <tr
+                        key={lead.id}
                         className="hover:bg-gray-50 cursor-pointer"
                         onClick={() => window.location.href = `/clients/${lead.lead_number}`}
                       >
@@ -8222,16 +7703,37 @@ const Dashboard: React.FC = () => {
       )}
 
       {/* AI Suggestions Modal */}
-      <AISuggestionsModal 
+      <AISuggestionsModal
         isOpen={isAISuggestionsModalOpen}
         onClose={() => setIsAISuggestionsModalOpen(false)}
       />
 
       {/* Unavailable Employees Modal */}
-      <UnavailableEmployeesModal 
+      <UnavailableEmployeesModal
         isOpen={isUnavailableEmployeesModalOpen}
         onClose={() => setIsUnavailableEmployeesModalOpen(false)}
       />
+
+      {/* My Availability Modal - Mobile Only */}
+      {isMyAvailabilityModalOpen && (
+        <div className="fixed inset-0 z-50 overflow-y-auto bg-black bg-opacity-50 flex items-center justify-center p-4">
+          <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between z-10">
+              <h2 className="text-xl font-bold text-gray-900">My Availability</h2>
+              <button
+                onClick={() => setIsMyAvailabilityModalOpen(false)}
+                className="btn btn-sm btn-ghost btn-circle"
+                title="Close"
+              >
+                <XMarkIcon className="w-5 h-5" />
+              </button>
+            </div>
+            <div className="p-6">
+              <MyAvailabilitySection onAvailabilityChange={() => fetchUnavailableEmployeesData(teamAvailabilityDate)} />
+            </div>
+          </div>
+        </div>
+      )}
 
     </div>
   );

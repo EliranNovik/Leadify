@@ -7,9 +7,25 @@ import {
   ClockIcon,
   CheckIcon,
   XMarkIcon,
-  MagnifyingGlassIcon
+  MagnifyingGlassIcon,
+  DocumentArrowUpIcon
 } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+
+interface UnavailabilityReason {
+  id: number;
+  employee_id: number;
+  unavailability_type: 'sick_days' | 'vacation' | 'general';
+  start_date: string;
+  end_date: string | null;
+  start_time?: string | null;
+  end_time?: string | null;
+  sick_days_reason?: string | null;
+  vacation_reason?: string | null;
+  general_reason?: string | null;
+  document_url?: string | null;
+  created_at: string;
+}
 
 // Role mapping function to convert role codes to full names
 const getRoleDisplayName = (roleCode: string): string => {
@@ -76,15 +92,21 @@ const EmployeeAvailabilityManager: React.FC = () => {
   const [newUnavailableTime, setNewUnavailableTime] = useState({
     startTime: '09:00',
     endTime: '17:00',
-    reason: ''
+    reason: '',
+    unavailabilityType: 'general' as 'sick_days' | 'vacation' | 'general',
+    documentFile: null as File | null
   });
   const [newUnavailableRange, setNewUnavailableRange] = useState({
     startDate: '',
     endDate: '',
-    reason: ''
+    reason: '',
+    unavailabilityType: 'general' as 'sick_days' | 'vacation' | 'general',
+    documentFile: null as File | null
   });
   const [loading, setLoading] = useState(false);
+  const [uploadingDocument, setUploadingDocument] = useState(false);
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
+  const [unavailabilityReasons, setUnavailabilityReasons] = useState<UnavailabilityReason[]>([]);
 
   // Fetch all employees
   const fetchEmployees = async () => {
@@ -125,8 +147,50 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
       setUnavailableTimes(data?.unavailable_times || []);
       setUnavailableRanges(data?.unavailable_ranges || []);
+
+      // Fetch from new employee_unavailability_reasons table
+      const { data: reasonsData, error: reasonsError } = await supabase
+        .from('employee_unavailability_reasons')
+        .select('*')
+        .eq('employee_id', parseInt(employeeId))
+        .order('start_date', { ascending: false });
+
+      if (!reasonsError && reasonsData) {
+        setUnavailabilityReasons(reasonsData);
+      }
     } catch (error) {
       console.error('Error fetching employee unavailable times:', error);
+    }
+  };
+
+  // Upload document to storage
+  const uploadDocument = async (file: File, employeeId: string): Promise<string | null> => {
+    setUploadingDocument(true);
+    try {
+      const fileExt = file.name.split('.').pop();
+      const fileName = `employee_${employeeId}_${Date.now()}_${Math.random().toString(36).substring(7)}.${fileExt}`;
+      
+      const { data, error } = await supabase.storage
+        .from('employee-unavailability-documents')
+        .upload(fileName, file, {
+          cacheControl: '3600',
+          upsert: false,
+          contentType: file.type
+        });
+
+      if (error) {
+        console.error('Error uploading document:', error);
+        toast.error('Failed to upload document');
+        return null;
+      }
+
+      return data.path;
+    } catch (error) {
+      console.error('Error uploading document:', error);
+      toast.error('Failed to upload document');
+      return null;
+    } finally {
+      setUploadingDocument(false);
     }
   };
 
@@ -147,23 +211,61 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
     setLoading(true);
     try {
-      // Get current user info for audit trail
-      const { data: { user } } = await supabase.auth.getUser();
-      const currentUser = user?.id || 'system';
-
       // Format date as YYYY-MM-DD
       const year = selectedDate.getFullYear();
       const month = String(selectedDate.getMonth() + 1).padStart(2, '0');
       const day = String(selectedDate.getDate()).padStart(2, '0');
       const dateString = `${year}-${month}-${day}`;
 
+      // Upload document if it's a sick day and document is provided
+      let documentUrl: string | null = null;
+      if (newUnavailableTime.unavailabilityType === 'sick_days' && newUnavailableTime.documentFile) {
+        documentUrl = await uploadDocument(newUnavailableTime.documentFile, selectedEmployee.id);
+        if (!documentUrl) {
+          setLoading(false);
+          return;
+        }
+      }
+
+      // Prepare reason data based on type
+      const reasonData: any = {
+        employee_id: parseInt(selectedEmployee.id),
+        unavailability_type: newUnavailableTime.unavailabilityType,
+        start_date: dateString,
+        start_time: newUnavailableTime.startTime,
+        end_time: newUnavailableTime.endTime,
+      };
+
+      if (newUnavailableTime.unavailabilityType === 'sick_days') {
+        reasonData.sick_days_reason = newUnavailableTime.reason;
+        if (documentUrl) {
+          reasonData.document_url = documentUrl;
+        }
+      } else if (newUnavailableTime.unavailabilityType === 'vacation') {
+        reasonData.vacation_reason = newUnavailableTime.reason;
+      } else {
+        reasonData.general_reason = newUnavailableTime.reason;
+      }
+
+      // Save to new table
+      const { error: reasonError } = await supabase
+        .from('employee_unavailability_reasons')
+        .insert(reasonData);
+
+      if (reasonError) {
+        console.error('Error saving unavailability reason:', reasonError);
+        toast.error('Failed to save unavailability reason');
+        setLoading(false);
+        return;
+      }
+
+      // Also save to existing unavailable_times for backward compatibility
       const newTime: UnavailableTime = {
         id: Date.now().toString(),
         date: dateString,
         startTime: newUnavailableTime.startTime,
         endTime: newUnavailableTime.endTime,
-        reason: newUnavailableTime.reason,
-        created_by: currentUser
+        reason: newUnavailableTime.reason
       };
 
       const updatedTimes = [...unavailableTimes, newTime];
@@ -186,7 +288,8 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
       toast.success(`Unavailable time saved for ${selectedEmployee.display_name}`);
       setShowAddModal(false);
-      setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '' });
+      setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
+      fetchEmployeeUnavailableTimes(selectedEmployee.id); // Refresh the list
     } catch (error) {
       console.error('Error saving unavailable time:', error);
       toast.error('Failed to save unavailable time');
@@ -218,16 +321,53 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
     setLoading(true);
     try {
-      // Get current user info for audit trail
-      const { data: { user } } = await supabase.auth.getUser();
-      const currentUser = user?.id || 'system';
+      // Upload document if it's a sick day and document is provided
+      let documentUrl: string | null = null;
+      if (newUnavailableRange.unavailabilityType === 'sick_days' && newUnavailableRange.documentFile) {
+        documentUrl = await uploadDocument(newUnavailableRange.documentFile, selectedEmployee.id);
+        if (!documentUrl) {
+          setLoading(false);
+          return;
+        }
+      }
 
+      // Prepare reason data based on type
+      const reasonData: any = {
+        employee_id: parseInt(selectedEmployee.id),
+        unavailability_type: newUnavailableRange.unavailabilityType,
+        start_date: newUnavailableRange.startDate,
+        end_date: newUnavailableRange.endDate,
+      };
+
+      if (newUnavailableRange.unavailabilityType === 'sick_days') {
+        reasonData.sick_days_reason = newUnavailableRange.reason;
+        if (documentUrl) {
+          reasonData.document_url = documentUrl;
+        }
+      } else if (newUnavailableRange.unavailabilityType === 'vacation') {
+        reasonData.vacation_reason = newUnavailableRange.reason;
+      } else {
+        reasonData.general_reason = newUnavailableRange.reason;
+      }
+
+      // Save to new table
+      const { error: reasonError } = await supabase
+        .from('employee_unavailability_reasons')
+        .insert(reasonData);
+
+      if (reasonError) {
+        console.error('Error saving unavailability reason:', reasonError);
+        toast.error('Failed to save unavailability reason');
+        setLoading(false);
+        return;
+      }
+
+      // Also save to existing unavailable_ranges for backward compatibility
       const newRange: UnavailableRange = {
         id: Date.now().toString(),
         startDate: newUnavailableRange.startDate,
         endDate: newUnavailableRange.endDate,
-        reason: newUnavailableRange.reason,
-        created_by: currentUser
+        reason: newUnavailableRange.reason
       };
 
       const updatedRanges = [...unavailableRanges, newRange];
@@ -250,7 +390,8 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
       toast.success(`Unavailable range saved for ${selectedEmployee.display_name}`);
       setShowAddRangeModal(false);
-      setNewUnavailableRange({ startDate: '', endDate: '', reason: '' });
+      setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
+      fetchEmployeeUnavailableTimes(selectedEmployee.id); // Refresh the list
     } catch (error) {
       console.error('Error saving unavailable range:', error);
       toast.error('Failed to save unavailable range');
@@ -318,6 +459,33 @@ const EmployeeAvailabilityManager: React.FC = () => {
     } catch (error) {
       console.error('Error deleting unavailable range:', error);
       toast.error('Failed to delete unavailable range');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Delete unavailability reason from new table
+  const deleteUnavailabilityReason = async (reasonId: number) => {
+    if (!selectedEmployee) return;
+
+    setLoading(true);
+    try {
+      const { error } = await supabase
+        .from('employee_unavailability_reasons')
+        .delete()
+        .eq('id', reasonId);
+
+      if (error) {
+        console.error('Error deleting unavailability reason:', error);
+        toast.error('Failed to delete unavailability');
+        return;
+      }
+
+      toast.success('Unavailability deleted successfully');
+      fetchEmployeeUnavailableTimes(selectedEmployee.id); // Refresh the list
+    } catch (error) {
+      console.error('Error deleting unavailability reason:', error);
+      toast.error('Failed to delete unavailability');
     } finally {
       setLoading(false);
     }
@@ -459,7 +627,13 @@ const EmployeeAvailabilityManager: React.FC = () => {
               {unavailableTimes
                 .sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime())
                 .map(time => (
-                  <div key={time.id} className="flex items-center justify-between gap-2 p-3 bg-base-200 rounded-lg">
+                  <div 
+                    key={time.id} 
+                    className="flex items-center justify-between gap-2 p-3 bg-white rounded-lg"
+                    style={{
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                    }}
+                  >
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
                         <div className="text-sm font-medium">
@@ -489,7 +663,7 @@ const EmployeeAvailabilityManager: React.FC = () => {
 
       {/* Unavailable Ranges List */}
       {selectedEmployee && (
-        <div className="bg-base-100 rounded-lg p-4">
+        <div className="bg-base-100 rounded-lg p-4 mb-4">
           <div className="flex items-center justify-between mb-3">
             <h4 className="text-lg font-semibold">Unavailable Ranges</h4>
             <div className="text-sm text-base-content/70">
@@ -505,7 +679,13 @@ const EmployeeAvailabilityManager: React.FC = () => {
               {unavailableRanges
                 .sort((a, b) => new Date(a.startDate).getTime() - new Date(b.startDate).getTime())
                 .map(range => (
-                  <div key={range.id} className="flex items-center justify-between gap-2 p-3 bg-base-200 rounded-lg">
+                  <div 
+                    key={range.id} 
+                    className="flex items-center justify-between gap-2 p-3 bg-white rounded-lg"
+                    style={{
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                    }}
+                  >
                     <div className="flex-1 min-w-0">
                       <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
                         <div className="text-sm font-medium">
@@ -530,6 +710,83 @@ const EmployeeAvailabilityManager: React.FC = () => {
         </div>
       )}
 
+      {/* All Unavailabilities from New Table */}
+      {selectedEmployee && (
+        <div className="bg-base-100 rounded-lg p-4">
+          <div className="flex items-center justify-between mb-3">
+            <h4 className="text-lg font-semibold">All Unavailabilities</h4>
+            <div className="text-sm text-base-content/70">
+              {selectedEmployee.display_name} • {getRoleDisplayName(selectedEmployee.bonuses_role || '')}
+            </div>
+          </div>
+          {unavailabilityReasons.length === 0 ? (
+            <p className="text-base-content/70 text-center py-6">
+              No unavailabilities recorded for {selectedEmployee.display_name} yet.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {unavailabilityReasons.map(reason => {
+                const getReasonText = () => {
+                  if (reason.unavailability_type === 'sick_days') return reason.sick_days_reason || '';
+                  if (reason.unavailability_type === 'vacation') return reason.vacation_reason || '';
+                  return reason.general_reason || '';
+                };
+
+                const getTypeLabel = () => {
+                  if (reason.unavailability_type === 'sick_days') return 'Sick day/s';
+                  if (reason.unavailability_type === 'vacation') return 'Vacation';
+                  return 'General';
+                };
+
+                const dateRange = reason.end_date 
+                  ? `${new Date(reason.start_date).toLocaleDateString()} - ${new Date(reason.end_date).toLocaleDateString()}`
+                  : new Date(reason.start_date).toLocaleDateString();
+                
+                const timeRange = reason.start_time && reason.end_time 
+                  ? `${reason.start_time} - ${reason.end_time}`
+                  : '';
+
+                return (
+                  <div 
+                    key={reason.id} 
+                    className="flex items-center justify-between gap-2 p-3 bg-white rounded-lg"
+                    style={{
+                      boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05), 0 0 0 1px rgba(0, 0, 0, 0.05), 0 20px 25px -5px rgba(0, 0, 0, 0.1)'
+                    }}
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-1 sm:gap-4">
+                        <div className="text-sm font-medium">
+                          {dateRange}
+                          {timeRange && <span className="ml-2 text-xs text-base-content/70">({timeRange})</span>}
+                        </div>
+                        <div className="badge badge-sm badge-primary">{getTypeLabel()}</div>
+                        {reason.document_url && (
+                          <div className="flex items-center gap-1 text-xs text-success">
+                            <DocumentArrowUpIcon className="w-3 h-3" />
+                            <span>Document</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-xs text-base-content/80 mt-1 truncate">
+                        {getReasonText()}
+                      </div>
+                    </div>
+                    <button
+                      className="btn btn-ghost btn-xs text-error hover:bg-error/10 flex-shrink-0"
+                      onClick={() => deleteUnavailabilityReason(reason.id)}
+                      disabled={loading}
+                    >
+                      <TrashIcon className="w-3 h-3" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* Add Unavailable Time Modal */}
       {showAddModal && selectedDate && selectedEmployee && (
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -538,7 +795,10 @@ const EmployeeAvailabilityManager: React.FC = () => {
               <h3 className="text-lg font-bold">Add Unavailable Time</h3>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => setShowAddModal(false)}
+                onClick={() => {
+                  setShowAddModal(false);
+                  setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
+                }}
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
@@ -593,29 +853,137 @@ const EmployeeAvailabilityManager: React.FC = () => {
               
               <div>
                 <label className="label">
+                  <span className="label-text text-sm">Type</span>
+                </label>
+                <select
+                  className="select select-bordered w-full"
+                  value={newUnavailableTime.unavailabilityType}
+                  onChange={(e) => setNewUnavailableTime({ 
+                    ...newUnavailableTime, 
+                    unavailabilityType: e.target.value as 'sick_days' | 'vacation' | 'general',
+                    documentFile: e.target.value !== 'sick_days' ? null : newUnavailableTime.documentFile
+                  })}
+                >
+                  <option value="general">General</option>
+                  <option value="sick_days">Sick day/s</option>
+                  <option value="vacation">Vacation</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="label">
                   <span className="label-text text-sm">Reason</span>
                 </label>
                 <input
                   type="text"
                   className="input input-bordered w-full"
-                  placeholder="e.g., Personal appointment, Vacation, etc."
+                  placeholder={newUnavailableTime.unavailabilityType === 'sick_days' ? 'e.g., Flu, Doctor appointment' : newUnavailableTime.unavailabilityType === 'vacation' ? 'e.g., Family vacation' : 'e.g., Personal appointment'}
                   value={newUnavailableTime.reason}
                   onChange={(e) => setNewUnavailableTime(prev => ({ ...prev, reason: e.target.value }))}
                 />
               </div>
+
+              {/* Document Upload for Sick Days */}
+              {newUnavailableTime.unavailabilityType === 'sick_days' && (
+                <div>
+                  <label className="label">
+                    <span className="label-text text-sm">Doctors Documents</span>
+                  </label>
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                      newUnavailableTime.documentFile
+                        ? 'border-primary bg-primary/5'
+                        : 'border-gray-300 hover:border-primary/50'
+                    }`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const file = e.dataTransfer.files[0];
+                      if (file) {
+                        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+                        if (allowedTypes.includes(file.type)) {
+                          if (file.size <= 10 * 1024 * 1024) { // 10MB
+                            setNewUnavailableTime({ ...newUnavailableTime, documentFile: file });
+                          } else {
+                            toast.error('File size must be less than 10MB');
+                          }
+                        } else {
+                          toast.error('Invalid file type. Please upload images or documents (PDF, Word)');
+                        }
+                      }
+                    }}
+                  >
+                    {newUnavailableTime.documentFile ? (
+                      <div className="space-y-2">
+                        <DocumentArrowUpIcon className="w-8 h-8 mx-auto text-primary" />
+                        <p className="text-sm font-medium text-gray-700">{newUnavailableTime.documentFile.name}</p>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={() => setNewUnavailableTime({ ...newUnavailableTime, documentFile: null })}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <DocumentArrowUpIcon className="w-8 h-8 mx-auto text-gray-400" />
+                        <p className="text-sm text-gray-600">
+                          Drag and drop a document here, or{' '}
+                          <label className="text-primary cursor-pointer hover:underline">
+                            click to browse
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept="image/*,.pdf,.doc,.docx"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+                                  if (allowedTypes.includes(file.type)) {
+                                    if (file.size <= 10 * 1024 * 1024) { // 10MB
+                                      setNewUnavailableTime({ ...newUnavailableTime, documentFile: file });
+                                    } else {
+                                      toast.error('File size must be less than 10MB');
+                                    }
+                                  } else {
+                                    toast.error('Invalid file type. Please upload images or documents (PDF, Word)');
+                                  }
+                                }
+                              }}
+                            />
+                          </label>
+                        </p>
+                        <p className="text-xs text-gray-500">PDF, Word, or Images (max 10MB)</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             
             <div className="flex gap-3 mt-6">
               <button
                 className="btn btn-primary flex-1"
                 onClick={saveUnavailableTime}
-                disabled={loading}
+                disabled={loading || uploadingDocument}
               >
-                {loading ? 'Saving...' : 'Save'}
+                {loading || uploadingDocument ? 'Saving...' : 'Save'}
               </button>
               <button
                 className="btn btn-ghost"
-                onClick={() => setShowAddModal(false)}
+                onClick={() => {
+                  setShowAddModal(false);
+                  setNewUnavailableTime({ startTime: '09:00', endTime: '17:00', reason: '', unavailabilityType: 'general', documentFile: null });
+                }}
               >
                 Cancel
               </button>
@@ -632,7 +1000,10 @@ const EmployeeAvailabilityManager: React.FC = () => {
               <h3 className="text-lg font-bold">Add Unavailable Range</h3>
               <button
                 className="btn btn-ghost btn-sm"
-                onClick={() => setShowAddRangeModal(false)}
+                onClick={() => {
+                  setShowAddRangeModal(false);
+                  setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
+                }}
               >
                 <XMarkIcon className="w-5 h-5" />
               </button>
@@ -670,29 +1041,137 @@ const EmployeeAvailabilityManager: React.FC = () => {
               
               <div>
                 <label className="label">
+                  <span className="label-text text-sm">Type</span>
+                </label>
+                <select
+                  className="select select-bordered w-full"
+                  value={newUnavailableRange.unavailabilityType}
+                  onChange={(e) => setNewUnavailableRange({ 
+                    ...newUnavailableRange, 
+                    unavailabilityType: e.target.value as 'sick_days' | 'vacation' | 'general',
+                    documentFile: e.target.value !== 'sick_days' ? null : newUnavailableRange.documentFile
+                  })}
+                >
+                  <option value="general">General</option>
+                  <option value="sick_days">Sick day/s</option>
+                  <option value="vacation">Vacation</option>
+                </select>
+              </div>
+
+              <div>
+                <label className="label">
                   <span className="label-text text-sm">Reason</span>
                 </label>
                 <input
                   type="text"
                   className="input input-bordered w-full"
-                  placeholder="e.g., Vacation, Sick Leave, Conference"
+                  placeholder={newUnavailableRange.unavailabilityType === 'sick_days' ? 'e.g., Flu, Doctor appointment' : newUnavailableRange.unavailabilityType === 'vacation' ? 'e.g., Family vacation' : 'e.g., Conference'}
                   value={newUnavailableRange.reason}
                   onChange={(e) => setNewUnavailableRange(prev => ({ ...prev, reason: e.target.value }))}
                 />
               </div>
+
+              {/* Document Upload for Sick Days */}
+              {newUnavailableRange.unavailabilityType === 'sick_days' && (
+                <div>
+                  <label className="label">
+                    <span className="label-text text-sm">Doctors Documents</span>
+                  </label>
+                  <div
+                    className={`border-2 border-dashed rounded-lg p-6 text-center transition-colors ${
+                      newUnavailableRange.documentFile
+                        ? 'border-primary bg-primary/5'
+                        : 'border-gray-300 hover:border-primary/50'
+                    }`}
+                    onDragOver={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDragLeave={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                    }}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      const file = e.dataTransfer.files[0];
+                      if (file) {
+                        const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+                        if (allowedTypes.includes(file.type)) {
+                          if (file.size <= 10 * 1024 * 1024) { // 10MB
+                            setNewUnavailableRange({ ...newUnavailableRange, documentFile: file });
+                          } else {
+                            toast.error('File size must be less than 10MB');
+                          }
+                        } else {
+                          toast.error('Invalid file type. Please upload images or documents (PDF, Word)');
+                        }
+                      }
+                    }}
+                  >
+                    {newUnavailableRange.documentFile ? (
+                      <div className="space-y-2">
+                        <DocumentArrowUpIcon className="w-8 h-8 mx-auto text-primary" />
+                        <p className="text-sm font-medium text-gray-700">{newUnavailableRange.documentFile.name}</p>
+                        <button
+                          type="button"
+                          className="btn btn-xs btn-ghost"
+                          onClick={() => setNewUnavailableRange({ ...newUnavailableRange, documentFile: null })}
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="space-y-2">
+                        <DocumentArrowUpIcon className="w-8 h-8 mx-auto text-gray-400" />
+                        <p className="text-sm text-gray-600">
+                          Drag and drop a document here, or{' '}
+                          <label className="text-primary cursor-pointer hover:underline">
+                            click to browse
+                            <input
+                              type="file"
+                              className="hidden"
+                              accept="image/*,.pdf,.doc,.docx"
+                              onChange={(e) => {
+                                const file = e.target.files?.[0];
+                                if (file) {
+                                  const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp', 'application/pdf', 'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'];
+                                  if (allowedTypes.includes(file.type)) {
+                                    if (file.size <= 10 * 1024 * 1024) { // 10MB
+                                      setNewUnavailableRange({ ...newUnavailableRange, documentFile: file });
+                                    } else {
+                                      toast.error('File size must be less than 10MB');
+                                    }
+                                  } else {
+                                    toast.error('Invalid file type. Please upload images or documents (PDF, Word)');
+                                  }
+                                }
+                              }}
+                            />
+                          </label>
+                        </p>
+                        <p className="text-xs text-gray-500">PDF, Word, or Images (max 10MB)</p>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
             
             <div className="flex gap-3 mt-6">
               <button
                 className="btn btn-primary flex-1"
                 onClick={saveUnavailableRange}
-                disabled={loading}
+                disabled={loading || uploadingDocument}
               >
-                {loading ? 'Saving...' : 'Save Range'}
+                {loading || uploadingDocument ? 'Saving...' : 'Save Range'}
               </button>
               <button
                 className="btn btn-ghost"
-                onClick={() => setShowAddRangeModal(false)}
+                onClick={() => {
+                  setShowAddRangeModal(false);
+                  setNewUnavailableRange({ startDate: '', endDate: '', reason: '', unavailabilityType: 'general', documentFile: null });
+                }}
               >
                 Cancel
               </button>
